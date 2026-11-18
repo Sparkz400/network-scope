@@ -1,0 +1,130 @@
+{
+  "_comment": "Service probe database. A probe without ports/send is the null probe: it only listens for a banner. Rules are regular expressions over the raw reply bytes (case-sensitive unless (?i); '.' also matches newlines and any byte). $1..$9 expand to capture groups. The first matching rule wins. A probe with the same name in the user file (%LOCALAPPDATA%/NetworkScope/probes.json or --probes FILE) replaces the built-in one; other names are added. Fields: name, ports, send (text), send_hex, wait_ms, rules[{re, service, product, version, info}].",
+  "probes": [
+    {
+      "name": "banner",
+      "wait_ms": 2500,
+      "rules": [
+        { "re": "^SSH-([\\d.]+)-OpenSSH_for_Windows_([\\w.]+)", "service": "ssh", "product": "OpenSSH for Windows", "version": "$2", "info": "protocol $1" },
+        { "re": "^SSH-([\\d.]+)-OpenSSH[_-]([\\w.]+)(?: ([^\\r\\n]*))?", "service": "ssh", "product": "OpenSSH", "version": "$2", "info": "protocol $1 $3" },
+        { "re": "^SSH-([\\d.]+)-([^\\s\\r\\n]+)(?: ([^\\r\\n]*))?", "service": "ssh", "product": "$2", "info": "protocol $1 $3" },
+        { "re": "^220[ -][^\\r\\n]*Postfix", "service": "smtp", "product": "Postfix" },
+        { "re": "^220[ -][^\\r\\n]*Exim ([\\d.]+)", "service": "smtp", "product": "Exim", "version": "$1" },
+        { "re": "^220[ -][^\\r\\n]*Microsoft ESMTP MAIL Service", "service": "smtp", "product": "Microsoft Exchange/SMTP" },
+        { "re": "^220[ -][^\\r\\n]*ESMTP Sendmail ([\\w.]+)", "service": "smtp", "product": "Sendmail", "version": "$1" },
+        { "re": "^220[ -][^\\r\\n]*(?:ESMTP|SMTP)", "service": "smtp" },
+        { "re": "^220[ -][^\\r\\n]*vsFTPd ([\\d.]+)", "service": "ftp", "product": "vsFTPd", "version": "$1" },
+        { "re": "^220[ -][^\\r\\n]*ProFTPD ([\\w.]+)", "service": "ftp", "product": "ProFTPD", "version": "$1" },
+        { "re": "^220[ -][^\\r\\n]*Pure-FTPd", "service": "ftp", "product": "Pure-FTPd" },
+        { "re": "^220[ -][^\\r\\n]*FileZilla Server(?: version)? ([\\d.]+)", "service": "ftp", "product": "FileZilla Server", "version": "$1" },
+        { "re": "^220[ -][^\\r\\n]*Microsoft FTP Service", "service": "ftp", "product": "Microsoft FTP Service" },
+        { "re": "^220[ -]", "service": "ftp" },
+        { "re": "^\\+OK[^\\r\\n]*Dovecot", "service": "pop3", "product": "Dovecot" },
+        { "re": "^\\+OK", "service": "pop3" },
+        { "re": "^\\* OK[^\\r\\n]*Dovecot", "service": "imap", "product": "Dovecot" },
+        { "re": "^\\* OK", "service": "imap" },
+        { "re": "^.{4}\\x0a(\\d+\\.\\d+\\.\\d+)-MariaDB", "service": "mysql", "product": "MariaDB", "version": "$1" },
+        { "re": "^.{4}\\x0a(\\d+\\.\\d+\\.\\d+[\\w.+~-]*)\\x00", "service": "mysql", "product": "MySQL", "version": "$1" },
+        { "re": "^.{4}\\xff.{2}Host '[^']*' is not allowed", "service": "mysql", "product": "MySQL", "info": "host not allowed" },
+        { "re": "^RFB (\\d{3})\\.(\\d{3})", "service": "vnc", "info": "protocol $1.$2" },
+        { "re": "^\\xff[\\xfb-\\xfe]", "service": "telnet" },
+        { "re": "^RTSP/1\\.0 ", "service": "rtsp" },
+        { "re": "^HTTP/1\\.[01] \\d{3}", "service": "http" }
+      ]
+    },
+    {
+      "name": "redis",
+      "ports": [6379],
+      "send": "INFO server\r\n",
+      "rules": [
+        { "re": "redis_version:([\\w.]+)", "service": "redis", "product": "Redis", "version": "$1" },
+        { "re": "^-(?:NOAUTH|DENIED)", "service": "redis", "product": "Redis", "info": "authentication required" },
+        { "re": "^[+$-]", "service": "redis" }
+      ]
+    },
+    {
+      "name": "memcached",
+      "ports": [11211],
+      "send": "version\r\n",
+      "rules": [
+        { "re": "^VERSION ([\\w.]+)", "service": "memcached", "product": "memcached", "version": "$1" }
+      ]
+    },
+    {
+      "name": "mqtt",
+      "ports": [1883],
+      "send_hex": "100c00044d5154540402003c0000",
+      "rules": [
+        { "re": "^\\x20\\x02.\\x00", "service": "mqtt", "info": "anonymous connection accepted" },
+        { "re": "^\\x20\\x02.[\\x04\\x05]", "service": "mqtt", "info": "authentication required" },
+        { "re": "^\\x20\\x02.\\x02", "service": "mqtt", "info": "client id required" },
+        { "re": "^\\x20\\x02", "service": "mqtt" }
+      ]
+    },
+    {
+      "name": "postgresql",
+      "ports": [5432],
+      "send_hex": "0000000804d2162f",
+      "rules": [
+        { "re": "^S$", "service": "postgresql", "info": "TLS supported" },
+        { "re": "^N$", "service": "postgresql", "info": "TLS not supported" },
+        { "re": "^E", "service": "postgresql" }
+      ]
+    },
+    {
+      "name": "mssql",
+      "ports": [1433],
+      "send_hex": "1201001a0000010000000b00060100110001ff00000000000002",
+      "rules": [
+        { "re": "^\\x04\\x01", "service": "ms-sql-s", "product": "Microsoft SQL Server" }
+      ]
+    },
+    {
+      "name": "mongodb",
+      "ports": [27017],
+      "send_hex": "340000000100000000000000dd07000000000000001f0000001068656c6c6f000100000002246462000600000061646d696e0000",
+      "rules": [
+        { "re": "maxWireVersion|isWritablePrimary|ismaster", "service": "mongodb", "product": "MongoDB" }
+      ]
+    },
+    {
+      "name": "rdp",
+      "ports": [3389],
+      "send_hex": "030000130ee00000000000010008000b000000",
+      "rules": [
+        { "re": "^\\x03\\x00\\x00\\x13\\x0e\\xd0.{5}\\x02.\\x08\\x00\\x00\\x00\\x00\\x00", "service": "ms-wbt-server", "product": "RDP", "info": "standard RDP security (no TLS/NLA)" },
+        { "re": "^\\x03\\x00\\x00\\x13\\x0e\\xd0.{5}\\x02.\\x08\\x00\\x01\\x00\\x00\\x00", "service": "ms-wbt-server", "product": "RDP", "info": "TLS security" },
+        { "re": "^\\x03\\x00\\x00\\x13\\x0e\\xd0.{5}\\x02.\\x08\\x00\\x02\\x00\\x00\\x00", "service": "ms-wbt-server", "product": "RDP", "info": "NLA (CredSSP)" },
+        { "re": "^\\x03\\x00\\x00\\x13\\x0e\\xd0.{5}\\x02.\\x08\\x00\\x08\\x00\\x00\\x00", "service": "ms-wbt-server", "product": "RDP", "info": "NLA with early user authentication" },
+        { "re": "^\\x03\\x00\\x00\\x13\\x0e\\xd0.{5}\\x03", "service": "ms-wbt-server", "product": "RDP", "info": "negotiation refused" },
+        { "re": "^\\x03\\x00..\\x0e?\\xd0", "service": "ms-wbt-server", "product": "RDP" }
+      ]
+    },
+    {
+      "name": "ldap",
+      "ports": [389, 3268],
+      "send_hex": "300c020101600702010304008000",
+      "rules": [
+        { "re": "^\\x30.{1,3}?\\x02\\x01\\x01\\x61", "service": "ldap", "info": "anonymous bind answered" }
+      ]
+    },
+    {
+      "name": "dns-tcp",
+      "ports": [53],
+      "send_hex": "001e0539000000010000000000000776657273696f6e0462696e640000100003",
+      "rules": [
+        { "re": "\\xc0\\x0c\\x00\\x10\\x00\\x03.{4}.{2}.([\\x20-\\x7e]+)", "service": "domain", "product": "$1", "info": "version.bind" },
+        { "re": "^..\\x05\\x39[\\x80-\\xff]", "service": "domain" }
+      ]
+    },
+    {
+      "name": "rtsp",
+      "ports": [554, 8554],
+      "send": "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+      "rules": [
+        { "re": "(?i)^RTSP/1\\.0 \\d+[^\\r\\n]*\\r\\n(?:[^\\r\\n]+\\r\\n)*?Server: ([^\\r\\n]+)", "service": "rtsp", "product": "$1" },
+        { "re": "^RTSP/1\\.0 ", "service": "rtsp" }
+      ]
+    }
+  ]
+}

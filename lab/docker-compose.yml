@@ -1,0 +1,29 @@
+# Lab targets for Network Scope. Only start this on a network you own; the services are fake.
+#   docker compose up -d --build
+#   network-scope scan 172.28.0.0/24 --deep --ot --script ../scripts
+# Services bind low ports inside the container (no root needed, the container sets
+# net.ipv4.ip_unprivileged_port_start=0). The lab network is internal: no outside access.
+services:
+  weak-host:
+    build: .
+    networks:
+      lab:
+        ipv4_address: 172.28.0.10
+    sysctls:
+      - net.ipv4.ip_unprivileged_port_start=0
+    cap_drop: [ALL]
+    read_only: true
+  redis-open:
+    image: redis:7-alpine
+    command: ["redis-server", "--protected-mode", "no"]
+    networks:
+      lab:
+        ipv4_address: 172.28.0.11
+    cap_drop: [ALL]
+networks:
+  lab:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
