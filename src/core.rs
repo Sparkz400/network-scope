@@ -460,7 +460,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     }
     if s.services && !h.open.is_empty() {
         let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
-        let rounds = if s.safe { 4 } else { 10 };
+        let rounds = if s.safe { 6 } else { 12 };
         let slots = Arc::new(Semaphore::new(if s.safe { 1 } else { 8 }));
         let mut tasks = JoinSet::new();
         for &port in h.open.iter().filter(|p| !crate::service::is_ot_port(**p)) {
