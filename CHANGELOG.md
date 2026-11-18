@@ -89,6 +89,8 @@ First public release. The [documentation](https://sparkz400.github.io/network-sc
 - Exports carry the real scan time (stored time for saved/reopened scans, current time for live GUI results) instead of "time not recorded".
 - GUI: the OT pcap import now flushes partially reassembled messages; a cancelled import is partial, not an error.
 
+- **Npcap was never loaded on Windows:** the driver path used forward slashes, which `LoadLibraryExW` rejects with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, so SYN scanning, the ARP sweep, TCP traceroute, `listen`, DCP and live OT capture always reported "Capture driver unavailable" even with Npcap installed. Found in the first real-hardware test.
+
 ### Security
 
 - **Bundled SQLite 3.54.1** (rusqlite 0.41): fixes RUSTSEC-2026-0459 / CVE-2026-119375, where a crafted database and `-wal` file pair could make queries return uninitialised memory. Only inventory files from an untrusted source were exposed.
@@ -106,10 +108,10 @@ Deliberately, or for lack of a test setup:
 
 ### Untested
 
-- Anything needing Npcap/libpcap on a real interface: SYN (on-link and routed), ARP sweep, TCP traceroute, live passive/OT capture, DCP. Only fake-wire tests ran.
+- Npcap/libpcap features not yet run on a real interface: SYN to routed targets, ARP sweep, TCP traceroute, live OT capture, DCP; libpcap on Linux/macOS. (Verified on Windows with Npcap: on-link SYN, passive `listen`; see the lab and testing page.)
 - UDP traceroute with administrator/root rights; ICMPv6 hop-limit expiry from a real router on Windows.
 - Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine; CI is the first compile.
-- `network-scope-cli` and the GUI binary's console attach in real `cmd.exe`/PowerShell sessions; the installer script (never compiled with `iscc`); the CI, release and documentation workflows.
+- The GUI binary's console attach when started from a shell; the installer script (never compiled with `iscc`); the CI, release and documentation workflows.
 - Webhook/syslog delivery against real receivers; SMB against Samba; TLS 1.3 enumeration against OpenSSL/Schannel; JA4S against the reference implementation; CPE names against the NVD dictionary.
 - OT decoders and reassembly against real industrial traffic (synthetic frames only).
 

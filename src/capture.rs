@@ -65,13 +65,22 @@ pub fn library_candidates(macos: bool) -> &'static [&'static str] {
         &["libpcap.so.1", "libpcap.so", "libpcap.so.0.8"]
     }
 }
+/// `%SystemRoot%\System32\Npcap\wpcap.dll`, built from separate components so the path
+/// only contains backslashes on Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn npcap_dll_path(system_root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    std::path::PathBuf::from(system_root.unwrap_or_else(|| "C:\\Windows".into()))
+        .join("System32")
+        .join("Npcap")
+        .join("wpcap.dll")
+}
 fn library() -> Result<Library, String> {
     #[cfg(windows)]
     {
-        let path = std::path::PathBuf::from(
-            std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
-        )
-        .join("System32/Npcap/wpcap.dll");
+        // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR (0x100) needs a fully qualified path with
+        // backslashes: "System32/Npcap/wpcap.dll" (forward slashes) is rejected and the
+        // installed driver looked missing. `npcap_dll_path` joins the components separately.
+        let path = npcap_dll_path(std::env::var_os("SystemRoot"));
         let loaded = unsafe {
             libloading::os::windows::Library::load_with_flags(path, 0x100 | 0x1000)
                 .map(Library::from)
@@ -285,6 +294,18 @@ pub fn mac(text: &str) -> Result<[u8; 6], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LoadLibraryExW with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR rejects forward slashes, which made
+    /// an installed Npcap look missing.
+    #[cfg(windows)]
+    #[test]
+    fn npcap_path_has_only_backslashes() {
+        let p = npcap_dll_path(Some(r"C:\Windows".into()));
+        let s = p.to_string_lossy();
+        assert_eq!(s, r"C:\Windows\System32\Npcap\wpcap.dll");
+        assert!(!s.contains('/'));
+        assert!(npcap_dll_path(None).is_absolute());
+    }
 
     #[test]
     fn library_candidates_cover_macos_and_linux() {
