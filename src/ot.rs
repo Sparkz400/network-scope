@@ -439,6 +439,32 @@ mod tests {
         assert!(parse_modbus(&[0x2b, 0x0e, 1, 1, 0, 0, 1, 0, 50]).is_err());
     }
     #[test]
+    fn list_identity_names_the_odva_vendor() {
+        let identity = |vendor: u16| {
+            let mut v = vec![1, 0];
+            v.extend([0u8; 16]);
+            v.extend(vendor.to_le_bytes());
+            v.extend(14u16.to_le_bytes());
+            v.extend(55u16.to_le_bytes());
+            v.extend([32, 11, 0, 0]);
+            v.extend(7u32.to_le_bytes());
+            v.push(4);
+            v.extend(b"PLC1");
+            v.push(3);
+            let mut b = vec![1, 0, 0x0c, 0];
+            b.extend((v.len() as u16).to_le_bytes());
+            b.extend(v);
+            b
+        };
+        let f = parse_list_identity(&identity(1)).unwrap();
+        assert_eq!(f["vendor"], "Rockwell Automation/Allen-Bradley");
+        assert_eq!((f["vendor_id"].as_str(), f["name"].as_str()), ("1", "PLC1"));
+        // an ID missing from data/cip_vendors.tsv keeps only the number
+        let f = parse_list_identity(&identity(65_000)).unwrap();
+        assert_eq!(f["vendor_id"], "65000");
+        assert!(!f.contains_key("vendor"));
+    }
+    #[test]
     fn bacnet_identity() {
         let f = parse_bacnet(&[
             0x81, 0x0a, 0, 20, 1, 0, 0x10, 0, 0xc4, 2, 0, 0, 42, 0x22, 5, 0xdc, 0x91, 3, 0x21, 15,

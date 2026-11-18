@@ -269,7 +269,8 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
         _ => return None,
     }
     o.ip = o.ip.filter(|v| !v.is_unspecified());
-    if o.mac.is_empty() {
+    // An all-zero source is a synthesised header (raw IP capture files): no MAC is known.
+    if o.mac.is_empty() && frame[6..12] != [0; 6] {
         o.mac = mac(&frame[6..12]);
     }
     Some(o)

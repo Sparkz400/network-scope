@@ -1,6 +1,8 @@
 //! Continuous monitoring: repeat a scan, compare it with the previous one and with the set of
 //! devices ever seen, and raise alerts for new devices, opened/closed ports, new findings and
 //! unexpected DHCP servers. Alerts are stored in the inventory database and emitted as JSON lines.
+//! A condition that persists is alerted once (`Dedup`), not every cycle; alerts can also go to
+//! configured webhook/syslog destinations (`crate::notify`).
 use crate::{
     devices, risk,
     risk::Severity,
@@ -32,6 +34,8 @@ pub struct Policy {
     pub dhcp_allow: BTreeSet<IpAddr>,
     pub min_severity: Severity,
     pub report_missing: bool,
+    /// Alert delivery and de-duplication.
+    pub notify: Notify,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -40,8 +44,156 @@ impl Default for Policy {
             dhcp_allow: BTreeSet::new(),
             min_severity: Severity::Low,
             report_missing: false,
+            notify: Notify::default(),
         }
     }
+}
+
+/// Where alerts go besides stdout/the database, and how repeats are handled.
+#[derive(Clone, Debug)]
+pub struct Notify {
+    /// Webhook/syslog destinations (opt-in; empty by default).
+    pub sinks: Vec<crate::notify::Sink>,
+    /// Per-operation network timeout for the sinks.
+    pub timeout: Duration,
+    /// Raise an alert only when its condition is new, not on every cycle while it persists.
+    pub dedup: bool,
+    /// With `dedup`: raise a persisting condition again after this long. `None`: only after it
+    /// resolved and came back.
+    pub renotify: Option<Duration>,
+}
+impl Default for Notify {
+    fn default() -> Self {
+        Self {
+            sinks: vec![],
+            timeout: crate::notify::DEFAULT_TIMEOUT,
+            dedup: true,
+            renotify: Some(Duration::from_secs(24 * 3600)),
+        }
+    }
+}
+
+/// The identity of an alert's condition, for de-duplication: kind, subject and the stable part
+/// of the message (counters, offered addresses and similar details are left out).
+pub fn alert_key(a: &Alert) -> String {
+    let detail = match a.kind.as_str() {
+        // the finding title; the evidence after " - " may change between scans
+        "new-finding" => a
+            .message
+            .split(" - ")
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+        // "N DHCP servers answer: ip (how); ip (how)": the set of servers
+        "rogue-dhcp" if a.subject == "dhcp" => {
+            let mut servers: Vec<&str> = a
+                .message
+                .split_once(": ")
+                .map_or("", |(_, list)| list)
+                .split("; ")
+                .map(|s| s.split(" (").next().unwrap_or_default())
+                .collect();
+            servers.sort_unstable();
+            servers.join(",")
+        }
+        "new-device"
+        | "device-missing"
+        | "capture-incomplete"
+        | "dhcp-discover-failed"
+        | "rogue-dhcp" => String::new(),
+        // port-opened/closed ("ip: TCP port N ..."), address-changed and anything else
+        _ => a.message.clone(),
+    };
+    format!("{}|{}|{detail}", a.kind, a.subject)
+}
+
+/// De-duplication across monitoring cycles. A key raised in a cycle is suppressed in later
+/// cycles while it keeps being produced; it is raised again after a complete cycle without it
+/// (the condition resolved, then recurred) or after `renotify`.
+#[derive(Debug, Default)]
+pub struct Dedup {
+    /// key -> when it was last raised (emitted)
+    active: HashMap<String, i64>,
+    renotify: Option<i64>,
+}
+impl Dedup {
+    pub fn new(renotify: Option<Duration>) -> Self {
+        Self {
+            active: HashMap::new(),
+            renotify: renotify.map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX)),
+        }
+    }
+    /// Seeds the state from stored alerts (e.g. `store::list_alerts`), so a restarted monitor
+    /// does not repeat what it raised just before: alerts raised within `window` seconds
+    /// before `now` count as active.
+    pub fn restore(&mut self, stored: &[Alert], now: i64, window: i64) {
+        for a in stored.iter().filter(|a| now - a.timestamp <= window) {
+            let t = self.active.entry(alert_key(a)).or_insert(a.timestamp);
+            *t = (*t).max(a.timestamp);
+        }
+    }
+    /// The alerts to raise this cycle and how many repeats were suppressed. `complete`: the
+    /// cycle compared everything, so a key it did not produce has resolved. After an
+    /// incomplete cycle (comparisons skipped) nothing counts as resolved.
+    pub fn filter(&mut self, alerts: Vec<Alert>, now: i64, complete: bool) -> (Vec<Alert>, usize) {
+        let mut seen = HashSet::new();
+        let mut out = vec![];
+        let mut suppressed = 0;
+        for a in alerts {
+            let key = alert_key(&a);
+            let repeat = self.active.get(&key).is_some_and(|&last| {
+                seen.contains(&key) || self.renotify.is_none_or(|r| now - last < r)
+            });
+            if repeat {
+                suppressed += 1;
+            } else {
+                self.active.insert(key.clone(), now);
+                out.push(a);
+            }
+            seen.insert(key);
+        }
+        if complete {
+            self.active.retain(|k, _| seen.contains(k));
+        }
+        (out, suppressed)
+    }
+}
+
+/// Alert kinds `evaluate` filters by `min_severity`, with the highest severity each can have.
+/// (`new-finding` can have any severity; notices such as `capture-incomplete` are never
+/// filtered.)
+const KIND_MAX_SEVERITY: [(&str, Severity); 6] = [
+    ("port-closed", Severity::Info),
+    ("device-missing", Severity::Low),
+    ("address-changed", Severity::Medium),
+    ("new-device", Severity::High),
+    ("port-opened", Severity::High),
+    ("rogue-dhcp", Severity::Critical),
+];
+
+/// With `--report-missing`: a one-line hint when `min_severity` hides whole alert kinds.
+pub fn severity_hint(policy: &Policy) -> Option<String> {
+    if !policy.report_missing {
+        return None;
+    }
+    let hidden: Vec<String> = KIND_MAX_SEVERITY
+        .iter()
+        .filter(|(_, s)| *s < policy.min_severity)
+        .map(|(k, s)| format!("{k} ({})", s.name()))
+        .collect();
+    if hidden.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Hint: --min-severity {} hides these alert kinds: {}{}",
+        policy.min_severity.name(),
+        hidden.join(", "),
+        if policy.min_severity > Severity::Low {
+            "; --report-missing has no visible effect (use --min-severity low)"
+        } else {
+            ""
+        }
+    ))
 }
 
 const RISKY_PORTS: [u16; 14] = [
@@ -399,6 +551,23 @@ pub fn run(
 ) -> Result<(), String> {
     let targets = scan::parse_targets(targets_text, settings.skip_edges, scan::MAX_STREAM)?;
     let ports = scan::parse_ports(&settings.ports)?;
+    if let Some(hint) = severity_hint(&cfg.policy) {
+        eprintln!("{hint}");
+    }
+    let notify = &cfg.policy.notify;
+    let mut dedup = Dedup::new(notify.renotify);
+    if notify.dedup {
+        // Alerts raised shortly before a restart are not repeated. A lookup failure only
+        // costs repeated alerts.
+        let window = i64::try_from(cfg.interval.as_secs())
+            .unwrap_or(i64::MAX / 4)
+            .saturating_mul(2)
+            .saturating_add(300);
+        match store::list_alerts(db, 2000) {
+            Ok(stored) => dedup.restore(&stored, now(), window),
+            Err(e) => eprintln!("Alert history not read ({e}); persisting alerts may repeat once"),
+        }
+    }
     let mut cycle = 0;
     loop {
         cycle += 1;
@@ -495,6 +664,10 @@ pub fn run(
         let t = now();
         let mut alerts = evaluate(prev.as_ref(), &snapshot, &known, &cfg.policy, t);
         alerts.extend(notices);
+        let mut suppressed = 0;
+        if notify.dedup {
+            (alerts, suppressed) = dedup.filter(alerts, t, complete);
+        }
         let keys: Vec<String> = devices::merge(&snapshot.hosts, &snapshot.observations)
             .into_iter()
             .map(|d| d.id)
@@ -504,12 +677,21 @@ pub fn run(
         }
         store::save_alerts(db, id, &alerts)?;
         eprintln!(
-            "Cycle {cycle}: scan #{id}, {} hosts, {} alerts",
+            "Cycle {cycle}: scan #{id}, {} hosts, {} alerts{}",
             snapshot.hosts.len(),
-            alerts.len()
+            alerts.len(),
+            if suppressed > 0 {
+                format!(" ({suppressed} still-active alerts not repeated)")
+            } else {
+                String::new()
+            }
         );
         for a in &alerts {
             emit(a);
+        }
+        // Delivery problems are reported and never end monitoring.
+        for warning in crate::notify::deliver(&notify.sinks, &alerts, notify.timeout) {
+            eprintln!("Cycle {cycle}: alert delivery failed: {warning}");
         }
         if cfg.cycles != 0 && cycle >= cfg.cycles {
             return Ok(());
@@ -966,5 +1148,173 @@ mod tests {
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert_eq!(warnings[0], "driver");
         assert!(warnings[1].contains("5 further"), "{warnings:?}");
+    }
+
+    fn a(kind: &str, subject: &str, message: &str) -> Alert {
+        alert(0, Severity::High, kind, subject, message)
+    }
+
+    #[test]
+    fn alert_keys_ignore_volatile_details() {
+        let k = |kind, subject, message| alert_key(&a(kind, subject, message));
+        assert_eq!(
+            k("rogue-dhcp", "dhcp", "2 DHCP servers answer: 10.0.0.1 (answered DHCPDISCOVER offering 10.0.0.57); 10.0.0.9 (seen sending DHCP OFFER/ACK)"),
+            k("rogue-dhcp", "dhcp", "2 DHCP servers answer: 10.0.0.9 (x); 10.0.0.1 (answered DHCPDISCOVER offering 10.0.0.80)")
+        );
+        assert_ne!(
+            k(
+                "rogue-dhcp",
+                "dhcp",
+                "2 DHCP servers answer: 10.0.0.1 (x); 10.0.0.9 (y)"
+            ),
+            k(
+                "rogue-dhcp",
+                "dhcp",
+                "2 DHCP servers answer: 10.0.0.1 (x); 10.0.0.7 (y)"
+            )
+        );
+        assert_eq!(
+            k(
+                "new-finding",
+                "10.0.0.5:443",
+                "TLS certificate expired - 3 days ago"
+            ),
+            k(
+                "new-finding",
+                "10.0.0.5:443",
+                "TLS certificate expired - 4 days ago"
+            )
+        );
+        assert_eq!(
+            k(
+                "capture-incomplete",
+                "eth0",
+                "Passive capture incomplete: 5 dropped"
+            ),
+            k(
+                "capture-incomplete",
+                "eth0",
+                "Passive capture incomplete: 9 dropped"
+            )
+        );
+        assert_ne!(
+            k(
+                "port-opened",
+                "10.0.0.5",
+                "10.0.0.5: TCP port 22 newly open"
+            ),
+            k(
+                "port-opened",
+                "10.0.0.5",
+                "10.0.0.5: TCP port 23 newly open"
+            )
+        );
+        assert_ne!(
+            k("new-device", "10.0.0.5", ""),
+            k("device-missing", "10.0.0.5", "")
+        );
+    }
+
+    #[test]
+    fn persisting_alerts_are_raised_once() {
+        let rogue = || {
+            a(
+                "rogue-dhcp",
+                "10.0.0.66",
+                "Unexpected DHCP server 10.0.0.66",
+            )
+        };
+        let port = || {
+            a(
+                "port-opened",
+                "10.0.0.5",
+                "10.0.0.5: TCP port 23 newly open",
+            )
+        };
+        let mut d = Dedup::new(None);
+        let (out, n) = d.filter(vec![rogue(), port()], 100, true);
+        assert_eq!((out.len(), n), (2, 0));
+        // the condition persists: not raised again
+        let (out, n) = d.filter(vec![rogue()], 200, true);
+        assert_eq!((out.len(), n), (0, 1));
+        // an incomplete cycle without it does not count as resolved
+        let (out, _) = d.filter(vec![], 300, false);
+        assert!(out.is_empty());
+        let (out, n) = d.filter(vec![rogue()], 400, true);
+        assert_eq!((out.len(), n), (0, 1));
+        // resolved in a complete cycle, then recurring: raised again
+        d.filter(vec![], 500, true);
+        let (out, _) = d.filter(vec![rogue(), port()], 600, true);
+        assert_eq!(kinds(&out), ["rogue-dhcp", "port-opened"]);
+        // the same key twice in one cycle is raised once
+        let mut d = Dedup::new(None);
+        let (out, n) = d.filter(vec![rogue(), rogue()], 1, true);
+        assert_eq!((out.len(), n), (1, 1));
+    }
+
+    #[test]
+    fn persisting_alerts_are_repeated_after_the_renotify_interval() {
+        let rogue = || a("rogue-dhcp", "10.0.0.66", "x");
+        let mut d = Dedup::new(Some(Duration::from_secs(3600)));
+        assert_eq!(d.filter(vec![rogue()], 0, true).0.len(), 1);
+        assert_eq!(d.filter(vec![rogue()], 3599, true).0.len(), 0);
+        assert_eq!(d.filter(vec![rogue()], 3600, true).0.len(), 1);
+        assert_eq!(
+            d.filter(vec![rogue()], 4000, true).0.len(),
+            0,
+            "timer restarted"
+        );
+    }
+
+    #[test]
+    fn dedup_state_is_restored_from_stored_alerts() {
+        let mut old = a("rogue-dhcp", "10.0.0.66", "x");
+        old.timestamp = 1000;
+        let mut ancient = a("new-device", "10.0.0.7", "New device 10.0.0.7");
+        ancient.timestamp = 10;
+        let mut d = Dedup::new(None);
+        d.restore(&[old.clone(), ancient.clone()], 1500, 900);
+        let (out, n) = d.filter(vec![old, ancient], 1600, true);
+        assert_eq!(n, 1, "the recent alert is not repeated after a restart");
+        assert_eq!(
+            kinds(&out),
+            ["new-device"],
+            "outside the window it is raised"
+        );
+    }
+
+    #[test]
+    fn hint_when_min_severity_hides_requested_alerts() {
+        let mut p = Policy {
+            report_missing: true,
+            ..Policy::default()
+        };
+        // default (low): only port-closed (info) is hidden
+        let h = severity_hint(&p).unwrap();
+        assert!(
+            h.contains("port-closed (info)") && !h.contains("device-missing"),
+            "{h}"
+        );
+        assert!(!h.contains('\n'));
+        p.min_severity = Severity::High;
+        let h = severity_hint(&p).unwrap();
+        assert!(
+            h.contains("device-missing (low)") && h.contains("address-changed (medium)"),
+            "{h}"
+        );
+        assert!(h.contains("--report-missing has no visible effect"), "{h}");
+        p.min_severity = Severity::Info;
+        assert_eq!(severity_hint(&p), None);
+        p.min_severity = Severity::Critical;
+        p.report_missing = false;
+        assert_eq!(severity_hint(&p), None, "only with --report-missing");
+    }
+
+    #[test]
+    fn notification_defaults_are_opt_in() {
+        let n = Policy::default().notify;
+        assert!(n.sinks.is_empty(), "nothing is sent unless configured");
+        assert!(n.dedup);
+        assert_eq!(n.renotify, Some(Duration::from_secs(86_400)));
     }
 }
