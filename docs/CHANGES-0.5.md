@@ -47,8 +47,8 @@ Changes since 0.4, collected from the bug-fix and feature waves. The README desc
 - **`--adaptive-syn`**: RFC 6298 per-target reply windows and an AIMD congestion window.
 - **`--arp-sweep`**: ARP who-has sweep through the capture handle.
 - **Traceroute methods** `--trace-method icmp|tcp|udp`, `--trace-port N`; ICMPv6 traceroute; `trace --fast --trace-method`.
-- **SMB** 3.1.1 negotiate contexts and NTLM challenge (dialect, GUID, encryption, compression, signing, clock skew, OS build, NetBIOS/DNS names); findings `smb-no-encryption`, CVE-2020-0796 hint.
-- **TLS 1.3 suite enumeration**, **JA4S** (`tls.<port>.ja4s`), **HASSHServer** (`ssh.<port>.hassh`).
+- **SMB** 3.1.1 negotiate contexts and NTLM challenge (dialect, GUID, encryption, compression, signing, clock skew, OS build, NetBIOS/DNS names); findings `smb-no-encryption`, CVE-2020-0796 hint. The NTLM SESSION_SETUP is not sent in Safe Mode.
+- **TLS 1.3 suite enumeration** (not in Safe Mode), **JA4S** (`tls.<port>.ja4s`), **HASSHServer** (`ssh.<port>.hassh`).
 - **CVE rules in `data/cves.json`**, user override file and `--cves FILE`; CPE names (`svc.<port>.cpe`).
 - **UDP payload probes** from probes.json (`"proto": "udp"`): SQL Server Browser, rpcbind, memcached, SIP. `probes` lists UDP probes too; `--probes` applies to UDP-only scans.
 - **OS evidence** from the SMB NTLM version, Dropbear, Cisco/MikroTik SSH.

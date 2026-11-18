@@ -1228,7 +1228,8 @@ async fn read_frame<S: AsyncRead + Unpin>(s: &mut S, limit: Duration) -> Vec<u8>
 }
 
 /// NEGOTIATE, then (same connection) the credential-less SESSION_SETUP for the NTLM
-/// challenge. Returns the negotiate reply and the NTLM fields.
+/// challenge. Returns the negotiate reply and the NTLM fields. Safe Mode sends only the
+/// NEGOTIATE, so it gets no Windows build or NetBIOS/DNS names.
 async fn smb2_exchange(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> (Vec<u8>, Fields) {
     let Some(mut s) = connect(ip, port, limit, gate).await else {
         return (vec![], Fields::new());
@@ -1238,7 +1239,8 @@ async fn smb2_exchange(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> (
     }
     let reply = read_frame(&mut s, limit).await;
     let mut ntlm = Fields::new();
-    if parse_smb2_negotiate(&reply).is_some()
+    if !gate.is_safe()
+        && parse_smb2_negotiate(&reply).is_some()
         && s.write_all(&smb2_session_setup_request()).await.is_ok()
     {
         ntlm = parse_ntlm_challenge(&read_frame(&mut s, limit).await);
@@ -2693,6 +2695,46 @@ mod tests {
         assert_eq!(ids["smb.445.netbios_name"], "DESKTOP-42");
         assert_eq!(ids["smb.445.smb1"], "refused");
     }
+    /// Safe Mode sends the SMB2 NEGOTIATE but never the NTLM SESSION_SETUP.
+    #[tokio::test]
+    async fn safe_mode_skips_the_ntlm_session_setup() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let setup_seen = Arc::new(AtomicBool::new(false));
+        let seen = setup_seen.clone();
+        let port = serve(move |mut s| {
+            let seen = seen.clone();
+            Box::pin(async move {
+                let mut buf = [0u8; 1024];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                if n > 8 && buf[4] == 0xFE {
+                    let _ = s.write_all(&smb311_reply(&[1], 4)).await;
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n > 20 && buf[16] == 1 {
+                        seen.store(true, Ordering::SeqCst);
+                    }
+                }
+            })
+        })
+        .await;
+        let gate = Gate::unlimited().with_safe(true);
+        let out = smb_negotiate(
+            "127.0.0.1".parse().unwrap(),
+            port,
+            Duration::from_millis(300),
+            &gate,
+        )
+        .await
+        .unwrap();
+        let ids = identity_entries(445, &out);
+        assert_eq!(ids["smb.445.guid"], "12345678-9abc-def0-0102-030405060708");
+        assert!(!ids.contains_key("smb.445.os_version"));
+        assert!(!ids.contains_key("smb.445.netbios_name"));
+        assert!(
+            !setup_seen.load(Ordering::SeqCst),
+            "no SESSION_SETUP in Safe Mode"
+        );
+    }
+
     #[test]
     fn udp_probes_load_merge_and_validate() {
         let db = ProbeDb::builtin();

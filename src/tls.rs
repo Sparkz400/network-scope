@@ -934,10 +934,11 @@ pub async fn inspect_after(
     let mut support = enumerate(ip, port, limit, rounds, gate).await;
     // TLS 1.3 only when the rustls handshake negotiated it: 1.2-only and legacy servers get
     // no extra connection. Its full-offer ServerHello gives the JA4S (preferred over 1.2's).
+    // Safe Mode skips these extra hellos; the negotiated version is still reported.
     let modern = handshake
         .as_ref()
         .is_ok_and(|f| f.get("negotiated").map(String::as_str) == Some("TLS1.3"));
-    if modern {
+    if modern && !gate.is_safe() {
         let (suites, truncated, ja4s) = enumerate13(ip, port, limit, rounds, gate).await;
         support.tls13 = suites;
         support.tls13_truncated = truncated;
@@ -1373,6 +1374,29 @@ mod tests {
             }
         });
         (port, hellos)
+    }
+
+    /// Safe Mode skips the extra TLS 1.3 hellos even when 1.3 was negotiated.
+    #[tokio::test]
+    async fn safe_mode_skips_tls13_enumeration() {
+        let ip = "127.0.0.1".parse().unwrap();
+        let limit = Duration::from_millis(500);
+        let negotiated = || {
+            let mut f = Fields::new();
+            f.insert("negotiated".into(), "TLS1.3".into());
+            Ok(f)
+        };
+        let (port, _) = tls13_server(&[0x1301, 0x1302], false).await;
+        let normal = inspect_after(ip, port, limit, 6, &Gate::unlimited(), negotiated())
+            .await
+            .unwrap();
+        assert!(normal.contains_key("tls13_suites"));
+        let (port, _) = tls13_server(&[0x1301, 0x1302], false).await;
+        let safe = Gate::unlimited().with_safe(true);
+        let quiet = inspect_after(ip, port, limit, 6, &safe, negotiated())
+            .await
+            .unwrap();
+        assert!(!quiet.contains_key("tls13_suites"));
     }
 
     #[tokio::test]
