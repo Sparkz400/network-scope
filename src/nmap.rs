@@ -24,8 +24,60 @@ fn esc(s: &str) -> String {
     out
 }
 
+/// Splits "text (info)" into ("text", "info"), matching the final parenthesised group as a whole
+/// so nested parentheses inside the info survive ("a (b (c))" -> ("a", "b (c)")).
+fn split_info(s: &str) -> (&str, &str) {
+    let Some(body) = s.strip_suffix(')') else {
+        return (s.trim_end(), "");
+    };
+    let mut depth = 1usize;
+    for (i, c) in body.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    let before = &body[..i];
+                    if before.is_empty() || before.ends_with(' ') {
+                        return (before.trim_end(), &body[i + 1..]);
+                    }
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    (s.trim_end(), "")
+}
+
+/// Removes one pair of parentheses only when it encloses the whole string ("(Unix)" -> "Unix",
+/// "a (b)" and "(a) (b)" stay as they are).
+fn strip_outer_parens(s: &str) -> &str {
+    let Some(body) = s.strip_prefix('(').and_then(|b| b.strip_suffix(')')) else {
+        return s;
+    };
+    let mut depth = 0i32;
+    for c in body.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return s;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth == 0 {
+        body
+    } else {
+        s
+    }
+}
+
 fn service_attrs(h: &Host, port: u16) -> Option<String> {
-    let svc = h.identity.get(&format!("svc.{port}"))?;
+    let svc = h.identity.get(&format!("svc.{port}"))?.trim_start();
     if svc.starts_with("unidentified") {
         return None;
     }
@@ -43,10 +95,27 @@ fn service_attrs(h: &Host, port: u16) -> Option<String> {
         .identity
         .get(&format!("svc.{port}.version"))
         .map_or("", String::as_str);
-    let extra = svc
-        .rsplit_once(" (")
-        .and_then(|(_, e)| e.strip_suffix(')'))
-        .unwrap_or("");
+    // Summary layout is "name[ product][ version][ (info)]"; info may itself contain parentheses.
+    let rest = svc[name_word.len()..].trim_start();
+    let (middle, extra) = split_info(rest);
+    let joined = [product, version]
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Keep the summary lossless: whatever sits between the name and the info goes into
+    // product/version, even when the identity keys do not spell it out.
+    let (product, version) = if middle == joined {
+        (product, version)
+    } else if !version.is_empty() && middle.ends_with(&format!(" {version}")) {
+        (
+            middle[..middle.len() - version.len() - 1].trim_end(),
+            version,
+        )
+    } else {
+        (middle, "")
+    };
     let mut s = format!("name=\"{}\"", esc(name));
     if !product.is_empty() {
         let _ = write!(s, " product=\"{}\"", esc(product));
@@ -84,7 +153,8 @@ pub fn export(snapshot: &Snapshot, timestamp: i64) -> String {
     let _ = writeln!(
         x,
         "<scaninfo type=\"connect\" protocol=\"tcp\" numservices=\"{}\" services=\"{}\"/>",
-        snapshot.settings.ports.split(',').count(),
+        crate::scan::parse_ports(&snapshot.settings.ports)
+            .map_or_else(|_| snapshot.settings.ports.split(',').count(), |p| p.len()),
         esc(&snapshot.settings.ports)
     );
     for h in &up {
@@ -198,6 +268,127 @@ fn child<'a, 'b>(n: roxmltree::Node<'a, 'b>, name: &str) -> Option<roxmltree::No
     n.children().find(|c| c.has_tag_name(name))
 }
 
+/// nmap options whose value is the following argument (when not attached with `=`).
+const NMAP_VALUE_OPTIONS: &[&str] = &[
+    "-p",
+    "-iL",
+    "-iR",
+    "-e",
+    "-S",
+    "-g",
+    "-D",
+    "-b",
+    "-sI",
+    "-T",
+    "--exclude",
+    "--excludefile",
+    "--exclude-ports",
+    "--top-ports",
+    "--port-ratio",
+    "--script",
+    "--script-args",
+    "--script-args-file",
+    "--script-help",
+    "--script-timeout",
+    "--host-timeout",
+    "--scan-delay",
+    "--max-scan-delay",
+    "--initial-rtt-timeout",
+    "--source-port",
+    "--data",
+    "--data-string",
+    "--data-length",
+    "--ip-options",
+    "--ttl",
+    "--spoof-mac",
+    "--proxies",
+    "--proxy",
+    "--dns-servers",
+    "--version-intensity",
+    "--datadir",
+    "--servicedb",
+    "--versiondb",
+    "--mtu",
+    "--stats-every",
+];
+
+/// Output-only options: they never change what was scanned and are dropped from the scope.
+fn nmap_output_option(t: &str) -> bool {
+    (t.starts_with("-o") && !t.starts_with("--"))
+        || matches!(
+            t,
+            "--stylesheet" | "--resume" | "--append-output" | "--webxml" | "--no-stylesheet"
+        )
+}
+
+fn nmap_takes_value(t: &str) -> bool {
+    if t.contains('=') {
+        return false;
+    }
+    (t.starts_with("-o") && t.len() == 3)
+        || matches!(t, "--stylesheet" | "--resume")
+        || NMAP_VALUE_OPTIONS.contains(&t)
+        || t.starts_with("--min-")
+        || t.starts_with("--max-")
+}
+
+/// Scan scope of an nmap `args` string (or an older import that stored it as targets): the target
+/// specification without the program name, options and output files, so scans that differ only
+/// in e.g. `-oX` file name compare as the same scope. Our own exports
+/// (`network-scope scan <targets>`) yield their targets; any other text is returned unchanged.
+/// Returns an empty string when an nmap command line names no targets on the command line and
+/// carries no other scope-defining option.
+pub fn scope_targets(args: &str) -> String {
+    if let Some(t) = args.trim_start().strip_prefix("network-scope scan ") {
+        return t.trim().to_string();
+    }
+    let mut tokens = args.split_whitespace();
+    let Some(first) = tokens.next() else {
+        return String::new();
+    };
+    let program = first
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(first)
+        .to_ascii_lowercase();
+    if program != "nmap" && program != "nmap.exe" {
+        return args.to_string();
+    }
+    let (mut targets, mut options, mut excludes) = (vec![], vec![], vec![]);
+    while let Some(t) = tokens.next() {
+        if t.len() > 1 && t.starts_with('-') {
+            let value = if nmap_takes_value(t) {
+                tokens.next()
+            } else {
+                None
+            };
+            if !nmap_output_option(t) {
+                options.push(t);
+                options.extend(value);
+            }
+            if t.starts_with("--exclude") && !t.starts_with("--exclude-ports") {
+                // Exclusions narrow the scope, so they stay part of it.
+                excludes.push(t);
+                excludes.extend(value);
+            }
+        } else {
+            targets.push(t);
+        }
+    }
+    if !targets.is_empty() {
+        targets.extend(excludes);
+        targets.join(" ")
+    } else if options
+        .iter()
+        .any(|o| o.starts_with("-iL") || o.starts_with("-iR"))
+    {
+        // Targets come from a file or are random: the remaining options are the best scope.
+        format!("nmap {}", options.join(" "))
+    } else {
+        String::new()
+    }
+}
+
 pub const MAX_IMPORT_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn import(xml: &str) -> Result<Snapshot, String> {
@@ -269,6 +460,14 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
                 if let Some(s) = child(p, "service") {
                     let attr = |n: &str| s.attribute(n).unwrap_or("").trim();
                     let mut name = attr("name").to_string();
+                    if name.is_empty()
+                        && [attr("product"), attr("version"), attr("extrainfo")]
+                            .iter()
+                            .any(|p| !p.is_empty())
+                    {
+                        // The summary's first word is the service name; keep it in place.
+                        name = "unknown".into();
+                    }
                     if s.attribute("tunnel") == Some("ssl") {
                         name = if name == "http" {
                             "https".into()
@@ -283,9 +482,7 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
                             summary.push_str(part);
                         }
                     }
-                    let extra = attr("extrainfo")
-                        .trim_start_matches('(')
-                        .trim_end_matches(')');
+                    let extra = strip_outer_parens(attr("extrainfo"));
                     if !extra.is_empty() {
                         summary.push_str(&format!(" ({extra})"));
                     }
@@ -371,11 +568,33 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
             settings.ports = p.to_string();
         }
     }
-    let targets = root
+    // Detection settings decide which identity keys a scan can report; take them from the nmap
+    // command line so imports with and without -sV/-O are not diffed against each other.
+    for t in root.attribute("args").unwrap_or("").split_whitespace() {
+        if t == "-A" {
+            settings.services = true;
+            settings.os_detect = true;
+        } else if t.strip_prefix("-s").is_some_and(|r| r.contains('V')) {
+            settings.services = true;
+        } else if t == "-O" {
+            settings.os_detect = true;
+        }
+    }
+    let mut targets = root
         .attribute("args")
-        .filter(|a| !a.is_empty())
-        .unwrap_or("imported nmap scan")
-        .to_string();
+        .map(scope_targets)
+        .unwrap_or_default();
+    if targets.is_empty() {
+        targets = if hosts.is_empty() {
+            "imported nmap scan".to_string()
+        } else {
+            hosts
+                .iter()
+                .map(|h| h.ip.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+    }
     Ok(Snapshot {
         targets,
         complete,
@@ -537,7 +756,7 @@ mod tests {
 <runstats><finished time="2" exit="success"/><hosts up="1" down="1" total="2"/></runstats>
 </nmaprun>"#;
         let s = import(xml).unwrap();
-        assert_eq!(s.targets, "nmap -sV -O 192.168.1.0/24");
+        assert_eq!(s.targets, "192.168.1.0/24");
         assert_eq!(s.hosts.len(), 1);
         let h = &s.hosts[0];
         assert_eq!(h.open, [80]);
@@ -552,6 +771,150 @@ mod tests {
         assert!(crate::risk::analyze(&s.hosts)
             .iter()
             .any(|f| f.cve.contains(&"CVE-2021-41773".to_string())));
+    }
+
+    #[test]
+    fn nested_parentheses_round_trip_losslessly() {
+        let mut s = snapshot();
+        let h = &mut s.hosts[0];
+        h.open = vec![22, 443, 3389, 3390, 8443];
+        for (k, v) in [
+            (
+                "svc.3389",
+                "ms-wbt-server RDP (standard RDP security (no TLS/NLA))",
+            ),
+            ("svc.3389.product", "RDP"),
+            // Same summary without the product key: the text must still survive.
+            (
+                "svc.3390",
+                "ms-wbt-server RDP (standard RDP security (no TLS/NLA))",
+            ),
+            ("svc.8443", "ssl/imap Dovecot 2.3 (a (b) c)"),
+            ("svc.8443.version", "2.3"),
+        ] {
+            h.identity.insert(k.into(), v.into());
+        }
+        let original = s.hosts[0].identity.clone();
+        let xml = export(&s, 0);
+        assert!(
+            xml.contains("extrainfo=\"standard RDP security (no TLS/NLA)\""),
+            "{xml}"
+        );
+        let back = import(&xml).unwrap();
+        let id = &back.hosts[0].identity;
+        for port in [22, 443, 3389, 3390, 8443] {
+            let k = format!("svc.{port}");
+            assert_eq!(id[&k], original[&k], "{k}");
+        }
+        assert_eq!(id["svc.8443.version"], "2.3");
+        assert_eq!(id["svc.3389.product"], "RDP");
+        let rdp: Vec<_> = crate::risk::analyze(&back.hosts)
+            .into_iter()
+            .filter(|f| f.id == "rdp-no-nla")
+            .collect();
+        assert_eq!(rdp.len(), 2, "both RDP ports keep their finding");
+    }
+
+    #[test]
+    fn info_parentheses_helpers() {
+        assert_eq!(split_info("RDP (a (b))"), ("RDP", "a (b)"));
+        assert_eq!(split_info("(a) (b)"), ("(a)", "b"));
+        assert_eq!(split_info("x(y)"), ("x(y)", ""));
+        assert_eq!(split_info("x y"), ("x y", ""));
+        assert_eq!(strip_outer_parens("(Unix)"), "Unix");
+        assert_eq!(strip_outer_parens("(a) (b)"), "(a) (b)");
+        assert_eq!(strip_outer_parens("a (b)"), "a (b)");
+        assert_eq!(strip_outer_parens("((x))"), "(x)");
+    }
+
+    #[test]
+    fn numservices_counts_ports_not_list_items() {
+        let mut s = snapshot();
+        s.settings.ports = "1-1000,8080".into();
+        let xml = export(&s, 0);
+        assert!(xml.contains("numservices=\"1001\""), "{xml}");
+    }
+
+    #[test]
+    fn targets_come_from_the_target_specification() {
+        assert_eq!(
+            scope_targets(
+                "nmap -sV -p 1-1000 -oX scan-1.xml --top-ports 100 -T4 10.0.0.0/24 10.0.1.5"
+            ),
+            "10.0.0.0/24 10.0.1.5"
+        );
+        assert_eq!(
+            scope_targets("/usr/bin/nmap -oA out --script=vuln --min-rate 500 -e eth0 192.168.1.1"),
+            "192.168.1.1"
+        );
+        assert_eq!(
+            scope_targets("nmap -sV -iL hosts.txt -oX a.xml"),
+            scope_targets("nmap -sV -iL hosts.txt -oX b.xml")
+        );
+        assert_eq!(
+            scope_targets("network-scope scan 10.0.0.0/24"),
+            "10.0.0.0/24"
+        );
+        assert_eq!(scope_targets("10.0.0.1, 10.0.0.2"), "10.0.0.1, 10.0.0.2");
+        assert_eq!(scope_targets("nmap -sn"), "");
+        // Two imports differing only in the output file have the same scope.
+        let doc = |out: &str| {
+            format!(
+                "<nmaprun args=\"nmap -sV -oX {out} 10.0.0.5\"><host><status state=\"up\"/><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/></host></nmaprun>"
+            )
+        };
+        let (a, b) = (
+            import(&doc("a.xml")).unwrap(),
+            import(&doc("b.xml")).unwrap(),
+        );
+        assert_eq!(a.targets, "10.0.0.5");
+        assert!(crate::store::diff(&a, &b).is_ok());
+        // No target on the command line: fall back to the hosts that were found.
+        let none = import("<nmaprun args=\"nmap -sn\"><host><status state=\"up\"/><address addr=\"10.0.0.9\" addrtype=\"ipv4\"/></host></nmaprun>").unwrap();
+        assert_eq!(none.targets, "10.0.0.9");
+        // Our own export keeps the original scope.
+        let s = snapshot();
+        assert_eq!(import(&export(&s, 0)).unwrap().targets, s.targets);
+        // Exclusions narrow the scope and stay part of it.
+        assert_eq!(
+            scope_targets("nmap --exclude 10.0.0.1 -oX a.xml 10.0.0.0/24"),
+            "10.0.0.0/24 --exclude 10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn imports_carry_detection_settings_from_args() {
+        let doc = |args: &str| {
+            format!(
+                "<nmaprun args=\"{args}\"><host><status state=\"up\"/><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports><port protocol=\"tcp\" portid=\"22\"><state state=\"open\"/><service name=\"ssh\" product=\"OpenSSH\"/></port></ports></host></nmaprun>"
+            )
+        };
+        let plain = import(&doc("nmap 10.0.0.5")).unwrap();
+        let sv = import(&doc("nmap -sV -oX x.xml 10.0.0.5")).unwrap();
+        let all = import(&doc("nmap -A 10.0.0.5")).unwrap();
+        assert!(!plain.settings.services && !plain.settings.os_detect);
+        assert!(sv.settings.services && !sv.settings.os_detect);
+        assert!(all.settings.services && all.settings.os_detect);
+        assert!(crate::store::diff(&plain, &sv)
+            .unwrap_err()
+            .contains("service detection"));
+        assert!(crate::store::diff(&sv, &import(&doc("nmap -sSV 10.0.0.5")).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn service_without_name_round_trips_without_panicking() {
+        let xml = "<nmaprun><host><status state=\"up\"/><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports><port protocol=\"tcp\" portid=\"81\"><state state=\"open\"/><service product=\"Élan\" version=\"1\"/></port></ports></host></nmaprun>";
+        let first = import(xml).unwrap();
+        assert_eq!(first.hosts[0].identity["svc.81"], "unknown Élan 1");
+        let again = import(&export(&first, 0)).unwrap();
+        assert_eq!(again.hosts[0].identity, first.hosts[0].identity);
+        // A summary with stray leading whitespace (older imports) exports without slicing errors.
+        let mut s = first.clone();
+        s.hosts[0]
+            .identity
+            .insert("svc.81".into(), " Élan 1".into());
+        let back = import(&export(&s, 0)).unwrap();
+        assert_eq!(back.hosts[0].identity["svc.81"], "Élan 1");
     }
 
     #[test]
