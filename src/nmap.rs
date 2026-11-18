@@ -77,7 +77,7 @@ fn strip_outer_parens(s: &str) -> &str {
 }
 
 fn service_attrs(h: &Host, port: u16) -> Option<String> {
-    let svc = h.identity.get(&format!("svc.{port}"))?;
+    let svc = h.identity.get(&format!("svc.{port}"))?.trim_start();
     if svc.starts_with("unidentified") {
         return None;
     }
@@ -354,7 +354,7 @@ pub fn scope_targets(args: &str) -> String {
     if program != "nmap" && program != "nmap.exe" {
         return args.to_string();
     }
-    let (mut targets, mut options) = (vec![], vec![]);
+    let (mut targets, mut options, mut excludes) = (vec![], vec![], vec![]);
     while let Some(t) = tokens.next() {
         if t.len() > 1 && t.starts_with('-') {
             let value = if nmap_takes_value(t) {
@@ -366,11 +366,17 @@ pub fn scope_targets(args: &str) -> String {
                 options.push(t);
                 options.extend(value);
             }
+            if t.starts_with("--exclude") && !t.starts_with("--exclude-ports") {
+                // Exclusions narrow the scope, so they stay part of it.
+                excludes.push(t);
+                excludes.extend(value);
+            }
         } else {
             targets.push(t);
         }
     }
     if !targets.is_empty() {
+        targets.extend(excludes);
         targets.join(" ")
     } else if options
         .iter()
@@ -454,6 +460,14 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
                 if let Some(s) = child(p, "service") {
                     let attr = |n: &str| s.attribute(n).unwrap_or("").trim();
                     let mut name = attr("name").to_string();
+                    if name.is_empty()
+                        && [attr("product"), attr("version"), attr("extrainfo")]
+                            .iter()
+                            .any(|p| !p.is_empty())
+                    {
+                        // The summary's first word is the service name; keep it in place.
+                        name = "unknown".into();
+                    }
                     if s.attribute("tunnel") == Some("ssl") {
                         name = if name == "http" {
                             "https".into()
@@ -552,6 +566,18 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
     {
         if let Some(p) = s.attribute("services").filter(|p| !p.is_empty()) {
             settings.ports = p.to_string();
+        }
+    }
+    // Detection settings decide which identity keys a scan can report; take them from the nmap
+    // command line so imports with and without -sV/-O are not diffed against each other.
+    for t in root.attribute("args").unwrap_or("").split_whitespace() {
+        if t == "-A" {
+            settings.services = true;
+            settings.os_detect = true;
+        } else if t.strip_prefix("-s").is_some_and(|r| r.contains('V')) {
+            settings.services = true;
+        } else if t == "-O" {
+            settings.os_detect = true;
         }
     }
     let mut targets = root
@@ -849,6 +875,46 @@ mod tests {
         // Our own export keeps the original scope.
         let s = snapshot();
         assert_eq!(import(&export(&s, 0)).unwrap().targets, s.targets);
+        // Exclusions narrow the scope and stay part of it.
+        assert_eq!(
+            scope_targets("nmap --exclude 10.0.0.1 -oX a.xml 10.0.0.0/24"),
+            "10.0.0.0/24 --exclude 10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn imports_carry_detection_settings_from_args() {
+        let doc = |args: &str| {
+            format!(
+                "<nmaprun args=\"{args}\"><host><status state=\"up\"/><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports><port protocol=\"tcp\" portid=\"22\"><state state=\"open\"/><service name=\"ssh\" product=\"OpenSSH\"/></port></ports></host></nmaprun>"
+            )
+        };
+        let plain = import(&doc("nmap 10.0.0.5")).unwrap();
+        let sv = import(&doc("nmap -sV -oX x.xml 10.0.0.5")).unwrap();
+        let all = import(&doc("nmap -A 10.0.0.5")).unwrap();
+        assert!(!plain.settings.services && !plain.settings.os_detect);
+        assert!(sv.settings.services && !sv.settings.os_detect);
+        assert!(all.settings.services && all.settings.os_detect);
+        assert!(crate::store::diff(&plain, &sv)
+            .unwrap_err()
+            .contains("service detection"));
+        assert!(crate::store::diff(&sv, &import(&doc("nmap -sSV 10.0.0.5")).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn service_without_name_round_trips_without_panicking() {
+        let xml = "<nmaprun><host><status state=\"up\"/><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports><port protocol=\"tcp\" portid=\"81\"><state state=\"open\"/><service product=\"Élan\" version=\"1\"/></port></ports></host></nmaprun>";
+        let first = import(xml).unwrap();
+        assert_eq!(first.hosts[0].identity["svc.81"], "unknown Élan 1");
+        let again = import(&export(&first, 0)).unwrap();
+        assert_eq!(again.hosts[0].identity, first.hosts[0].identity);
+        // A summary with stray leading whitespace (older imports) exports without slicing errors.
+        let mut s = first.clone();
+        s.hosts[0]
+            .identity
+            .insert("svc.81".into(), " Élan 1".into());
+        let back = import(&export(&s, 0)).unwrap();
+        assert_eq!(back.hosts[0].identity["svc.81"], "Élan 1");
     }
 
     #[test]
