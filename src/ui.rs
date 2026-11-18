@@ -27,7 +27,7 @@ network-scope ot-assets ID [--format json|csv]  OT asset inventory from a passiv
 network-scope devices ID [--format json|csv]   One record per device (active + passive merged)
 network-scope devices --history MAC|IP [--format text|json]   Timeline of one device across saved scans
 network-scope topology ID [--format ascii|dot] Network path map from traceroute data
-network-scope trace TARGET [--max-hops 20] [--timeout 1000] [--trace-method icmp|udp|tcp --trace-port N]
+network-scope trace TARGET [--max-hops 20] [--timeout 1000] [--fast --trace-method udp|tcp --trace-port N]
 network-scope probes [--probes FILE]           List/validate the TCP and UDP probe database
 network-scope completions powershell|bash      Print a shell completion script
 
@@ -746,10 +746,19 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .build()
                 .map_err(|e| e.to_string())?;
             let blocking = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
-            let gate = crate::core::Gate::unlimited();
             let method = match opts.get("trace-method") {
                 Some(m) => trace_method(m)?,
                 None => crate::trace::TraceMethod::Icmp,
+            };
+            // TCP/UDP traceroute transmits beyond ICMP echo: like in scans, only with --fast.
+            if method != crate::trace::TraceMethod::Icmp && !opts.contains_key("fast") {
+                return Err("TCP/UDP traceroute needs --fast (Safe Mode allows ICMP only)".into());
+            }
+            let rate: u32 = number(&opts, "rate", 0)?;
+            let gate = if rate > 0 {
+                crate::core::Gate::per_second(f64::from(rate), (f64::from(rate) / 10.0).max(1.0))
+            } else {
+                crate::core::Gate::unlimited()
             };
             let v4 = || match target {
                 std::net::IpAddr::V4(v4) => Ok(v4),
@@ -1626,6 +1635,9 @@ mod tests {
         assert_eq!(p.notify.timeout, Duration::from_secs(10));
         assert!(!p.notify.dedup);
         assert_eq!(p.notify.renotify, None);
+        assert!(run(&args(&["trace", "127.0.0.1", "--trace-method", "udp"]))
+            .unwrap_err()
+            .contains("--fast"));
         let defaults = monitor_policy(&BTreeMap::new()).unwrap();
         assert!(defaults.notify.sinks.is_empty() && defaults.notify.dedup);
         let https = BTreeMap::from([("webhook".to_string(), "https://x".to_string())]);

@@ -46,7 +46,7 @@ Changes since 0.4, collected from the bug-fix and feature waves. The README desc
 - **SYN to routed IPv4 targets** via the gateway MAC (OS routing table).
 - **`--adaptive-syn`**: RFC 6298 per-target reply windows and an AIMD congestion window.
 - **`--arp-sweep`**: ARP who-has sweep through the capture handle.
-- **Traceroute methods** `--trace-method icmp|tcp|udp`, `--trace-port N`; ICMPv6 traceroute; `trace --trace-method`.
+- **Traceroute methods** `--trace-method icmp|tcp|udp`, `--trace-port N`; ICMPv6 traceroute; `trace --fast --trace-method`.
 - **SMB** 3.1.1 negotiate contexts and NTLM challenge (dialect, GUID, encryption, compression, signing, clock skew, OS build, NetBIOS/DNS names); findings `smb-no-encryption`, CVE-2020-0796 hint.
 - **TLS 1.3 suite enumeration**, **JA4S** (`tls.<port>.ja4s`), **HASSHServer** (`ssh.<port>.hassh`).
 - **CVE rules in `data/cves.json`**, user override file and `--cves FILE`; CPE names (`svc.<port>.cpe`).
@@ -70,13 +70,13 @@ Changes since 0.4, collected from the bug-fix and feature waves. The README desc
 - First scan after upgrading: `tls.<port>.ciphers` gains a `TLS1.3:` part on TLS 1.3 servers, and nmap imports stored by 0.4 differ in `svc.<port>.product` spelling; both show as identity changes once.
 - A diff of an old /23-or-larger snapshot against a new one can list inner .0/.255 addresses as new devices.
 - OT passive `packets` counts messages, not segments, on the reassembled ports.
+- Routed hosts merged by SMB GUID + NetBIOS name keep the device id of the lowest address; an existing monitor database may raise one `new-device` or `device-missing` alert for such hosts after the upgrade.
 - On Linux a rescan may report a host found earlier only through a now-STALE ARP entry as not responding.
 
 ## Not done (deliberately or for lack of a test setup)
 
 - JARM: needs byte-exact hellos to match public databases and too many connections for Safe Mode.
 - x509 signature verification for self-signed detection (would need the `verify` feature of x509-parser).
-- Safe Mode TLS rounds stay at 6; longer strong-suite lists need `--fast`.
 - `store::list_alerts_since` (exact alert de-duplication restore with several monitors on one database).
 - A GUI field for a CVE rules file (the user file in LOCALAPPDATA and `--cves` cover it).
 - HTTPS webhooks (no bundled CA store).
