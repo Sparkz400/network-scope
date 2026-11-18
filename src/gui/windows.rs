@@ -160,6 +160,7 @@ impl Scanner {
                     return;
                 }
                 view.controls(ui, "findings_severity", "All severities");
+                tables::plain_labels(ui);
                 TableBuilder::new(ui)
                     .id_salt("findings_table")
                     .striped(true)
@@ -247,6 +248,7 @@ impl Scanner {
                     devices.len()
                 ));
                 view.controls(ui, "devices_severity", "Any risk");
+                tables::plain_labels(ui);
                 TableBuilder::new(ui)
                     .id_salt("devices_table")
                     .striped(true)

@@ -438,6 +438,12 @@ impl Scanner {
 const CONTROL: egui::Color32 = egui::Color32::from_rgb(190, 60, 20);
 
 fn asset_table(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
+    // Ten columns are wider than the window: scroll sideways instead of squeezing the last one.
+    egui::ScrollArea::horizontal()
+        .id_salt("ot_assets_h")
+        .show(ui, |ui| asset_rows(ui, assets));
+}
+fn asset_rows(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
     TableBuilder::new(ui)
         .id_salt("ot_assets")
         .striped(true)
@@ -453,7 +459,7 @@ fn asset_table(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
         .column(Column::initial(80.0).clip(true))
         .column(Column::initial(130.0).clip(true))
         .column(Column::initial(130.0).clip(true))
-        .column(Column::remainder().clip(true))
+        .column(Column::initial(240.0).at_least(120.0).clip(true))
         .header(22.0, |mut row| {
             for h in [
                 "Address",
@@ -585,6 +591,74 @@ mod tests {
         );
         assert!(result.is_ok());
         assert_eq!(tracker.frames, 7, "cancelled before reading");
+    }
+
+    /// Ethernet + IPv4 + TCP frame (layout as in the otpassive tests).
+    fn tcp_frame(src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![0u8; 12];
+        f.extend([8, 0]);
+        let total = (40 + payload.len()) as u16;
+        let mut ip = vec![0x45, 0, 0, 0, 0, 0, 0, 0, 64, 6, 0, 0];
+        ip[2..4].copy_from_slice(&total.to_be_bytes());
+        ip.extend(src);
+        ip.extend(dst);
+        f.extend(ip);
+        f.extend(sport.to_be_bytes());
+        f.extend(dport.to_be_bytes());
+        f.extend([0; 8]);
+        f.extend([0x50, 0x18, 0, 0, 0, 0, 0, 0]);
+        f.extend(payload);
+        f
+    }
+
+    #[test]
+    fn pcap_and_pcapng_files_build_the_asset_table() {
+        // HMI 10.0.0.50 reads, then writes a register on PLC 10.0.0.10 (Modbus/TCP).
+        let frames = vec![
+            (
+                100,
+                tcp_frame(
+                    [10, 0, 0, 50],
+                    [10, 0, 0, 10],
+                    50000,
+                    502,
+                    &[0, 1, 0, 0, 0, 6, 7, 3, 0, 0, 0, 2],
+                ),
+            ),
+            (
+                105,
+                tcp_frame(
+                    [10, 0, 0, 50],
+                    [10, 0, 0, 10],
+                    50000,
+                    502,
+                    &[0, 2, 0, 0, 0, 6, 7, 6, 0, 5, 0, 9],
+                ),
+            ),
+        ];
+        let dir = std::env::temp_dir().join(format!("ns-gui-ot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, bytes) in [
+            ("a.pcap", crate::pcapfile::write_pcap(&frames)),
+            ("b.pcapng", crate::pcapfile::write_pcapng(&frames, false)),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let mut state = OtState::default();
+            state.begin(Source::Pcap(path), egui::Context::default());
+            state.wait();
+            assert!(state.complete, "{name}: {}", state.error);
+            assert_eq!(state.frames, 2, "{name}");
+            let plc = state
+                .assets
+                .iter()
+                .find(|a| a.ips.iter().any(|ip| ip.to_string() == "10.0.0.10"))
+                .unwrap_or_else(|| panic!("{name}: {:?}", state.assets));
+            assert!(plc.roles.iter().any(|r| r == "server"), "{plc:?}");
+            assert!(!plc.control_traffic.is_empty(), "write is control traffic");
+            assert_eq!((plc.first_seen, plc.last_seen), (100, 105));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

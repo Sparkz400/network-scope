@@ -1,5 +1,5 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
-//! (findings, devices, ot, script). Screenshot runs never save to the inventory or preferences.
+//! (findings, devices, ot, script; append "-small" for the default 800x450 window). Screenshot runs never save to the inventory or preferences.
 use super::*;
 
 fn demo_host(ip: &str, open: &[u16], identity: &[(&str, &str)]) -> scan::Host {
@@ -39,7 +39,8 @@ impl Scanner {
         self.results[0].hostname = "plc-line-1".into();
         self.recount();
         self.data_changed();
-        match state {
+        // "-small" keeps the default window size.
+        match state.trim_end_matches("-small") {
             "findings" => self.findings_open = true,
             "devices" => self.devices_open = true,
             "ot" => {
