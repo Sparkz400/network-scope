@@ -127,7 +127,9 @@ pub fn evaluate(
                 continue;
             }
             let ot = d.device_type.starts_with("Industrial")
-                || d.open_tcp.iter().any(|p| crate::service::is_ot_port(*p));
+                || d.open_tcp
+                    .iter()
+                    .any(|p| crate::service::is_ot_port_candidate(*p));
             out.push(alert(
                 now,
                 if ot { Severity::High } else { Severity::Medium },
