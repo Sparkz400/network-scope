@@ -13,21 +13,19 @@ impl Scanner {
                     }
                     if ui
                         .add_enabled(
-                            self.run.is_none(),
+                            self.run.is_none() && !self.busy.importing,
                             egui::Button::new("Import address list…"),
                         )
                         .clicked()
                     {
+                        ui.close_menu();
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("Address list", &["txt"])
                             .pick_file()
                         {
-                            match std::fs::read_to_string(path) {
-                                Ok(text) => self.targets = text,
-                                Err(e) => self.error = e.to_string(),
-                            }
+                            // Read in the background; large lists must not freeze the window.
+                            self.submit(Job::ReadFile(path));
                         }
-                        ui.close_menu();
                     }
                     ui.separator();
                     if ui
@@ -61,12 +59,16 @@ impl Scanner {
                         ui.close_menu();
                     }
                     if ui
-                        .add_enabled(self.run.is_none(), egui::Button::new("Clear results"))
+                        .add_enabled(
+                            !self.live() && !self.busy.loading,
+                            egui::Button::new("Clear results and captures"),
+                        )
+                        .on_hover_text(
+                            "Removes active scan results and passive observations from the window. Saved inventory is kept.",
+                        )
                         .clicked()
                     {
-                        self.results.clear();
-                        self.selected = None;
-                        self.status = "Ready to scan".into();
+                        self.clear();
                         ui.close_menu();
                     }
                 });
@@ -176,10 +178,12 @@ impl Scanner {
                 ui.add_enabled_ui(self.run.is_none(), |ui| {
                     if ui
                         .button("Standard")
-                        .on_hover_text("Original scan defaults")
+                        .on_hover_text(
+                            "Original scan defaults (keeps interface, source addresses and script)",
+                        )
                         .clicked()
                     {
-                        self.saved.settings = scan::Settings::default();
+                        self.saved.settings = standard_settings(&self.saved.settings);
                     }
                     if ui
                         .button("Fast")

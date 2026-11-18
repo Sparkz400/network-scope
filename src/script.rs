@@ -227,7 +227,13 @@ impl Scripts {
             .collect()
     }
 
+    /// Runs every script's `on_host`. The wall-clock limit is shared by all scripts of one host:
+    /// once it is spent, the remaining scripts are skipped with a note.
     pub fn run_host(&self, host: &mut Host) {
+        self.run_host_within(host, WALL_LIMIT);
+    }
+
+    fn run_host_within(&self, host: &mut Host, budget: Duration) {
         let data = H(Arc::new(Mutex::new(Data {
             ip: host.ip.to_string(),
             hostname: host.hostname.clone(),
@@ -241,11 +247,21 @@ impl Scripts {
             findings: vec![],
             notes: vec![],
         })));
+        let deadline = Instant::now() + budget;
         for (name, ast) in &self.asts {
             if !ast.iter_functions().any(|f| f.name == "on_host") {
                 continue;
             }
-            DEADLINE.set(Some(Instant::now() + WALL_LIMIT));
+            if Instant::now() >= deadline {
+                let mut d = data.lock();
+                if d.notes.len() < 8 {
+                    d.notes.push(clip(&format!(
+                        "script {name}: skipped, time limit for this host used up"
+                    )));
+                }
+                continue;
+            }
+            DEADLINE.set(Some(deadline));
             let result =
                 self.engine
                     .call_fn::<Dynamic>(&mut Scope::new(), ast, "on_host", (data.clone(),));
@@ -381,6 +397,48 @@ mod tests {
         let mut h = host();
         scripts("fn on_host(h) { let f = open(\"x\"); }").run_host(&mut h);
         assert!(!h.errors.is_empty());
+    }
+
+    #[test]
+    fn wall_limit_is_shared_by_all_scripts_of_a_host() {
+        let spin = "let t = timestamp(); while t.elapsed < 0.06 { }";
+        let s = Scripts::from_sources(&[
+            (
+                "a.rhai".into(),
+                format!("fn on_host(h) {{ {spin} h.set(\"a\", \"1\"); }}"),
+            ),
+            (
+                "b.rhai".into(),
+                format!("fn on_host(h) {{ {spin} h.set(\"b\", \"2\"); }}"),
+            ),
+            (
+                "c.rhai".into(),
+                "fn on_host(h) { h.set(\"c\", \"3\"); }".into(),
+            ),
+        ])
+        .unwrap();
+        // Each script alone fits the budget; together they do not.
+        let mut h = host();
+        s.run_host_within(&mut h, Duration::from_millis(100));
+        assert_eq!(h.identity.get("script.a").map(String::as_str), Some("1"));
+        assert!(!h.identity.contains_key("script.b"), "{:?}", h.errors);
+        assert!(!h.identity.contains_key("script.c"), "{:?}", h.errors);
+        assert!(
+            h.errors.iter().any(|e| e.contains("b.rhai")),
+            "{:?}",
+            h.errors
+        );
+        assert!(
+            h.errors
+                .iter()
+                .any(|e| e.contains("c.rhai") && e.contains("skipped")),
+            "{:?}",
+            h.errors
+        );
+        let mut h = host();
+        s.run_host_within(&mut h, Duration::from_secs(5));
+        assert_eq!(h.identity["script.c"], "3");
+        assert!(h.errors.is_empty(), "{:?}", h.errors);
     }
 
     #[test]
