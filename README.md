@@ -15,7 +15,9 @@
 
 **Portable network discovery and inventory for IT and OT networks: desktop GUI, CLI and live TUI in one Rust binary.**
 
-<img src="assets/demo-gui.gif" alt="Network Scope desktop: scanning a network, opening findings, devices and the OT view" width="800">
+<img src="assets/demo-gui.gif" alt="Network Scope desktop: scan results, findings with CVE hints, merged devices, OT assets and a script test" width="800">
+
+<sub>Desktop tour with a sample plant network.</sub>
 
 </div>
 
@@ -99,7 +101,7 @@ network-scope-cli report 1 --output report.html
 network-scope-cli ot-listen --pcap plant.pcapng --progress
 ```
 
-<p align="center"><img src="assets/demo-cli.gif" alt="Network Scope CLI scanning a network with the live terminal view" width="800"></p>
+<p align="center"><img src="assets/demo-cli.gif" alt="Network Scope CLI scanning the bundled lab simulators and listing the findings in PowerShell" width="800"></p>
 
 More in [Quick start](docs/src/quick-start.md) and the [CLI reference](docs/src/cli-reference.md).
 
