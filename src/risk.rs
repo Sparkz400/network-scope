@@ -3,7 +3,12 @@
 //! distributions backport fixes without changing the version string.
 use crate::scan::Host;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{
+    collections::BTreeMap,
+    net::IpAddr,
+    path::Path,
+    sync::{Arc, OnceLock, RwLock},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -108,82 +113,266 @@ pub fn in_range(version: &str, min: Option<&str>, max_exclusive: Option<&str>) -
         && max_exclusive.is_none_or(|m| compare(&v, &parse_version(m)).is_lt())
 }
 
-struct CveRule {
-    product: &'static str,
-    min: Option<&'static str>,
-    max: Option<&'static str>,
-    severity: Severity,
-    cve: &'static [&'static str],
-    title: &'static str,
+// ---- CVE / CPE database (data/cves.json plus an optional user file) ----------------------
+
+static BUILTIN_CVES: &str = include_str!("../data/cves.json");
+
+#[derive(Deserialize)]
+struct RawCveRule {
+    id: String,
+    product: String,
+    #[serde(default)]
+    exclude: Vec<String>,
+    #[serde(default)]
+    min: Option<String>,
+    #[serde(default)]
+    max: Option<String>,
+    severity: String,
+    cve: Vec<String>,
+    title: String,
 }
-const CVE_RULES: &[CveRule] = &[
-    CveRule {
-        product: "openssh",
-        min: Some("8.5p1"),
-        max: Some("9.8p1"),
-        severity: Severity::High,
-        cve: &["CVE-2024-6387"],
-        title: "OpenSSH regreSSHion (unauthenticated signal-handler race, glibc Linux)",
-    },
-    CveRule {
-        product: "openssh",
-        min: None,
-        max: Some("9.3p2"),
-        severity: Severity::Medium,
-        cve: &["CVE-2023-38408"],
-        title: "OpenSSH ssh-agent PKCS#11 code execution (needs a forwarded agent)",
-    },
-    CveRule {
-        product: "openssh",
-        min: None,
-        // Affected through 7.7 (fixed in 7.8). "7.7p1" parses as [7, 7, 1], above "7.7", so the
-        // exclusive bound must be 7.8 to include 7.7 and 7.7p1.
-        max: Some("7.8"),
-        severity: Severity::Low,
-        cve: &["CVE-2018-15473"],
-        title: "OpenSSH username enumeration",
-    },
-    CveRule {
-        product: "apache",
-        min: Some("2.4.49"),
-        max: Some("2.4.51"),
-        severity: Severity::Critical,
-        cve: &["CVE-2021-41773", "CVE-2021-42013"],
-        title: "Apache httpd 2.4.49/2.4.50 path traversal and remote code execution",
-    },
-    CveRule {
-        product: "nginx",
-        min: Some("0.6.18"),
-        max: Some("1.20.1"),
-        severity: Severity::Medium,
-        cve: &["CVE-2021-23017"],
-        title: "nginx resolver off-by-one (only when a resolver is configured)",
-    },
-    CveRule {
-        product: "vsftpd",
-        min: Some("2.3.4"),
-        max: Some("2.3.5"),
-        severity: Severity::Critical,
-        cve: &["CVE-2011-2523"],
-        title: "vsFTPd 2.3.4 backdoor",
-    },
-    CveRule {
-        product: "exim",
-        min: Some("4.87"),
-        max: Some("4.92"),
-        severity: Severity::Critical,
-        cve: &["CVE-2019-10149"],
-        title: "Exim 4.87-4.91 remote command execution",
-    },
-    CveRule {
-        product: "microsoft-iis",
-        min: Some("6.0"),
-        max: Some("6.1"),
-        severity: Severity::High,
-        cve: &["CVE-2017-7269"],
-        title: "IIS 6.0 WebDAV buffer overflow",
-    },
-];
+#[derive(Deserialize)]
+struct RawCpe {
+    id: String,
+    products: Vec<String>,
+    template: String,
+}
+#[derive(Deserialize)]
+struct RawCveDb {
+    #[serde(default)]
+    rules: Vec<RawCveRule>,
+    #[serde(default)]
+    cpe: Vec<RawCpe>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CveRule {
+    pub id: String,
+    /// Lower-case substring of the detected product name.
+    pub product: String,
+    /// Lower-case product substrings the rule does not apply to.
+    pub exclude: Vec<String>,
+    pub min: Option<String>,
+    pub max: Option<String>,
+    pub severity: Severity,
+    pub cve: Vec<String>,
+    pub title: String,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct CpeRule {
+    pub id: String,
+    /// Exact lower-case product names.
+    pub products: Vec<String>,
+    pub template: String,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct CveDb {
+    pub rules: Vec<CveRule>,
+    pub cpe: Vec<CpeRule>,
+}
+
+/// A rule bound: digits separated by dots with an optional `pN` patch level (`8.5p1`).
+fn valid_version(s: &str) -> bool {
+    let (base, patch) = match s.split_once('p') {
+        Some((b, p)) => (b, Some(p)),
+        None => (s, None),
+    };
+    let numeric = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    base.split('.').all(numeric) && patch.is_none_or(numeric)
+}
+fn valid_cve(s: &str) -> bool {
+    let mut parts = s.split('-');
+    parts.next() == Some("CVE")
+        && parts
+            .next()
+            .is_some_and(|y| y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()))
+        && parts
+            .next()
+            .is_some_and(|n| n.len() >= 4 && n.bytes().all(|b| b.is_ascii_digit()))
+        && parts.next().is_none()
+}
+
+impl CveDb {
+    fn parse(json: &str, origin: &str) -> Result<Self, String> {
+        let raw: RawCveDb = serde_json::from_str(json).map_err(|e| format!("{origin}: {e}"))?;
+        let mut rules = vec![];
+        for r in raw.rules {
+            let err = |what: String| format!("{origin}: rule {:?}: {what}", r.id);
+            if r.id.trim().is_empty() {
+                return Err(format!("{origin}: a rule has an empty id"));
+            }
+            if r.product.trim().is_empty() {
+                return Err(err("empty product".into()));
+            }
+            for bound in [&r.min, &r.max].into_iter().flatten() {
+                if !valid_version(bound) {
+                    return Err(err(format!(
+                        "bad version {bound:?} (expected e.g. 2.4.49 or 8.5p1)"
+                    )));
+                }
+            }
+            if let (Some(lo), Some(hi)) = (&r.min, &r.max) {
+                if compare(&parse_version(lo), &parse_version(hi)).is_ge() {
+                    return Err(err(format!("min {lo} is not below max {hi}")));
+                }
+            }
+            let severity = Severity::parse(&r.severity)
+                .ok_or_else(|| err(format!("unknown severity {:?}", r.severity)))?;
+            if r.cve.is_empty() {
+                return Err(err("cve list is empty".into()));
+            }
+            if let Some(bad) = r.cve.iter().find(|c| !valid_cve(c)) {
+                return Err(err(format!("bad CVE id {bad:?}")));
+            }
+            rules.push(CveRule {
+                product: r.product.trim().to_ascii_lowercase(),
+                exclude: r.exclude.iter().map(|e| e.to_ascii_lowercase()).collect(),
+                min: r.min,
+                max: r.max,
+                severity,
+                cve: r.cve,
+                title: r.title,
+                id: r.id,
+            });
+        }
+        let mut cpe = vec![];
+        for c in raw.cpe {
+            if c.id.trim().is_empty() || c.products.is_empty() {
+                return Err(format!(
+                    "{origin}: cpe {:?}: needs an id and products",
+                    c.id
+                ));
+            }
+            if !c.template.starts_with("cpe:2.3:")
+                || c.template.split(':').count() != 13
+                || !(c.template.contains("{version}") || c.template.contains("{base}"))
+            {
+                return Err(format!(
+                    "{origin}: cpe {:?}: template must be a 13-part cpe:2.3 name with {{version}} or {{base}}",
+                    c.id
+                ));
+            }
+            cpe.push(CpeRule {
+                products: c.products.iter().map(|p| p.to_ascii_lowercase()).collect(),
+                template: c.template,
+                id: c.id,
+            });
+        }
+        Ok(Self { rules, cpe })
+    }
+    pub fn builtin() -> Self {
+        Self::parse(BUILTIN_CVES, "built-in CVE rules").expect("built-in CVE rules are valid")
+    }
+    /// Built-in rules plus a user file: same id replaces, new ids are added.
+    pub fn with_user_file(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let user = Self::parse(&text, &path.display().to_string())?;
+        let mut db = Self::builtin();
+        for rule in user.rules {
+            match db.rules.iter_mut().find(|r| r.id == rule.id) {
+                Some(slot) => *slot = rule,
+                None => db.rules.push(rule),
+            }
+        }
+        for c in user.cpe {
+            match db.cpe.iter_mut().find(|x| x.id == c.id) {
+                Some(slot) => *slot = c,
+                None => db.cpe.push(c),
+            }
+        }
+        Ok(db)
+    }
+    /// The explicit file (`--cves FILE`), else `%LOCALAPPDATA%/NetworkScope/cves.json` when it
+    /// exists, else the built-in rules.
+    pub fn load(explicit: Option<&Path>) -> Result<Self, String> {
+        if let Some(p) = explicit {
+            return Self::with_user_file(p);
+        }
+        let default = std::env::var_os("LOCALAPPDATA")
+            .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+            .map(|p| Path::new(&p).join("NetworkScope").join("cves.json"));
+        match default {
+            Some(p) if p.exists() => Self::with_user_file(&p),
+            _ => Ok(Self::builtin()),
+        }
+    }
+    /// CPE 2.3 name for a detected product and version, when the table knows the product and
+    /// the version is a plain version string (banners are untrusted input).
+    pub fn cpe(&self, product: &str, version: &str) -> Option<String> {
+        let product = product.trim().to_ascii_lowercase();
+        // Distribution suffixes ("8.0.33-0ubuntu0.22.04.2") are not part of the CPE version.
+        let version: String = version
+            .trim()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if version.is_empty()
+            || version.len() > 40
+            || !version.starts_with(|c: char| c.is_ascii_digit())
+        {
+            return None;
+        }
+        let rule = self.cpe.iter().find(|c| c.products.contains(&product))?;
+        let (base, update) = match version.find('p') {
+            Some(at)
+                if version[at + 1..].chars().all(|c| c.is_ascii_digit())
+                    && at + 1 < version.len() =>
+            {
+                (&version[..at], &version[at..])
+            }
+            _ => (version.as_str(), "*"),
+        };
+        Some(
+            rule.template
+                .replace("{version}", &version)
+                .replace("{base}", base)
+                .replace("{update}", update),
+        )
+    }
+}
+
+fn cve_slot() -> &'static RwLock<Option<Arc<CveDb>>> {
+    static SLOT: OnceLock<RwLock<Option<Arc<CveDb>>>> = OnceLock::new();
+    SLOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Loads the CVE/CPE rules (explicit file, else the default user file, else built-in) and makes
+/// them the rules every later analysis uses. Called for `--cves FILE` / before a scan; on error
+/// the previously active rules stay in place.
+// Wired by the CLI/GUI (`--cves FILE`, see NOTES-service-features.md); until then the default
+// user file is picked up lazily by `cve_db`.
+#[allow(dead_code)]
+pub fn load_cves(explicit: Option<&Path>) -> Result<(), String> {
+    let db = CveDb::load(explicit)?;
+    if let Ok(mut slot) = cve_slot().write() {
+        *slot = Some(Arc::new(db));
+    }
+    Ok(())
+}
+
+/// The active rules. Until `load_cves` ran: the default user file when it is valid, else the
+/// built-in rules (an invalid user file is reported once on stderr).
+pub fn cve_db() -> Arc<CveDb> {
+    if let Some(db) = cve_slot().read().ok().and_then(|s| s.clone()) {
+        return db;
+    }
+    // Tests never read the developer's own override file.
+    #[cfg(test)]
+    let db = Arc::new(CveDb::builtin());
+    #[cfg(not(test))]
+    let db = Arc::new(CveDb::load(None).unwrap_or_else(|e| {
+        eprintln!("CVE rules: {e}; using the built-in rules");
+        CveDb::builtin()
+    }));
+    if let Ok(mut slot) = cve_slot().write() {
+        if let Some(existing) = slot.as_ref() {
+            return existing.clone();
+        }
+        *slot = Some(db.clone());
+    }
+    db
+}
 /// PHP branch end-of-life dates (end of security support, php.net/supported-versions).
 /// Branches not listed here (8.2 and newer once added) are not flagged; extend the table
 /// when php.net publishes new dates. Last reviewed 2026-11.
@@ -234,6 +423,21 @@ fn heartbleed(server: &str) -> Option<String> {
     }
 }
 
+/// SMBGhost (CVE-2020-0796) is limited to Windows 10 / Server version 1903 (build 18362) and
+/// 1909 (build 18363) with SMB 3.1.1 compression. The NTLM challenge names the build but not
+/// the update revision, so a patched host looks the same: a version-based hint only, never
+/// raised on compression alone.
+pub fn smbghost_hint(dialect: &str, compression: &str, os_version: &str) -> Option<String> {
+    let v = parse_version(os_version);
+    let affected = v.len() == 3 && v[0] == 10 && v[1] == 0 && matches!(v[2], 18362 | 18363);
+    let compressing = !compression.is_empty() && compression != "none";
+    (dialect == "3.1.1" && compressing && affected).then(|| {
+        format!(
+            "SMB 3.1.1, compression {compression}, Windows build {os_version}. Version-based hint: the patch level (KB4551762) is not visible remotely."
+        )
+    })
+}
+
 struct Out<'a> {
     host: &'a Host,
     list: Vec<Finding>,
@@ -264,6 +468,10 @@ impl Out<'_> {
 }
 
 pub fn analyze_host(h: &Host) -> Vec<Finding> {
+    analyze_host_with(h, &cve_db())
+}
+
+fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
     let mut o = Out {
         host: h,
         list: vec![],
@@ -490,6 +698,17 @@ pub fn analyze_host(h: &Host) -> Vec<Finding> {
                 if svc.contains("signing disabled") || svc.contains("not required") {
                     o.add(Severity::Medium, "smb-signing", "SMB signing is not required", port, svc, &[], "Require SMB signing to prevent relay attacks.");
                 }
+                let encryption = get(format!("smb.{p}.encryption"));
+                if encryption.starts_with("not supported") {
+                    o.add(Severity::Info, "smb-no-encryption", "SMB server does not offer encryption", port, format!("dialect {}; encryption {encryption}", get(format!("smb.{p}.dialect"))), &[], "Enable SMB 3.x encryption for shares that carry sensitive data.");
+                }
+                if let Some(evidence) = smbghost_hint(
+                    get(format!("smb.{p}.dialect")),
+                    get(format!("smb.{p}.compression")),
+                    get(format!("smb.{p}.os_version")),
+                ) {
+                    o.add(Severity::High, "cve-cve-2020-0796", "SMBv3 compression on a Windows build affected by SMBGhost", port, evidence, &["CVE-2020-0796"], "Install KB4551762 (March 2020) or later, or disable SMBv3 compression; Windows 10 1903/1909 is out of support, upgrade it.");
+                }
             }
             _ => {}
         }
@@ -546,19 +765,22 @@ pub fn analyze_host(h: &Host) -> Vec<Finding> {
         let mut seen = std::collections::BTreeSet::new();
         for (prod, ver) in candidates {
             let prod = prod.to_ascii_lowercase();
-            for rule in CVE_RULES.iter().filter(|r| {
-                // These OpenSSH issues concern the portable (Unix) release, not OpenSSH for Windows.
-                let windows_port = r.product == "openssh" && prod.contains("for windows");
-                prod.contains(r.product) && !windows_port && in_range(&ver, r.min, r.max)
+            for rule in cves.rules.iter().filter(|r| {
+                // e.g. the portable-OpenSSH issues do not concern OpenSSH for Windows.
+                let excluded = r.exclude.iter().any(|x| prod.contains(x.as_str()));
+                prod.contains(r.product.as_str())
+                    && !excluded
+                    && in_range(&ver, r.min.as_deref(), r.max.as_deref())
             }) {
-                if seen.insert(rule.cve[0]) {
+                if seen.insert(rule.cve[0].clone()) {
+                    let cve: Vec<&str> = rule.cve.iter().map(String::as_str).collect();
                     o.add(
                         rule.severity,
                         &format!("cve-{}", rule.cve[0].to_ascii_lowercase()),
-                        rule.title,
+                        &rule.title,
                         port,
                         format!("{prod} {ver}. {BACKPORT_NOTE}"),
-                        rule.cve,
+                        &cve,
                         "Update to a fixed release or confirm the vendor backported the fix.",
                     );
                 }
@@ -1031,5 +1253,198 @@ mod tests {
         let mut silent = host(&[23], &[("svc.23", "telnet")]);
         silent.responding = false;
         assert!(analyze(&[silent]).is_empty());
+    }
+
+    #[test]
+    fn builtin_cve_rules_match_the_former_table() {
+        let db = CveDb::builtin();
+        assert_eq!(db.rules.len(), 8);
+        let first: Vec<&str> = db.rules.iter().map(|r| r.cve[0].as_str()).collect();
+        assert_eq!(
+            first,
+            [
+                "CVE-2024-6387",
+                "CVE-2023-38408",
+                "CVE-2018-15473",
+                "CVE-2021-41773",
+                "CVE-2021-23017",
+                "CVE-2011-2523",
+                "CVE-2019-10149",
+                "CVE-2017-7269"
+            ]
+        );
+        let regre = &db.rules[0];
+        assert_eq!(
+            (regre.min.as_deref(), regre.max.as_deref(), regre.severity),
+            (Some("8.5p1"), Some("9.8p1"), Severity::High)
+        );
+        assert_eq!(regre.exclude, ["for windows"]);
+        assert_eq!(db.rules[3].cve.len(), 2);
+    }
+
+    #[test]
+    fn cve_file_validation_and_merge() {
+        let parse = |json: &str| CveDb::parse(json, "test");
+        let rule = |extra: &str| {
+            format!(
+                r#"{{"rules":[{{"id":"x","product":"foo","severity":"high","cve":["CVE-2020-1234"],"title":"t"{extra}}}]}}"#
+            )
+        };
+        assert!(parse(&rule(r#","min":"1.2","max":"1.3p1""#)).is_ok());
+        assert!(parse(&rule(r#","max":"1.x""#))
+            .unwrap_err()
+            .contains("bad version"));
+        assert!(parse(&rule(r#","min":"""#))
+            .unwrap_err()
+            .contains("bad version"));
+        assert!(parse(&rule(r#","min":"2.0","max":"1.0""#))
+            .unwrap_err()
+            .contains("not below"));
+        assert!(parse(&rule(r#","min":"1.0","max":"1.0""#)).is_err());
+        assert!(parse(
+            r#"{"rules":[{"id":"x","product":"foo","severity":"severe","cve":["CVE-2020-1234"],"title":"t"}]}"#
+        )
+        .unwrap_err()
+        .contains("severity"));
+        assert!(parse(
+            r#"{"rules":[{"id":"x","product":"foo","severity":"low","cve":[],"title":"t"}]}"#
+        )
+        .unwrap_err()
+        .contains("empty"));
+        assert!(parse(
+            r#"{"rules":[{"id":"x","product":"foo","severity":"low","cve":["CVE-20-1"],"title":"t"}]}"#
+        )
+        .unwrap_err()
+        .contains("bad CVE"));
+        assert!(
+            parse(r#"{"cpe":[{"id":"c","products":["foo"],"template":"cpe:2.3:a:foo"}]}"#)
+                .unwrap_err()
+                .contains("template")
+        );
+        assert!(parse("not json").is_err());
+
+        let path = std::env::temp_dir().join(format!("ns-cves-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{"rules":[
+              {"id":"openssh-user-enum","product":"openssh","max":"7.5","severity":"medium","cve":["CVE-2018-15473"],"title":"replaced"},
+              {"id":"lab-1","product":"labd","min":"1.0","max":"2.0","severity":"critical","cve":["CVE-2099-0001"],"title":"Lab daemon"}],
+             "cpe":[{"id":"labd","products":["labd"],"template":"cpe:2.3:a:lab:labd:{version}:*:*:*:*:*:*:*"}]}"#,
+        )
+        .unwrap();
+        let db = CveDb::load(Some(&path)).unwrap();
+        assert_eq!(db.rules.len(), 9, "one replaced, one added");
+        let replaced = db
+            .rules
+            .iter()
+            .find(|r| r.id == "openssh-user-enum")
+            .unwrap();
+        assert_eq!(
+            (replaced.title.as_str(), replaced.max.as_deref()),
+            ("replaced", Some("7.5"))
+        );
+        let h = host(
+            &[7000],
+            &[("svc.7000.product", "labd"), ("svc.7000.version", "1.4")],
+        );
+        let f = analyze_host_with(&h, &db);
+        assert_eq!(f.len(), 1);
+        assert_eq!(
+            (f[0].id.as_str(), f[0].severity),
+            ("cve-cve-2099-0001", Severity::Critical)
+        );
+        assert!(analyze_host_with(&h, &CveDb::builtin()).is_empty());
+        // 7.6 is no longer in the replaced range.
+        let ssh = host(
+            &[22],
+            &[("svc.22.product", "OpenSSH"), ("svc.22.version", "7.6")],
+        );
+        assert!(!analyze_host_with(&ssh, &db)
+            .iter()
+            .any(|f| f.id == "cve-cve-2018-15473"));
+        assert_eq!(
+            db.cpe("labd", "1.4").unwrap(),
+            "cpe:2.3:a:lab:labd:1.4:*:*:*:*:*:*:*"
+        );
+        std::fs::write(&path, r#"{"rules":[{"id":"y","product":"p","max":"abc","severity":"low","cve":["CVE-2020-0001"],"title":"t"}]}"#).unwrap();
+        assert!(CveDb::load(Some(&path))
+            .unwrap_err()
+            .contains("bad version"));
+        let _ = std::fs::remove_file(&path);
+        assert!(CveDb::load(Some(&path)).is_err());
+    }
+
+    #[test]
+    fn cpe_names_from_product_and_version() {
+        let db = CveDb::builtin();
+        assert_eq!(
+            db.cpe("OpenSSH", "7.4p1").unwrap(),
+            "cpe:2.3:a:openbsd:openssh:7.4:p1:*:*:*:*:*:*"
+        );
+        assert_eq!(
+            db.cpe("OpenSSH", "9.6").unwrap(),
+            "cpe:2.3:a:openbsd:openssh:9.6:*:*:*:*:*:*:*"
+        );
+        assert_eq!(
+            db.cpe("Apache", "2.4.49").unwrap(),
+            "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"
+        );
+        assert_eq!(
+            db.cpe("MySQL", "8.0.33-0ubuntu0.22.04.2").unwrap(),
+            "cpe:2.3:a:oracle:mysql:8.0.33:*:*:*:*:*:*:*"
+        );
+        assert_eq!(
+            db.cpe("OpenSSH for Windows", "9.5"),
+            None,
+            "exact names only"
+        );
+        assert_eq!(db.cpe("Apache-Coyote", "1.1"), None);
+        assert_eq!(db.cpe("OpenSSH", ""), None);
+        assert_eq!(db.cpe("OpenSSH", "x:y*"), None, "untrusted banner text");
+        assert_eq!(db.cpe("unknown", "1.0"), None);
+    }
+    #[test]
+    fn smb_encryption_and_smbghost_hints() {
+        let smb = |extra: &[(&str, &str)]| {
+            let mut kv = vec![("svc.445", "microsoft-ds SMB 3.1.1 (signing required)")];
+            kv.extend_from_slice(extra);
+            ids(&host(&[445], &kv))
+        };
+        assert_eq!(
+            smb(&[
+                ("smb.445.dialect", "3.0"),
+                ("smb.445.encryption", "not supported")
+            ]),
+            ["smb-no-encryption"]
+        );
+        assert!(smb(&[
+            ("smb.445.dialect", "3.1.1"),
+            ("smb.445.encryption", "AES-128-GCM")
+        ])
+        .is_empty());
+        let ghost = [
+            ("smb.445.dialect", "3.1.1"),
+            ("smb.445.encryption", "AES-128-GCM"),
+            ("smb.445.compression", "LZNT1"),
+            ("smb.445.os_version", "10.0.18363"),
+        ];
+        let h = host(
+            &[445],
+            &[
+                &[("svc.445", "microsoft-ds SMB 3.1.1 (signing required)")][..],
+                &ghost[..],
+            ]
+            .concat(),
+        );
+        let f = analyze_host(&h);
+        let g = f.iter().find(|f| f.id == "cve-cve-2020-0796").unwrap();
+        assert_eq!(g.cve, ["CVE-2020-0796"]);
+        assert!(g.evidence.contains("Version-based hint"));
+        // Never on compression alone, nor on other builds, nor without compression.
+        assert!(smbghost_hint("3.1.1", "LZNT1", "").is_none());
+        assert!(smbghost_hint("3.1.1", "LZNT1", "10.0.19045").is_none());
+        assert!(smbghost_hint("3.1.1", "none", "10.0.18362").is_none());
+        assert!(smbghost_hint("3.0.2", "LZNT1", "10.0.18362").is_none());
+        assert!(smbghost_hint("3.1.1", "LZ77", "10.0.18362").is_some());
     }
 }
