@@ -130,8 +130,12 @@ impl Scanner {
                     ui.label("A ping timeout does not prove a device is offline.");
                     ui.label("Read-only queries can still affect fragile devices. Passive listening sends none.");
                     ui.label("Pause lets active hosts finish. Stop cancels async work.");
-                    if ui.button("Restore defaults").clicked() {
-                        *s = scan::Settings::default();
+                    if ui
+                        .button("Restore defaults")
+                        .on_hover_text("Keeps interface, source addresses, script and probe file")
+                        .clicked()
+                    {
+                        *s = standard_settings(s);
                     }
                 });
                 if self.run.is_some() {

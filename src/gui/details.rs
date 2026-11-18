@@ -91,11 +91,19 @@ impl Scanner {
                 }
                 ui.separator();
                 ui.label("Your note");
-                ui.add(
-                    egui::TextEdit::multiline(self.saved.notes.entry(ip).or_default())
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY),
-                );
+                // Edit a copy: viewing a host must not create an empty note.
+                let mut note = self.saved.notes.get(&ip).cloned().unwrap_or_default();
+                if ui
+                    .add(
+                        egui::TextEdit::multiline(&mut note)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed()
+                {
+                    set_note(&mut self.saved.notes, ip, note);
+                    self.notes_generation += 1;
+                }
                 if ui.button("Copy IP address").clicked() {
                     ctx.copy_text(ip.to_string());
                 }
