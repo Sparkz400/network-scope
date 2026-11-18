@@ -1,28 +1,72 @@
-use super::Scanner;
+use super::{Job, Scanner};
 use crate::{capture, devices, passive, risk, store, topology};
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use std::sync::{atomic::Ordering, mpsc::TryRecvError};
+/// Combines non-empty, distinct scopes ("10.0.0.0/24 + listen:eth0").
+fn combined_scope(scan: &str, capture: &str) -> String {
+    match (scan.is_empty(), capture.is_empty()) {
+        (_, true) => scan.to_string(),
+        (true, false) => capture.to_string(),
+        (false, false) if scan == capture => scan.to_string(),
+        (false, false) => format!("{scan} + {capture}"),
+    }
+}
 impl Scanner {
+    /// Everything on screen: active results plus passive observations (exports, reports).
     pub(super) fn snapshot(&self) -> store::Snapshot {
+        let mut notes = self.saved.notes.clone();
+        super::prune_notes(&mut notes);
         store::Snapshot {
-            targets: self.scan_scope.clone(),
-            complete: self.scan_complete && self.run.is_none() && self.listening.is_none(),
+            targets: combined_scope(&self.scan_scope, &self.capture_scope),
+            complete: self.scan_complete && self.capture_complete && !self.live(),
             settings: self.scan_settings.clone(),
             hosts: self.results.clone(),
             observations: self.observations.clone(),
-            notes: self.saved.notes.clone(),
+            notes,
+        }
+    }
+    /// The active scan alone, as the inventory stores it.
+    pub(super) fn scan_snapshot(&self) -> store::Snapshot {
+        let mut notes = self.saved.notes.clone();
+        super::prune_notes(&mut notes);
+        store::Snapshot {
+            targets: self.scan_scope.clone(),
+            complete: self.scan_complete && self.run.is_none(),
+            settings: self.scan_settings.clone(),
+            hosts: self.results.clone(),
+            observations: vec![],
+            notes,
+        }
+    }
+    /// The passive capture alone, as the inventory stores it.
+    pub(super) fn capture_snapshot(&self) -> store::Snapshot {
+        let mut notes = self.saved.notes.clone();
+        super::prune_notes(&mut notes);
+        store::Snapshot {
+            targets: self.capture_scope.clone(),
+            complete: self.capture_complete && self.listening.is_none(),
+            settings: self.saved.settings.clone(),
+            hosts: vec![],
+            observations: self.observations.clone(),
+            notes,
         }
     }
     pub(super) fn topology_window(&mut self, ctx: &egui::Context) {
         if !self.topology_open {
             return;
         }
+        if self.topology.stale(self.generation, self.live()) {
+            let graph = topology::build(&self.results);
+            let layers = topology::layers(&graph);
+            self.topology.set(self.generation, (graph, layers));
+        }
         let mut open = self.topology_open;
+        let (graph, layers) = &self.topology.value;
         egui::Window::new("Network topology")
             .open(&mut open)
             .default_size([780.0, 460.0])
             .show(ctx, |ui| {
-                let graph = topology::build(&self.results);
                 if graph.nodes.len() <= 1 {
                     ui.label("No path data yet. Enable \"Record router path\" in Settings and scan again.");
                     return;
@@ -33,7 +77,6 @@ impl Scanner {
                     graph.edges.len()
                 ));
                 egui::ScrollArea::both().show(ui, |ui| {
-                    let layers = topology::layers(&graph);
                     let (col_w, row_h) = (190.0, 30.0);
                     let rows = layers.iter().map(Vec::len).max().unwrap_or(1).max(1);
                     let size = egui::vec2(col_w * layers.len() as f32 + 20.0, row_h * rows as f32 + 20.0);
@@ -74,23 +117,52 @@ impl Scanner {
         if !self.findings_open {
             return;
         }
+        if self.findings.stale(self.generation, self.live()) {
+            // Borrow the data into a snapshot instead of deep-cloning it.
+            let snapshot = store::Snapshot {
+                targets: String::new(),
+                complete: false,
+                settings: Default::default(),
+                hosts: std::mem::take(&mut self.results),
+                observations: std::mem::take(&mut self.observations),
+                notes: Default::default(),
+            };
+            let findings = risk::analyze_snapshot(&snapshot);
+            self.results = snapshot.hosts;
+            self.observations = snapshot.observations;
+            self.findings.set(self.generation, findings);
+        }
         let mut open = self.findings_open;
+        let findings = &self.findings.value;
         egui::Window::new("Findings (weak configuration, risky services, CVE hints)")
             .open(&mut open)
             .default_size([900.0, 420.0])
             .show(ctx, |ui| {
-                let findings = risk::analyze_snapshot(&self.snapshot());
                 ui.label(format!("{} findings. CVE entries are version-based hints; vendors often backport fixes.", findings.len()));
                 if findings.is_empty() {
                     ui.label("Nothing found. Enable service detection in Settings to collect the evidence these checks use.");
+                    return;
                 }
-                egui::ScrollArea::both().show(ui, |ui| {
-                    egui::Grid::new("findings_grid").striped(true).num_columns(5).spacing([16.0, 6.0]).show(ui, |ui| {
+                TableBuilder::new(ui)
+                    .id_salt("findings_table")
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::initial(70.0))
+                    .column(Column::initial(140.0))
+                    .column(Column::initial(260.0))
+                    .column(Column::initial(260.0).clip(true))
+                    .column(Column::remainder())
+                    .header(22.0, |mut row| {
                         for h in ["Severity", "Host", "Finding", "Evidence", "CVE"] {
-                            ui.strong(h);
+                            row.col(|ui| {
+                                ui.strong(h);
+                            });
                         }
-                        ui.end_row();
-                        for f in &findings {
+                    })
+                    .body(|body| {
+                        body.rows(22.0, findings.len(), |mut row| {
+                            let f = &findings[row.index()];
                             let color = match f.severity {
                                 risk::Severity::Critical => egui::Color32::from_rgb(155, 28, 28),
                                 risk::Severity::High => egui::Color32::from_rgb(217, 72, 15),
@@ -98,15 +170,23 @@ impl Scanner {
                                 risk::Severity::Low => egui::Color32::from_rgb(43, 108, 176),
                                 risk::Severity::Info => egui::Color32::GRAY,
                             };
-                            ui.colored_label(color, f.severity.name());
-                            ui.label(format!("{}{}", f.ip, f.port.map_or(String::new(), |p| format!(":{p}"))));
-                            ui.label(&f.title).on_hover_text(&f.advice);
-                            ui.label(f.evidence.chars().take(90).collect::<String>()).on_hover_text(&f.evidence);
-                            ui.label(f.cve.join(", "));
-                            ui.end_row();
-                        }
+                            row.col(|ui| {
+                                ui.colored_label(color, f.severity.name());
+                            });
+                            row.col(|ui| {
+                                ui.label(format!("{}{}", f.ip, f.port.map_or(String::new(), |p| format!(":{p}"))));
+                            });
+                            row.col(|ui| {
+                                ui.label(&f.title).on_hover_text(&f.advice);
+                            });
+                            row.col(|ui| {
+                                ui.label(f.evidence.chars().take(90).collect::<String>()).on_hover_text(&f.evidence);
+                            });
+                            row.col(|ui| {
+                                ui.label(f.cve.join(", "));
+                            });
+                        });
                     });
-                });
             });
         self.findings_open = open;
     }
@@ -114,34 +194,49 @@ impl Scanner {
         if !self.devices_open {
             return;
         }
+        if self.devices.stale(self.generation, self.live()) {
+            let merged = devices::merge(&self.results, &self.observations);
+            self.devices.set(self.generation, merged);
+        }
         let mut open = self.devices_open;
+        let devices = &self.devices.value;
         egui::Window::new("Devices (active + passive merged)")
             .open(&mut open)
             .default_size([900.0, 420.0])
             .show(ctx, |ui| {
-                let devices = devices::merge(&self.results, &self.observations);
                 ui.label(format!(
                     "{} devices. Records are keyed by MAC address, or by IP when no MAC is known.",
                     devices.len()
                 ));
-                egui::ScrollArea::both().show(ui, |ui| {
-                    egui::Grid::new("devices_grid")
-                        .striped(true)
-                        .num_columns(6)
-                        .spacing([18.0, 6.0])
-                        .show(ui, |ui| {
-                            for h in [
-                                "Address",
-                                "MAC",
-                                "Manufacturer",
-                                "Type",
-                                "OS guess",
-                                "Open ports",
-                            ] {
+                TableBuilder::new(ui)
+                    .id_salt("devices_table")
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::initial(160.0).clip(true))
+                    .column(Column::initial(170.0))
+                    .column(Column::initial(150.0).clip(true))
+                    .column(Column::initial(110.0))
+                    .column(Column::initial(120.0).clip(true))
+                    .column(Column::remainder())
+                    .header(22.0, |mut row| {
+                        for h in [
+                            "Address",
+                            "MAC",
+                            "Manufacturer",
+                            "Type",
+                            "OS guess",
+                            "Open ports",
+                        ] {
+                            row.col(|ui| {
                                 ui.strong(h);
-                            }
-                            ui.end_row();
-                            for d in &devices {
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(22.0, devices.len(), |mut row| {
+                            let d = &devices[row.index()];
+                            row.col(|ui| {
                                 ui.label(
                                     d.ips
                                         .iter()
@@ -149,18 +244,28 @@ impl Scanner {
                                         .collect::<Vec<_>>()
                                         .join(", "),
                                 );
+                            });
+                            row.col(|ui| {
                                 ui.label(if d.randomized_mac {
                                     format!("{} (randomized)", d.mac)
                                 } else {
                                     d.mac.clone()
                                 });
+                            });
+                            row.col(|ui| {
                                 ui.label(&d.vendor);
+                            });
+                            row.col(|ui| {
                                 ui.label(&d.device_type).on_hover_text(&d.type_evidence);
+                            });
+                            row.col(|ui| {
                                 ui.label(if d.os.is_empty() {
                                     String::new()
                                 } else {
                                     format!("{} {}", d.os, d.os_confidence)
                                 });
+                            });
+                            row.col(|ui| {
                                 let ports: Vec<String> = d
                                     .open_tcp
                                     .iter()
@@ -168,17 +273,15 @@ impl Scanner {
                                     .chain(d.open_udp.iter().map(|p| format!("{p}/udp")))
                                     .collect();
                                 ui.label(ports.join(", "));
-                                ui.end_row();
-                            }
+                            });
                         });
-                });
+                    });
             });
         self.devices_open = open;
     }
     pub(super) fn refresh_history(&mut self) {
-        match store::list(&store::default_path()) {
-            Ok(h) => self.history = h,
-            Err(e) => self.error = e,
+        if !self.busy.listing {
+            self.submit(Job::List);
         }
     }
     pub(super) fn inventory_window(&mut self, ctx: &egui::Context) {
@@ -191,29 +294,28 @@ impl Scanner {
                     "Scans are saved automatically, including interrupted scans marked as partial.",
                 );
                 ui.horizontal(|ui| {
-                    if ui.button("Refresh").clicked() {
+                    if ui
+                        .add_enabled(!self.busy.listing, egui::Button::new("Refresh"))
+                        .clicked()
+                    {
                         self.refresh_history();
                     }
-                    if ui.button("Compare A → B").clicked() {
-                        let compare = || -> Result<Vec<String>, String> {
-                            let path = store::default_path();
-                            let a = store::load(&path, self.compare_a.ok_or("Select baseline A")?)?;
-                            let b = store::load(&path, self.compare_b.ok_or("Select scan B")?)?;
-                            store::diff(&a, &b)
-                        };
-                        match compare() {
-                            Ok(changes) => {
-                                self.changes = if changes.is_empty() {
-                                    vec!["No observed changes.".into()]
-                                } else {
-                                    changes
-                                }
-                            }
-                            Err(e) => self.error = e,
+                    if ui
+                        .add_enabled(!self.busy.comparing, egui::Button::new("Compare A → B"))
+                        .clicked()
+                    {
+                        match (self.compare_a, self.compare_b) {
+                            (Some(a), Some(b)) => self.submit(Job::Diff(a, b)),
+                            (None, _) => self.error = "Select baseline A".into(),
+                            (_, None) => self.error = "Select scan B".into(),
                         }
+                    }
+                    if self.busy.listing || self.busy.comparing || self.busy.loading {
+                        ui.spinner();
                     }
                 });
                 let mut load = None;
+                let can_open = !self.live() && !self.busy.loading;
                 egui::ScrollArea::vertical()
                     .id_salt("history")
                     .max_height(220.0)
@@ -230,35 +332,19 @@ impl Scanner {
                                     h.targets
                                 ));
                                 if ui
-                                    .add_enabled(
-                                        self.run.is_none() && self.listening.is_none(),
-                                        egui::Button::new("Open"),
-                                    )
+                                    .add_enabled(can_open, egui::Button::new("Open"))
                                     .clicked()
                                 {
                                     load = Some(h.id);
                                 }
                             });
                         }
-                        if self.history.is_empty() {
+                        if self.history.is_empty() && !self.busy.listing {
                             ui.label("No saved scans yet. Run a scan to start an inventory.");
                         }
                     });
                 if let Some(id) = load {
-                    match store::load(&store::default_path(), id) {
-                        Ok(snapshot) => {
-                            self.results = snapshot.hosts;
-                            self.observations = snapshot.observations;
-                            self.scan_scope = snapshot.targets;
-                            self.scan_settings = snapshot.settings;
-                            self.scan_complete = snapshot.complete;
-                            self.selected = None;
-                            self.previous.clear();
-                            self.status = format!("Loaded inventory #{id}");
-                            self.sort();
-                        }
-                        Err(e) => self.error = e,
-                    }
+                    self.submit(Job::Load(id));
                 }
                 ui.separator();
                 egui::ScrollArea::vertical()
@@ -281,11 +367,17 @@ impl Scanner {
     }
     pub(super) fn poll_capture(&mut self) {
         let mut done = false;
+        let mut changed = false;
         if let Some(run) = &self.listening {
             for _ in 0..1024 {
                 match run.receiver.try_recv() {
                     Ok(Ok(o)) => {
-                        if let Err(e) = crate::ui::merge(&mut self.observations, o) {
+                        changed = true;
+                        if let Err(e) = crate::ui::merge_indexed(
+                            &mut self.observations,
+                            &mut self.observation_index,
+                            o,
+                        ) {
                             self.error = e;
                             self.capture_complete = false;
                             run.cancel.store(true, Ordering::Relaxed);
@@ -303,26 +395,25 @@ impl Scanner {
                 }
             }
         }
+        if changed {
+            self.data_changed();
+        }
         if done {
             if let Some(run) = &self.listening {
                 self.capture_complete &= !run.cancel.load(Ordering::Relaxed);
             }
             self.listening = None;
-            self.scan_scope = self.capture_scope.clone();
-            self.scan_complete = self.capture_complete;
-            self.scan_settings = self.saved.settings.clone();
-            match store::save(&store::default_path(), &self.snapshot()) {
-                Ok(id) => {
-                    self.status = format!(
-                        "{} observations · saved capture #{id}",
-                        self.observations.len()
-                    )
-                }
-                Err(e) => self.error = e,
-            }
+            self.data_changed();
+            self.status = format!("{} observations · saving capture", self.observations.len());
+            let snapshot = self.capture_snapshot();
+            self.submit(Job::Save(Box::new(snapshot), "capture"));
         }
     }
     fn begin_capture(&mut self, dcp: bool) {
+        if self.busy.loading {
+            self.error = "Wait until the inventory scan has been opened.".into();
+            return;
+        }
         let source = if dcp {
             match capture::mac(&self.saved.settings.source_mac) {
                 Ok(mac) => Some(mac),
@@ -334,9 +425,10 @@ impl Scanner {
         } else {
             None
         };
-        self.results.clear();
-        self.observations.clear();
-        self.selected = None;
+        // A new capture replaces the previous capture only; active scan results stay so the
+        // Devices window can merge both.
+        self.reset_observations();
+        self.data_changed();
         self.error.clear();
         self.capture_complete = true;
         self.capture_scope = format!(
@@ -437,30 +529,67 @@ impl Scanner {
                     "{} observed device/protocol combinations",
                     self.observations.len()
                 ));
+                // Virtualized: only the rows in view are laid out, even with 10,000 entries.
+                let text_height = ui.text_style_height(&egui::TextStyle::Body);
+                let row_height = text_height + 2.0 * ui.spacing().button_padding.y;
+                let observations = &self.observations;
+                let selected = &mut self.capture_selected;
                 egui::ScrollArea::vertical()
-                    .max_height(300.0)
-                    .show(ui, |ui| {
-                        for o in &self.observations {
-                            ui.collapsing(
-                                format!(
-                                    "{} · {} · {}",
-                                    o.protocol,
-                                    o.mac,
-                                    o.ip.map(|v| v.to_string())
-                                        .unwrap_or_else(|| "No IP advertised".into())
-                                ),
-                                |ui| {
-                                    for (k, v) in &o.fields {
-                                        ui.label(format!("{k}: {v}"));
-                                    }
-                                },
-                            );
+                    .id_salt("observations")
+                    .max_height(260.0)
+                    .auto_shrink([false, true])
+                    .show_rows(ui, row_height, observations.len(), |ui, range| {
+                        for i in range {
+                            let o = &observations[i];
+                            if ui
+                                .selectable_label(
+                                    *selected == Some(i),
+                                    format!(
+                                        "{} · {} · {}",
+                                        o.protocol,
+                                        o.mac,
+                                        o.ip.map(|v| v.to_string())
+                                            .unwrap_or_else(|| "No IP advertised".into())
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                *selected = if *selected == Some(i) { None } else { Some(i) };
+                            }
                         }
                     });
+                if let Some(o) = self.capture_selected.and_then(|i| self.observations.get(i)) {
+                    ui.separator();
+                    ui.strong(format!("{} · {}", o.protocol, o.mac));
+                    egui::ScrollArea::vertical()
+                        .id_salt("observation_fields")
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            for (k, v) in &o.fields {
+                                ui.label(format!("{k}: {v}"));
+                            }
+                        });
+                }
                 if !self.error.is_empty() {
                     ui.colored_label(egui::Color32::DARK_RED, &self.error);
                 }
             });
         self.capture_open = open;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn export_scope_names_both_sources() {
+        assert_eq!(combined_scope("10.0.0.0/24", ""), "10.0.0.0/24");
+        assert_eq!(combined_scope("", "listen:eth0"), "listen:eth0");
+        assert_eq!(combined_scope("a", "a"), "a");
+        assert_eq!(
+            combined_scope("10.0.0.0/24", "listen:eth0"),
+            "10.0.0.0/24 + listen:eth0"
+        );
+        assert_eq!(combined_scope("", ""), "");
     }
 }

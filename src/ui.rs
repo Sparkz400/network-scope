@@ -55,54 +55,56 @@ OT queries run only on their standard open ports; BACnet uses unicast UDP Who-Is
 Npcap is optional for TCP connect; capture/DCP/SYN require its driver and access.
 TUI: Space pause/resume, Q stop and save a partial scan. No scan starts by itself.
 "#;
+const FLAGS: [&str; 15] = [
+    "tcp-only",
+    "arp",
+    "ot",
+    "dns",
+    "tui",
+    "fast",
+    "syn",
+    "services",
+    "udp",
+    "os",
+    "trace",
+    "deep",
+    "learn",
+    "dhcp-discover",
+    "report-missing",
+];
+const VALUES: [&str; 29] = [
+    "ports",
+    "top-ports",
+    "udp-ports",
+    "max-hops",
+    "probes",
+    "script",
+    "interval",
+    "cycles",
+    "dhcp-allow",
+    "min-severity",
+    "baseline",
+    "listen-seconds",
+    "alerts",
+    "pcap",
+    "retries",
+    "rate",
+    "parallel",
+    "workers",
+    "timeout",
+    "format",
+    "output",
+    "db",
+    "interface",
+    "source-ip",
+    "source-mac",
+    "seconds",
+    "unit",
+    "rack",
+    "slot",
+];
 fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
-    let flags = [
-        "tcp-only",
-        "arp",
-        "ot",
-        "dns",
-        "tui",
-        "fast",
-        "syn",
-        "services",
-        "udp",
-        "os",
-        "trace",
-        "deep",
-        "learn",
-        "dhcp-discover",
-        "report-missing",
-    ];
-    let values = [
-        "ports",
-        "top-ports",
-        "udp-ports",
-        "max-hops",
-        "probes",
-        "script",
-        "interval",
-        "cycles",
-        "dhcp-allow",
-        "min-severity",
-        "baseline",
-        "listen-seconds",
-        "pcap",
-        "retries",
-        "rate",
-        "parallel",
-        "workers",
-        "timeout",
-        "format",
-        "output",
-        "db",
-        "interface",
-        "source-ip",
-        "source-mac",
-        "seconds",
-        "unit",
-        "rack",
-        "slot",
-    ];
+    let (flags, values) = (FLAGS, VALUES);
     let mut positional = vec![];
     let mut opts = BTreeMap::new();
     let mut i = 0;
@@ -511,11 +513,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let ports = scan::parse_ports(&s.ports)?;
             let total = hosts.count() as usize;
             let run = scan::start_stream(Box::new(hosts.iter()), total, ports, s.clone());
-            let (results, complete) = if opts.contains_key("tui") {
-                tui(&run)?
+            let (results, complete, errors) = if opts.contains_key("tui") {
+                tui(&run)
             } else {
-                collect(&run)?
+                collect(&run)
             };
+            if results.is_empty() && !errors.is_empty() {
+                return Err(errors.join("; "));
+            }
             let snapshot = store::Snapshot {
                 targets,
                 complete,
@@ -529,7 +534,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "Saved scan #{id} ({})",
                 if complete { "complete" } else { "partial" }
             );
-            output(&store::export(&snapshot, format)?, &opts)
+            output(&store::export(&snapshot, format)?, &opts)?;
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Scan #{id} saved as partial after errors: {}",
+                    errors.join("; ")
+                ))
+            }
         }
         "listen" | "dcp" => {
             let interface = opts
@@ -548,32 +561,48 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 None
             };
             let run = passive::start(interface.clone(), seconds, source);
-            let mut observations = vec![];
-            for item in &run.receiver {
-                let o = item?;
-                merge(&mut observations, o)?;
+            let (observations, error) = drain_observations(&run.receiver);
+            if error.is_some() {
+                run.cancel.store(true, Ordering::Relaxed);
+            }
+            drop(run);
+            if let (Some(e), true) = (&error, observations.is_empty()) {
+                return Err(e.clone());
             }
             let snapshot = store::Snapshot {
                 targets: format!("{command}:{interface}"),
-                complete: true,
+                complete: error.is_none(),
                 settings: scan::Settings::default(),
                 hosts: vec![],
                 observations,
                 notes: BTreeMap::new(),
             };
             let id = store::save(&db, &snapshot)?;
-            eprintln!("Saved capture #{id}");
+            eprintln!(
+                "Saved capture #{id} ({})",
+                if error.is_none() {
+                    "complete"
+                } else {
+                    "partial"
+                }
+            );
             output(
                 &store::export(
                     &snapshot,
                     opts.get("format").map(String::as_str).unwrap_or("json"),
                 )?,
                 &opts,
-            )
+            )?;
+            match error {
+                None => Ok(()),
+                Some(e) => Err(format!("Capture #{id} saved as partial: {e}")),
+            }
         }
         _ => Err(format!("Unknown command {command}. Use --help.")),
     }
 }
+/// Adds an observation, or merges its fields into the entry with the same MAC, protocol and IP.
+/// Linear lookup; long-running callers should use [`merge_indexed`] with an [`ObservationIndex`].
 pub fn merge(
     observations: &mut Vec<passive::Observation>,
     o: passive::Observation,
@@ -583,33 +612,178 @@ pub fn merge(
         .find(|v| v.mac == o.mac && v.protocol == o.protocol && v.ip == o.ip)
     {
         old.fields.extend(o.fields);
-    } else if observations.len() < 10000 {
+    } else if observations.len() < MAX_OBSERVATIONS {
         observations.push(o);
     } else {
-        return Err("Observation limit (10,000) reached".into());
+        return Err(LIMIT_MESSAGE.into());
     }
     Ok(())
 }
-fn collect(run: &scan::Running) -> Result<(Vec<scan::Host>, bool), String> {
-    let mut hosts = vec![];
-    let sparse = run.total > scan::MAX_HOSTS;
-    loop {
-        match run.receiver.recv().map_err(|e| e.to_string())? {
-            scan::Event::Host(h) => {
-                if h.responding || !sparse {
-                    hosts.push(h)
-                }
+const MAX_OBSERVATIONS: usize = 10_000;
+const LIMIT_MESSAGE: &str = "Observation limit (10,000) reached";
+type ObservationKey = (String, String, Option<std::net::IpAddr>);
+fn observation_key(o: &passive::Observation) -> ObservationKey {
+    (o.mac.clone(), o.protocol.clone(), o.ip)
+}
+/// Hash index over an observation list for [`merge_indexed`]. It rebuilds itself when the list
+/// was replaced or changed behind its back (length mismatch or a stale entry).
+#[derive(Default)]
+pub struct ObservationIndex {
+    map: std::collections::HashMap<ObservationKey, usize>,
+    len: usize,
+}
+impl ObservationIndex {
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.len = 0;
+    }
+    fn rebuild(&mut self, observations: &[passive::Observation]) {
+        self.map.clear();
+        for (i, o) in observations.iter().enumerate() {
+            self.map.entry(observation_key(o)).or_insert(i);
+        }
+        self.len = observations.len();
+    }
+    fn find(&self, observations: &[passive::Observation], key: &ObservationKey) -> Option<usize> {
+        self.map.get(key).copied().filter(|&i| {
+            observations
+                .get(i)
+                .is_some_and(|v| v.mac == key.0 && v.protocol == key.1 && v.ip == key.2)
+        })
+    }
+}
+/// Same semantics as [`merge`] in O(1) per call.
+pub fn merge_indexed(
+    observations: &mut Vec<passive::Observation>,
+    index: &mut ObservationIndex,
+    o: passive::Observation,
+) -> Result<(), String> {
+    if index.len != observations.len() {
+        index.rebuild(observations);
+    }
+    let key = observation_key(&o);
+    let mut found = index.find(observations, &key);
+    if found.is_none() && index.map.contains_key(&key) {
+        // Stale entry: the list was edited in place.
+        index.rebuild(observations);
+        found = index.find(observations, &key);
+    }
+    if let Some(i) = found {
+        observations[i].fields.extend(o.fields);
+    } else if observations.len() < MAX_OBSERVATIONS {
+        index.map.insert(key, observations.len());
+        observations.push(o);
+        index.len = observations.len();
+    } else {
+        return Err(LIMIT_MESSAGE.into());
+    }
+    Ok(())
+}
+/// Collects a passive capture; on an error (capture failure or the observation cap) it stops and
+/// returns everything gathered so far together with the error.
+fn drain_observations(
+    items: impl IntoIterator<Item = Result<passive::Observation, String>>,
+) -> (Vec<passive::Observation>, Option<String>) {
+    let mut observations = vec![];
+    let mut index = ObservationIndex::default();
+    for item in items {
+        if let Err(e) = item.and_then(|o| merge_indexed(&mut observations, &mut index, o)) {
+            return (observations, Some(e));
+        }
+    }
+    (observations, None)
+}
+/// Applies one scan event and returns true on `Done`. Errors never discard results: they are
+/// recorded and mark the scan partial (the engine always follows with `Done`).
+fn accept(
+    event: scan::Event,
+    hosts: &mut Vec<scan::Host>,
+    sparse: bool,
+    errors: &mut Vec<String>,
+) -> bool {
+    match event {
+        scan::Event::Host(h) => {
+            if h.responding || !sparse {
+                hosts.push(h)
             }
-            scan::Event::Done => return Ok((hosts, !run.cancel.load(Ordering::Relaxed))),
-            scan::Event::Error(e) => return Err(e),
+            false
+        }
+        scan::Event::Done => true,
+        scan::Event::Error(e) => {
+            errors.push(e);
+            false
         }
     }
 }
-fn tui(run: &scan::Running) -> Result<(Vec<scan::Host>, bool), String> {
+/// Hosts, complete flag, errors.
+type Collected = (Vec<scan::Host>, bool, Vec<String>);
+fn collect(run: &scan::Running) -> Collected {
+    let mut hosts = vec![];
+    let mut errors = vec![];
+    let sparse = run.total > scan::MAX_HOSTS;
+    loop {
+        match run.receiver.recv() {
+            Ok(event) => {
+                if accept(event, &mut hosts, sparse, &mut errors) {
+                    break;
+                }
+            }
+            Err(_) => {
+                errors.push("Scan worker disconnected".into());
+                break;
+            }
+        }
+    }
+    let complete = errors.is_empty() && !run.cancel.load(Ordering::Relaxed);
+    (hosts, complete, errors)
+}
+fn stop_key(code: crossterm::event::KeyCode) -> bool {
+    use crossterm::event::KeyCode;
+    matches!(code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc)
+}
+static TUI_THREAD: std::sync::Mutex<Option<std::thread::ThreadId>> = std::sync::Mutex::new(None);
+fn restore_terminal() {
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+}
+/// Panic messages from other threads while the live view is on; printed once it is closed.
+static TUI_PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// A panic printed inside the alternate screen would be lost. On the TUI thread the terminal is
+/// restored first; panics of worker threads (the TUI keeps running) are also kept and printed
+/// after the terminal is restored. Then the previous (default) hook runs. Installed once; inert
+/// outside the TUI.
+fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let tui = TUI_THREAD.lock().map(|t| *t).unwrap_or(None);
+            if let Some(id) = tui {
+                if id == std::thread::current().id() {
+                    restore_terminal();
+                } else if let Ok(mut panics) = TUI_PANICS.lock() {
+                    if panics.len() < 16 {
+                        let thread = std::thread::current();
+                        panics.push(format!(
+                            "thread '{}' {info}",
+                            thread.name().unwrap_or("<unnamed>")
+                        ));
+                    }
+                }
+            }
+            previous(info);
+        }));
+    });
+}
+fn tui(run: &scan::Running) -> Collected {
     use crossterm::{
         event::{self, Event, KeyCode, KeyEventKind},
         execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{enable_raw_mode, EnterAlternateScreen},
     };
     use ratatui::{
         backend::CrosstermBackend,
@@ -617,112 +791,359 @@ fn tui(run: &scan::Running) -> Result<(Vec<scan::Host>, bool), String> {
         widgets::{Block, Borders, Row, Table},
         Terminal,
     };
-    struct Restore;
+    /// Undoes only what was set up, then prints panics of other threads seen meanwhile.
+    struct Restore {
+        raw: bool,
+        screen: bool,
+    }
     impl Drop for Restore {
         fn drop(&mut self) {
-            let _ = disable_raw_mode();
-            let _ = execute!(
-                std::io::stdout(),
-                LeaveAlternateScreen,
-                crossterm::cursor::Show
-            );
+            if let Ok(mut t) = TUI_THREAD.lock() {
+                *t = None;
+            }
+            if self.raw {
+                let _ = crossterm::terminal::disable_raw_mode();
+            }
+            if self.screen {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::terminal::LeaveAlternateScreen,
+                    crossterm::cursor::Show
+                );
+            }
+            if let Ok(mut panics) = TUI_PANICS.lock() {
+                for p in panics.drain(..) {
+                    eprintln!("{p}");
+                }
+            }
         }
     }
-    enable_raw_mode().map_err(|e| e.to_string())?;
-    let _restore = Restore;
-    execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
-    let mut terminal =
-        Terminal::new(CrosstermBackend::new(std::io::stdout())).map_err(|e| e.to_string())?;
+    install_panic_hook();
+    if let Ok(mut t) = TUI_THREAD.lock() {
+        *t = Some(std::thread::current().id());
+    }
+    let mut restore = Restore {
+        raw: false,
+        screen: false,
+    };
+    let setup = enable_raw_mode()
+        .and_then(|()| {
+            restore.raw = true;
+            execute!(std::io::stdout(), EnterAlternateScreen)
+        })
+        .and_then(|()| {
+            restore.screen = true;
+            Terminal::new(CrosstermBackend::new(std::io::stdout()))
+        });
+    let mut terminal = match setup {
+        Ok(t) => t,
+        Err(e) => {
+            // No usable terminal: keep the scan and collect it without the live view.
+            drop(restore);
+            eprintln!("Live view unavailable ({e}); collecting without it.");
+            return collect(run);
+        }
+    };
     let mut hosts = vec![];
+    let mut errors = vec![];
     let mut seen = 0usize;
     let sparse = run.total > scan::MAX_HOSTS;
     let mut done = false;
     while !done {
         loop {
             match run.receiver.try_recv() {
-                Ok(scan::Event::Host(h)) => {
-                    seen += 1;
-                    if h.responding || !sparse {
-                        hosts.push(h)
+                Ok(event) => {
+                    if matches!(event, scan::Event::Host(_)) {
+                        seen += 1;
+                    }
+                    if accept(event, &mut hosts, sparse, &mut errors) {
+                        done = true;
+                        break;
                     }
                 }
-                Ok(scan::Event::Done) => {
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(_) => {
+                    errors.push("Scan worker disconnected".into());
                     done = true;
                     break;
                 }
-                Ok(scan::Event::Error(e)) => return Err(e),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(_) => return Err("Scan worker disconnected".into()),
             }
         }
-        terminal
-            .draw(|f| {
-                let rows = hosts
-                    .iter()
-                    .rev()
-                    .take(f.area().height.saturating_sub(4) as usize)
-                    .map(|h| {
-                        Row::new(vec![
-                            h.ip.to_string(),
-                            if h.responding {
-                                "Responding"
-                            } else {
-                                "No reply"
-                            }
-                            .into(),
-                            h.open
-                                .iter()
-                                .map(u16::to_string)
-                                .collect::<Vec<_>>()
-                                .join(","),
-                            h.identity
-                                .keys()
-                                .filter(|k| k.ends_with("name") || k.ends_with("firmware"))
-                                .map(|k| format!("{k}: {}", h.identity[k]))
-                                .collect::<Vec<_>>()
-                                .join("; "),
-                        ])
-                    });
-                f.render_widget(
-                    Table::new(
-                        rows,
-                        [
-                            Constraint::Length(18),
-                            Constraint::Length(13),
-                            Constraint::Length(22),
-                            Constraint::Min(10),
-                        ],
-                    )
-                    .header(Row::new(["IP", "Status", "Ports", "Identity"]))
-                    .block(Block::default().borders(Borders::ALL).title(format!(
-                        " Network Scope · {}/{} · {} · Space pause / Q stop ",
-                        seen,
-                        run.total,
-                        if run.pause.load(Ordering::Relaxed) {
-                            "paused"
+        if done {
+            break;
+        }
+        let drawn = terminal.draw(|f| {
+            let rows = hosts
+                .iter()
+                .rev()
+                .take(f.area().height.saturating_sub(4) as usize)
+                .map(|h: &scan::Host| {
+                    Row::new(vec![
+                        h.ip.to_string(),
+                        if h.responding {
+                            "Responding"
                         } else {
-                            "scanning"
+                            "No reply"
                         }
-                    ))),
-                    f.area(),
-                );
-            })
-            .map_err(|e| e.to_string())?;
-        if event::poll(Duration::from_millis(60)).map_err(|e| e.to_string())? {
-            if let Event::Key(k) = event::read().map_err(|e| e.to_string())? {
-                if k.kind == KeyEventKind::Press {
-                    match k.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            run.cancel.store(true, Ordering::Relaxed)
-                        }
-                        KeyCode::Char(' ') => {
+                        .into(),
+                        h.open
+                            .iter()
+                            .map(u16::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        h.identity
+                            .keys()
+                            .filter(|k| k.ends_with("name") || k.ends_with("firmware"))
+                            .map(|k| format!("{k}: {}", h.identity[k]))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    ])
+                });
+            f.render_widget(
+                Table::new(
+                    rows,
+                    [
+                        Constraint::Length(18),
+                        Constraint::Length(13),
+                        Constraint::Length(22),
+                        Constraint::Min(10),
+                    ],
+                )
+                .header(Row::new(["IP", "Status", "Ports", "Identity"]))
+                .block(Block::default().borders(Borders::ALL).title(format!(
+                    " Network Scope · {}/{} · {} · Space pause / Q stop ",
+                    seen,
+                    run.total,
+                    if run.pause.load(Ordering::Relaxed) {
+                        "paused"
+                    } else {
+                        "scanning"
+                    }
+                ))),
+                f.area(),
+            );
+        });
+        let input = drawn.and_then(|_| {
+            if event::poll(Duration::from_millis(60))? {
+                if let Event::Key(k) = event::read()? {
+                    if k.kind == KeyEventKind::Press {
+                        if stop_key(k.code) {
+                            run.cancel.store(true, Ordering::Relaxed);
+                        } else if k.code == KeyCode::Char(' ') {
                             run.pause.fetch_xor(true, Ordering::Relaxed);
                         }
-                        _ => {}
                     }
                 }
             }
+            Ok(())
+        });
+        if let Err(e) = input {
+            // Terminal failure: stop the scan but keep what was found.
+            errors.push(format!("Terminal: {e}"));
+            run.cancel.store(true, Ordering::Relaxed);
+            break;
         }
     }
-    Ok((hosts, !run.cancel.load(Ordering::Relaxed)))
+    drop(restore);
+    let complete = done && errors.is_empty() && !run.cancel.load(Ordering::Relaxed);
+    (hosts, complete, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+    fn obs(
+        mac: &str,
+        protocol: &str,
+        ip: Option<&str>,
+        field: (&str, &str),
+    ) -> passive::Observation {
+        passive::Observation {
+            protocol: protocol.into(),
+            mac: mac.into(),
+            ip: ip.map(|i| i.parse().unwrap()),
+            fields: BTreeMap::from([(field.0.to_string(), field.1.to_string())]),
+        }
+    }
+
+    #[test]
+    fn monitor_alerts_option_is_accepted() {
+        let (pos, opts) = options(&args(&[
+            "10.0.0.0/24",
+            "--alerts",
+            "alerts.jsonl",
+            "--learn",
+        ]))
+        .unwrap();
+        assert_eq!(pos, ["10.0.0.0/24"]);
+        assert_eq!(opts["alerts"], "alerts.jsonl");
+        assert_eq!(opts["learn"], "true");
+        assert!(options(&args(&["--alerts"]))
+            .unwrap_err()
+            .contains("Missing --alerts"));
+        assert!(options(&args(&["--bogus"]))
+            .unwrap_err()
+            .contains("Unknown"));
+    }
+
+    #[test]
+    fn every_option_read_by_a_command_is_declared() {
+        let src = include_str!("ui.rs");
+        let mut keys = std::collections::BTreeSet::new();
+        for pattern in [
+            "opts.get(\"",
+            "opts.contains_key(\"",
+            "number(opts, \"",
+            "number(&opts, \"",
+        ] {
+            for part in src.split(pattern).skip(1) {
+                keys.insert(part.split('"').next().unwrap().to_string());
+            }
+        }
+        assert!(keys.len() > 30, "{keys:?}");
+        for k in &keys {
+            assert!(
+                FLAGS.contains(&k.as_str()) || VALUES.contains(&k.as_str()),
+                "--{k} is read but not declared"
+            );
+        }
+        for k in FLAGS {
+            assert!(!VALUES.contains(&k), "--{k} is both flag and value");
+        }
+    }
+
+    #[test]
+    fn indexed_merge_matches_linear_merge() {
+        let input = vec![
+            obs("aa", "mDNS", Some("10.0.0.1"), ("name", "a")),
+            obs("aa", "mDNS", Some("10.0.0.1"), ("model", "x")),
+            obs("aa", "mDNS", None, ("name", "b")),
+            obs("aa", "LLDP", Some("10.0.0.1"), ("port", "1")),
+            obs("bb", "mDNS", Some("10.0.0.1"), ("name", "c")),
+            obs("aa", "mDNS", Some("10.0.0.1"), ("name", "a2")),
+        ];
+        let mut linear = vec![];
+        let mut indexed = vec![];
+        let mut index = ObservationIndex::default();
+        for o in input {
+            merge(&mut linear, o.clone()).unwrap();
+            merge_indexed(&mut indexed, &mut index, o).unwrap();
+        }
+        assert_eq!(linear, indexed);
+        assert_eq!(indexed.len(), 4);
+        assert_eq!(indexed[0].fields["name"], "a2");
+        assert_eq!(indexed[0].fields["model"], "x");
+        // The list is replaced behind the index's back: it must notice and rebuild.
+        indexed = vec![obs("cc", "ARP", None, ("x", "1"))];
+        merge_indexed(&mut indexed, &mut index, obs("cc", "ARP", None, ("y", "2"))).unwrap();
+        assert_eq!(indexed.len(), 1);
+        assert_eq!(indexed[0].fields.len(), 2);
+        // Same length, different content.
+        indexed = vec![obs("dd", "ARP", None, ("x", "1"))];
+        merge_indexed(&mut indexed, &mut index, obs("cc", "ARP", None, ("z", "3"))).unwrap();
+        assert_eq!(indexed.len(), 2);
+        index.clear();
+        merge_indexed(&mut indexed, &mut index, obs("dd", "ARP", None, ("w", "4"))).unwrap();
+        assert_eq!(indexed.len(), 2);
+    }
+
+    #[test]
+    fn observation_cap_keeps_merging_existing_entries() {
+        let mut list = vec![];
+        let mut index = ObservationIndex::default();
+        for i in 0..MAX_OBSERVATIONS {
+            merge_indexed(
+                &mut list,
+                &mut index,
+                obs(&format!("{i}"), "ARP", None, ("n", "1")),
+            )
+            .unwrap();
+        }
+        merge_indexed(&mut list, &mut index, obs("5", "ARP", None, ("m", "2"))).unwrap();
+        assert_eq!(list[5].fields["m"], "2");
+        assert!(merge_indexed(&mut list, &mut index, obs("new", "ARP", None, ("n", "1"))).is_err());
+        assert!(merge(&mut list, obs("new", "ARP", None, ("n", "1"))).is_err());
+        assert!(merge(&mut list, obs("7", "ARP", None, ("m", "2"))).is_ok());
+    }
+
+    #[test]
+    fn capture_errors_keep_collected_observations() {
+        let items = vec![
+            Ok(obs("aa", "ARP", None, ("a", "1"))),
+            Ok(obs("bb", "ARP", None, ("a", "1"))),
+            Err("Capture queue full".to_string()),
+            Ok(obs("cc", "ARP", None, ("a", "1"))),
+        ];
+        let (list, error) = drain_observations(items);
+        assert_eq!(list.len(), 2);
+        assert_eq!(error.as_deref(), Some("Capture queue full"));
+        let many =
+            (0..MAX_OBSERVATIONS + 5).map(|i| Ok(obs(&format!("{i}"), "ARP", None, ("a", "1"))));
+        let (list, error) = drain_observations(many);
+        assert_eq!(list.len(), MAX_OBSERVATIONS);
+        assert!(error.unwrap().contains("limit"));
+        let (list, error) = drain_observations(vec![Ok(obs("aa", "ARP", None, ("a", "1")))]);
+        assert_eq!((list.len(), error), (1, None));
+    }
+
+    #[test]
+    fn scan_errors_do_not_discard_hosts() {
+        let host = |ip: &str, responding: bool| scan::Host {
+            ip: ip.parse().unwrap(),
+            responding,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: false,
+            identity: BTreeMap::new(),
+            udp_open: vec![],
+            trace: vec![],
+        };
+        let mut hosts = vec![];
+        let mut errors = vec![];
+        assert!(!accept(
+            scan::Event::Host(host("10.0.0.1", true)),
+            &mut hosts,
+            false,
+            &mut errors
+        ));
+        assert!(!accept(
+            scan::Event::Error("Probe task: boom".into()),
+            &mut hosts,
+            false,
+            &mut errors
+        ));
+        assert!(!accept(
+            scan::Event::Host(host("10.0.0.2", false)),
+            &mut hosts,
+            true,
+            &mut errors
+        ));
+        assert!(!accept(
+            scan::Event::Host(host("10.0.0.3", false)),
+            &mut hosts,
+            false,
+            &mut errors
+        ));
+        assert!(accept(scan::Event::Done, &mut hosts, false, &mut errors));
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(errors, ["Probe task: boom"]);
+    }
+
+    #[test]
+    fn upper_and_lower_case_q_stop_the_tui() {
+        use crossterm::event::KeyCode;
+        assert!(stop_key(KeyCode::Char('q')));
+        assert!(stop_key(KeyCode::Char('Q')));
+        assert!(stop_key(KeyCode::Esc));
+        assert!(!stop_key(KeyCode::Char(' ')));
+    }
 }

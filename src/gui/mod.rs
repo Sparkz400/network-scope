@@ -3,20 +3,43 @@ mod details;
 mod settings;
 mod windows;
 
-use crate::{passive, scan, store};
+use crate::{devices, passive, risk, scan, store, topology};
 use eframe::egui::{self, Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap, net::IpAddr, path::PathBuf, sync::atomic::Ordering, time::Duration,
+    collections::{BTreeMap, HashMap},
+    net::IpAddr,
+    path::PathBuf,
+    sync::{atomic::Ordering, mpsc},
+    time::{Duration, Instant},
 };
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
     settings: scan::Settings,
     favorites: Vec<String>,
     notes: BTreeMap<IpAddr, String>,
+}
+impl Saved {
+    /// What goes to disk: empty notes are dropped.
+    fn to_disk(&self) -> Vec<u8> {
+        let mut copy = self.clone();
+        prune_notes(&mut copy.notes);
+        serde_json::to_vec_pretty(&copy).unwrap_or_default()
+    }
+}
+fn prune_notes(notes: &mut BTreeMap<IpAddr, String>) {
+    notes.retain(|_, n| !n.trim().is_empty());
+}
+/// Stores an edited note; an empty note removes the entry instead of keeping a blank one.
+fn set_note(notes: &mut BTreeMap<IpAddr, String>, ip: IpAddr, text: String) {
+    if text.trim().is_empty() {
+        notes.remove(&ip);
+    } else {
+        notes.insert(ip, text);
+    }
 }
 fn saved_path() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
@@ -25,8 +48,191 @@ fn saved_path() -> PathBuf {
         .join("NetworkScope")
         .join("preferences.json")
 }
+fn write_prefs(bytes: &[u8]) -> Result<(), String> {
+    let path = saved_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+/// The "Standard" preset and "Restore defaults": scan defaults, but the fields that describe
+/// this machine (capture interface, source addresses, script and probe files) are kept.
+fn standard_settings(current: &scan::Settings) -> scan::Settings {
+    scan::Settings {
+        interface: current.interface.clone(),
+        source_ip: current.source_ip.clone(),
+        source_mac: current.source_mac.clone(),
+        scripts: current.scripts.clone(),
+        probe_file: current.probe_file.clone(),
+        ..scan::Settings::default()
+    }
+}
 
-#[derive(PartialEq, Clone, Copy)]
+/// While a scan or capture is running, derived views refresh at most this often.
+const LIVE_REFRESH: Duration = Duration::from_millis(500);
+/// A value derived from results/observations, recomputed only when the data generation changed.
+struct Cached<T> {
+    generation: Option<u64>,
+    at: Instant,
+    value: T,
+}
+impl<T: Default> Default for Cached<T> {
+    fn default() -> Self {
+        Self {
+            generation: None,
+            at: Instant::now(),
+            value: T::default(),
+        }
+    }
+}
+impl<T> Cached<T> {
+    fn stale(&self, generation: u64, live: bool) -> bool {
+        self.generation != Some(generation)
+            && (!live || self.generation.is_none() || self.at.elapsed() >= LIVE_REFRESH)
+    }
+    fn set(&mut self, generation: u64, value: T) {
+        self.generation = Some(generation);
+        self.at = Instant::now();
+        self.value = value;
+    }
+}
+
+/// Lowercase text a host is searched by (notes are matched separately: they change on their own).
+fn haystack(h: &scan::Host) -> String {
+    format!(
+        "{} {} {} {}",
+        h.ip,
+        h.hostname,
+        serde_json::to_string(&h.identity).unwrap_or_default(),
+        ports_text(&h.open)
+    )
+    .to_lowercase()
+}
+fn filter_rows(
+    results: &[scan::Host],
+    filter: Filter,
+    query: &str,
+    haystacks: &mut HashMap<IpAddr, String>,
+    notes: &BTreeMap<IpAddr, String>,
+) -> Vec<usize> {
+    results
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| {
+            (match filter {
+                Filter::All => true,
+                Filter::Responding => h.responding,
+                Filter::Open => !h.open.is_empty(),
+            }) && (query.is_empty()
+                || haystacks
+                    .entry(h.ip)
+                    .or_insert_with(|| haystack(h))
+                    .contains(query)
+                || notes
+                    .get(&h.ip)
+                    .is_some_and(|n| n.to_lowercase().contains(query)))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Inventory work that must not block the UI thread. One worker runs jobs in order, which also
+/// serializes access to the SQLite file.
+enum Job {
+    Save(Box<store::Snapshot>, &'static str),
+    List,
+    Diff(i64, i64),
+    Load(i64),
+    ReadFile(PathBuf),
+    WritePrefs(Vec<u8>),
+}
+enum Done {
+    Saved(&'static str, usize, Result<i64, String>),
+    Listed(Result<Vec<store::Entry>, String>),
+    Diffed(Result<Vec<String>, String>),
+    Loaded(i64, Result<Box<store::Snapshot>, String>),
+    Read(Result<String, String>),
+    PrefsWritten(Result<(), String>),
+}
+fn run_job(job: Job) -> Done {
+    let path = store::default_path();
+    match job {
+        Job::Save(snapshot, kind) => Done::Saved(
+            kind,
+            snapshot.observations.len(),
+            store::save(&path, &snapshot),
+        ),
+        Job::List => Done::Listed(store::list(&path)),
+        Job::Diff(a, b) => Done::Diffed(
+            store::load(&path, a)
+                .and_then(|a| store::load(&path, b).and_then(|b| store::diff(&a, &b))),
+        ),
+        Job::Load(id) => Done::Loaded(id, store::load(&path, id).map(Box::new)),
+        Job::ReadFile(file) => Done::Read(
+            std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display())),
+        ),
+        Job::WritePrefs(bytes) => Done::PrefsWritten(write_prefs(&bytes)),
+    }
+}
+struct Worker {
+    jobs: Option<mpsc::Sender<Job>>,
+    done: mpsc::Receiver<Done>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Worker {
+    fn start(ctx: egui::Context) -> Self {
+        let (jobs, inbox) = mpsc::channel::<Job>();
+        let (outbox, done) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            for job in inbox {
+                if outbox.send(run_job(job)).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        });
+        Self {
+            jobs: Some(jobs),
+            done,
+            thread: Some(thread),
+        }
+    }
+    /// Lets queued jobs (an in-flight inventory save in particular) finish.
+    fn finish(&mut self) {
+        self.jobs = None;
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+#[derive(Default)]
+struct Busy {
+    saving: usize,
+    listing: bool,
+    comparing: bool,
+    loading: bool,
+    importing: bool,
+    prefs: bool,
+}
+impl Busy {
+    fn label(&self) -> Option<&'static str> {
+        if self.saving > 0 {
+            Some("Saving to inventory…")
+        } else if self.loading {
+            Some("Opening inventory…")
+        } else if self.comparing {
+            Some("Comparing scans…")
+        } else if self.listing {
+            Some("Reading inventory…")
+        } else if self.importing {
+            Some("Reading address list…")
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Filter {
     Responding,
     All,
@@ -60,6 +266,8 @@ struct Scanner {
     compare_b: Option<i64>,
     changes: Vec<String>,
     observations: Vec<passive::Observation>,
+    observation_index: crate::ui::ObservationIndex,
+    capture_selected: Option<usize>,
     listening: Option<passive::Listening>,
     interfaces: Vec<(String, String)>,
     capture_seconds: u64,
@@ -68,6 +276,22 @@ struct Scanner {
     scan_complete: bool,
     scan_scope: String,
     scan_settings: scan::Settings,
+    /// Bumped whenever results (including their order) or observations change.
+    generation: u64,
+    /// Bumped whenever a note changes.
+    notes_generation: u64,
+    haystacks: HashMap<IpAddr, String>,
+    rows: Vec<usize>,
+    rows_key: Option<(u64, u64, Filter, String)>,
+    responding: usize,
+    with_open: usize,
+    findings: Cached<Vec<risk::Finding>>,
+    devices: Cached<Vec<devices::Device>>,
+    topology: Cached<(topology::Graph, Vec<Vec<usize>>)>,
+    worker: Worker,
+    busy: Busy,
+    prefs_written: Vec<u8>,
+    prefs_dirty: Option<Instant>,
 }
 impl Scanner {
     fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
@@ -76,7 +300,7 @@ impl Scanner {
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
         cc.egui_ctx.set_style(style);
-        let saved = if screenshot.is_none() {
+        let mut saved: Saved = if screenshot.is_none() {
             std::fs::read(saved_path())
                 .ok()
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -84,6 +308,8 @@ impl Scanner {
         } else {
             Saved::default()
         };
+        prune_notes(&mut saved.notes);
+        let prefs_written = saved.to_disk();
         Self {
             saved,
             targets: "192.168.1.1-254".into(),
@@ -112,6 +338,8 @@ impl Scanner {
             compare_b: None,
             changes: vec![],
             observations: vec![],
+            observation_index: Default::default(),
+            capture_selected: None,
             listening: None,
             interfaces: vec![],
             capture_seconds: 60,
@@ -120,11 +348,164 @@ impl Scanner {
             scan_complete: true,
             scan_scope: String::new(),
             scan_settings: scan::Settings::default(),
+            generation: 0,
+            notes_generation: 0,
+            haystacks: HashMap::new(),
+            rows: vec![],
+            rows_key: None,
+            responding: 0,
+            with_open: 0,
+            findings: Cached::default(),
+            devices: Cached::default(),
+            topology: Cached::default(),
+            worker: Worker::start(cc.egui_ctx.clone()),
+            busy: Busy::default(),
+            prefs_written,
+            prefs_dirty: None,
         }
+    }
+    fn live(&self) -> bool {
+        self.run.is_some() || self.listening.is_some()
+    }
+    fn submit(&mut self, job: Job) {
+        match &job {
+            Job::Save(..) => self.busy.saving += 1,
+            Job::List => self.busy.listing = true,
+            Job::Diff(..) => self.busy.comparing = true,
+            Job::Load(_) => self.busy.loading = true,
+            Job::ReadFile(_) => self.busy.importing = true,
+            Job::WritePrefs(_) => self.busy.prefs = true,
+        }
+        let sent = self
+            .worker
+            .jobs
+            .as_ref()
+            .is_some_and(|tx| tx.send(job).is_ok());
+        if !sent {
+            self.busy = Busy::default();
+            self.error = "Background worker stopped; restart the program.".into();
+        }
+    }
+    fn poll_jobs(&mut self) {
+        while let Ok(done) = self.worker.done.try_recv() {
+            match done {
+                Done::Saved(kind, observations, result) => {
+                    self.busy.saving = self.busy.saving.saturating_sub(1);
+                    match result {
+                        Ok(id) if kind == "capture" => {
+                            self.status =
+                                format!("{observations} observations · saved capture #{id}")
+                        }
+                        Ok(id) => self.status.push_str(&format!(" · saved #{id}")),
+                        Err(e) => self.error = format!("Inventory could not be saved: {e}"),
+                    }
+                }
+                Done::Listed(result) => {
+                    self.busy.listing = false;
+                    match result {
+                        Ok(h) => self.history = h,
+                        Err(e) => self.error = e,
+                    }
+                }
+                Done::Diffed(result) => {
+                    self.busy.comparing = false;
+                    match result {
+                        Ok(changes) if changes.is_empty() => {
+                            self.changes = vec!["No observed changes.".into()]
+                        }
+                        Ok(changes) => self.changes = changes,
+                        Err(e) => self.error = e,
+                    }
+                }
+                Done::Loaded(id, result) => {
+                    self.busy.loading = false;
+                    match result {
+                        Ok(_) if self.live() => {
+                            self.error = format!(
+                                "Inventory #{id} was not opened: a scan or capture is running."
+                            )
+                        }
+                        Ok(snapshot) => self.open_snapshot(id, *snapshot),
+                        Err(e) => self.error = e,
+                    }
+                }
+                Done::Read(result) => {
+                    self.busy.importing = false;
+                    match result {
+                        Ok(text) if self.run.is_none() => self.targets = text,
+                        Ok(_) => self.error = "Address list ignored: a scan is running.".into(),
+                        Err(e) => self.error = e,
+                    }
+                }
+                Done::PrefsWritten(result) => {
+                    self.busy.prefs = false;
+                    if let Err(e) = result {
+                        self.error = format!("Preferences could not be saved: {e}");
+                    }
+                }
+            }
+        }
+    }
+    /// Results and/or observations were replaced or reordered.
+    fn data_changed(&mut self) {
+        self.generation += 1;
+    }
+    fn recount(&mut self) {
+        self.responding = self.results.iter().filter(|h| h.responding).count();
+        self.with_open = self.results.iter().filter(|h| !h.open.is_empty()).count();
+    }
+    fn reset_observations(&mut self) {
+        self.observations.clear();
+        self.observation_index.clear();
+        self.capture_selected = None;
+    }
+    fn open_snapshot(&mut self, id: i64, snapshot: store::Snapshot) {
+        self.results = snapshot.hosts;
+        self.observations = snapshot.observations;
+        self.observation_index.clear();
+        self.capture_selected = None;
+        self.capture_scope = if self.observations.is_empty() {
+            String::new()
+        } else {
+            snapshot.targets.clone()
+        };
+        self.capture_complete = snapshot.complete;
+        self.scan_scope = if self.results.is_empty() && !self.observations.is_empty() {
+            String::new()
+        } else {
+            snapshot.targets
+        };
+        self.scan_settings = snapshot.settings;
+        self.scan_complete = snapshot.complete;
+        self.selected = None;
+        self.previous.clear();
+        self.haystacks.clear();
+        self.status = format!("Loaded inventory #{id}");
+        self.recount();
+        self.sort();
+    }
+    fn clear(&mut self) {
+        self.results.clear();
+        self.previous.clear();
+        self.reset_observations();
+        self.haystacks.clear();
+        self.selected = None;
+        self.scan_scope.clear();
+        self.capture_scope.clear();
+        self.scan_complete = true;
+        self.capture_complete = true;
+        self.changes.clear();
+        self.status = "Ready to scan".into();
+        self.recount();
+        self.data_changed();
     }
     fn start(&mut self) {
         if self.listening.is_some() {
             self.error = "Stop passive capture before starting an active scan.".into();
+            return;
+        }
+        if self.busy.loading {
+            self.error = "Wait until the inventory scan has been opened.".into();
             return;
         }
         let parsed =
@@ -133,14 +514,17 @@ impl Scanner {
             });
         match parsed {
             Ok((hosts, ports)) => {
+                // Passive observations stay: the Devices window merges them with this scan.
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
+                self.haystacks.clear();
                 self.selected = None;
-                self.observations.clear();
                 self.scan_complete = true;
                 self.scan_scope = self.targets.clone();
                 self.scan_settings = self.saved.settings.clone();
                 self.error.clear();
                 self.status = format!("Scanning {} addresses", hosts.len());
+                self.recount();
+                self.data_changed();
                 self.run = Some(scan::start(hosts, ports, self.saved.settings.clone()));
             }
             Err(e) => self.error = e,
@@ -153,6 +537,8 @@ impl Scanner {
             for _ in 0..2048 {
                 match run.receiver.try_recv() {
                     Ok(scan::Event::Host(host)) => {
+                        self.responding += usize::from(host.responding);
+                        self.with_open += usize::from(!host.open.is_empty());
                         self.results.push(host);
                         changed = true;
                     }
@@ -164,7 +550,7 @@ impl Scanner {
                         done = true;
                         break;
                     }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(mpsc::TryRecvError::Disconnected) => {
                         self.scan_complete = false;
                         done = true;
                         break;
@@ -186,6 +572,10 @@ impl Scanner {
                 );
             }
         }
+        if changed {
+            // Sorted once per batch of new hosts, never on idle frames.
+            self.sort();
+        }
         if done {
             self.scan_complete &= self
                 .run
@@ -193,14 +583,9 @@ impl Scanner {
                 .map(|r| !r.cancel.load(Ordering::Relaxed))
                 .unwrap_or(false);
             self.run = None;
-            let snapshot = self.snapshot();
-            match store::save(&store::default_path(), &snapshot) {
-                Ok(id) => self.status.push_str(&format!(" · saved #{id}")),
-                Err(e) => self.error = format!("Inventory could not be saved: {e}"),
-            }
-        }
-        if changed {
-            self.sort();
+            self.data_changed();
+            let snapshot = self.scan_snapshot();
+            self.submit(Job::Save(Box::new(snapshot), "scan"));
         }
     }
     fn sort(&mut self) {
@@ -219,35 +604,23 @@ impl Scanner {
                 order
             }
         });
+        self.data_changed();
     }
-    fn visible(&self) -> Vec<usize> {
+    /// Recomputes the visible row list only when data, notes, filter or query changed.
+    fn refresh_rows(&mut self) {
         let query = self.search.to_lowercase();
-        self.results
-            .iter()
-            .enumerate()
-            .filter(|(_, h)| {
-                (match self.filter {
-                    Filter::All => true,
-                    Filter::Responding => h.responding,
-                    Filter::Open => !h.open.is_empty(),
-                }) && (query.is_empty()
-                    || format!(
-                        "{} {} {} {} {}",
-                        h.ip,
-                        h.hostname,
-                        serde_json::to_string(&h.identity).unwrap_or_default(),
-                        ports_text(&h.open),
-                        self.saved
-                            .notes
-                            .get(&h.ip)
-                            .map(String::as_str)
-                            .unwrap_or("")
-                    )
-                    .to_lowercase()
-                    .contains(&query))
-            })
-            .map(|(i, _)| i)
-            .collect()
+        let key = (self.generation, self.notes_generation, self.filter, query);
+        if self.rows_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.rows = filter_rows(
+            &self.results,
+            self.filter,
+            &key.3,
+            &mut self.haystacks,
+            &self.saved.notes,
+        );
+        self.rows_key = Some(key);
     }
     fn export(&mut self, extension: &str) {
         let Some(path) = rfd::FileDialog::new()
@@ -257,22 +630,43 @@ impl Scanner {
         else {
             return;
         };
+        self.refresh_rows();
         let mut snapshot = self.snapshot();
-        snapshot.hosts = self
-            .visible()
-            .into_iter()
-            .map(|i| self.results[i].clone())
-            .collect();
+        snapshot.hosts = self.rows.iter().map(|&i| self.results[i].clone()).collect();
         let data = store::export(&snapshot, extension);
         match data.and_then(|data| std::fs::write(&path, data).map_err(|e| e.to_string())) {
             Ok(()) => self.status = format!("Saved {}", path.display()),
             Err(e) => self.error = e,
         }
     }
+    /// Saves preferences in the background shortly after the user stops interacting.
+    fn save_prefs_debounced(&mut self, ctx: &egui::Context) {
+        if self.screenshot.is_some() {
+            return;
+        }
+        if ctx.input(|i| !i.events.is_empty()) {
+            self.prefs_dirty = Some(Instant::now());
+        }
+        let Some(since) = self.prefs_dirty else {
+            return;
+        };
+        let wait = Duration::from_secs(1);
+        if since.elapsed() < wait || self.busy.prefs {
+            ctx.request_repaint_after(wait);
+            return;
+        }
+        self.prefs_dirty = None;
+        let bytes = self.saved.to_disk();
+        if bytes != self.prefs_written {
+            self.prefs_written = bytes.clone();
+            self.submit(Job::WritePrefs(bytes));
+        }
+    }
 }
 
 impl eframe::App for Scanner {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_jobs();
         self.poll();
         self.poll_capture();
         self.controls(ctx);
@@ -296,18 +690,22 @@ impl eframe::App for Scanner {
                 );
             }
             ui.horizontal(|ui| {
+                if let Some(busy) = self.busy.label() {
+                    ui.spinner();
+                    ui.label(busy);
+                }
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
                         "{} responding · {} with open ports",
-                        self.results.iter().filter(|h| h.responding).count(),
-                        self.results.iter().filter(|h| !h.open.is_empty()).count()
+                        self.responding, self.with_open
                     ));
                 });
             });
         });
+        self.refresh_rows();
         egui::CentralPanel::default().show(ctx, |ui| {
-            let visible = self.visible();
+            let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
             TableBuilder::new(ui)
                 .striped(true)
@@ -373,6 +771,8 @@ impl eframe::App for Scanner {
                         });
                     });
                 });
+            let empty = visible.is_empty();
+            self.rows = visible;
             if let Some(column) = sort {
                 if self.sort_column == column {
                     self.sort_reverse = !self.sort_reverse;
@@ -382,7 +782,7 @@ impl eframe::App for Scanner {
                 }
                 self.sort();
             }
-            if visible.is_empty() {
+            if empty {
                 // Overlay the empty state without inserting fake scan results.
                 let center = ui.max_rect().center();
                 ui.painter().text(
@@ -418,7 +818,8 @@ impl eframe::App for Scanner {
         self.devices_window(ctx);
         self.findings_window(ctx);
         self.capture_window(ctx);
-        if self.run.is_some() || self.listening.is_some() || self.screenshot.is_some() {
+        self.save_prefs_debounced(ctx);
+        if self.live() || self.screenshot.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
         self.frames += 1;
@@ -452,28 +853,31 @@ impl eframe::App for Scanner {
         }
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if self.screenshot.is_none() && (self.run.is_some() || self.listening.is_some()) {
-            let mut snapshot = self.snapshot();
-            snapshot.complete = false;
-            if self.listening.is_some() {
-                snapshot.targets = self.capture_scope.clone();
-            }
-            if let Err(e) = store::save(&store::default_path(), &snapshot) {
-                eprintln!("Could not save interrupted scan: {e}");
-            }
-        }
         if let Some(run) = &self.run {
             run.cancel.store(true, Ordering::Relaxed);
         }
-        if self.screenshot.is_none() {
-            let path = saved_path();
-            if let Some(parent) = path.parent() {
-                if std::fs::create_dir_all(parent).is_ok() {
-                    if let Ok(bytes) = serde_json::to_vec_pretty(&self.saved) {
-                        let _ = std::fs::write(path, bytes);
-                    }
-                }
+        // Queued saves finish first; the worker owns the database until then.
+        self.worker.finish();
+        if self.screenshot.is_some() {
+            return;
+        }
+        let path = store::default_path();
+        if self.run.is_some() {
+            let mut snapshot = self.scan_snapshot();
+            snapshot.complete = false;
+            if let Err(e) = store::save(&path, &snapshot) {
+                eprintln!("Could not save interrupted scan: {e}");
             }
+        }
+        if self.listening.is_some() {
+            let mut snapshot = self.capture_snapshot();
+            snapshot.complete = false;
+            if let Err(e) = store::save(&path, &snapshot) {
+                eprintln!("Could not save interrupted capture: {e}");
+            }
+        }
+        if let Err(e) = write_prefs(&self.saved.to_disk()) {
+            eprintln!("Could not save preferences: {e}");
         }
     }
 }
@@ -519,4 +923,120 @@ pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
         options,
         Box::new(move |cc| Ok(Box::new(Scanner::new(cc, screenshot)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn host(ip: &str, responding: bool, open: Vec<u16>, hostname: &str) -> scan::Host {
+        scan::Host {
+            ip: ip.parse().unwrap(),
+            responding,
+            ping: None,
+            ttl: None,
+            hostname: hostname.into(),
+            mac: String::new(),
+            open,
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::from([("Modbus.Vendor".into(), "ACME PLC".into())]),
+            udp_open: vec![],
+            trace: vec![],
+        }
+    }
+
+    #[test]
+    fn standard_preset_keeps_machine_specific_fields() {
+        let current = scan::Settings {
+            interface: "\\Device\\NPF_{X}".into(),
+            source_ip: "10.0.0.9".into(),
+            source_mac: "AA:BB:CC:DD:EE:FF".into(),
+            scripts: "C:\\scripts".into(),
+            probe_file: "probes.json".into(),
+            workers: 999,
+            safe: false,
+            ports: "1-1000".into(),
+            ..Default::default()
+        };
+        let s = standard_settings(&current);
+        assert_eq!(s.interface, current.interface);
+        assert_eq!(s.source_ip, current.source_ip);
+        assert_eq!(s.source_mac, current.source_mac);
+        assert_eq!(s.scripts, current.scripts);
+        assert_eq!(s.probe_file, current.probe_file);
+        let d = scan::Settings::default();
+        assert_eq!((s.workers, s.safe, s.ports), (d.workers, d.safe, d.ports));
+    }
+
+    #[test]
+    fn notes_are_stored_only_when_not_empty() {
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let mut notes = BTreeMap::new();
+        set_note(&mut notes, ip, String::new());
+        assert!(notes.is_empty(), "viewing a host must not add a note");
+        set_note(&mut notes, ip, "rack 3".into());
+        assert_eq!(notes[&ip], "rack 3");
+        set_note(&mut notes, ip, "  ".into());
+        assert!(notes.is_empty());
+        let mut saved = Saved::default();
+        saved.notes.insert(ip, " ".into());
+        saved
+            .notes
+            .insert("10.0.0.2".parse().unwrap(), "keep".into());
+        let disk: Saved = serde_json::from_slice(&saved.to_disk()).unwrap();
+        assert_eq!(disk.notes.len(), 1);
+    }
+
+    #[test]
+    fn caches_refresh_on_new_data_and_throttle_while_live() {
+        let mut c: Cached<u32> = Cached::default();
+        assert!(c.stale(0, true), "first computation is never delayed");
+        c.set(0, 1);
+        assert!(!c.stale(0, false));
+        assert!(!c.stale(0, true));
+        assert!(c.stale(1, false), "idle: new data refreshes at once");
+        assert!(!c.stale(1, true), "live: throttled");
+        c.at = Instant::now() - LIVE_REFRESH;
+        assert!(c.stale(1, true));
+    }
+
+    #[test]
+    fn search_uses_cached_haystacks_and_notes() {
+        let results = vec![
+            host("10.0.0.1", true, vec![502], "plc-1"),
+            host("10.0.0.2", false, vec![], "printer"),
+            host("10.0.0.3", true, vec![], "PC-7"),
+        ];
+        let mut hay = HashMap::new();
+        let mut notes = BTreeMap::new();
+        assert_eq!(
+            filter_rows(&results, Filter::All, "", &mut hay, &notes),
+            [0, 1, 2]
+        );
+        assert!(hay.is_empty(), "no haystacks without a query");
+        assert_eq!(
+            filter_rows(&results, Filter::Responding, "", &mut hay, &notes),
+            [0, 2]
+        );
+        assert_eq!(
+            filter_rows(&results, Filter::Open, "", &mut hay, &notes),
+            [0]
+        );
+        assert_eq!(
+            filter_rows(&results, Filter::All, "pc-7", &mut hay, &notes),
+            [2]
+        );
+        assert_eq!(
+            filter_rows(&results, Filter::All, "acme plc", &mut hay, &notes),
+            [0, 1, 2]
+        );
+        assert_eq!(hay.len(), 3);
+        notes.insert(results[1].ip, "Basement Rack".to_string());
+        assert_eq!(
+            filter_rows(&results, Filter::All, "basement", &mut hay, &notes),
+            [1]
+        );
+    }
 }
