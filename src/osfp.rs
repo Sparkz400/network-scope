@@ -279,7 +279,11 @@ pub fn guess(
             continue;
         };
         if build == 0 {
-            s.add(LINUX, 25, format!("SMB server is Samba ({k} {v})"));
+            s.add(
+                LINUX,
+                25,
+                format!("Samba-style SMB server ({k} {v}, build 0)"),
+            );
         } else if let Some(release) = windows_release(major, minor, build) {
             s.add(
                 WINDOWS,
