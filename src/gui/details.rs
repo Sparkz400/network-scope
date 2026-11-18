@@ -7,10 +7,12 @@ impl Scanner {
         let Some(host) = self.results.iter().find(|h| h.ip == ip) else {
             return;
         };
+        let (mut test, mut apply, mut discard) = (None, false, false);
         let mut open = true;
         egui::Window::new(format!("Host details · {ip}"))
             .open(&mut open)
             .default_width(400.0)
+            .default_pos([24.0, 40.0])
             .vscroll(true)
             .show(ctx, |ui| {
                 ui.label(format!("Status: {}", host_status(host)));
@@ -104,12 +106,194 @@ impl Scanner {
                     set_note(&mut self.saved.notes, ip, note);
                     self.notes_generation += 1;
                 }
-                if ui.button("Copy IP address").clicked() {
-                    ctx.copy_text(ip.to_string());
+                ui.horizontal(|ui| {
+                    if ui.button("Copy IP address").clicked() {
+                        ctx.copy_text(ip.to_string());
+                    }
+                    ui.add_enabled_ui(!self.busy.testing, |ui| {
+                        ui.menu_button("Test script…", |ui| {
+                            let configured = self.saved.settings.scripts.trim();
+                            if ui
+                                .add_enabled(
+                                    !configured.is_empty(),
+                                    egui::Button::new(if configured.is_empty() {
+                                        "Configured script (none set in Settings)".to_string()
+                                    } else {
+                                        format!("Configured script ({configured})")
+                                    }),
+                                )
+                                .clicked()
+                            {
+                                test = Some(configured.to_string());
+                                ui.close_menu();
+                            }
+                            if ui.button("Choose .rhai file…").clicked() {
+                                ui.close_menu();
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Rhai script", &["rhai"])
+                                    .pick_file()
+                                {
+                                    test = Some(path.display().to_string());
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Runs the script on a copy of this host. Nothing is rescanned or changed until you choose Apply.",
+                        );
+                    });
+                });
+                if let Some(t) = self.script_test.as_ref().filter(|t| t.ip == ip) {
+                    ui.separator();
+                    ui.strong(format!("Script test · {}", t.path));
+                    match &t.result {
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Running…");
+                            });
+                        }
+                        Some(Err(e)) => {
+                            ui.colored_label(Color32::from_rgb(180, 40, 40), e);
+                        }
+                        Some(Ok(outcome)) => {
+                            for line in script_lines(outcome) {
+                                ui.label(line);
+                            }
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        self.run.is_none() && !outcome_is_empty(outcome),
+                                        egui::Button::new("Apply"),
+                                    )
+                                    .on_hover_text(
+                                        "Adds these fields, findings and notes to the host in this window.",
+                                    )
+                                    .on_disabled_hover_text(
+                                        "Nothing to apply, or a scan is running.",
+                                    )
+                                    .clicked()
+                                {
+                                    apply = true;
+                                }
+                                if ui.button("Discard").clicked() {
+                                    discard = true;
+                                }
+                            });
+                        }
+                    }
                 }
             });
+        let tested = test.and_then(|path| {
+            let host = self.results.iter().find(|h| h.ip == ip)?.clone();
+            Some((path, host))
+        });
+        if let Some((path, host_copy)) = tested {
+            self.script_tokens += 1;
+            self.script_test = Some(ScriptTest {
+                token: self.script_tokens,
+                ip,
+                path: path.clone(),
+                result: None,
+            });
+            self.submit(Job::TestScript(
+                self.script_tokens,
+                path,
+                Box::new(host_copy),
+            ));
+        }
+        if apply {
+            self.apply_script_test();
+        }
+        if discard || !open {
+            self.script_test = None;
+        }
         if !open {
             self.selected = None;
         }
+    }
+    /// Adds the result of the finished dry-run to the host it ran on, if it is still there.
+    fn apply_script_test(&mut self) {
+        let Some(ScriptTest {
+            ip,
+            path,
+            result: Some(Ok(outcome)),
+            ..
+        }) = self.script_test.take()
+        else {
+            return;
+        };
+        if self.run.is_some() {
+            self.error = "Script result not applied: a scan is running.".into();
+            return;
+        }
+        match self.results.iter_mut().find(|h| h.ip == ip) {
+            Some(host) => {
+                outcome.apply(host);
+                self.haystacks.remove(&ip);
+                self.data_changed();
+                self.status =
+                    format!("Applied {path} to {ip} (in this window; export or rescan to keep it)");
+            }
+            None => self.error = format!("{ip} is no longer in the results."),
+        }
+    }
+}
+fn outcome_is_empty(o: &crate::script::Outcome) -> bool {
+    o.sets.is_empty() && o.findings.is_empty() && o.notes.is_empty()
+}
+/// Readable lines for a dry-run result.
+fn script_lines(o: &crate::script::Outcome) -> Vec<String> {
+    if outcome_is_empty(o) {
+        return vec!["The script set nothing for this host.".into()];
+    }
+    let mut lines = vec![];
+    for (k, v) in &o.sets {
+        lines.push(format!("Set script.{k} = {v}"));
+    }
+    for f in &o.findings {
+        lines.push(format!(
+            "Finding [{}] {}: {}{}",
+            f.severity,
+            f.id,
+            f.title,
+            if f.evidence.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", f.evidence)
+            }
+        ));
+    }
+    for n in &o.notes {
+        lines.push(format!("Note / error: {n}"));
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn dry_run_lines_list_fields_findings_and_notes() {
+        let o = crate::script::Outcome {
+            sets: vec![("owner".into(), "ot".into())],
+            findings: vec![crate::script::ScriptFinding {
+                id: "telnet".into(),
+                severity: "high".into(),
+                title: "Telnet open".into(),
+                evidence: "port 23".into(),
+            }],
+            notes: vec!["script t.rhai: boom".into()],
+        };
+        assert_eq!(
+            script_lines(&o),
+            [
+                "Set script.owner = ot",
+                "Finding [high] telnet: Telnet open (port 23)",
+                "Note / error: script t.rhai: boom"
+            ]
+        );
+        assert!(outcome_is_empty(&Default::default()));
+        assert_eq!(script_lines(&Default::default()).len(), 1);
     }
 }

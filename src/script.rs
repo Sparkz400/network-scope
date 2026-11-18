@@ -240,7 +240,14 @@ impl Scripts {
         self.run_host_within(host, WALL_LIMIT);
     }
 
-    fn run_host_within(&self, host: &mut Host, budget: Duration) {
+    /// Runs the scripts against a copy of `host` and reports what they produced. `host` itself is
+    /// not changed; [`Outcome::apply`] adds the result to a host later.
+    pub fn dry_run(&self, host: &Host) -> Outcome {
+        let mut copy = host.clone();
+        self.run_host_within(&mut copy, WALL_LIMIT)
+    }
+
+    fn run_host_within(&self, host: &mut Host, budget: Duration) -> Outcome {
         let data = H(Arc::new(Mutex::new(Data {
             ip: host.ip.to_string(),
             hostname: host.hostname.clone(),
@@ -281,16 +288,59 @@ impl Scripts {
             }
         }
         let d = data.lock();
-        for (k, v) in &d.sets {
+        let outcome = Outcome {
+            sets: d.sets.clone(),
+            findings: d
+                .findings
+                .iter()
+                .map(|(id, severity, title, evidence)| ScriptFinding {
+                    id: id.clone(),
+                    severity: severity.clone(),
+                    title: title.clone(),
+                    evidence: evidence.clone(),
+                })
+                .collect(),
+            notes: d.notes.clone(),
+        };
+        outcome.apply(host);
+        outcome
+    }
+}
+
+/// A finding added by a script (`h.finding(...)`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptFinding {
+    pub id: String,
+    pub severity: String,
+    pub title: String,
+    pub evidence: String,
+}
+
+/// What the scripts produced for one host: fields set, findings and notes (errors included).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outcome {
+    pub sets: Vec<(String, String)>,
+    pub findings: Vec<ScriptFinding>,
+    pub notes: Vec<String>,
+}
+impl Outcome {
+    /// Stores the result on a host exactly as a scan does.
+    pub fn apply(&self, host: &mut Host) {
+        for (k, v) in &self.sets {
             host.identity.insert(format!("script.{k}"), v.clone());
         }
-        for (id, sev, title, evidence) in &d.findings {
+        for f in &self.findings {
             host.identity.insert(
-                format!("finding.script.{id}"),
-                format!("{sev}|{}|{}", title.replace('|', "/"), evidence),
+                format!("finding.script.{}", f.id),
+                format!(
+                    "{}|{}|{}",
+                    f.severity,
+                    f.title.replace('|', "/"),
+                    f.evidence
+                ),
             );
         }
-        for n in &d.notes {
+        for n in &self.notes {
             if host.errors.len() < 8 {
                 host.errors.push(format!("Script: {n}"));
             }
@@ -449,6 +499,34 @@ mod tests {
         let mut h = host();
         scripts("fn on_host(h) { sleep(2.5); }").run_host(&mut h);
         assert!(started.elapsed() < Duration::from_secs(1), "{:?}", h.errors);
+    }
+
+    #[test]
+    fn dry_run_reports_without_changing_the_host_and_applies_like_a_scan() {
+        let s = scripts(
+            r#"
+            fn on_host(h) {
+                h.set("owner", "ot");
+                h.finding("high", "telnet", "Telnet open", "port 23");
+                h.note("checked");
+                h.nosuch();
+            }
+            "#,
+        );
+        let original = host();
+        let outcome = s.dry_run(&original);
+        assert_eq!(outcome.sets, [("owner".to_string(), "ot".to_string())]);
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.findings[0].severity, "high");
+        assert_eq!(outcome.notes[0], "checked");
+        assert!(outcome.notes[1].contains("t.rhai"), "{:?}", outcome.notes);
+        assert!(!original.identity.contains_key("script.owner"));
+        let mut applied = host();
+        outcome.apply(&mut applied);
+        let mut scanned = host();
+        s.run_host(&mut scanned);
+        assert_eq!(applied.identity, scanned.identity);
+        assert_eq!(applied.errors, scanned.errors);
     }
 
     #[test]
