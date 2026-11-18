@@ -39,7 +39,12 @@ implemented in fingerprint.rs and checked against the RFC 1321 / FIPS 180 test v
    and `smb.<port>.dns_name` name the host. Good merge/display keys for device identity.
    `tls.<port>.ja4s` and `ssh.<port>.hassh` identify the server software configuration, not a
    device: do not merge on them.
-7. **JARM (`jarm` setting)**: not implemented, so no flag needed. JARM needs 10 specially crafted
+7. **devices.rs `classify`**: `all_text` / `http_text` scan every identity value (including
+   `svc.<port>.*`) for words like "ipp", "printer", "switch", "gateway". The new derived keys
+   (`svc.<port>.cpe`, `ssh.<port>.hassh`, `ssh.<port>.hassh_algorithms`, `tls.<port>.ja4s`) are
+   not device evidence; filter keys ending in those suffixes out, as osfp.rs now does. No false
+   match is known with the shipped CPE table, but user CPE templates are free text.
+8. **JARM (`jarm` setting)**: not implemented, so no flag needed. JARM needs 10 specially crafted
    ClientHellos per port with exact cipher orderings, GREASE and ALPN variants; a non-byte-exact
    implementation produces hashes that do not match public JARM databases, which is worse than
    none, and 10 extra connections per TLS port exceed what Safe Mode should spend.
@@ -138,10 +143,20 @@ CPE vendor `openbsd` must not count as BSD).
 - Printer ports and 2222 still return before any of this (listen-only policies); core still
   skips `is_ot_port` ports for service detection.
 
-## Uncertain / not verified against real devices
+## Verification and open points
 
+- SMB was checked once against a real Windows 11 SMB server (127.0.0.1:445, temporary ignored
+  test, removed again): SMB 3.1.1, signing required, non-zero GUID, encryption AES-128-GCM,
+  compression "LZNT1, Pattern_V1", signing AES-GMAC, preauth SHA-512, SPNEGO mechs
+  Kerberos/NEGOEX/NTLM, NTLM os_version 10.0.26100 (the machine reports build 26300; NTLM carries
+  the base build), NetBIOS name equal to %COMPUTERNAME%, SMB1 refused. Not checked against Samba.
 - JA4S format follows the FoxIO spec as I know it; not cross-checked against the reference
-  implementation on captured traffic.
-- SMB negotiate contexts and the NTLM challenge parser are tested against hand-built replies
-  laid out per MS-SMB2 2.2.4 / MS-NLMP 2.2.1.2, not against a live Windows or Samba server.
-- Samba's NTLM version (6.1, build 0) is from Samba's source as I remember it.
+  implementation on captured traffic. TLS 1.3 enumeration is tested against rustls and a raw
+  test server, not against OpenSSL/Schannel servers.
+- Samba's NTLM version (6.1, build 0) is from memory of Samba's source; the OS guess calls it
+  "Samba-style" and weights it lightly.
+- CPE vendor/product names in data/cves.json (e.g. `beasts:vsftpd`, `f5:nginx`,
+  `filezilla-project:filezilla_server`) are from memory of the NVD dictionary; spot-check them
+  against NVD before relying on CPE matching.
+- One-time identity diff: `tls.<port>.ciphers` now starts with a `TLS1.3:` part on TLS 1.3
+  servers, so the first scan after this change reports that key as changed.
