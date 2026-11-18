@@ -338,17 +338,25 @@ fn cve_slot() -> &'static RwLock<Option<Arc<CveDb>>> {
 }
 
 /// Loads the CVE/CPE rules (explicit file, else the default user file, else built-in) and makes
-/// them the rules every later analysis uses. Called for `--cves FILE` / before a scan; on error
-/// the previously active rules stay in place.
-// Wired by the CLI/GUI (`--cves FILE`, see NOTES-service-features.md); until then the default
-// user file is picked up lazily by `cve_db`.
-#[allow(dead_code)]
+/// them the rules every later analysis uses. Called for `--cves FILE`; on error the previously
+/// active rules stay in place.
 pub fn load_cves(explicit: Option<&Path>) -> Result<(), String> {
     let db = CveDb::load(explicit)?;
     if let Ok(mut slot) = cve_slot().write() {
         *slot = Some(Arc::new(db));
     }
     Ok(())
+}
+
+/// Start-up load of the default rules (user file `NetworkScope/cves.json` under LOCALAPPDATA or
+/// XDG_CONFIG_HOME, else built-in). A broken user file is returned as an error message for the
+/// caller to show, and the built-in rules are used.
+pub fn init_cves() -> Option<String> {
+    let error = load_cves(None).err()?;
+    if let Ok(mut slot) = cve_slot().write() {
+        *slot = Some(Arc::new(CveDb::builtin()));
+    }
+    Some(format!("CVE rules: {error}; using the built-in rules"))
 }
 
 /// The active rules. Until `load_cves` ran: the default user file when it is valid, else the

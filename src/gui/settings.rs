@@ -62,12 +62,20 @@ impl Scanner {
                     ui.separator();
                     ui.checkbox(
                         &mut s.safe,
-                        "Safe Mode: max. 8 hosts, 100 ms probe spacing, no SYN",
+                        "Safe Mode: max. 8 hosts, 100 ms probe spacing, no SYN, no ARP sweep, ICMP traceroute",
                     );
                     ui.checkbox(
                         &mut s.arp,
                         "ARP discovery even without a ping response (Windows LAN)",
                     );
+                    ui.add_enabled(
+                        !s.safe,
+                        egui::Checkbox::new(
+                            &mut s.arp_sweep,
+                            "Fast ARP sweep through the capture interface (needs Npcap)",
+                        ),
+                    )
+                    .on_disabled_hover_text("Not in Safe Mode");
                     ui.checkbox(
                         &mut s.ot,
                         "Read industrial device identities (standard ports + BACnet UDP)",
@@ -89,7 +97,14 @@ impl Scanner {
                         !s.safe,
                         egui::Checkbox::new(&mut s.syn, "SYN via Npcap; fallback to TCP connect"),
                     );
-                    if s.syn {
+                    ui.add_enabled(
+                        !s.safe && s.syn,
+                        egui::Checkbox::new(
+                            &mut s.syn_adaptive,
+                            "Adaptive SYN timing (RTT-based timeouts, slows down on packet loss)",
+                        ),
+                    );
+                    if s.syn || s.arp_sweep {
                         ui.label("Configure interface, source IPv4 and MAC in Passive / DCP.");
                     }
                     ui.separator();
@@ -114,7 +129,27 @@ impl Scanner {
                         ui.horizontal(|ui| {
                             ui.label("Max hops");
                             ui.add(egui::DragValue::new(&mut s.trace_hops).range(1..=64));
+                            ui.label("Method");
+                            trace_method_combo(ui, s.safe, &mut s.trace_method);
                         });
+                        if s.trace_method == TraceMethod::Tcp {
+                            ui.horizontal(|ui| {
+                                ui.label("TCP port");
+                                ui.add_enabled(
+                                    !s.safe,
+                                    egui::DragValue::new(&mut s.trace_port).range(0..=65535),
+                                );
+                                ui.label("0 = first open port; OT and printer ports are never used");
+                            });
+                            if s.trace_port != 0
+                                && !crate::trace::trace_port_allowed(s.trace_port)
+                            {
+                                ui.colored_label(
+                                    egui::Color32::DARK_RED,
+                                    "OT/printer port: ICMP will be used instead",
+                                );
+                            }
+                        }
                     }
                     ui.separator();
                     ui.checkbox(&mut s.tcp_only, "TCP only (skip ICMP ping)");
@@ -123,7 +158,10 @@ impl Scanner {
                         "Check ports even when ping gets no reply",
                     );
                     ui.checkbox(&mut s.adaptive, "Adapt port timeout to measured ping");
-                    ui.checkbox(&mut s.skip_edges, "Skip .0 and .255 in ranges and subnets");
+                    ui.checkbox(
+                        &mut s.skip_edges,
+                        "Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255)",
+                    );
                     ui.checkbox(&mut s.dns, "Resolve hostnames (system DNS)");
                     ui.checkbox(&mut s.mac, "Look up MAC addresses (local IPv4 network)");
                     ui.separator();
@@ -147,10 +185,36 @@ impl Scanner {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.heading("Network Scope");
-                ui.label("A native Rust network scanner · 0.1.0");
+                ui.label(format!(
+                    "A native Rust network scanner · {}",
+                    env!("CARGO_PKG_VERSION")
+                ));
                 ui.label("Built with egui/eframe, egui_extras, image, serde, rfd and dns-lookup.");
                 ui.label("Address inputs: IPv4, IPv6, IPv4 ranges, CIDR, or an imported list.");
                 ui.label("Use the Scan menu to export the currently visible results.");
             });
     }
+}
+use crate::trace::TraceMethod;
+/// Traceroute method; TCP and UDP transmit beyond ICMP and are not offered in Safe Mode.
+fn trace_method_combo(ui: &mut egui::Ui, safe: bool, method: &mut TraceMethod) {
+    let name = |m: TraceMethod| match m {
+        TraceMethod::Icmp => "ICMP",
+        TraceMethod::Tcp => "TCP SYN (needs Npcap)",
+        TraceMethod::Udp => "UDP (needs administrator)",
+    };
+    let shown = if safe && *method != TraceMethod::Icmp {
+        "ICMP in Safe Mode".to_string()
+    } else {
+        name(*method).to_string()
+    };
+    egui::ComboBox::from_id_salt("trace_method")
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for m in [TraceMethod::Icmp, TraceMethod::Tcp, TraceMethod::Udp] {
+                ui.add_enabled_ui(!safe || m == TraceMethod::Icmp, |ui| {
+                    ui.selectable_value(method, m, name(m));
+                });
+            }
+        });
 }

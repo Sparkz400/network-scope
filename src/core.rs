@@ -199,9 +199,11 @@ pub async fn execute(
     } else {
         Gate::unlimited()
     });
-    let probes = if s.services {
+    // UDP payload probes come from the same database (registered process-wide by `load`), so
+    // `--probes FILE` also applies to a UDP-only scan; the value itself is only kept for TCP.
+    let probes = if s.services || s.udp {
         match ProbeDb::load(&s.probe_file) {
-            Ok(db) => Some(db),
+            Ok(db) => s.services.then_some(db),
             Err(e) => {
                 let _ = tx.send(Event::Error(format!("Service probes: {e}")));
                 return;
@@ -440,6 +442,14 @@ async fn traceroute(
     }
 }
 
+/// Splits the UDP port list into ports the generic UDP scan may probe and industrial/printer
+/// ports it never sends to (`service::is_ot_udp_port`). BACnet and the other OT protocols are
+/// identified only by the dedicated read-only path (`--ot`).
+fn udp_scan_ports(ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
+    ports
+        .iter()
+        .partition(|p| !crate::service::is_ot_udp_port(**p))
+}
 fn note(h: &mut Host, text: String) {
     if h.errors.len() < 8 && !h.errors.contains(&text) {
         h.errors.push(text);
@@ -617,7 +627,21 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         let tries = (s.retries + 1).min(4);
         let slots = Arc::new(Semaphore::new(if s.safe { 2 } else { 16 }));
         let mut tasks = JoinSet::new();
-        for &port in &ctx.udp_ports {
+        let (ports, skipped) = udp_scan_ports(&ctx.udp_ports);
+        if !skipped.is_empty() && h.responding {
+            note(
+                &mut h,
+                format!(
+                    "UDP {}: industrial/printer port, not probed by the UDP scan (use --ot for BACnet)",
+                    skipped
+                        .iter()
+                        .map(u16::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            );
+        }
+        for port in ports {
             let Ok(permit) = slots.clone().acquire_owned().await else {
                 break;
             };
@@ -752,6 +776,13 @@ fn analyze(h: &mut Host, fp: Option<&TcpFp>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn udp_scan_never_sends_to_ot_or_printer_ports() {
+        let (send, skip) = udp_scan_ports(&[53, 161, 2222, 9100, 20000, 44818, 47808, 47810, 5353]);
+        assert_eq!(send, [53, 161, 5353]);
+        assert_eq!(skip, [2222, 9100, 20000, 44818, 47808, 47810]);
+    }
 
     #[tokio::test]
     async fn unlimited_gate_never_waits() {

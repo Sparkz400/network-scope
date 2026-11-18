@@ -483,6 +483,7 @@ impl Scanner {
         self.data_changed();
         self.error.clear();
         self.capture_complete = true;
+        self.opened_stamp = None;
         self.capture_scope = format!(
             "{}:{}",
             if dcp { "dcp" } else { "listen" },

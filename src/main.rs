@@ -46,7 +46,7 @@ fn handle_unusable(handle: isize, file_type: u32) -> bool {
 /// whether or not stdout is redirected, and point only the unusable standard
 /// handles at it. Redirected stdout/stderr stay redirected; progress on stderr is no
 /// longer lost when only stdout goes to a file. (The shell still does not wait for a
-/// GUI-subsystem process; see NOTES-engine.md.)
+/// GUI-subsystem process; use network-scope-cli for scripts.)
 #[cfg(windows)]
 fn attach_parent_console() {
     use std::ffi::c_void;
@@ -116,6 +116,13 @@ pub(crate) fn main() -> eframe::Result<()> {
     {
         #[cfg(windows)]
         attach_parent_console();
+        // `--cves FILE` replaces the default user rules (loaded by `ui::run`); otherwise a
+        // broken user file is reported here instead of being silently ignored.
+        if !cli_args.iter().any(|a| a == "--cves") {
+            if let Some(warning) = risk::init_cves() {
+                eprintln!("{warning}");
+            }
+        }
         if let Err(e) = ui::run(&cli_args) {
             eprintln!("{e}");
             std::process::exit(1);

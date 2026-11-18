@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -48,9 +48,13 @@ enum Msg {
     },
 }
 
+/// Latest pcap read progress (file imports only), shared with the ingest thread.
+type SharedProgress = Arc<Mutex<Option<crate::pcapfile::Progress>>>;
+
 struct Run {
     cancel: Arc<AtomicBool>,
     frames: Arc<AtomicU64>,
+    progress: SharedProgress,
     rx: mpsc::Receiver<Msg>,
     started: Instant,
     label: String,
@@ -163,14 +167,55 @@ impl OtState {
         let label = run.label.clone();
         self.run = None;
         self.complete = error.is_none() && !cancelled;
-        self.error = error.unwrap_or_default();
+        // Cancel/Stop is the user's choice: the result is partial, not an error.
+        self.error = if cancelled {
+            String::new()
+        } else {
+            error.unwrap_or_default()
+        };
         self.observations = observations.len();
         self.assets = assets;
         Some((label, observations, self.complete))
     }
+    /// Shows a saved `ot-passive:` capture reopened from the inventory in the asset table.
+    pub(super) fn show_saved(
+        &mut self,
+        label: &str,
+        observations: &[passive::Observation],
+        complete: bool,
+    ) {
+        if self.run.is_some() {
+            return;
+        }
+        self.label = label.to_string();
+        self.assets = otpassive::assets(observations);
+        self.observations = observations.len();
+        self.frames = 0;
+        self.complete = complete;
+        self.error.clear();
+    }
+    /// Window close: stops a running capture and waits up to `wait` for what it collected
+    /// (label, observations), so it can be saved as a partial capture.
+    pub(super) fn stop_for_exit(
+        &mut self,
+        wait: Duration,
+    ) -> Option<(String, Vec<passive::Observation>)> {
+        let run = self.run.take()?;
+        run.cancel.store(true, Ordering::Relaxed);
+        let end = Instant::now() + wait;
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            match run.rx.recv_timeout(left) {
+                Ok(Msg::Done { observations, .. }) => return Some((run.label, observations)),
+                Ok(Msg::Progress(_)) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
     fn begin(&mut self, source: Source, ctx: egui::Context) {
         let cancel = Arc::new(AtomicBool::new(false));
         let frames = Arc::new(AtomicU64::new(0));
+        let progress: SharedProgress = Arc::new(Mutex::new(None));
         let (tx, rx) = mpsc::channel();
         self.label = source.label();
         let live = matches!(source, Source::Live { .. });
@@ -182,12 +227,13 @@ impl OtState {
         self.run = Some(Run {
             cancel: cancel.clone(),
             frames: frames.clone(),
+            progress: progress.clone(),
             rx,
             started: Instant::now(),
             label: self.label.clone(),
             live,
         });
-        std::thread::spawn(move || ingest(source, &cancel, &frames, &tx, &ctx));
+        std::thread::spawn(move || ingest(source, &cancel, &frames, &progress, &tx, &ctx));
     }
 }
 
@@ -223,26 +269,27 @@ fn pump(
     result
 }
 
+/// Reads a capture file with progress reports (bytes, frames/s) and Cancel; buffered TCP
+/// messages are flushed at the end by `read_pcap_file_with_progress`.
 fn ingest_pcap(
     path: &std::path::Path,
     tracker: &mut otpassive::Tracker,
     cancel: &AtomicBool,
     frames: &AtomicU64,
+    progress: &SharedProgress,
+    ctx: &egui::Context,
 ) -> Result<(), String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut reader = crate::pcapfile::Reader::new(std::io::BufReader::new(file))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    pump(
+    otpassive::read_pcap_file_with_progress(
+        &path.to_string_lossy(),
         tracker,
-        || {
-            Ok(match reader.next_frame()? {
-                Some((ts, frame)) => Step::Frame(ts, frame),
-                None => Step::End,
-            })
+        Some(cancel),
+        &mut |p| {
+            frames.store(p.frames, Ordering::Relaxed);
+            if let Ok(mut slot) = progress.lock() {
+                *slot = Some(*p);
+            }
+            ctx.request_repaint();
         },
-        cancel,
-        frames,
-        |_| {},
     )
 }
 
@@ -284,17 +331,21 @@ fn ingest(
     source: Source,
     cancel: &AtomicBool,
     frames: &AtomicU64,
+    progress: &SharedProgress,
     tx: &mpsc::Sender<Msg>,
     ctx: &egui::Context,
 ) {
     let mut tracker = otpassive::Tracker::new();
     let result = match &source {
-        Source::Pcap(path) => ingest_pcap(path, &mut tracker, cancel, frames),
+        Source::Pcap(path) => ingest_pcap(path, &mut tracker, cancel, frames, progress, ctx),
         Source::Live { interface, seconds } => {
-            ingest_live(interface, *seconds, &mut tracker, cancel, frames, |t| {
+            let result = ingest_live(interface, *seconds, &mut tracker, cancel, frames, |t| {
                 let _ = tx.send(Msg::Progress(otpassive::assets(&t.observations())));
                 ctx.request_repaint();
-            })
+            });
+            // Partial TCP messages still buffered are decoded as far as they go.
+            tracker.flush();
+            result
         }
     };
     let observations = tracker.observations();
@@ -391,20 +442,39 @@ impl Scanner {
                 };
                 self.ot.begin(source, ui.ctx().clone());
             }
-            if running && ui.button("Stop").clicked() {
+            let stop = if self.ot.capturing() {
+                "Stop"
+            } else {
+                "Cancel"
+            };
+            if running && ui.button(stop).clicked() {
                 self.ot.cancel();
             }
         });
         if let Some(run) = &self.ot.run {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(format!(
-                    "{} · {} frames processed · {:.0}s",
-                    run.label,
-                    self.ot.frames,
-                    run.started.elapsed().as_secs_f32()
-                ));
-            });
+            let file = run.progress.lock().ok().and_then(|p| *p);
+            match file {
+                Some(p) => {
+                    let bar = egui::ProgressBar::new(p.percent().map_or(0.0, |v| v as f32 / 100.0))
+                        .text(format!("{} · {}", run.label, p.line()));
+                    ui.add(if p.percent().is_some() {
+                        bar
+                    } else {
+                        bar.animate(true)
+                    });
+                }
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!(
+                            "{} · {} frames processed · {:.0}s",
+                            run.label,
+                            self.ot.frames,
+                            run.started.elapsed().as_secs_f32()
+                        ));
+                    });
+                }
+            }
         } else if !self.ot.label.is_empty() {
             ui.label(format!(
                 "{} · {} frames · {} observations · {} OT assets{}",
@@ -658,6 +728,40 @@ mod tests {
             assert!(!plc.control_traffic.is_empty(), "write is control traffic");
             assert_eq!((plc.first_seen, plc.last_seen), (100, 105));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saved_capture_refills_the_table_and_exit_returns_partial_data() {
+        let frames = vec![(
+            100,
+            tcp_frame(
+                [10, 0, 0, 50],
+                [10, 0, 0, 10],
+                50000,
+                502,
+                &[0, 1, 0, 0, 0, 6, 7, 3, 0, 0, 0, 2],
+            ),
+        )];
+        let dir = std::env::temp_dir().join(format!("ns-gui-ot-exit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.pcap");
+        std::fs::write(&path, crate::pcapfile::write_pcap(&frames)).unwrap();
+        let mut state = OtState::default();
+        state.begin(Source::Pcap(path), egui::Context::default());
+        let (label, observations) = state
+            .stop_for_exit(Duration::from_secs(10))
+            .expect("the ingest thread hands over what it has");
+        assert!(label.starts_with("ot-passive:"));
+        assert!(!state.running());
+        let mut reopened = OtState::default();
+        reopened.show_saved(&label, &observations, false);
+        assert_eq!(reopened.observations, observations.len());
+        assert_eq!(
+            reopened.assets.len(),
+            otpassive::assets(&observations).len()
+        );
+        assert!(!reopened.complete);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

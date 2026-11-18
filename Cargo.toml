@@ -1,7 +1,9 @@
 [package]
 name = "network-scope"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
+# `cargo run` starts the GUI binary; the console twin is `--bin network-scope-cli`.
+default-run = "network-scope"
 license = "MIT"
 description = "Network scanner and analysis tool: fast TCP/SYN/UDP scanning, service and TLS inspection, monitoring, reports and passive OT discovery"
 

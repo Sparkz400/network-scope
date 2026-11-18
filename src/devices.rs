@@ -64,19 +64,28 @@ pub fn is_virtual_mac(mac: &str) -> bool {
     VIRTUAL_PREFIXES.iter().any(|p| hex.starts_with(p))
 }
 
+/// Derived keys that describe software configuration, not the device: CPE names (user
+/// templates are free text), SSH HASSH and TLS JA4S fingerprints. Keyword rules skip them.
+const NON_EVIDENCE_SUFFIXES: [&str; 4] = [".cpe", ".hassh", ".hassh_algorithms", ".ja4s"];
+fn is_device_evidence(key: &str) -> bool {
+    !NON_EVIDENCE_SUFFIXES.iter().any(|s| key.ends_with(s))
+}
+
 /// (device type, evidence) when the combined evidence is strong enough.
 pub fn classify(e: &Evidence) -> Option<(String, String)> {
     let mut s = Scores::default();
     let all_text = e
         .identity
-        .values()
-        .cloned()
+        .iter()
+        .filter(|(k, _)| is_device_evidence(k))
+        .map(|(_, v)| v.clone())
         .chain(e.hostnames.iter().cloned())
         .collect::<Vec<_>>()
         .join(" | ");
     let http_text = e
         .identity
         .iter()
+        .filter(|(k, _)| is_device_evidence(k))
         .filter(|(k, _)| {
             k.starts_with("http.")
                 || k.starts_with("svc.")
@@ -446,6 +455,10 @@ pub struct Device {
     pub services: BTreeMap<String, String>,
     pub sources: Vec<String>,
     pub observations: BTreeMap<String, BTreeMap<String, String>>,
+    /// Names that came only from SMB/NTLM (`smb.<port>.netbios_name` / `dns_name`); also in
+    /// `hostnames`. History ignores them so scans with and without `--services` compare equal.
+    #[serde(skip)]
+    pub smb_names: Vec<String>,
 }
 
 #[derive(Default)]
@@ -555,6 +568,29 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
         // The first device seen at an address keeps it for IP-only records that follow.
         by_ip.entry(h.ip).or_insert(key);
     }
+    // A routed Windows host answering on several addresses (no MAC visible) is one device when
+    // the addresses report the same SMB server GUID and NetBIOS name. The GUID alone is not
+    // enough (cloned VMs share it), and records with a MAC are never merged this way.
+    let mut by_smb: BTreeMap<(String, String), String> = BTreeMap::new();
+    let ip_keys: Vec<String> = accs
+        .keys()
+        .filter(|k| k.starts_with("ip:"))
+        .cloned()
+        .collect();
+    for key in ip_keys {
+        let Some(identity) = accs.get(&key).map(|a| smb_identity(&a.identity)) else {
+            continue;
+        };
+        let Some(id) = identity else {
+            continue;
+        };
+        match by_smb.get(&id) {
+            Some(first) => rekey(&mut accs, &mut by_ip, &key, &first.clone()),
+            None => {
+                by_smb.insert(id, key);
+            }
+        }
+    }
     for o in observations {
         let mac = norm_mac(&o.mac);
         let key = if !mac.is_empty() {
@@ -598,7 +634,17 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
             } else {
                 oui::vendor(&a.mac).unwrap_or("").to_string()
             };
-            let hostnames: Vec<String> = a.hostnames.into_iter().collect();
+            let smb_names: Vec<String> = smb_names(&a.identity)
+                .into_iter()
+                .filter(|n| !a.hostnames.contains(n))
+                .collect();
+            let hostnames: Vec<String> = a
+                .hostnames
+                .into_iter()
+                .chain(smb_names.iter().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
             let (tcp, udp): (Vec<u16>, Vec<u16>) =
                 (a.tcp.into_iter().collect(), a.udp.into_iter().collect());
             let os = a.identity.get("os.guess").cloned().unwrap_or_default();
@@ -636,6 +682,7 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
                 open_udp: udp,
                 services,
                 sources: a.sources.into_iter().collect(),
+                smb_names,
                 observations: {
                     let mut observations = a.observations;
                     if let Some(c) = conflict {
@@ -652,6 +699,33 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
                 },
             }
         })
+        .collect()
+}
+
+/// (server GUID, NetBIOS name) from any SMB port, when both are known.
+fn smb_identity(identity: &BTreeMap<String, String>) -> Option<(String, String)> {
+    identity
+        .iter()
+        .filter(|(k, v)| k.starts_with("smb.") && k.ends_with(".guid") && !v.is_empty())
+        .find_map(|(k, guid)| {
+            let port = k.strip_prefix("smb.")?.strip_suffix(".guid")?;
+            identity
+                .get(&format!("smb.{port}.netbios_name"))
+                .filter(|n| !n.is_empty())
+                .map(|n| (guid.to_ascii_lowercase(), n.to_ascii_uppercase()))
+        })
+}
+
+/// Host names the SMB NTLM challenge reported (`smb.<port>.netbios_name`, `dns_name`).
+fn smb_names(identity: &BTreeMap<String, String>) -> BTreeSet<String> {
+    identity
+        .iter()
+        .filter(|(k, v)| {
+            k.starts_with("smb.")
+                && (k.ends_with(".netbios_name") || k.ends_with(".dns_name"))
+                && !v.trim().is_empty()
+        })
+        .map(|(_, v)| v.trim().to_string())
         .collect()
 }
 
@@ -827,10 +901,16 @@ impl HistoryBuilder {
             .map(|d| norm_mac(&d.mac))
             .filter(|m| !m.is_empty())
             .collect();
+        // SMB-only names depend on whether service detection ran, so they are not compared.
         let hostnames: BTreeSet<String> = devices
             .iter()
-            .flat_map(|d| d.hostnames.clone())
-            .filter(|h| !h.is_empty())
+            .flat_map(|d| {
+                d.hostnames
+                    .iter()
+                    .filter(|h| !h.is_empty() && !d.smb_names.contains(h))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .collect();
         let mut event = |kind: &'static str, detail: String| {
             self.out.events.push(HistoryEvent {
@@ -954,7 +1034,6 @@ impl HistoryBuilder {
 }
 
 /// `devices --history` output: `text` (default) or `json`.
-#[allow(dead_code)] // Pending CLI wiring of `devices --history` (see NOTES-store-features.md).
 pub fn history_output(h: &DeviceHistory, format: &str) -> Result<String, String> {
     match format {
         "json" => serde_json::to_string_pretty(h).map_err(|e| e.to_string()),
@@ -1397,5 +1476,54 @@ mod tests {
             (0, 1, None)
         );
         assert!(history_text(&empty).contains("Not seen"));
+    }
+    #[test]
+    fn fingerprint_and_cpe_keys_are_not_device_evidence() {
+        // A user CPE template or a fingerprint string must not trigger keyword rules.
+        let identity = BTreeMap::from([
+            (
+                "svc.80.cpe".to_string(),
+                "cpe:2.3:a:acme:printer_portal:1.0".to_string(),
+            ),
+            ("tls.443.ja4s".to_string(), "t130200_1301_mfp".to_string()),
+        ]);
+        assert_eq!(classify(&ev("", &[80], &identity, "")), None);
+        assert!(is_device_evidence("svc.80.product"));
+        assert!(!is_device_evidence("ssh.22.hassh_algorithms"));
+    }
+
+    #[test]
+    fn smb_guid_and_netbios_name_join_routed_addresses() {
+        let smb = |guid: &str, name: &str| {
+            vec![
+                ("smb.445.guid", guid.to_string()),
+                ("smb.445.netbios_name", name.to_string()),
+                (
+                    "smb.445.dns_name",
+                    format!("{}.corp.example", name.to_lowercase()),
+                ),
+            ]
+        };
+        let h = |ip: &str, mac: &str, id: &[(&str, String)]| {
+            let id: Vec<(&str, &str)> = id.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            host(ip, mac, &[445], &id)
+        };
+        let devices = merge(
+            &[
+                h("10.1.0.5", "", &smb("1111", "SRV1")),
+                h("10.2.0.5", "", &smb("1111", "SRV1")),
+                // Cloned VM: same GUID, other name -> separate device.
+                h("10.3.0.5", "", &smb("1111", "SRV2")),
+                // Records with a MAC are never merged by GUID.
+                h("10.0.0.7", "AA:BB:CC:00:00:07", &smb("2222", "PC7")),
+                h("10.0.0.8", "AA:BB:CC:00:00:08", &smb("2222", "PC7")),
+            ],
+            &[],
+        );
+        assert_eq!(devices.len(), 4, "{devices:#?}");
+        let srv1 = devices.iter().find(|d| d.ips.len() == 2).unwrap();
+        assert!(srv1.hostnames.contains(&"SRV1".to_string()));
+        assert!(srv1.hostnames.contains(&"srv1.corp.example".to_string()));
+        assert_eq!(srv1.smb_names.len(), 2);
     }
 }

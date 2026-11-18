@@ -148,8 +148,8 @@ enum Job {
     Load(i64),
     ReadFile(PathBuf),
     WritePrefs(Vec<u8>),
-    /// Formats a snapshot (json/csv/html) and writes it to the file.
-    Export(Box<store::Snapshot>, String, PathBuf),
+    /// Formats a snapshot (json/csv/html/md) stamped with the given Unix time and writes it.
+    Export(Box<store::Snapshot>, String, i64, PathBuf),
     /// Writes the OT asset table as CSV (true) or JSON (false).
     ExportAssets(Vec<crate::otpassive::Asset>, bool, PathBuf),
     /// Loads a script file/folder and runs it on a copy of the host (token, path, host).
@@ -186,8 +186,8 @@ fn run_job(job: Job) -> Done {
             std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display())),
         ),
         Job::WritePrefs(bytes) => Done::PrefsWritten(write_prefs(&bytes)),
-        Job::Export(snapshot, format, file) => {
-            let result = write_file(&file, store::export(&snapshot, &format));
+        Job::Export(snapshot, format, stamp, file) => {
+            let result = write_file(&file, store::export_at(&snapshot, &format, stamp));
             Done::Exported(file, result)
         }
         Job::ExportAssets(assets, csv, file) => {
@@ -336,6 +336,9 @@ struct Scanner {
     script_test: Option<ScriptTest>,
     script_tokens: u64,
     ot: ot::OtState,
+    /// Stored time of the inventory snapshot on screen; `None` for live results (exports are
+    /// then stamped with the current time).
+    opened_stamp: Option<i64>,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -419,7 +422,14 @@ impl Scanner {
             script_test: None,
             script_tokens: 0,
             ot: ot::OtState::default(),
+            opened_stamp: None,
         };
+        // A broken user CVE file is reported, not silently replaced by the built-in rules.
+        if app.screenshot.is_none() {
+            if let Some(warning) = risk::init_cves() {
+                app.error = warning;
+            }
+        }
         if app.screenshot.is_some() {
             if let Ok(state) = std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE") {
                 app.seed_demo(&state);
@@ -566,6 +576,19 @@ impl Scanner {
         self.previous.clear();
         self.haystacks.clear();
         self.status = format!("Loaded inventory #{id}");
+        self.opened_stamp = self
+            .history
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.timestamp);
+        // A saved OT capture refills the OT asset table, as after `ot-listen`.
+        if self.capture_scope.starts_with("ot-passive:") {
+            self.ot.show_saved(
+                &self.capture_scope,
+                &self.observations,
+                self.capture_complete,
+            );
+        }
         self.recount();
         self.sort();
     }
@@ -581,6 +604,7 @@ impl Scanner {
         self.scan_complete = true;
         self.capture_complete = true;
         self.changes.clear();
+        self.opened_stamp = None;
         self.status = "Ready to scan".into();
         self.recount();
         self.data_changed();
@@ -608,6 +632,7 @@ impl Scanner {
                 self.scan_complete = true;
                 self.scan_scope = self.targets.clone();
                 self.scan_settings = self.saved.settings.clone();
+                self.opened_stamp = None;
                 self.error.clear();
                 self.status = format!("Scanning {} addresses", hosts.len());
                 self.recount();
@@ -720,9 +745,15 @@ impl Scanner {
         self.refresh_rows();
         let mut snapshot = self.snapshot();
         snapshot.hosts = self.rows.iter().map(|&i| self.results[i].clone()).collect();
+        let stamp = self.opened_stamp.unwrap_or_else(unix_now);
         // Formatting and writing happen on the worker; the dialog stays on this thread.
         self.status = format!("Writing {}…", path.display());
-        self.submit(Job::Export(Box::new(snapshot), extension.to_string(), path));
+        self.submit(Job::Export(
+            Box::new(snapshot),
+            extension.to_string(),
+            stamp,
+            path,
+        ));
     }
     /// Selects a host of the active results (first of `ips` that is one), makes its row visible
     /// in the main table and opens its details.
@@ -981,7 +1012,8 @@ impl eframe::App for Scanner {
         if let Some(run) = &self.run {
             run.cancel.store(true, Ordering::Relaxed);
         }
-        self.ot.cancel();
+        // A running OT capture stops and hands over what it has (bounded wait).
+        let ot_partial = self.ot.stop_for_exit(Duration::from_secs(3));
         // Queued saves finish first; the worker owns the database until then.
         self.worker.finish();
         if self.screenshot.is_some() {
@@ -1002,10 +1034,28 @@ impl eframe::App for Scanner {
                 eprintln!("Could not save interrupted capture: {e}");
             }
         }
+        if let Some((label, observations)) = ot_partial.filter(|(_, o)| !o.is_empty()) {
+            let snapshot = store::Snapshot {
+                targets: label,
+                complete: false,
+                settings: Default::default(),
+                hosts: vec![],
+                observations,
+                notes: Default::default(),
+            };
+            if let Err(e) = store::save(&path, &snapshot) {
+                eprintln!("Could not save interrupted OT capture: {e}");
+            }
+        }
         if let Err(e) = write_prefs(&self.saved.to_disk()) {
             eprintln!("Could not save preferences: {e}");
         }
     }
+}
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 fn ports_text(ports: &[u16]) -> String {
     if ports.is_empty() {
