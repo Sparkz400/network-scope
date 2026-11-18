@@ -979,7 +979,14 @@ impl eframe::App for Scanner {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
         self.frames += 1;
-        if self.screenshot.is_some() && self.frames >= 120 && !self.screenshot_requested {
+        // egui_glow panics when it reads back a zero-sized framebuffer, which happens if the
+        // window is still being sized or was minimized; wait until it has a real size.
+        let drawable = ctx.input(|i| {
+            let r = i.screen_rect();
+            r.width() >= 1.0 && r.height() >= 1.0 && i.viewport().minimized != Some(true)
+        });
+        if self.screenshot.is_some() && self.frames >= 120 && drawable && !self.screenshot_requested
+        {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
