@@ -66,12 +66,112 @@ impl Gate {
         };
         sleep(delay).await;
     }
+    /// Non-blocking variant for synchronous senders (the SYN I/O thread): takes one
+    /// token if available, otherwise returns how long until one will be. It never
+    /// goes into debt, so async waiters that already reserved tokens keep priority.
+    pub fn try_take(&self) -> Result<(), Duration> {
+        let Some(bucket) = &self.bucket else {
+            return Ok(());
+        };
+        let mut b = bucket.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let refill = now.duration_since(b.last).as_secs_f64() * b.rate;
+        b.tokens = (b.tokens + refill).min(b.burst);
+        b.last = now;
+        if b.tokens >= 1.0 {
+            b.tokens -= 1.0;
+            Ok(())
+        } else {
+            Err(Duration::from_secs_f64((1.0 - b.tokens) / b.rate))
+        }
+    }
+}
+
+/// Runs a native blocking call on the bounded blocking pool. The permit moves into
+/// the blocking closure, so it is released when the thread really finishes, even if
+/// the caller stopped waiting (timeout or Stop).
+async fn run_blocking<T: Send + 'static>(
+    pool: &Arc<Semaphore>,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let permit = pool.clone().acquire_owned().await.ok()?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+    .ok()
+}
+
+/// Reverse DNS returns the numeric address when there is no PTR record; that is not a name.
+fn hostname_from(name: String) -> String {
+    if name.trim().parse::<IpAddr>().is_ok() {
+        String::new()
+    } else {
+        name
+    }
+}
+
+/// Sends every host whose task already finished. Called before Stop aborts the
+/// rest, so completed work is not discarded. Returns false when the receiver is gone.
+fn drain_finished(jobs: &mut JoinSet<Host>, tx: &Sender<Event>) -> bool {
+    while let Some(result) = jobs.try_join_next() {
+        match result {
+            Ok(host) => {
+                if tx.send(Event::Host(host)).is_err() {
+                    return false;
+                }
+            }
+            Err(e) if e.is_cancelled() => {}
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("Probe task: {e}")));
+            }
+        }
+    }
+    true
+}
+
+/// TCP connect with retries: every attempt (first and retries) takes a rate-gate
+/// token, and each retry doubles the timeout up to `cap`.
+async fn connect_with_retries<F, Fut>(
+    gate: &Gate,
+    first: Duration,
+    cap: Duration,
+    retries: u32,
+    mut connect: F,
+) -> PortState
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: std::future::Future<Output = PortState>,
+{
+    let mut attempt = first;
+    gate.wait().await;
+    let mut state = connect(attempt).await;
+    for _ in 0..retries.min(5) {
+        if state != PortState::Unanswered {
+            break;
+        }
+        attempt = (attempt * 2).min(cap.max(first));
+        gate.wait().await;
+        state = connect(attempt).await;
+    }
+    state
+}
+
+/// OT identification (including the BACnet Who-Is that waits up to four port
+/// timeouts) only runs for hosts that answered something. A host with an open or
+/// closed TCP port is responding, so ICMP-silent devices with OT TCP ports still
+/// qualify.
+fn wants_ot(h: &Host, s: &Settings) -> bool {
+    s.ot && h.responding
 }
 
 struct Ctx {
-    gate: Gate,
+    gate: Arc<Gate>,
     blocking: Arc<Semaphore>,
-    sockets: Semaphore,
+    /// In-flight port probes (sockets for TCP connect, outstanding SYNs otherwise).
+    /// Taken before a probe task is spawned, so idle hosts cannot pile up tasks.
+    sockets: Arc<Semaphore>,
     dhcp: Semaphore,
     syn: Option<Arc<SynEngine>>,
     syn_error: Option<String>,
@@ -89,14 +189,14 @@ pub async fn execute(
     tx: Sender<Event>,
 ) {
     let s = Arc::new(s);
-    let gate = if s.safe {
+    let gate = Arc::new(if s.safe {
         Gate::new(s.delay.max(100))
     } else if s.max_rate > 0 {
         let rate = f64::from(s.max_rate);
         Gate::per_second(rate, (rate / 10.0).max(1.0))
     } else {
         Gate::unlimited()
-    };
+    });
     let probes = if s.services {
         match ProbeDb::load(&s.probe_file) {
             Ok(db) => Some(db),
@@ -131,7 +231,7 @@ pub async fn execute(
         vec![]
     };
     let (syn, syn_error) = if s.syn && !s.safe {
-        match SynEngine::start(&s, s.max_rate) {
+        match SynEngine::start(&s, gate.clone()) {
             Ok(engine) => (Some(engine), None),
             Err(e) => (None, Some(e)),
         }
@@ -141,7 +241,7 @@ pub async fn execute(
     let ctx = Arc::new(Ctx {
         gate,
         blocking: Arc::new(Semaphore::new(256)),
-        sockets: Semaphore::new(4096),
+        sockets: Arc::new(Semaphore::new(4096)),
         dhcp: Semaphore::new(1),
         syn,
         syn_error,
@@ -160,6 +260,8 @@ pub async fn execute(
     let mut exhausted = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
+            // Keep hosts that already finished but were not joined yet.
+            drain_finished(&mut jobs, &tx);
             jobs.abort_all();
             break;
         }
@@ -202,13 +304,16 @@ async fn probe_port(
     s: &Settings,
     ctx: &Ctx,
 ) -> PortProbe {
-    ctx.gate.wait().await;
+    // The caller already holds this probe's in-flight permit (`ctx.sockets`).
+    let cap = timeout.max(Duration::from_millis(u64::from(s.port_timeout)));
     let mut note = ctx
         .syn_error
         .as_ref()
         .map(|e| format!("SYN unavailable; TCP connect fallback: {e}"));
     if let Some(engine) = &ctx.syn {
-        match engine.probe(ip, port, timeout, s.retries).await {
+        // The SYN engine takes one gate token per transmitted SYN (retransmits
+        // included), so the rate is not applied a second time here.
+        match engine.probe(ip, port, timeout, cap, s.retries).await {
             Ok((state, fp)) => {
                 return PortProbe {
                     state,
@@ -219,17 +324,10 @@ async fn probe_port(
             Err(e) => note = Some(format!("SYN unavailable; TCP connect fallback: {e}")),
         }
     }
-    let _socket = ctx.sockets.acquire().await.ok();
-    let cap = timeout.max(Duration::from_millis(u64::from(s.port_timeout)));
-    let mut attempt = timeout;
-    let mut state = crate::probes::connect(ip, port, attempt).await;
-    for _ in 0..s.retries.min(5) {
-        if state != PortState::Unanswered {
-            break;
-        }
-        attempt = (attempt * 2).min(cap);
-        state = crate::probes::connect(ip, port, attempt).await;
-    }
+    let state = connect_with_retries(&ctx.gate, timeout, cap, s.retries, |attempt| {
+        crate::probes::connect(ip, port, attempt)
+    })
+    .await;
     PortProbe {
         state,
         note,
@@ -264,14 +362,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     // ARP is independent of ping: an ICMP-silent LAN device can still be found.
     if s.arp || s.mac || s.os_detect {
         ctx.gate.wait().await;
-        if let Ok(permit) = ctx.blocking.acquire().await {
-            h.mac =
-                tokio::task::spawn_blocking(move || crate::platform::mac(ip).unwrap_or_default())
-                    .await
-                    .unwrap_or_default();
-            drop(permit);
+        if let Some(Some(n)) =
+            run_blocking(&ctx.blocking, move || crate::platform::neighbor(ip)).await
+        {
+            h.mac = n.mac;
+            // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
+            h.responding = n.fresh;
         }
-        h.responding = !h.mac.is_empty();
     }
     let mut rtts = vec![];
     if !s.tcp_only {
@@ -281,10 +378,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             ctx.gate.wait().await;
             let ctx = ctx.clone();
             echoes.spawn(async move {
-                let _permit = ctx.blocking.acquire().await.ok();
-                tokio::task::spawn_blocking(move || crate::platform::echo(ip, timeout))
-                    .await
-                    .ok()
+                run_blocking(&ctx.blocking, move || crate::platform::echo(ip, timeout)).await
             });
         }
         while let Some(result) = echoes.join_next().await {
@@ -319,9 +413,15 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             let Ok(permit) = slots.clone().acquire_owned().await else {
                 break;
             };
+            // Global in-flight bound taken before spawning: with many workers and a
+            // high --parallel, tasks would otherwise pile up waiting for a socket.
+            let Ok(socket) = ctx.sockets.clone().acquire_owned().await else {
+                break;
+            };
             let (s, ctx) = (s.clone(), ctx.clone());
             probes.spawn(async move {
                 let result = probe_port(ip, port, timeout, &s, &ctx).await;
+                drop(socket);
                 drop(permit);
                 (port, result)
             });
@@ -446,7 +546,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if s.ot {
+    if wants_ot(&h, &s) {
         crate::ot::identify(&mut h, &s, &ctx.gate).await;
     }
     if s.trace && h.responding {
@@ -457,21 +557,37 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
     }
     if h.responding && s.dns {
-        if let Ok(permit) = ctx.blocking.acquire().await {
-            let task = tokio::task::spawn_blocking(move || {
-                dns_lookup::lookup_addr(&ip).unwrap_or_default()
-            });
-            if let Ok(Ok(name)) = tokio::time::timeout(Duration::from_secs(3), task).await {
-                h.hostname = name;
-            }
-            drop(permit);
+        let lookup = run_blocking(&ctx.blocking, move || {
+            dns_lookup::lookup_addr(&ip).unwrap_or_default()
+        });
+        // On timeout the lookup thread keeps its blocking-pool permit until it ends.
+        if let Ok(Some(name)) = tokio::time::timeout(Duration::from_secs(3), lookup).await {
+            h.hostname = hostname_from(name);
         }
     }
     if s.os_detect && h.responding {
         analyze(&mut h, fingerprint.as_ref());
     }
-    if let Some(scripts) = &ctx.scripts {
-        scripts.run_host(&mut h);
+    if ctx.scripts.is_some() {
+        // Rhai may run up to its wall-time limit per script; keep it off the async workers.
+        let fallback = h.clone();
+        let script_ctx = ctx.clone();
+        let mut host = h;
+        h = match run_blocking(&ctx.blocking, move || {
+            if let Some(scripts) = &script_ctx.scripts {
+                scripts.run_host(&mut host);
+            }
+            host
+        })
+        .await
+        {
+            Some(done) => done,
+            None => {
+                let mut kept = fallback;
+                note(&mut kept, "Scripts did not complete".into());
+                kept
+            }
+        };
     }
     h
 }
@@ -556,5 +672,174 @@ mod tests {
         }
         while set.join_next().await.is_some() {}
         assert!(start.elapsed() >= Duration::from_millis(90));
+    }
+
+    #[test]
+    fn try_take_never_goes_into_debt() {
+        assert!(Gate::unlimited().try_take().is_ok());
+        let gate = Gate::per_second(10.0, 1.0);
+        assert!(gate.try_take().is_ok());
+        let wait = gate.try_take().unwrap_err();
+        assert!(wait > Duration::from_millis(50) && wait <= Duration::from_millis(100));
+        assert!(gate.try_take().is_err(), "refusals do not consume tokens");
+        std::thread::sleep(Duration::from_millis(110));
+        assert!(gate.try_take().is_ok());
+    }
+
+    #[tokio::test]
+    async fn every_connect_attempt_takes_a_token_and_doubles() {
+        // 20 tokens/s with one in the bucket: four attempts need three more tokens.
+        let gate = Gate::per_second(20.0, 1.0);
+        let attempts = Arc::new(Mutex::new(vec![]));
+        let start = Instant::now();
+        let seen = attempts.clone();
+        let state = connect_with_retries(
+            &gate,
+            Duration::from_millis(10),
+            Duration::from_millis(40),
+            3,
+            move |t| {
+                seen.lock().unwrap().push(t.as_millis());
+                async { PortState::Unanswered }
+            },
+        )
+        .await;
+        assert_eq!(state, PortState::Unanswered);
+        assert_eq!(*attempts.lock().unwrap(), vec![10, 20, 40, 40]);
+        assert!(
+            start.elapsed() >= Duration::from_millis(140),
+            "{:?}",
+            start.elapsed()
+        );
+        // An answer ends the retries.
+        let calls = Arc::new(Mutex::new(0));
+        let c = calls.clone();
+        let state = connect_with_retries(
+            &Gate::unlimited(),
+            Duration::from_millis(10),
+            Duration::from_millis(40),
+            3,
+            move |_| {
+                *c.lock().unwrap() += 1;
+                async { PortState::Closed }
+            },
+        )
+        .await;
+        assert_eq!((state, *calls.lock().unwrap()), (PortState::Closed, 1));
+    }
+
+    fn host(ip: &str) -> Host {
+        Host {
+            ip: ip.parse().unwrap(),
+            responding: false,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: false,
+            identity: BTreeMap::new(),
+            udp_open: vec![],
+            trace: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_keeps_hosts_that_already_finished() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut jobs = JoinSet::new();
+        jobs.spawn(async { host("10.0.0.1") });
+        jobs.spawn(async { host("10.0.0.2") });
+        jobs.spawn(async {
+            sleep(Duration::from_secs(30)).await;
+            host("10.0.0.3")
+        });
+        sleep(Duration::from_millis(50)).await;
+        assert!(drain_finished(&mut jobs, &tx));
+        jobs.abort_all();
+        let mut got: Vec<String> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                Event::Host(h) => Some(h.ip.to_string()),
+                _ => None,
+            })
+            .collect();
+        got.sort();
+        assert_eq!(got, ["10.0.0.1", "10.0.0.2"]);
+    }
+
+    #[test]
+    fn numeric_reverse_dns_is_not_a_hostname() {
+        assert_eq!(hostname_from("192.168.1.5".into()), "");
+        assert_eq!(hostname_from("fe80::1".into()), "");
+        assert_eq!(hostname_from("plc-7.example".into()), "plc-7.example");
+        assert_eq!(hostname_from(String::new()), "");
+    }
+
+    #[tokio::test]
+    async fn blocking_permit_is_held_until_the_thread_finishes() {
+        let pool = Arc::new(Semaphore::new(1));
+        let slow = run_blocking(&pool, || std::thread::sleep(Duration::from_millis(300)));
+        assert!(tokio::time::timeout(Duration::from_millis(50), slow)
+            .await
+            .is_err());
+        // The caller gave up, but the native call is still running and keeps its slot.
+        assert_eq!(pool.available_permits(), 0);
+        sleep(Duration::from_millis(400)).await;
+        assert_eq!(pool.available_permits(), 1);
+    }
+
+    #[test]
+    fn ot_identification_only_for_responding_hosts() {
+        let s = Settings {
+            ot: true,
+            scan_nonresponders: true,
+            ..Settings::default()
+        };
+        let mut h = host("10.0.0.1");
+        assert!(
+            !wants_ot(&h, &s),
+            "silent host: no Who-Is and no 4x timeout wait"
+        );
+        // An open (or closed) TCP port marks an ICMP-silent device as responding.
+        h.open.push(502);
+        h.responding = true;
+        assert!(wants_ot(&h, &s));
+        assert!(!wants_ot(
+            &h,
+            &Settings {
+                ot: false,
+                ..Settings::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn scripts_run_off_the_async_workers_and_still_apply() {
+        let dir = std::env::temp_dir().join(format!("ns-script-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mark.rhai");
+        std::fs::write(&file, "fn on_host(h) { h.set(\"seen\", \"yes\"); }").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            scripts: file.to_string_lossy().into_owned(),
+            ..Settings::default()
+        };
+        let run = crate::scan::start(vec![addr.ip()], vec![addr.port()], s);
+        let event = run.receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let Event::Host(h) = event else {
+            panic!("missing host")
+        };
+        assert_eq!(
+            h.identity.get("script.seen").map(String::as_str),
+            Some("yes")
+        );
     }
 }
