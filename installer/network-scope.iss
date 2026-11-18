@@ -1,9 +1,13 @@
-; Inno Setup script. Build: iscc /DAppVersion=0.4.0 /DExePath=..\target\release\network-scope.exe network-scope.iss
+; Inno Setup script. Build: iscc /DAppVersion=0.4.0 /DExePath=..\target\release\network-scope.exe /DCliExePath=..\target\release\network-scope-cli.exe network-scope.iss
 #ifndef AppVersion
   #define AppVersion "0.4.0"
 #endif
 #ifndef ExePath
   #define ExePath "..\target\release\network-scope.exe"
+#endif
+; Console-subsystem build for scripts: shells wait for it and see its exit code.
+#ifndef CliExePath
+  #define CliExePath "..\target\release\network-scope-cli.exe"
 #endif
 
 [Setup]
@@ -27,10 +31,11 @@ LicenseFile=..\LICENSE.txt
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
-Name: "addtopath"; Description: "Add the command-line tool to PATH"; Flags: unchecked
+Name: "addtopath"; Description: "Add the command-line tool (network-scope-cli) to PATH"; Flags: unchecked
 
 [Files]
 Source: "{#ExePath}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#CliExePath}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\CREDITS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs
