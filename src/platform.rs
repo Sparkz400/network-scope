@@ -392,13 +392,12 @@ mod win {
                 std::mem::size_of_val(&buffer) as u32,
                 timeout,
             );
-            let reply = &*(buffer.as_ptr().cast::<Reply6>());
-            let from = std::net::Ipv6Addr::from(reply.address.address);
-            // A hop-limit expiry is reported as a failed call with the router's address
-            // in the reply buffer on some Windows builds, and as a reply on others.
-            if count == 0 && from.is_unspecified() {
+            // As for IPv4: no reply structure means no answer (never guess a hop).
+            if count == 0 {
                 return Ok(HopReply::default());
             }
+            let reply = &*(buffer.as_ptr().cast::<Reply6>());
+            let from = std::net::Ipv6Addr::from(reply.address.address);
             Ok(HopReply {
                 ip: Some(IpAddr::V6(from)),
                 rtt: Some(reply.rtt),
@@ -1528,6 +1527,8 @@ mod tests {
                 next_hop("8.8.8.8".parse().unwrap(), *local.ip(), ""),
                 Ok(*hop)
             );
+            // A source address on another interface (loopback) is refused.
+            assert!(next_hop("8.8.8.8".parse().unwrap(), lo, "").is_err());
         }
         if let Ok(hop) = internet {
             match hop {
