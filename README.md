@@ -99,6 +99,8 @@ network-scope-cli report 1 --output report.html
 network-scope-cli ot-listen --pcap plant.pcapng --progress
 ```
 
+<p align="center"><img src="assets/demo-cli.gif" alt="Network Scope CLI scanning a network with the live terminal view" width="800"></p>
+
 More in [Quick start](docs/src/quick-start.md) and the [CLI reference](docs/src/cli-reference.md).
 
 ## Privileges and Npcap
