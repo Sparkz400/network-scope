@@ -30,7 +30,7 @@ A timeout never proves a device is offline. The host may drop ICMP and have none
 
 ## A device is missing from the OT results
 
-OT identification only runs on standard ports of hosts that answered something. In the desktop, enable **Use industrial ports** and scanning of nonresponders. A device that answers only BACnet/IP is not found. Passive discovery only sees the traffic that reaches your interface; use a SPAN/mirror port or tap.
+OT identification runs on standard ports of hosts that answered something. In the desktop, enable **Use industrial ports** and scanning of nonresponders; with nonresponders enabled, silent hosts also get the single BACnet Who-Is, so devices that answer only BACnet/IP are found too. Passive discovery only sees the traffic that reaches your interface; use a SPAN/mirror port or tap.
 
 ## A CVE finding is wrong; the host is patched
 
