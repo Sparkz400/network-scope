@@ -603,7 +603,9 @@ async fn socket(ip: IpAddr, port: u16, kind: Kind) -> Result<UdpSocket, String> 
     Ok(sock)
 }
 
-/// Sends the protocol's request up to `tries` times and classifies the answer.
+/// Sends the protocol's request up to `tries` times and classifies the answer. Ports without
+/// a built-in handler get the payload of a `"proto": "udp"` probe from probes.json when one
+/// lists the port (never on OT or printer ports), else an empty datagram.
 pub async fn probe_kind(
     ip: IpAddr,
     port: u16,
@@ -612,6 +614,40 @@ pub async fn probe_kind(
     tries: u32,
     gate: &Gate,
 ) -> Probe {
+    probe_with(
+        ip,
+        port,
+        kind,
+        wait,
+        tries,
+        gate,
+        &crate::service::udp_probes(),
+    )
+    .await
+}
+
+/// The data-driven probe for a generic UDP port, if any may be sent there.
+fn payload_probe(
+    port: u16,
+    kind: Kind,
+    probes: &[crate::service::Probe],
+) -> Option<&crate::service::Probe> {
+    if kind != Kind::Generic || crate::service::is_ot_udp_port(port) {
+        return None;
+    }
+    probes.iter().find(|p| p.ports.contains(&port))
+}
+
+async fn probe_with(
+    ip: IpAddr,
+    port: u16,
+    kind: Kind,
+    wait: Duration,
+    tries: u32,
+    gate: &Gate,
+    probes: &[crate::service::Probe],
+) -> Probe {
+    let data_probe = payload_probe(port, kind, probes);
     let sock = match socket(ip, port, kind).await {
         Ok(s) => s,
         Err(e) => {
@@ -640,7 +676,7 @@ pub async fn probe_kind(
             Kind::Mdns => dns_query(0, "_services._dns-sd._udp.local", 12, 0x8001),
             Kind::NetBios => netbios_request(),
             Kind::Dhcp => dhcp_inform(xid, local_v4, [0x02, 0x4e, 0x53, 0x00, 0x00, 0x01]),
-            Kind::Generic => vec![],
+            Kind::Generic => data_probe.map_or_else(Vec::new, |p| p.payload.clone()),
         };
         gate.wait().await;
         if let Err(e) = sock.send(&payload).await {
@@ -662,7 +698,10 @@ pub async fn probe_kind(
         let mut buf = vec![0u8; 2048];
         match timeout(wait, sock.recv(&mut buf)).await {
             Ok(Ok(n)) => {
-                let (info, mac) = parse_reply(kind, &buf[..n], xid);
+                let identified = data_probe
+                    .and_then(|p| crate::service::ProbeDb::identify(p, &buf[..n]))
+                    .map(|svc| (svc.summary(), None));
+                let (info, mac) = identified.unwrap_or_else(|| parse_reply(kind, &buf[..n], xid));
                 return Probe {
                     state: State::Open,
                     info,
@@ -992,5 +1031,115 @@ mod tests {
     fn port_mapping() {
         assert_eq!(kind_for_port(161), Kind::Snmp);
         assert_eq!(kind_for_port(9999), Kind::Generic);
+    }
+
+    /// A UDP server that records each datagram and answers with `reply`.
+    async fn recording_responder(reply: Vec<u8>) -> (u16, tokio::sync::mpsc::Receiver<Vec<u8>>) {
+        let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = s.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            while let Ok((n, from)) = s.recv_from(&mut buf).await {
+                let _ = tx.send(buf[..n].to_vec()).await;
+                let _ = s.send_to(&reply, from).await;
+            }
+        });
+        (port, rx)
+    }
+
+    #[tokio::test]
+    async fn generic_ports_use_udp_probes_from_the_database() {
+        use crate::service::ProbeDb;
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let gate = Gate::unlimited();
+        let wait = Duration::from_millis(500);
+        let builtin = ProbeDb::builtin();
+        let browser = builtin
+            .udp
+            .iter()
+            .find(|p| p.name == "udp-mssql-browser")
+            .unwrap();
+        let mut reply = vec![5, 0, 0];
+        reply.extend(b"ServerName;SQL01;InstanceName;MSSQLSERVER;IsClustered;No;Version;15.0.2000.5;tcp;1433;;");
+        let (port, mut rx) = recording_responder(reply).await;
+        let mut probe = browser.clone();
+        probe.ports = vec![port];
+        let r = probe_with(ip, port, Kind::Generic, wait, 1, &gate, &[probe.clone()]).await;
+        assert_eq!(r.state, State::Open);
+        assert_eq!(
+            r.info,
+            "ms-sql-m Microsoft SQL Server 15.0.2000.5 (server SQL01, instance MSSQLSERVER)"
+        );
+        assert_eq!(rx.recv().await.unwrap(), [3], "the probe payload was sent");
+        // A reply that matches no rule still means open, with the generic description.
+        let (port, mut rx) = recording_responder(b"??".to_vec()).await;
+        probe.ports = vec![port];
+        let r = probe_with(ip, port, Kind::Generic, wait, 1, &gate, &[probe.clone()]).await;
+        assert_eq!(r.info, "responds (2 bytes)");
+        assert_eq!(rx.recv().await.unwrap(), [3]);
+        // Ports without a probe keep the empty datagram.
+        let (port, mut rx) = recording_responder(b"x".to_vec()).await;
+        let _ = probe_with(ip, port, Kind::Generic, wait, 1, &gate, &[probe.clone()]).await;
+        assert!(rx.recv().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn udp_probes_never_target_ot_ports() {
+        use crate::service::{is_ot_udp_port, ProbeDb};
+        let builtin = ProbeDb::builtin();
+        assert!(builtin.udp.len() >= 4);
+        assert!(builtin.udp.iter().all(|p| !p.payload.is_empty()));
+        for p in [
+            47808, 47810, 2222, 2221, 34964, 20000, 44818, 502, 102, 9100, 515, 17185,
+        ] {
+            assert!(is_ot_udp_port(p), "{p}");
+            let mut probe = builtin.udp[0].clone();
+            probe.ports = vec![p];
+            assert!(
+                payload_probe(p, Kind::Generic, &[probe]).is_none(),
+                "payload for OT port {p}"
+            );
+        }
+        for p in [1434, 111, 5060, 11211] {
+            assert!(!is_ot_udp_port(p), "{p}");
+            assert!(
+                payload_probe(p, Kind::Generic, &builtin.udp).is_some(),
+                "{p}"
+            );
+        }
+        // Ports with a protocol handler keep it.
+        let mut snmp = builtin.udp[0].clone();
+        snmp.ports = vec![161];
+        assert!(payload_probe(161, Kind::Snmp, &[snmp]).is_none());
+    }
+
+    #[test]
+    fn udp_probe_rules_identify_replies() {
+        use crate::service::ProbeDb;
+        let db = ProbeDb::builtin();
+        let get = |n: &str| db.udp.iter().find(|p| p.name == n).unwrap();
+        let mut rpc = b"NS\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00".to_vec();
+        rpc.extend([0u8; 12]);
+        assert_eq!(
+            ProbeDb::identify(get("udp-rpcbind"), &rpc)
+                .unwrap()
+                .summary(),
+            "rpcbind (ONC RPC portmapper)"
+        );
+        assert_eq!(get("udp-rpcbind").payload.len(), 40);
+        let mem = get("udp-memcached");
+        assert!(mem.payload.ends_with(b"version\r\n") && mem.payload.len() == 17);
+        let mut reply = vec![0, 1, 0, 0, 0, 1, 0, 0];
+        reply.extend(b"VERSION 1.6.21\r\n");
+        assert_eq!(
+            ProbeDb::identify(mem, &reply).unwrap().summary(),
+            "memcached memcached 1.6.21 (UDP enabled)"
+        );
+        let sip = b"SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP nm\r\nServer: Asterisk PBX 18.0\r\nContent-Length: 0\r\n\r\n";
+        assert_eq!(
+            ProbeDb::identify(get("udp-sip"), sip).unwrap().summary(),
+            "sip Asterisk PBX 18.0"
+        );
     }
 }

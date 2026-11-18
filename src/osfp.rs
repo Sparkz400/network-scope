@@ -106,6 +106,32 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
         .any(|n| lower.contains(&n.to_ascii_lowercase()))
 }
 
+/// Derived keys that name vendors without being evidence about the OS: a CPE for OpenSSH
+/// says "openbsd" on every Linux host, and fingerprint hashes are opaque.
+fn derived(key: &str) -> bool {
+    key.ends_with(".cpe") || key.ends_with(".hassh") || key.ends_with(".ja4s")
+}
+
+/// Windows release for an NTLM version `major.minor.build` (builds shared by client and
+/// server releases name both).
+fn windows_release(major: u32, minor: u32, build: u32) -> Option<&'static str> {
+    Some(match (major, minor, build) {
+        (5, 1, _) => "XP",
+        (5, 2, _) => "XP x64 / Server 2003",
+        (6, 0, _) => "Vista / Server 2008",
+        (6, 1, _) => "7 / Server 2008 R2",
+        (6, 2, _) => "8 / Server 2012",
+        (6, 3, _) => "8.1 / Server 2012 R2",
+        (10, 0, 14393) => "10 1607 / Server 2016",
+        (10, 0, 17763) => "10 1809 / Server 2019",
+        (10, 0, 20348) => "Server 2022",
+        (10, 0, 26100) => "11 24H2 / Server 2025",
+        (10, 0, b) if b >= 22000 => "11",
+        (10, 0, _) => "10",
+        _ => return None,
+    })
+}
+
 /// `key` is `base` itself or a sub-key of it (`svc.22`, `svc.22.product`), never `svc.220`.
 fn key_under(key: &str, base: &str) -> bool {
     key.strip_prefix(base)
@@ -184,7 +210,7 @@ pub fn guess(
                 let base = format!("svc.{port}");
                 identity
                     .iter()
-                    .filter(move |(k, _)| key_under(k, &base))
+                    .filter(move |(k, _)| key_under(k, &base) && !derived(k))
                     .map(|(_, v)| v.as_str())
             })
             .collect::<Vec<_>>()
@@ -213,9 +239,9 @@ pub fn guess(
         .collect::<Vec<_>>()
         .join(" | ");
     let all = identity
-        .values()
-        .filter(|v| !v.starts_with("unidentified"))
-        .cloned()
+        .iter()
+        .filter(|(k, v)| !v.starts_with("unidentified") && !derived(k))
+        .map(|(_, v)| v.clone())
         .collect::<Vec<_>>()
         .join(" | ");
     if contains_any(
@@ -231,6 +257,41 @@ pub fn guess(
     }
     if contains_any(&ssh, &["freebsd", "openbsd", "netbsd"]) {
         s.add(BSD, 45, "SSH banner names a BSD");
+    }
+    if contains_any(&ssh, &["dropbear"]) {
+        s.add(EMBEDDED, 30, "Dropbear SSH (embedded Linux)");
+    }
+    if contains_any(&ssh, &["ssh cisco-", "rosssh"]) {
+        s.add(
+            NETDEV,
+            40,
+            "SSH banner names network equipment (Cisco/MikroTik)",
+        );
+    }
+    // The NTLM challenge of the SMB session setup names the Windows version and build.
+    // Samba answers with a fixed 6.1 and build 0, so build 0 is Samba, not Windows 7.
+    for (k, v) in identity
+        .iter()
+        .filter(|(k, _)| k.starts_with("smb.") && k.ends_with(".os_version"))
+    {
+        let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
+        let [major, minor, build] = parts[..] else {
+            continue;
+        };
+        if build == 0 {
+            s.add(
+                LINUX,
+                25,
+                format!("Samba-style SMB server ({k} {v}, build 0)"),
+            );
+        } else if let Some(release) = windows_release(major, minor, build) {
+            s.add(
+                WINDOWS,
+                70,
+                format!("SMB NTLM challenge: Windows {release} (build {build})"),
+            );
+        }
+        break;
     }
     if contains_any(&http, &["microsoft-iis", "microsoft-httpapi"]) {
         s.add(WINDOWS, 45, "HTTP server header names Microsoft");
@@ -461,5 +522,81 @@ mod tests {
             .name,
             NETDEV
         );
+    }
+
+    #[test]
+    fn cpe_and_fingerprint_keys_are_not_os_evidence() {
+        // The OpenSSH CPE vendor is "openbsd" on every platform.
+        let ids = id(&[
+            ("svc.22", "ssh OpenSSH 9.6 (protocol 2.0)"),
+            ("svc.22.product", "OpenSSH"),
+            ("svc.22.cpe", "cpe:2.3:a:openbsd:openssh:9.6:*:*:*:*:*:*:*"),
+            ("svc.8080.cpe", "cpe:2.3:a:apple:x:1:*:*:*:*:*:*:*"),
+        ]);
+        let g = guess(Some(61), None, &ids, &[22], "");
+        assert!(
+            g.as_ref().is_none_or(|g| g.name != BSD && g.name != APPLE),
+            "{g:?}"
+        );
+    }
+
+    #[test]
+    fn smb_ntlm_version_names_windows_or_samba() {
+        let g = guess(
+            Some(120),
+            None,
+            &id(&[
+                ("svc.445", "microsoft-ds SMB 3.1.1 (signing required)"),
+                ("smb.445.os_version", "10.0.20348"),
+            ]),
+            &[445],
+            "",
+        )
+        .unwrap();
+        assert_eq!(g.name, WINDOWS);
+        assert!(
+            g.evidence.iter().any(|e| e.contains("Server 2022")),
+            "{g:?}"
+        );
+        let samba = guess(
+            Some(63),
+            None,
+            &id(&[
+                (
+                    "svc.445",
+                    "microsoft-ds SMB 3.1.1 (signing enabled, not required)",
+                ),
+                ("smb.445.os_version", "6.1.0"),
+            ]),
+            &[445],
+            "",
+        )
+        .unwrap();
+        assert_eq!(samba.name, LINUX, "{samba:?}");
+        assert_eq!(windows_release(10, 0, 22631), Some("11"));
+        assert_eq!(windows_release(10, 0, 19045), Some("10"));
+        assert_eq!(windows_release(4, 0, 1381), None);
+    }
+
+    #[test]
+    fn embedded_and_network_ssh_servers() {
+        let g = guess(
+            Some(64),
+            None,
+            &id(&[("svc.22", "ssh dropbear_2022.83 (protocol 2.0)")]),
+            &[22],
+            "",
+        )
+        .unwrap();
+        assert_eq!(g.name, EMBEDDED);
+        let g = guess(
+            Some(255),
+            None,
+            &id(&[("svc.22", "ssh Cisco-1.25 (protocol 2.0)")]),
+            &[22],
+            "",
+        )
+        .unwrap();
+        assert_eq!(g.name, NETDEV);
     }
 }

@@ -391,6 +391,8 @@ pub enum Reply {
         version: u16,
         cipher: u16,
         cert: Option<Vec<u8>>,
+        /// JA4S of the ServerHello.
+        ja4s: String,
     },
     Alert(u8),
     Other,
@@ -414,7 +416,7 @@ pub fn parse_flight(data: &[u8]) -> Reply {
         }
         i += 5 + len;
     }
-    let (mut version, mut cipher, mut cert) = (None, None, None);
+    let (mut version, mut cipher, mut cert, mut ja4s) = (None, None, None, String::new());
     let mut j = 0;
     while let Some(head) = handshake.get(j..j + 4) {
         let len = (usize::from(head[1]) << 16) | (usize::from(head[2]) << 8) | usize::from(head[3]);
@@ -425,6 +427,9 @@ pub fn parse_flight(data: &[u8]) -> Reply {
                 let sid = usize::from(body[34]);
                 if let Some(c) = body.get(35 + sid..37 + sid) {
                     cipher = Some(u16::from_be_bytes([c[0], c[1]]));
+                }
+                if let Some(h) = crate::fingerprint::parse_server_hello(body) {
+                    ja4s = crate::fingerprint::ja4s(&h);
                 }
             }
             11 if body.len() >= 6 => {
@@ -442,6 +447,7 @@ pub fn parse_flight(data: &[u8]) -> Reply {
             version,
             cipher,
             cert,
+            ja4s,
         },
         _ => Reply::Other,
     }
@@ -510,6 +516,184 @@ fn has_done(data: &[u8]) -> bool {
     false
 }
 
+// ---- TLS 1.3 -----------------------------------------------------------------------------
+
+/// The five TLS 1.3 cipher suites (RFC 8446 B.4) and a weakness note.
+pub const TLS13_SUITES: [(u16, &str, Option<&str>); 5] = [
+    (0x1301, "TLS_AES_128_GCM_SHA256", None),
+    (0x1302, "TLS_AES_256_GCM_SHA384", None),
+    (0x1303, "TLS_CHACHA20_POLY1305_SHA256", None),
+    (0x1304, "TLS_AES_128_CCM_SHA256", None),
+    (
+        0x1305,
+        "TLS_AES_128_CCM_8_SHA256",
+        Some("truncated 8-byte tag"),
+    ),
+];
+
+/// A TLS 1.3-only ClientHello: supported_versions offers only 0x0304 and the key_share carries
+/// a random 32-byte x25519 value. No key is ever derived: only the ServerHello is read.
+pub fn client_hello13(
+    suites: &[u16],
+    random: [u8; 32],
+    session: [u8; 32],
+    share: [u8; 32],
+) -> Vec<u8> {
+    let mut body = vec![3, 3];
+    body.extend(random);
+    body.push(32); // legacy session id (middlebox compatibility)
+    body.extend(session);
+    body.extend(((suites.len() * 2) as u16).to_be_bytes());
+    for s in suites {
+        body.extend(s.to_be_bytes());
+    }
+    body.extend([1, 0]);
+    let mut exts = vec![];
+    extension(&mut exts, 10, &[0, 6, 0, 0x1d, 0, 0x17, 0, 0x18]);
+    extension(
+        &mut exts,
+        13,
+        &[
+            0, 20, 4, 3, 5, 3, 6, 3, 8, 4, 8, 5, 8, 6, 8, 7, 4, 1, 5, 1, 6, 1,
+        ],
+    );
+    extension(&mut exts, 43, &[2, 3, 4]);
+    extension(&mut exts, 45, &[1, 1]);
+    let mut key_share = vec![0, 36, 0, 0x1d, 0, 32];
+    key_share.extend(share);
+    extension(&mut exts, 51, &key_share);
+    body.extend((exts.len() as u16).to_be_bytes());
+    body.extend(exts);
+    let mut handshake = vec![1];
+    handshake.extend(&(body.len() as u32).to_be_bytes()[1..]);
+    handshake.extend(body);
+    let mut record = vec![22, 3, 1];
+    record.extend((handshake.len() as u16).to_be_bytes());
+    record.extend(handshake);
+    record
+}
+
+#[derive(Debug, PartialEq)]
+pub enum First {
+    Hello(crate::fingerprint::ServerHello),
+    Alert(u8),
+    /// More bytes are needed for a complete first handshake message.
+    Incomplete,
+    Other,
+}
+
+/// The first handshake message of the server's flight. TLS 1.3 servers follow the ServerHello
+/// with ChangeCipherSpec and encrypted records, so parsing stops at the first message.
+pub fn first_server_hello(data: &[u8]) -> First {
+    let mut handshake = vec![];
+    let mut i = 0;
+    while let Some(head) = data.get(i..i + 5) {
+        let len = usize::from(u16::from_be_bytes([head[3], head[4]]));
+        let payload = data
+            .get(i + 5..(i + 5 + len).min(data.len()))
+            .unwrap_or(&[]);
+        match head[0] {
+            21 if handshake.is_empty() => {
+                return match payload.get(1) {
+                    Some(d) => First::Alert(*d),
+                    None => First::Incomplete,
+                }
+            }
+            22 => handshake.extend_from_slice(payload),
+            _ if handshake.is_empty() => return First::Other,
+            _ => break,
+        }
+        i += 5 + len;
+    }
+    let Some(head) = handshake.get(..4) else {
+        return if data.len() < 5 || data.first() == Some(&22) || data.first() == Some(&21) {
+            First::Incomplete
+        } else {
+            First::Other
+        };
+    };
+    let len = (usize::from(head[1]) << 16) | (usize::from(head[2]) << 8) | usize::from(head[3]);
+    let Some(body) = handshake.get(4..4 + len) else {
+        return First::Incomplete;
+    };
+    match head[0] {
+        2 => crate::fingerprint::parse_server_hello(body).map_or(First::Other, First::Hello),
+        _ => First::Other,
+    }
+}
+
+async fn hello13(ip: IpAddr, port: u16, suites: &[u16], limit: Duration) -> First {
+    let Ok(Ok(mut stream)) = timeout(limit, TcpStream::connect((ip, port))).await else {
+        return First::Other;
+    };
+    if stream
+        .write_all(&client_hello13(suites, random32(), random32(), random32()))
+        .await
+        .is_err()
+    {
+        return First::Other;
+    }
+    let mut data = vec![];
+    let mut chunk = [0u8; 4096];
+    let deadline = tokio::time::Instant::now() + limit;
+    while data.len() < 65_536 {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(left, stream.read(&mut chunk)).await {
+            Ok(Ok(n)) if n > 0 => data.extend_from_slice(&chunk[..n]),
+            _ => break,
+        }
+        if first_server_hello(&data) != First::Incomplete {
+            break;
+        }
+    }
+    match first_server_hello(&data) {
+        First::Incomplete => First::Other,
+        other => other,
+    }
+}
+
+/// Which TLS 1.3 suites does the server accept? One hello per round, each offering the suites
+/// not yet chosen, until the server refuses or `rounds` (at most 6) is spent. A
+/// HelloRetryRequest names the chosen suite as well and counts as acceptance. The first hello
+/// always offers all five suites, so its ServerHello gives a comparable JA4S.
+pub async fn enumerate13(
+    ip: IpAddr,
+    port: u16,
+    limit: Duration,
+    rounds: usize,
+    gate: &Gate,
+) -> (Vec<u16>, bool, Option<String>) {
+    let mut offered: Vec<u16> = TLS13_SUITES.iter().map(|s| s.0).collect();
+    let mut chosen = vec![];
+    let mut ja4s = None;
+    let mut budget = rounds.min(6);
+    let mut exhausted = false;
+    while budget > 0 && !exhausted {
+        budget -= 1;
+        gate.wait().await;
+        match hello13(ip, port, &offered, limit).await {
+            First::Hello(h)
+                if h.selected_version == Some(0x0304) && offered.contains(&h.cipher) =>
+            {
+                if chosen.is_empty() && !h.retry {
+                    ja4s = Some(crate::fingerprint::ja4s(&h));
+                }
+                chosen.push(h.cipher);
+                offered.retain(|c| *c != h.cipher);
+                exhausted = offered.is_empty();
+            }
+            _ => exhausted = true,
+        }
+    }
+    (chosen, !exhausted, ja4s)
+}
+
+fn suite13_name(id: u16) -> (&'static str, Option<&'static str>) {
+    TLS13_SUITES
+        .iter()
+        .find(|s| s.0 == id)
+        .map_or(("unknown", None), |s| (s.1, s.2))
+}
 #[derive(Debug, Default)]
 pub struct Support {
     /// For each protocol version the server accepts: the suites it chose, in selection order.
@@ -517,6 +701,11 @@ pub struct Support {
     pub cert: Option<Vec<u8>>,
     /// Versions whose suite list is incomplete because the round budget ran out.
     pub truncated: Vec<u16>,
+    /// JA4S of the first full-offer hello the server accepted (highest version first).
+    pub ja4s: Option<String>,
+    /// TLS 1.3 suites in selection order (filled by `enumerate13`).
+    pub tls13: Vec<u16>,
+    pub tls13_truncated: bool,
 }
 
 /// Weakness classes that each map to one finding (tls-broken-cipher, tls-3des, tls-no-pfs).
@@ -569,7 +758,8 @@ pub async fn enumerate(
                         version: v,
                         cipher,
                         cert,
-                    }) if v == version && suites.contains(&cipher) => Some((cipher, cert)),
+                        ja4s,
+                    }) if v == version && suites.contains(&cipher) => Some((cipher, cert, ja4s)),
                     _ => None,
                 }
             }
@@ -578,9 +768,12 @@ pub async fn enumerate(
             break;
         }
         budget -= 1;
-        let Some((first, cert)) = ask(offered.clone()).await else {
+        let Some((first, cert, ja4s)) = ask(offered.clone()).await else {
             continue;
         };
+        if support.ja4s.is_none() && !ja4s.is_empty() {
+            support.ja4s = Some(ja4s);
+        }
         chosen.push(first);
         offered.retain(|c| *c != first);
         if support.cert.is_none() {
@@ -602,7 +795,7 @@ pub async fn enumerate(
                 continue;
             }
             budget -= 1;
-            if let Some((cipher, cert)) = ask(subset).await {
+            if let Some((cipher, cert, _)) = ask(subset).await {
                 chosen.push(cipher);
                 offered.retain(|c| *c != cipher);
                 if support.cert.is_none() {
@@ -614,7 +807,7 @@ pub async fn enumerate(
         while budget > 0 && !exhausted {
             budget -= 1;
             match ask(offered.clone()).await {
-                Some((cipher, cert)) => {
+                Some((cipher, cert, _)) => {
                     chosen.push(cipher);
                     offered.retain(|c| *c != cipher);
                     exhausted = offered.is_empty();
@@ -643,8 +836,23 @@ pub fn summarize(support: &Support, negotiated: Option<&str>) -> Fields {
     let mut versions: Vec<String> = vec![];
     let mut weak: Vec<String> = vec![];
     let mut ciphers = vec![];
-    if negotiated == Some("TLS1.3") {
+    if negotiated == Some("TLS1.3") || !support.tls13.is_empty() {
         versions.push("TLS1.3".into());
+    }
+    if !support.tls13.is_empty() {
+        let names: Vec<&str> = support
+            .tls13
+            .iter()
+            .map(|id| {
+                let (n, w) = suite13_name(*id);
+                if let Some(w) = w {
+                    weak.push(format!("TLS1.3: {n} - {w}"));
+                }
+                n
+            })
+            .collect();
+        f.insert("tls13_suites".into(), names.join(", "));
+        ciphers.push(format!("TLS1.3: {}", names.join(", ")));
     }
     for (v, suites) in &support.accepted {
         let name = version_name(*v);
@@ -677,10 +885,17 @@ pub fn summarize(support: &Support, negotiated: Option<&str>) -> Fields {
     if !weak.is_empty() {
         f.insert("weak".into(), weak.join("; "));
     }
-    if !support.truncated.is_empty() {
+    let mut truncated: Vec<&str> = vec![];
+    if support.tls13_truncated {
+        truncated.push("TLS1.3");
+    }
+    truncated.extend(support.truncated.iter().map(|v| version_name(*v)));
+    if !truncated.is_empty() {
         f.insert("suites_truncated".into(), "true".into());
-        let names: Vec<&str> = support.truncated.iter().map(|v| version_name(*v)).collect();
-        f.insert("suites_truncated_versions".into(), names.join(", "));
+        f.insert("suites_truncated_versions".into(), truncated.join(", "));
+    }
+    if let Some(j) = &support.ja4s {
+        f.insert("ja4s".into(), j.clone());
     }
     f
 }
@@ -716,7 +931,20 @@ pub async fn inspect_after(
     gate: &Gate,
     handshake: Result<Fields, String>,
 ) -> Result<Fields, String> {
-    let support = enumerate(ip, port, limit, rounds, gate).await;
+    let mut support = enumerate(ip, port, limit, rounds, gate).await;
+    // TLS 1.3 only when the rustls handshake negotiated it: 1.2-only and legacy servers get
+    // no extra connection. Its full-offer ServerHello gives the JA4S (preferred over 1.2's).
+    let modern = handshake
+        .as_ref()
+        .is_ok_and(|f| f.get("negotiated").map(String::as_str) == Some("TLS1.3"));
+    if modern {
+        let (suites, truncated, ja4s) = enumerate13(ip, port, limit, rounds, gate).await;
+        support.tls13 = suites;
+        support.tls13_truncated = truncated;
+        if ja4s.is_some() {
+            support.ja4s = ja4s;
+        }
+    }
     let mut fields = match handshake {
         Ok(fields) => fields,
         Err(e) if support.accepted.is_empty() => return Err(e),
@@ -806,25 +1034,25 @@ mod tests {
     #[test]
     fn flight_parsing() {
         let flight = server_flight(0x0303, 0xC02F, Some(&[1, 2, 3, 4]), false);
-        assert_eq!(
-            parse_flight(&flight),
-            Reply::Accepted {
-                version: 0x0303,
-                cipher: 0xC02F,
-                cert: Some(vec![1, 2, 3, 4])
-            }
-        );
+        let Reply::Accepted {
+            version,
+            cipher,
+            cert,
+            ja4s,
+        } = parse_flight(&flight)
+        else {
+            panic!("not accepted");
+        };
+        assert_eq!((version, cipher), (0x0303, 0xC02F));
+        assert_eq!(cert, Some(vec![1, 2, 3, 4]));
+        assert!(ja4s.starts_with("t120000_c02f_"), "{ja4s}");
         assert!(has_done(&flight));
         // The same flight split mid-message across two records still parses.
         let split = server_flight(0x0301, 0x002F, Some(&[9; 300]), true);
-        assert_eq!(
+        assert!(matches!(
             parse_flight(&split),
-            Reply::Accepted {
-                version: 0x0301,
-                cipher: 0x002F,
-                cert: Some(vec![9; 300])
-            }
-        );
+            Reply::Accepted { version: 0x0301, cipher: 0x002F, cert: Some(c), .. } if c == vec![9; 300]
+        ));
         assert_eq!(parse_flight(&[21, 3, 3, 0, 2, 2, 40]), Reply::Alert(40));
         assert_eq!(parse_flight(&[0x48, 0x54, 0x54, 0x50, 0x2f]), Reply::Other);
         assert_eq!(parse_flight(&[]), Reply::Other);
@@ -835,8 +1063,7 @@ mod tests {
     fn summary_flags_legacy_and_weak() {
         let support = Support {
             accepted: vec![(0x0303, vec![0xC02F, 0x002F]), (0x0301, vec![0x0005])],
-            cert: None,
-            truncated: vec![],
+            ..Default::default()
         };
         let f = summarize(&support, Some("TLS1.3"));
         assert!(!f.contains_key("suites_truncated"));
@@ -901,6 +1128,22 @@ mod tests {
         assert_eq!(fields["self_signed"], "true");
         assert!(fields["san"].contains("ns-test.local"), "{fields:?}");
         assert_eq!(fields["key"], "EC 256");
+        // rustls (ring) follows the client's order and has no CCM suites.
+        assert_eq!(
+            fields["tls13_suites"],
+            "TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256",
+            "{fields:?}"
+        );
+        assert!(fields["ciphers"].starts_with("TLS1.3: TLS_AES_128_GCM"));
+        assert!(
+            !fields
+                .get("suites_truncated_versions")
+                .is_some_and(|v| v.contains("TLS1.3")),
+            "{fields:?}"
+        );
+        // JA4S of the full-offer TLS 1.3 hello: version 13, cipher 1301.
+        assert!(fields["ja4s"].starts_with("t130"), "{fields:?}");
+        assert!(fields["ja4s"].contains("00_1301_"), "{fields:?}");
     }
 
     #[test]
@@ -1029,5 +1272,146 @@ mod tests {
             .push(rcgen::DnType::CommonName, "ns-test.local");
         let cert = params.self_signed(&key).unwrap();
         (cert.der().to_vec(), key.serialize_der())
+    }
+
+    #[test]
+    fn tls13_hello_is_well_formed() {
+        let ids: Vec<u16> = TLS13_SUITES.iter().map(|s| s.0).collect();
+        let h = client_hello13(&ids, [1; 32], [2; 32], [3; 32]);
+        assert_eq!(h[0], 22);
+        assert_eq!(usize::from(u16::from_be_bytes([h[3], h[4]])), h.len() - 5);
+        let hs_len = (usize::from(h[6]) << 16) | (usize::from(h[7]) << 8) | usize::from(h[8]);
+        assert_eq!(hs_len, h.len() - 9);
+        assert_eq!(&h[9..11], &[3, 3]);
+        assert_eq!(h[43], 32, "session id length");
+        let at = 44 + 32;
+        assert_eq!(u16::from_be_bytes([h[at], h[at + 1]]), 10);
+        assert_eq!(&h[at + 2..at + 4], &[0x13, 0x01]);
+        // supported_versions = TLS 1.3 only, key share x25519 with the given bytes.
+        assert!(h.windows(7).any(|w| w == [0, 43, 0, 3, 2, 3, 4]));
+        assert!(h.ends_with(&[3; 32]));
+        assert!(h.windows(4).any(|w| w == [8, 4, 8, 5]), "RSA-PSS offered");
+    }
+
+    fn sh13(cipher: u16, random: [u8; 32]) -> Vec<u8> {
+        let mut b = vec![3, 3];
+        b.extend(random);
+        b.push(0);
+        b.extend(cipher.to_be_bytes());
+        b.push(0);
+        let exts = [0u8, 43, 0, 2, 3, 4, 0, 51, 0, 4, 0, 0x1d, 0, 0];
+        b.extend((exts.len() as u16).to_be_bytes());
+        b.extend(exts);
+        let mut hs = vec![2];
+        hs.extend(&(b.len() as u32).to_be_bytes()[1..]);
+        hs.extend(b);
+        let mut rec = vec![22, 3, 3];
+        rec.extend((hs.len() as u16).to_be_bytes());
+        rec.extend(hs);
+        rec
+    }
+
+    #[test]
+    fn first_server_hello_stops_before_encrypted_records() {
+        let mut flight = sh13(0x1302, [5; 32]);
+        flight.extend([20, 3, 3, 0, 1, 1, 23, 3, 3, 0, 4, 9, 9, 9, 9]);
+        let First::Hello(h) = first_server_hello(&flight) else {
+            panic!("{:?}", first_server_hello(&flight));
+        };
+        assert_eq!(
+            (h.cipher, h.selected_version, h.retry),
+            (0x1302, Some(0x0304), false)
+        );
+        assert_eq!(first_server_hello(&flight[..20]), First::Incomplete);
+        assert_eq!(
+            first_server_hello(&[21, 3, 3, 0, 2, 2, 40]),
+            First::Alert(40)
+        );
+        assert_eq!(first_server_hello(&[21, 3, 3]), First::Incomplete);
+        assert_eq!(first_server_hello(b"HTTP/1.1 400"), First::Other);
+        let First::Hello(hrr) = first_server_hello(&sh13(0x1301, crate::fingerprint::HRR_RANDOM))
+        else {
+            panic!()
+        };
+        assert!(hrr.retry);
+    }
+
+    /// A raw TLS 1.3 server choosing by its own preference among `prefs`, answering a
+    /// HelloRetryRequest when `retry` is set. Counts hellos.
+    async fn tls13_server(
+        prefs: &'static [u16],
+        retry: bool,
+    ) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hellos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = hellos.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let count = count.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n < 80 {
+                        return;
+                    }
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let at = 44 + usize::from(buf[43]);
+                    let len = usize::from(u16::from_be_bytes([buf[at], buf[at + 1]]));
+                    let offered: Vec<u16> = buf[at + 2..at + 2 + len]
+                        .chunks(2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect();
+                    let reply = match prefs.iter().find(|p| offered.contains(p)) {
+                        Some(&c) if retry => sh13(c, crate::fingerprint::HRR_RANDOM),
+                        Some(&c) => sh13(c, [7; 32]),
+                        None => vec![21, 3, 3, 0, 2, 2, 40],
+                    };
+                    let _ = s.write_all(&reply).await;
+                    let _ = s.read(&mut buf).await;
+                });
+            }
+        });
+        (port, hellos)
+    }
+
+    #[tokio::test]
+    async fn tls13_suites_are_enumerated_within_the_budget() {
+        let ip = "127.0.0.1".parse().unwrap();
+        let limit = Duration::from_secs(2);
+        static PREFS: &[u16] = &[0x1302, 0x1303, 0x1301];
+        let (port, hellos) = tls13_server(PREFS, false).await;
+        let (suites, truncated, ja4s) = enumerate13(ip, port, limit, 6, &Gate::unlimited()).await;
+        assert_eq!(suites, PREFS);
+        assert!(!truncated);
+        assert!(ja4s.unwrap().starts_with("t130200_1302_"));
+        assert_eq!(
+            hellos.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "3 accepted + 1 refused"
+        );
+        // Budget of 2: the list is cut and marked truncated.
+        let (port, hellos) = tls13_server(PREFS, false).await;
+        let (suites, truncated, _) = enumerate13(ip, port, limit, 2, &Gate::unlimited()).await;
+        assert_eq!((suites.as_slice(), truncated), (&PREFS[..2], true));
+        assert_eq!(hellos.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // HelloRetryRequest still names the suite, but gives no JA4S.
+        let (port, _) = tls13_server(PREFS, true).await;
+        let (suites, _, ja4s) = enumerate13(ip, port, limit, 6, &Gate::unlimited()).await;
+        assert_eq!(suites, PREFS);
+        assert_eq!(ja4s, None);
+        let s = Support {
+            tls13: vec![0x1301, 0x1305],
+            tls13_truncated: true,
+            ..Default::default()
+        };
+        let f = summarize(&s, Some("TLS1.3"));
+        assert_eq!(f["versions"], "TLS1.3");
+        assert_eq!(
+            f["tls13_suites"],
+            "TLS_AES_128_GCM_SHA256, TLS_AES_128_CCM_8_SHA256"
+        );
+        assert!(f["weak"].contains("truncated 8-byte tag"));
+        assert_eq!(f["suites_truncated_versions"], "TLS1.3");
     }
 }
