@@ -44,20 +44,17 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) {
         gate.wait().await;
         let task = async {
             match port {
-                502 => modbus(h.ip, s.modbus_unit).await,
-                102 => s7(h.ip, s.s7_rack, s.s7_slot, gate).await,
-                4840 => opcua::discover(h.ip, gate).await,
-                44818 => enip(h.ip).await,
-                _ => bacnet(h.ip).await,
+                502 => modbus(h.ip, s.modbus_unit).await.map(Some),
+                102 => s7(h.ip, s.s7_rack, s.s7_slot, gate).await.map(Some),
+                4840 => opcua::discover(h.ip, gate).await.map(Some),
+                44818 => enip(h.ip).await.map(Some),
+                _ => bacnet(SocketAddr::new(h.ip, 47808)).await,
             }
         };
-        match tokio::time::timeout(
-            Duration::from_millis(s.port_timeout.clamp(500, 10000) as u64 * 4),
-            task,
-        )
-        .await
-        {
-            Ok(Ok(fields)) => {
+        match tokio::time::timeout(identify_timeout(port, s.port_timeout), task).await {
+            // BACnet: no answer or an ICMP "port unreachable" simply means no BACnet device.
+            Ok(Ok(None)) => {}
+            Ok(Ok(Some(fields))) => {
                 h.responding = true;
                 for (key, value) in fields {
                     h.identity.insert(format!("{protocol}.{key}"), value);
@@ -72,6 +69,23 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) {
             }
         }
     }
+}
+/// How long one identification exchange may take. The BACnet Who-Is is sent to every host,
+/// open port or not, so a silent host must not cost more than one port timeout (at most 2 s).
+fn identify_timeout(port: u16, port_timeout: u32) -> Duration {
+    if port == 47808 {
+        Duration::from_millis(u64::from(port_timeout.clamp(200, 2000)))
+    } else {
+        Duration::from_millis(u64::from(port_timeout.clamp(500, 10000)) * 4)
+    }
+}
+/// A refused/reset UDP exchange (ICMP port unreachable; WSAECONNRESET on Windows) means nothing
+/// listens there: not an error.
+fn no_listener(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused
+    )
 }
 async fn modbus(ip: IpAddr, unit: u8) -> Result<Fields, String> {
     let socket = TcpStream::connect((ip, 502))
@@ -204,25 +218,31 @@ pub(crate) fn parse_list_identity(b: &[u8]) -> Result<Fields, String> {
     }
     Err("No identity item returned".into())
 }
-async fn bacnet(ip: IpAddr) -> Result<Fields, String> {
-    if !ip.is_ipv4() {
-        return Err("BACnet/IP requires IPv4".into());
+/// `Ok(None)`: no BACnet device answers there (port unreachable). Silence is left to the
+/// caller's timeout.
+async fn bacnet(target: SocketAddr) -> Result<Option<Fields>, String> {
+    if !target.is_ipv4() {
+        return Ok(None);
     }
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .map_err(|e| e.to_string())?;
-    socket
-        .connect(SocketAddr::new(ip, 47808))
-        .await
-        .map_err(|e| e.to_string())?;
+    let local = if target.ip().is_loopback() {
+        "127.0.0.1:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let socket = UdpSocket::bind(local).await.map_err(|e| e.to_string())?;
+    socket.connect(target).await.map_err(|e| e.to_string())?;
     // Unicast Who-Is. Never a subnet-wide broadcast.
-    socket
-        .send(&[0x81, 0x0a, 0, 8, 1, 0, 0x10, 8])
-        .await
-        .map_err(|e| e.to_string())?;
+    match socket.send(&[0x81, 0x0a, 0, 8, 1, 0, 0x10, 8]).await {
+        Ok(_) => {}
+        Err(e) if no_listener(&e) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
     let mut b = [0u8; 2048];
-    let n = socket.recv(&mut b).await.map_err(|e| e.to_string())?;
-    parse_bacnet(&b[..n])
+    match socket.recv(&mut b).await {
+        Ok(n) => parse_bacnet(&b[..n]).map(Some),
+        Err(e) if no_listener(&e) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 pub(crate) fn parse_bacnet(b: &[u8]) -> Result<Fields, String> {
     if b.len() < 8
@@ -230,14 +250,25 @@ pub(crate) fn parse_bacnet(b: &[u8]) -> Result<Fields, String> {
         || ![0x0a, 0x0b].contains(&b[1])
         || be16(b, 2)? as usize != b.len()
         || b[4] != 1
-        || b[5] & 0xa8 != 0
+        || b[5] & 0x80 != 0
     {
         return Err("Unsupported BACnet frame".into());
     }
+    // NPCI control (ASHRAE 135 clause 6.2.2): 0x80 network layer message, 0x20 DNET/DLEN/DADR
+    // present, 0x08 SNET/SLEN/SADR present, 0x04 expecting reply, 0x03 priority. A hop count
+    // follows the source specifier when DNET is present.
+    let control = b[5];
     let mut i = 6;
-    if b[5] & 4 != 0 {
+    if control & 0x20 != 0 {
         let n = *b.get(i + 2).ok_or("Truncated NPDU")? as usize;
         i += 3 + n;
+    }
+    if control & 0x08 != 0 {
+        let n = *b.get(i + 2).ok_or("Truncated NPDU")? as usize;
+        i += 3 + n;
+    }
+    if control & 0x20 != 0 {
+        i += 1;
     }
     if b.get(i..i + 2) != Some(&[0x10, 0][..]) {
         return Err("Not an I-Am response".into());
@@ -415,5 +446,60 @@ mod tests {
         .unwrap();
         assert_eq!(f["device_id"], "42");
         assert_eq!(f["vendor_id"], "15");
+    }
+    const IAM: [u8; 14] = [0x10, 0, 0xc4, 2, 0, 0, 42, 0x22, 5, 0xdc, 0x91, 3, 0x21, 15];
+    fn bvlc(control: u8, npci: &[u8]) -> Vec<u8> {
+        let mut b = vec![0x81, 0x0a, 0, 0, 1, control];
+        b.extend(npci);
+        b.extend(IAM);
+        let n = b.len() as u16;
+        b[2..4].copy_from_slice(&n.to_be_bytes());
+        b
+    }
+    #[test]
+    fn bacnet_npci_control_bits() {
+        // 0x04 "expecting reply" has no address fields after it.
+        assert_eq!(parse_bacnet(&bvlc(0x04, &[])).unwrap()["device_id"], "42");
+        // I-Am from a device behind a router: SNET 5, SLEN 1, SADR 0x07.
+        let routed = parse_bacnet(&bvlc(0x08, &[0, 5, 1, 7])).unwrap();
+        assert_eq!(routed["device_id"], "42");
+        // DNET (global broadcast, DLEN 0) plus SNET, then the hop count.
+        let both = parse_bacnet(&bvlc(0x28, &[0xff, 0xff, 0, 0, 5, 1, 7, 255])).unwrap();
+        assert_eq!(both["vendor_id"], "15");
+        // A network layer message is not an I-Am.
+        assert!(parse_bacnet(&bvlc(0x80, &[])).is_err());
+        // Truncated address specifiers fail cleanly.
+        assert!(parse_bacnet(&[0x81, 0x0a, 0, 8, 1, 0x08, 0, 5]).is_err());
+    }
+    #[tokio::test]
+    async fn bacnet_port_unreachable_is_not_an_error() {
+        // A port nothing listens on: the ICMP port unreachable (WSAECONNRESET on Windows,
+        // ECONNREFUSED elsewhere) means "no BACnet", not a host error.
+        let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let target = closed.local_addr().unwrap();
+        drop(closed);
+        let r = tokio::time::timeout(Duration::from_secs(2), bacnet(target)).await;
+        // A timeout (no ICMP delivered on this platform) is silence, left to the caller.
+        if let Ok(result) = r {
+            assert_eq!(result, Ok(None));
+        }
+        // And a real answer still parses.
+        let device = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = device.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut b = [0u8; 64];
+            let (_, from) = device.recv_from(&mut b).await.unwrap();
+            device.send_to(&bvlc(0, &[]), from).await.unwrap();
+        });
+        let f = bacnet(address).await.unwrap().unwrap();
+        assert_eq!(f["device_id"], "42");
+        server.await.unwrap();
+    }
+    #[test]
+    fn bacnet_wait_is_capped() {
+        assert_eq!(identify_timeout(47808, 2000), Duration::from_secs(2));
+        assert_eq!(identify_timeout(47808, 10000), Duration::from_secs(2));
+        assert_eq!(identify_timeout(47808, 300), Duration::from_millis(300));
+        assert_eq!(identify_timeout(502, 2000), Duration::from_secs(8));
     }
 }
