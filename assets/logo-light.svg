@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="104" viewBox="0 0 440 104" role="img" aria-labelledby="t">
+  <title id="t">Network Scope</title>
+  <defs>
+    <radialGradient id="g" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity=".95"/>
+      <stop offset="1" stop-color="#2563eb" stop-opacity=".95"/>
+    </radialGradient>
+    <linearGradient id="sw" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity=".0"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity=".55"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(52 52)">
+    <circle r="46" fill="#f8fafc" stroke="url(#g)" stroke-width="4"/>
+    <circle r="31" fill="none" stroke="#cbd5e1" stroke-width="1.6"/>
+    <circle r="16" fill="none" stroke="#cbd5e1" stroke-width="1.6"/>
+    <path d="M0 -44 V44 M-44 0 H44" stroke="#cbd5e1" stroke-width="1.2"/>
+    <path d="M0 0 L0 -44 A44 44 0 0 1 38.1 -22 Z" fill="url(#sw)"/>
+    <path d="M0 0 L38.1 -22" stroke="#22d3ee" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M14 -24 L27 -8 L-20 12 L14 -24" fill="none" stroke="#2563eb" stroke-width="1.6" stroke-opacity=".8"/>
+    <circle cx="14" cy="-24" r="4.2" fill="#22d3ee"/>
+    <circle cx="27" cy="-8" r="3.6" fill="#2563eb"/>
+    <circle cx="-20" cy="12" r="4.2" fill="#f59e0b"/>
+    <circle r="3.2" fill="#22d3ee"/>
+  </g>
+  <text x="118" y="58" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="40" font-weight="700" fill="#0f172a" letter-spacing="-.5">Network<tspan fill="#2563eb" font-weight="600"> Scope</tspan></text>
+  <text x="120" y="84" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif" font-size="15" fill="#475569" letter-spacing=".4">IP · PORT · OT ASSET DISCOVERY</text>
+</svg>
