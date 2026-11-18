@@ -136,7 +136,9 @@ const CVE_RULES: &[CveRule] = &[
     CveRule {
         product: "openssh",
         min: None,
-        max: Some("7.7"),
+        // Affected through 7.7 (fixed in 7.8). "7.7p1" parses as [7, 7, 1], above "7.7", so the
+        // exclusive bound must be 7.8 to include 7.7 and 7.7p1.
+        max: Some("7.8"),
         severity: Severity::Low,
         cve: &["CVE-2018-15473"],
         title: "OpenSSH username enumeration",
@@ -182,6 +184,42 @@ const CVE_RULES: &[CveRule] = &[
         title: "IIS 6.0 WebDAV buffer overflow",
     },
 ];
+/// PHP branch end-of-life dates (end of security support, php.net/supported-versions).
+/// Branches not listed here (8.2 and newer once added) are not flagged; extend the table
+/// when php.net publishes new dates. Last reviewed 2026-11.
+const PHP_EOL: &[(&str, &str)] = &[
+    ("8.1", "2025-12-31"),
+    ("8.2", "2026-12-31"),
+    ("8.3", "2027-12-31"),
+    ("8.4", "2028-12-31"),
+];
+
+/// End-of-life date when `version` (a `PHP/x.y.z` value) is unsupported on `today` (ISO date).
+/// Everything older than the first listed branch is long out of support.
+pub fn php_eol(version: &str, today: &str) -> Option<String> {
+    let v = parse_version(version);
+    if v.is_empty() {
+        return None;
+    }
+    let (oldest, oldest_eol) = PHP_EOL[0];
+    if compare(&v, &parse_version(oldest)).is_lt() {
+        return Some(format!("before {oldest_eol}"));
+    }
+    let branch = [v[0], v.get(1).copied().unwrap_or(0)];
+    PHP_EOL
+        .iter()
+        .find(|(b, _)| parse_version(b) == branch)
+        .filter(|(_, eol)| *eol < today)
+        .map(|(_, eol)| (*eol).to_string())
+}
+
+fn today() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    crate::tls::date(now)
+}
+
 const BACKPORT_NOTE: &str =
     "Version-based hint only: distributions backport fixes without changing the version. Confirm with the vendor advisory or an authenticated check.";
 
@@ -273,6 +311,19 @@ pub fn analyze_host(h: &Host) -> Vec<Finding> {
                         "Renew the certificate before it expires.",
                     );
                 }
+            }
+            // The validity period has two ends: a certificate dated in the future (device
+            // clock reset, wrong issuance date) fails verification just like an expired one.
+            if get(format!("tls.{p}.not_yet_valid")) == "true" {
+                o.add(
+                    Severity::Medium,
+                    "tls-cert-not-yet-valid",
+                    "TLS certificate is not yet valid",
+                    port,
+                    format!("not before {}", get(format!("tls.{p}.not_before"))),
+                    &[],
+                    "Check the device clock and reissue the certificate with a correct validity period.",
+                );
             }
             if get(format!("tls.{p}.self_signed")) == "true" {
                 o.add(
@@ -416,7 +467,7 @@ pub fn analyze_host(h: &Host) -> Vec<Finding> {
             "redis" if !version.is_empty() => o.add(Severity::Critical, "redis-noauth", "Redis answers without authentication", port, svc, &[], "Require authentication and bind Redis to localhost or a private interface."),
             "memcached" if !version.is_empty() => o.add(Severity::High, "memcached-open", "memcached answers without authentication", port, svc, &[], "Bind to localhost or firewall it; exposed memcached is abused for amplification and data theft."),
             "mqtt" if svc.contains("anonymous connection accepted") => o.add(Severity::High, "mqtt-anonymous", "MQTT broker accepts anonymous clients", port, svc, &[], "Require authentication and per-topic ACLs."),
-            "ldap" => o.add(Severity::Low, "ldap-anonymous", "LDAP answers an anonymous bind", port, svc, &[], "Disable anonymous binds unless needed; prefer LDAPS."),
+            "ldap" if svc.contains("anonymous bind accepted") => o.add(Severity::Low, "ldap-anonymous", "LDAP answers an anonymous bind", port, svc, &[], "Disable anonymous binds unless needed; prefer LDAPS."),
             "postgresql" if svc.contains("TLS not supported") => o.add(Severity::Low, "postgres-no-tls", "PostgreSQL does not offer TLS", port, svc, &[], "Enable ssl in postgresql.conf."),
             "ms-wbt-server" => {
                 if svc.contains("standard RDP security") {
@@ -426,9 +477,17 @@ pub fn analyze_host(h: &Host) -> Vec<Finding> {
                 }
             }
             "microsoft-ds" => {
-                if svc.contains("SMBv1") {
-                    o.add(Severity::High, "smb1-enabled", "SMBv1 is enabled", port, svc, &["CVE-2017-0144"], "Disable SMBv1; confirm MS17-010 is installed (EternalBlue exposure depends on patch level).");
-                } else if svc.contains("signing disabled") || svc.contains("not required") {
+                // Independent checks: a server can speak SMB2/3 without signing and still accept
+                // an SMB1 negotiate (reported in `smb.<port>.smb1`).
+                if svc.contains("SMBv1") || get(format!("smb.{p}.smb1")) == "accepted" {
+                    let evidence = if svc.contains("SMBv1") {
+                        svc.to_string()
+                    } else {
+                        format!("{svc}; SMB1 negotiate (NT LM 0.12) accepted")
+                    };
+                    o.add(Severity::High, "smb1-enabled", "SMBv1 is enabled", port, evidence, &["CVE-2017-0144"], "Disable SMBv1; confirm MS17-010 is installed (EternalBlue exposure depends on patch level).");
+                }
+                if svc.contains("signing disabled") || svc.contains("not required") {
                     o.add(Severity::Medium, "smb-signing", "SMB signing is not required", port, svc, &[], "Require SMB signing to prevent relay attacks.");
                 }
             }
@@ -506,19 +565,23 @@ pub fn analyze_host(h: &Host) -> Vec<Finding> {
             }
         }
         if let Some(v) = get(format!("http.{p}.powered_by")).strip_prefix("PHP/") {
-            if in_range(v, None, Some("8.1")) {
+            if let Some(eol) = php_eol(v, &today()) {
                 o.add(
                     Severity::Low,
                     "php-eol",
                     "PHP release is no longer supported",
                     port,
-                    format!("PHP {v}"),
+                    format!("PHP {v} (end of life {eol})"),
                     &[],
                     "Upgrade to a supported PHP release.",
                 );
             }
         }
-        if crate::service::is_ot_port(p) {
+        // 2222/tcp is EtherNet/IP I/O (and legacy Allen-Bradley CSP) but also a very common
+        // alternative SSH port; service detection only listens there, so an SSH greeting
+        // means it is not an industrial service.
+        let ssh_on_2222 = p == 2222 && name == "ssh";
+        if crate::service::is_ot_port_candidate(p) && !ssh_on_2222 {
             o.add(Severity::Medium, "ot-reachable", "Industrial protocol port is reachable from the scanner", port, format!("TCP {p} open"), &[], "OT services should only be reachable from the control network; check segmentation.");
         }
     }
@@ -828,6 +891,121 @@ mod tests {
         let mut s = host(&[], &[("udp.161", "SNMP sysDescr: Linux")]);
         s.udp_open = vec![161];
         assert_eq!(ids(&s), ["snmp-public"]);
+    }
+
+    #[test]
+    fn not_yet_valid_certificate_is_reported() {
+        let h = host(
+            &[443],
+            &[
+                ("tls.443.subject", "CN=x"),
+                ("tls.443.not_yet_valid", "true"),
+                ("tls.443.not_before", "2999-01-01"),
+                ("tls.443.days_left", "400000"),
+            ],
+        );
+        let f = analyze_host(&h);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].id, "tls-cert-not-yet-valid");
+        assert!(f[0].evidence.contains("2999-01-01"));
+    }
+
+    #[test]
+    fn openssh_username_enumeration_includes_7_7() {
+        let cve = |v: &str| {
+            let h = host(
+                &[22],
+                &[("svc.22.product", "OpenSSH"), ("svc.22.version", v)],
+            );
+            ids(&h).contains(&"cve-cve-2018-15473".to_string())
+        };
+        assert!(cve("7.4"));
+        assert!(cve("7.7"));
+        assert!(cve("7.7p1"));
+        assert!(!cve("7.8"));
+        assert!(!cve("7.8p1"));
+    }
+
+    #[test]
+    fn php_end_of_life_is_date_aware() {
+        let today = "2026-11-18";
+        assert_eq!(php_eol("7.4.33", today).unwrap(), "before 2025-12-31");
+        assert_eq!(php_eol("8.0.30", today).unwrap(), "before 2025-12-31");
+        assert_eq!(php_eol("8.1.2", today).unwrap(), "2025-12-31");
+        assert_eq!(
+            php_eol("8.2.10", today),
+            None,
+            "8.2 is supported until 2026-12-31"
+        );
+        assert_eq!(php_eol("8.2.10", "2027-01-01").unwrap(), "2026-12-31");
+        assert_eq!(php_eol("8.3.1", today), None);
+        assert_eq!(
+            php_eol("9.0.0", today),
+            None,
+            "unknown newer branches are not flagged"
+        );
+        assert_eq!(php_eol("junk", today), None);
+        let h = host(&[80], &[("http.80.powered_by", "PHP/8.1.2")]);
+        assert!(ids(&h).contains(&"php-eol".to_string()));
+    }
+
+    #[test]
+    fn ldap_smb_and_port_2222_findings() {
+        let refused = host(&[389], &[("svc.389", "ldap (anonymous bind refused)")]);
+        assert!(ids(&refused).is_empty());
+        let plain = host(&[389], &[("svc.389", "ldap")]);
+        assert!(ids(&plain).is_empty());
+        let open = host(&[389], &[("svc.389", "ldap (anonymous bind accepted)")]);
+        assert_eq!(ids(&open), ["ldap-anonymous"]);
+
+        // SMB1 accepted besides an SMB2 dialect without required signing: both findings.
+        let smb = host(
+            &[445],
+            &[
+                (
+                    "svc.445",
+                    "microsoft-ds SMB 3.1.1 (signing enabled, not required)",
+                ),
+                ("smb.445.smb1", "accepted"),
+            ],
+        );
+        let got = ids(&smb);
+        assert!(
+            got.contains(&"smb1-enabled".to_string()) && got.contains(&"smb-signing".to_string())
+        );
+        let smb2_only = host(
+            &[445],
+            &[
+                ("svc.445", "microsoft-ds SMB 3.1.1 (signing required)"),
+                ("smb.445.smb1", "refused"),
+            ],
+        );
+        assert!(ids(&smb2_only).is_empty());
+
+        let ssh = host(&[2222], &[("svc.2222", "ssh OpenSSH 9.6 (protocol 2.0)")]);
+        assert!(!ids(&ssh).contains(&"ot-reachable".to_string()));
+        let silent = host(&[2222], &[("svc.2222", "unidentified")]);
+        assert_eq!(ids(&silent), ["ot-reachable"]);
+    }
+
+    #[test]
+    fn rdp_follow_up_results_raise_nla_findings() {
+        let sev = |svc: &str| {
+            let h = host(&[3389], &[("svc.3389", svc)]);
+            analyze_host(&h)
+                .into_iter()
+                .find(|f| f.id == "rdp-no-nla")
+                .map(|f| f.severity)
+        };
+        assert_eq!(sev("ms-wbt-server RDP (NLA (CredSSP); NLA required)"), None);
+        assert_eq!(
+            sev("ms-wbt-server RDP (NLA (CredSSP); TLS security also accepted (NLA not required))"),
+            Some(Severity::Medium)
+        );
+        assert_eq!(
+            sev("ms-wbt-server RDP (NLA (CredSSP); standard RDP security also accepted (NLA not required))"),
+            Some(Severity::High)
+        );
     }
 
     #[test]
