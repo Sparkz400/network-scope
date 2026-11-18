@@ -76,6 +76,64 @@ fn strip_outer_parens(s: &str) -> &str {
     }
 }
 
+/// Our product names (from banners and HTTP Server headers) and the names nmap's version
+/// detection gives the same software. Import matches nmap names case-insensitively; export
+/// writes the nmap name. Entries whose names agree are listed so imports normalise the case.
+const PRODUCT_NAMES: &[(&str, &str)] = &[
+    ("Microsoft-IIS", "Microsoft IIS httpd"),
+    ("Microsoft-HTTPAPI", "Microsoft HTTPAPI httpd"),
+    ("Apache", "Apache httpd"),
+    ("nginx", "nginx"),
+    ("lighttpd", "lighttpd"),
+    ("OpenSSH", "OpenSSH"),
+    ("vsFTPd", "vsftpd"),
+    ("ProFTPD", "ProFTPD"),
+    ("Pure-FTPd", "Pure-FTPd"),
+    ("FileZilla Server", "FileZilla ftpd"),
+    ("Microsoft FTP Service", "Microsoft ftpd"),
+    ("Exim", "Exim smtpd"),
+    ("Postfix", "Postfix smtpd"),
+    ("Sendmail", "Sendmail"),
+    ("Microsoft Exchange/SMTP", "Microsoft Exchange smtpd"),
+    ("Redis", "Redis key-value store"),
+    ("memcached", "Memcached"),
+    ("MySQL", "MySQL"),
+    ("MariaDB", "MariaDB"),
+    ("MongoDB", "MongoDB"),
+    ("Microsoft SQL Server", "Microsoft SQL Server"),
+];
+
+/// nmap reports OpenSSH for Windows as product "OpenSSH", version "for_Windows_8.1".
+const NMAP_WINDOWS_SSH: &str = "for_Windows_";
+
+/// Our (product, version) as nmap writes them. Unknown names and names that already are nmap
+/// names pass through unchanged, so the mapping is idempotent.
+fn to_nmap_product(product: &str, version: &str) -> (String, String) {
+    if product == "OpenSSH for Windows" {
+        return ("OpenSSH".into(), format!("{NMAP_WINDOWS_SSH}{version}"));
+    }
+    let name = PRODUCT_NAMES
+        .iter()
+        .find(|(ours, _)| *ours == product)
+        .map_or(product, |(_, nmap)| *nmap);
+    (name.to_string(), version.to_string())
+}
+
+/// nmap's (product, version) as our scanner names them, so the risk and CVE rules (which match
+/// our names, e.g. `microsoft-iis`) fire on imported data and Windows OpenSSH is recognised.
+fn from_nmap_product(product: &str, version: &str) -> (String, String) {
+    if product.eq_ignore_ascii_case("OpenSSH") {
+        if let Some(v) = version.strip_prefix(NMAP_WINDOWS_SSH) {
+            return ("OpenSSH for Windows".into(), v.to_string());
+        }
+    }
+    let name = PRODUCT_NAMES
+        .iter()
+        .find(|(_, nmap)| nmap.eq_ignore_ascii_case(product))
+        .map_or(product, |(ours, _)| *ours);
+    (name.to_string(), version.to_string())
+}
+
 fn service_attrs(h: &Host, port: u16) -> Option<String> {
     let svc = h.identity.get(&format!("svc.{port}"))?.trim_start();
     if svc.starts_with("unidentified") {
@@ -106,22 +164,24 @@ fn service_attrs(h: &Host, port: u16) -> Option<String> {
         .join(" ");
     // Keep the summary lossless: whatever sits between the name and the info goes into
     // product/version, even when the identity keys do not spell it out.
+    // Product names from our identity keys are written the way nmap spells them; free text
+    // recovered from the summary is written as it is.
     let (product, version) = if middle == joined {
-        (product, version)
+        to_nmap_product(product, version)
     } else if !version.is_empty() && middle.ends_with(&format!(" {version}")) {
-        (
+        to_nmap_product(
             middle[..middle.len() - version.len() - 1].trim_end(),
             version,
         )
     } else {
-        (middle, "")
+        (middle.to_string(), String::new())
     };
     let mut s = format!("name=\"{}\"", esc(name));
     if !product.is_empty() {
-        let _ = write!(s, " product=\"{}\"", esc(product));
+        let _ = write!(s, " product=\"{}\"", esc(&product));
     }
     if !version.is_empty() {
-        let _ = write!(s, " version=\"{}\"", esc(version));
+        let _ = write!(s, " version=\"{}\"", esc(&version));
     }
     if !extra.is_empty() {
         let _ = write!(s, " extrainfo=\"{}\"", esc(extra));
@@ -198,7 +258,20 @@ pub fn export(snapshot: &Snapshot, timestamp: i64) -> String {
         for p in &h.open {
             let _ = write!(x, "<port protocol=\"tcp\" portid=\"{p}\"><state state=\"open\" reason=\"syn-ack\" reason_ttl=\"0\"/>");
             if let Some(attrs) = service_attrs(h, *p) {
-                let _ = write!(x, "<service {attrs}/>");
+                let cpes: Vec<&str> = h
+                    .identity
+                    .get(&format!("svc.{p}.cpe"))
+                    .map(|c| c.split_whitespace().collect())
+                    .unwrap_or_default();
+                if cpes.is_empty() {
+                    let _ = write!(x, "<service {attrs}/>");
+                } else {
+                    let _ = write!(x, "<service {attrs}>");
+                    for cpe in cpes {
+                        let _ = write!(x, "<cpe>{}</cpe>", esc(cpe));
+                    }
+                    x.push_str("</service>");
+                }
             }
             if let Some(subject) = h.identity.get(&format!("tls.{p}.subject")) {
                 let mut out = format!("Subject: {subject}");
@@ -407,6 +480,7 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
     if root.tag_name().name() != "nmaprun" {
         return Err("Not an nmap XML file (root element is not <nmaprun>)".into());
     }
+    let own_export = root.attribute("scanner") == Some("network-scope");
     let mut hosts = vec![];
     for host in root.children().filter(|n| n.has_tag_name("host")) {
         if child(host, "status").and_then(|s| s.attribute("state")) != Some("up") {
@@ -475,8 +549,17 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
                             format!("ssl/{name}")
                         };
                     }
+                    // Identity keys use our product names so the risk rules apply. The summary
+                    // keeps nmap's wording, except for our own exports, where it maps back so
+                    // export -> import is lossless.
+                    let (product, version) = from_nmap_product(attr("product"), attr("version"));
+                    let (shown_product, shown_version) = if own_export {
+                        (product.as_str(), version.as_str())
+                    } else {
+                        (attr("product"), attr("version"))
+                    };
                     let mut summary = name;
-                    for part in [attr("product"), attr("version")] {
+                    for part in [shown_product, shown_version] {
                         if !part.is_empty() {
                             summary.push(' ');
                             summary.push_str(part);
@@ -489,11 +572,23 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
                     if !summary.is_empty() {
                         identity.insert(format!("svc.{id}"), summary);
                     }
-                    if !attr("product").is_empty() {
-                        identity.insert(format!("svc.{id}.product"), attr("product").to_string());
+                    if !product.is_empty() {
+                        identity.insert(format!("svc.{id}.product"), product);
                     }
-                    if !attr("version").is_empty() {
-                        identity.insert(format!("svc.{id}.version"), attr("version").to_string());
+                    if !version.is_empty() {
+                        identity.insert(format!("svc.{id}.version"), version);
+                    }
+                    // Several <cpe> children are stored space-separated (CPE names contain no
+                    // spaces); export splits them again.
+                    let cpes: Vec<&str> = s
+                        .children()
+                        .filter(|n| n.has_tag_name("cpe"))
+                        .filter_map(|n| n.text())
+                        .map(str::trim)
+                        .filter(|c| !c.is_empty() && !c.contains(char::is_whitespace))
+                        .collect();
+                    if !cpes.is_empty() {
+                        identity.insert(format!("svc.{id}.cpe"), cpes.join(" "));
                     }
                 }
             }
@@ -931,5 +1026,112 @@ mod tests {
         // An entity bomb must fail or stay bounded rather than exhaust memory.
         let bomb = "<?xml version=\"1.0\"?><!DOCTYPE nmaprun [<!ENTITY a \"aaaaaaaaaa\"><!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;\"><!ENTITY c \"&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;\"><!ENTITY d \"&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;\"><!ENTITY e \"&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;\"><!ENTITY f \"&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;\"><!ENTITY g \"&f;&f;&f;&f;&f;&f;&f;&f;&f;&f;\"><!ENTITY h \"&g;&g;&g;&g;&g;&g;&g;&g;&g;&g;\"><!ENTITY i \"&h;&h;&h;&h;&h;&h;&h;&h;&h;&h;\"><!ENTITY j \"&i;&i;&i;&i;&i;&i;&i;&i;&i;&i;\">]><nmaprun args=\"&j;\"/>";
         assert!(import(bomb).is_err(), "roxmltree caps entity expansion");
+    }
+
+    #[test]
+    fn product_names_map_both_ways_idempotently() {
+        assert_eq!(
+            to_nmap_product("Microsoft-IIS", "6.0"),
+            ("Microsoft IIS httpd".into(), "6.0".into())
+        );
+        assert_eq!(
+            to_nmap_product("OpenSSH for Windows", "8.1"),
+            ("OpenSSH".into(), "for_Windows_8.1".into())
+        );
+        for (ours, nmap) in PRODUCT_NAMES {
+            let (n, _) = to_nmap_product(ours, "1");
+            assert_eq!(n, *nmap);
+            assert_eq!(to_nmap_product(&n, "1").0, n, "idempotent for {n}");
+            assert_eq!(from_nmap_product(nmap, "1").0, *ours);
+            assert_eq!(from_nmap_product(&nmap.to_uppercase(), "1").0, *ours);
+        }
+        assert_eq!(
+            from_nmap_product("OpenSSH", "for_Windows_8.1"),
+            ("OpenSSH for Windows".into(), "8.1".into())
+        );
+        assert_eq!(from_nmap_product("Unknown thing", "2").0, "Unknown thing");
+    }
+
+    fn nmap_doc(services: &str) -> String {
+        format!(
+            "<nmaprun scanner=\"nmap\" args=\"nmap -sV 10.0.0.5\"><host><status state=\"up\"/><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports>{services}</ports></host></nmaprun>"
+        )
+    }
+
+    #[test]
+    fn imported_nmap_products_trigger_our_rules() {
+        let xml = nmap_doc(
+            "<port protocol=\"tcp\" portid=\"80\"><state state=\"open\"/><service name=\"http\" product=\"Microsoft IIS httpd\" version=\"6.0\"><cpe>cpe:/a:microsoft:internet_information_services:6.0</cpe><cpe>cpe:/o:microsoft:windows</cpe></service></port>\
+             <port protocol=\"tcp\" portid=\"22\"><state state=\"open\"/><service name=\"ssh\" product=\"OpenSSH\" version=\"for_Windows_8.9\" extrainfo=\"protocol 2.0\"/></port>\
+             <port protocol=\"tcp\" portid=\"2222\"><state state=\"open\"/><service name=\"ssh\" product=\"OpenSSH\" version=\"9.0p1\"/></port>",
+        );
+        let s = import(&xml).unwrap();
+        let id = &s.hosts[0].identity;
+        assert_eq!(id["svc.80.product"], "Microsoft-IIS");
+        assert_eq!(
+            id["svc.80"], "http Microsoft IIS httpd 6.0",
+            "nmap wording kept"
+        );
+        assert_eq!(
+            id["svc.80.cpe"],
+            "cpe:/a:microsoft:internet_information_services:6.0 cpe:/o:microsoft:windows"
+        );
+        assert_eq!(id["svc.22.product"], "OpenSSH for Windows");
+        assert_eq!(id["svc.22.version"], "8.9");
+        let findings = crate::risk::analyze_host(&s.hosts[0]);
+        let cves: Vec<(Option<u16>, &str)> = findings
+            .iter()
+            .flat_map(|f| f.cve.iter().map(move |c| (f.port, c.as_str())))
+            .collect();
+        assert!(cves.contains(&(Some(80), "CVE-2017-7269")), "{cves:?}");
+        assert!(
+            !cves.contains(&(Some(22), "CVE-2024-6387")),
+            "Windows OpenSSH is not the portable release"
+        );
+        assert!(cves.contains(&(Some(2222), "CVE-2024-6387")), "{cves:?}");
+    }
+
+    #[test]
+    fn export_writes_nmap_products_and_cpes_and_round_trips() {
+        let mut s = snapshot();
+        let h = &mut s.hosts[0];
+        h.open = vec![22, 80, 443, 2200];
+        for (k, v) in [
+            ("svc.80", "http Microsoft-IIS 10.0 (200 OK)"),
+            ("svc.80.product", "Microsoft-IIS"),
+            ("svc.80.version", "10.0"),
+            (
+                "svc.80.cpe",
+                "cpe:2.3:a:microsoft:internet_information_services:10.0:*:*:*:*:*:*:*",
+            ),
+            ("svc.2200", "ssh OpenSSH for Windows 8.1 (protocol 2.0)"),
+            ("svc.2200.product", "OpenSSH for Windows"),
+            ("svc.2200.version", "8.1"),
+        ] {
+            h.identity.insert(k.into(), v.into());
+        }
+        let xml = export(&s, 1_700_000_000);
+        assert!(
+            xml.contains("product=\"Microsoft IIS httpd\" version=\"10.0\""),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("product=\"OpenSSH\" version=\"for_Windows_8.1\""),
+            "{xml}"
+        );
+        assert!(xml.contains(
+            "<cpe>cpe:2.3:a:microsoft:internet_information_services:10.0:*:*:*:*:*:*:*</cpe></service>"
+        ));
+        assert!(xml.contains("<service name=\"ssh\" product=\"OpenSSH\" version=\"9.6p1\""));
+        roxmltree::Document::parse(&xml).unwrap();
+        // Keys the nmap format carries (svc.*, os.*, mac.vendor) come back unchanged; the
+        // fixture's "unidentified" 8080 summary is not exported by design.
+        s.hosts[0].identity.remove("svc.8080");
+        s.hosts[0]
+            .identity
+            .retain(|k, _| k.starts_with("svc.") || k.starts_with("os.") || k.starts_with("mac."));
+        let back = import(&export(&s, 0)).unwrap();
+        assert_eq!(back.hosts[0].identity, s.hosts[0].identity, "lossless");
+        assert_eq!(crate::store::diff(&s, &back).unwrap(), Vec::<String>::new());
     }
 }

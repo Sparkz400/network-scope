@@ -694,6 +694,320 @@ pub fn csv(devices: &[Device]) -> String {
     out
 }
 
+/// What a device history is keyed by: a MAC address (any common notation) or an IP address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HistoryKey {
+    Mac(String),
+    Ip(IpAddr),
+}
+
+impl HistoryKey {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if let Ok(ip) = s.parse::<IpAddr>() {
+            return Ok(Self::Ip(ip));
+        }
+        let only_mac_chars = s
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || matches!(c, ':' | '-' | '.'));
+        match norm_mac(s) {
+            mac if only_mac_chars && !mac.is_empty() => Ok(Self::Mac(mac)),
+            _ => Err(format!(
+                "{s}: give a MAC address (AA:BB:CC:DD:EE:FF) or an IP address"
+            )),
+        }
+    }
+    /// Text the stored snapshot JSON must contain (case-insensitively for MACs) for the device to
+    /// appear in it; used to skip unrelated scans without parsing them.
+    pub fn needles(&self) -> Vec<String> {
+        match self {
+            Self::Ip(ip) => vec![ip.to_string()],
+            Self::Mac(mac) => vec![mac.clone(), mac.replace(':', "-"), mac.replace(':', "")],
+        }
+    }
+}
+
+/// One dated change in a device's history.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HistoryEvent {
+    pub scan_id: i64,
+    pub timestamp: i64,
+    /// `first-seen`, `ip-changed`, `mac-changed`, `hostname-changed`, `port-opened`,
+    /// `port-closed`, `udp-answering` or `udp-silent`.
+    pub kind: &'static str,
+    pub detail: String,
+}
+
+/// A device across all saved scans and captures.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct DeviceHistory {
+    pub query: String,
+    /// `mac` or `ip`.
+    pub key: &'static str,
+    pub first_seen: Option<i64>,
+    pub first_scan: Option<i64>,
+    pub last_seen: Option<i64>,
+    pub last_scan: Option<i64>,
+    /// Scans and captures that saw the device.
+    pub sightings: usize,
+    /// Scans and captures in the inventory.
+    pub scans: usize,
+    pub ips: Vec<IpAddr>,
+    pub macs: Vec<String>,
+    pub hostnames: Vec<String>,
+    /// Open TCP ports in the latest completed active scan that saw the device.
+    pub open_tcp: Vec<u16>,
+    pub events: Vec<HistoryEvent>,
+}
+
+/// Port state of the device in one completed active scan.
+struct PortState {
+    scan_id: i64,
+    settings: crate::scan::Settings,
+    tcp: BTreeSet<u16>,
+    udp: BTreeSet<u16>,
+}
+
+/// Builds a [`DeviceHistory`] from snapshots fed oldest first.
+///
+/// Only sightings produce events: a scan that does not mention the device says nothing (it may
+/// not have covered the address). Port changes are compared only between completed active scans
+/// that checked the device's ports with the same TCP port list; UDP only for ports probed in both.
+pub struct HistoryBuilder {
+    key: HistoryKey,
+    out: DeviceHistory,
+    ips: BTreeSet<IpAddr>,
+    macs: BTreeSet<String>,
+    hostnames: BTreeSet<String>,
+    last: Option<(BTreeSet<IpAddr>, BTreeSet<String>, BTreeSet<String>)>,
+    ports: Option<PortState>,
+}
+
+impl HistoryBuilder {
+    pub fn new(key: HistoryKey, query: &str) -> Self {
+        let out = DeviceHistory {
+            query: query.trim().to_string(),
+            key: match key {
+                HistoryKey::Mac(_) => "mac",
+                HistoryKey::Ip(_) => "ip",
+            },
+            ..Default::default()
+        };
+        Self {
+            key,
+            out,
+            ips: BTreeSet::new(),
+            macs: BTreeSet::new(),
+            hostnames: BTreeSet::new(),
+            last: None,
+            ports: None,
+        }
+    }
+
+    /// A scan that was not loaded (filtered out or unreadable) still counts towards `scans`.
+    pub fn skip(&mut self) {
+        self.out.scans += 1;
+    }
+
+    pub fn add(&mut self, scan_id: i64, timestamp: i64, snapshot: &crate::store::Snapshot) {
+        self.out.scans += 1;
+        let devices: Vec<Device> = merge(&snapshot.hosts, &snapshot.observations)
+            .into_iter()
+            .filter(|d| match &self.key {
+                HistoryKey::Mac(m) => norm_mac(&d.mac) == *m,
+                HistoryKey::Ip(ip) => d.ips.contains(ip),
+            })
+            .collect();
+        if devices.is_empty() {
+            return;
+        }
+        let ips: BTreeSet<IpAddr> = devices.iter().flat_map(|d| d.ips.clone()).collect();
+        let macs: BTreeSet<String> = devices
+            .iter()
+            .map(|d| norm_mac(&d.mac))
+            .filter(|m| !m.is_empty())
+            .collect();
+        let hostnames: BTreeSet<String> = devices
+            .iter()
+            .flat_map(|d| d.hostnames.clone())
+            .filter(|h| !h.is_empty())
+            .collect();
+        let mut event = |kind: &'static str, detail: String| {
+            self.out.events.push(HistoryEvent {
+                scan_id,
+                timestamp,
+                kind,
+                detail,
+            })
+        };
+        let list = |s: &BTreeSet<String>| s.iter().cloned().collect::<Vec<_>>().join(", ");
+        let ip_list = |s: &BTreeSet<IpAddr>| {
+            s.iter()
+                .map(IpAddr::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match &self.last {
+            None => event(
+                "first-seen",
+                format!(
+                    "{}{}",
+                    if ips.is_empty() {
+                        "no IP address".to_string()
+                    } else {
+                        ip_list(&ips)
+                    },
+                    if macs.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", list(&macs))
+                    }
+                ),
+            ),
+            Some((old_ips, old_macs, old_names)) => {
+                if !old_ips.is_empty() && !ips.is_empty() && *old_ips != ips {
+                    event(
+                        "ip-changed",
+                        format!("{} → {}", ip_list(old_ips), ip_list(&ips)),
+                    );
+                }
+                if !old_macs.is_empty() && !macs.is_empty() && *old_macs != macs {
+                    event(
+                        "mac-changed",
+                        format!("{} → {}", list(old_macs), list(&macs)),
+                    );
+                }
+                if !old_names.is_empty() && !hostnames.is_empty() && *old_names != hostnames {
+                    event(
+                        "hostname-changed",
+                        format!("{} → {}", list(old_names), list(&hostnames)),
+                    );
+                }
+            }
+        }
+        // Port comparison: active results of this scan for the device's addresses.
+        let hosts: Vec<&Host> = snapshot
+            .hosts
+            .iter()
+            .filter(|h| h.responding && ips.contains(&h.ip))
+            .collect();
+        if snapshot.complete && !hosts.is_empty() && hosts.iter().all(|h| h.ports_checked) {
+            let state = PortState {
+                scan_id,
+                settings: snapshot.settings.clone(),
+                tcp: hosts.iter().flat_map(|h| h.open.iter().copied()).collect(),
+                udp: hosts
+                    .iter()
+                    .flat_map(|h| h.udp_open.iter().copied())
+                    .collect(),
+            };
+            if let Some(prev) = &self.ports {
+                let scope = |s: &crate::scan::Settings| crate::scan::parse_ports(&s.ports).ok();
+                let same_tcp = scope(&prev.settings).is_some()
+                    && scope(&prev.settings) == scope(&state.settings);
+                let since = prev.scan_id;
+                if same_tcp {
+                    for p in state.tcp.difference(&prev.tcp) {
+                        event(
+                            "port-opened",
+                            format!("TCP {p} open (not in scan #{since})"),
+                        );
+                    }
+                    for p in prev.tcp.difference(&state.tcp) {
+                        event(
+                            "port-closed",
+                            format!("TCP {p} no longer observed open (open in scan #{since})"),
+                        );
+                    }
+                }
+                for p in crate::store::udp_probed_in_both(&prev.settings, &state.settings) {
+                    match (prev.udp.contains(&p), state.udp.contains(&p)) {
+                        (false, true) => event("udp-answering", format!("UDP {p} answering")),
+                        (true, false) => event(
+                            "udp-silent",
+                            format!("UDP {p} no longer answering (not proof of closure)"),
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+            self.out.open_tcp = state.tcp.iter().copied().collect();
+            self.ports = Some(state);
+        }
+        self.out.sightings += 1;
+        self.out.first_seen.get_or_insert(timestamp);
+        self.out.first_scan.get_or_insert(scan_id);
+        self.out.last_seen = Some(timestamp);
+        self.out.last_scan = Some(scan_id);
+        self.ips.extend(ips.iter().copied());
+        self.macs.extend(macs.iter().cloned());
+        self.hostnames.extend(hostnames.iter().cloned());
+        self.last = Some((ips, macs, hostnames));
+    }
+
+    pub fn finish(mut self) -> DeviceHistory {
+        self.out.ips = self.ips.into_iter().collect();
+        self.out.macs = self.macs.into_iter().collect();
+        self.out.hostnames = self.hostnames.into_iter().collect();
+        self.out
+    }
+}
+
+/// `devices --history` output: `text` (default) or `json`.
+#[allow(dead_code)] // Pending CLI wiring of `devices --history` (see NOTES-store-features.md).
+pub fn history_output(h: &DeviceHistory, format: &str) -> Result<String, String> {
+    match format {
+        "json" => serde_json::to_string_pretty(h).map_err(|e| e.to_string()),
+        "text" => Ok(history_text(h)),
+        _ => Err("Choose text or json".into()),
+    }
+}
+
+pub fn history_text(h: &DeviceHistory) -> String {
+    use crate::report::fmt_time;
+    use std::fmt::Write as _;
+    let mut o = format!("Device history for {} ({})\n", h.query, h.key);
+    let (Some(first), Some(last)) = (h.first_scan, h.last_scan) else {
+        let _ = write!(o, "Not seen in any of {} saved scans.", h.scans);
+        return o;
+    };
+    let _ = writeln!(
+        o,
+        "First seen: {} (scan #{first})\nLast seen:  {} (scan #{last})\nSeen in {} of {} saved scans",
+        fmt_time(h.first_seen.unwrap_or(0)),
+        fmt_time(h.last_seen.unwrap_or(0)),
+        h.sightings,
+        h.scans
+    );
+    let join = |v: Vec<String>| {
+        if v.is_empty() {
+            "-".into()
+        } else {
+            v.join(", ")
+        }
+    };
+    let _ = writeln!(
+        o,
+        "Addresses:  {}\nMACs:       {}\nHostnames:  {}\nOpen TCP:   {}",
+        join(h.ips.iter().map(IpAddr::to_string).collect()),
+        join(h.macs.clone()),
+        join(h.hostnames.clone()),
+        join(h.open_tcp.iter().map(u16::to_string).collect())
+    );
+    o.push_str("Events:\n");
+    for e in &h.events {
+        let _ = writeln!(
+            o,
+            "  {}  #{:<5} {:<16} {}",
+            fmt_time(e.timestamp),
+            e.scan_id,
+            e.kind,
+            e.detail
+        );
+    }
+    o.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,5 +1264,129 @@ mod tests {
         let text = csv(&[d]);
         assert!(text.contains("\"a\"\"b\""));
         assert!(text.starts_with("id,mac,"));
+    }
+
+    fn history_snapshot(ip: &str, mac: &str, open: &[u16]) -> crate::store::Snapshot {
+        crate::store::Snapshot {
+            targets: "10.0.0.0/24".into(),
+            complete: true,
+            settings: crate::scan::Settings {
+                ports: "22,80,443".into(),
+                ..Default::default()
+            },
+            hosts: vec![Host {
+                ip: ip.parse().unwrap(),
+                responding: true,
+                ping: None,
+                ttl: None,
+                hostname: String::new(),
+                mac: mac.into(),
+                open: open.to_vec(),
+                closed: 0,
+                unanswered: 0,
+                errors: vec![],
+                ports_checked: true,
+                identity: BTreeMap::new(),
+                udp_open: vec![],
+                trace: vec![],
+            }],
+            observations: vec![],
+            notes: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn history_key_accepts_ip_and_mac_notations() {
+        let mac = HistoryKey::Mac("AA:BB:CC:00:11:22".into());
+        for s in [
+            "aa:bb:cc:00:11:22",
+            "AA-BB-CC-00-11-22",
+            "aabb.cc00.1122",
+            " aabbcc001122 ",
+        ] {
+            assert_eq!(HistoryKey::parse(s).unwrap(), mac, "{s}");
+        }
+        assert_eq!(
+            HistoryKey::parse("fe80::1").unwrap(),
+            HistoryKey::Ip("fe80::1".parse().unwrap())
+        );
+        for bad in ["", "host.lan", "aa:bb:cc", "zz:bb:cc:00:11:22"] {
+            assert!(HistoryKey::parse(bad).is_err(), "{bad}");
+        }
+        assert!(mac.needles().contains(&"AABBCC001122".to_string()));
+    }
+
+    #[test]
+    fn history_compares_ports_only_between_comparable_complete_scans() {
+        let mac = "00:11:22:33:44:55";
+        let key = HistoryKey::parse(mac).unwrap();
+        let mut b = HistoryBuilder::new(key, mac);
+        b.add(1, 100, &history_snapshot("10.0.0.5", mac, &[22]));
+        // Partial scan: nothing about ports.
+        let mut partial = history_snapshot("10.0.0.5", mac, &[]);
+        partial.complete = false;
+        b.add(2, 200, &partial);
+        // Different port list: not compared, but becomes the new reference.
+        let mut wider = history_snapshot("10.0.0.5", mac, &[22, 8080]);
+        wider.settings.ports = "22,80,443,8080".into();
+        b.add(3, 300, &wider);
+        // Not seen at all: no event.
+        b.add(
+            4,
+            400,
+            &history_snapshot("10.0.0.9", "00:00:00:00:00:01", &[]),
+        );
+        let mut same = history_snapshot("10.0.0.5", mac, &[443]);
+        same.settings.ports = "8080,22,80,443".into();
+        b.add(5, 500, &same);
+        // Passive sighting only (no active result): updates last seen, no port event.
+        let mut passive = history_snapshot("10.0.0.5", mac, &[]);
+        passive.hosts.clear();
+        passive.observations.push(Observation {
+            protocol: "ARP".into(),
+            mac: mac.into(),
+            ip: Some("10.0.0.7".parse().unwrap()),
+            fields: BTreeMap::new(),
+        });
+        b.add(6, 600, &passive);
+        let h = b.finish();
+        let events: Vec<(i64, &str, &str)> = h
+            .events
+            .iter()
+            .map(|e| (e.scan_id, e.kind, e.detail.as_str()))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                (1, "first-seen", "10.0.0.5 (00:11:22:33:44:55)"),
+                (5, "port-opened", "TCP 443 open (not in scan #3)"),
+                (
+                    5,
+                    "port-closed",
+                    "TCP 22 no longer observed open (open in scan #3)"
+                ),
+                (
+                    5,
+                    "port-closed",
+                    "TCP 8080 no longer observed open (open in scan #3)"
+                ),
+                (6, "ip-changed", "10.0.0.5 → 10.0.0.7"),
+            ]
+        );
+        assert_eq!((h.sightings, h.scans), (5, 6));
+        assert_eq!((h.first_seen, h.last_seen), (Some(100), Some(600)));
+        assert_eq!(h.open_tcp, [443]);
+        let text = history_text(&h);
+        assert!(
+            text.contains("First seen: 1970-01-01 00:01 UTC (scan #1)"),
+            "{text}"
+        );
+        assert!(text.contains("port-opened"));
+        let json: serde_json::Value =
+            serde_json::from_str(&history_output(&h, "json").unwrap()).unwrap();
+        assert_eq!(json["events"][1]["kind"], "port-opened");
+        assert!(history_output(&h, "xml").is_err());
+        let empty = HistoryBuilder::new(HistoryKey::parse("10.1.1.1").unwrap(), "10.1.1.1");
+        assert!(history_text(&empty.finish()).contains("Not seen"));
     }
 }
