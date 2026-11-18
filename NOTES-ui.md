@@ -31,6 +31,8 @@ itself if the Vec is replaced or edited elsewhere, so no other bookkeeping is ne
 - TUI: `q`, `Q` and Esc stop the scan.
 - Scripts: the 250 ms wall limit is per host across all scripts (as the README already says);
   scripts that would start after the budget is spent are skipped with a note on the host.
+  Rhai's built-in `sleep()` blocked without reaching the wall-clock check (a `sleep(3)` held the
+  host for 3 s); it is now disabled in scripts. The README API list could mention that.
 
 ## Observations, not changed (outside scope or not bugs)
 - GUI `export()` (file dialog + write) still runs on the UI thread; it was not in the list.

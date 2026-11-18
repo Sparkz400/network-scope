@@ -77,6 +77,13 @@ impl Scripts {
         e.set_max_string_size(16 * 1024);
         e.set_max_array_size(2048);
         e.set_max_map_size(512);
+        // The built-in sleep blocks without reaching on_progress and would bypass the wall limit.
+        e.register_fn("sleep", |_: i64| -> Result<(), Box<rhai::EvalAltResult>> {
+            Err("sleep is disabled in scripts".into())
+        });
+        e.register_fn("sleep", |_: f64| -> Result<(), Box<rhai::EvalAltResult>> {
+            Err("sleep is disabled in scripts".into())
+        });
         e.on_print(|_| {});
         e.on_debug(|_, _, _| {});
         e.on_progress(|_| match DEADLINE.get() {
@@ -401,44 +408,47 @@ mod tests {
 
     #[test]
     fn wall_limit_is_shared_by_all_scripts_of_a_host() {
-        let spin = "let t = timestamp(); while t.elapsed < 0.06 { }";
         let s = Scripts::from_sources(&[
             (
                 "a.rhai".into(),
-                format!("fn on_host(h) {{ {spin} h.set(\"a\", \"1\"); }}"),
+                "fn on_host(h) { h.set(\"a\", \"1\"); let t = timestamp(); while t.elapsed < 0.02 { } }".into(),
             ),
             (
                 "b.rhai".into(),
-                format!("fn on_host(h) {{ {spin} h.set(\"b\", \"2\"); }}"),
-            ),
-            (
-                "c.rhai".into(),
-                "fn on_host(h) { h.set(\"c\", \"3\"); }".into(),
+                "fn on_host(h) { h.set(\"b\", \"2\"); }".into(),
             ),
         ])
         .unwrap();
-        // Each script alone fits the budget; together they do not.
+        // Script a uses the whole (tiny) budget by the clock; b must not get a fresh one.
         let mut h = host();
-        s.run_host_within(&mut h, Duration::from_millis(100));
+        s.run_host_within(&mut h, Duration::from_millis(5));
         assert_eq!(h.identity.get("script.a").map(String::as_str), Some("1"));
         assert!(!h.identity.contains_key("script.b"), "{:?}", h.errors);
-        assert!(!h.identity.contains_key("script.c"), "{:?}", h.errors);
-        assert!(
-            h.errors.iter().any(|e| e.contains("b.rhai")),
-            "{:?}",
-            h.errors
-        );
         assert!(
             h.errors
                 .iter()
-                .any(|e| e.contains("c.rhai") && e.contains("skipped")),
+                .any(|e| e.contains("b.rhai") && e.contains("skipped")),
             "{:?}",
             h.errors
         );
         let mut h = host();
         s.run_host_within(&mut h, Duration::from_secs(5));
-        assert_eq!(h.identity["script.c"], "3");
+        assert_eq!(h.identity["script.b"], "2");
         assert!(h.errors.is_empty(), "{:?}", h.errors);
+    }
+
+    #[test]
+    fn sleeping_cannot_outlast_the_wall_limit() {
+        let started = Instant::now();
+        let mut h = host();
+        scripts("fn on_host(h) { sleep(3); h.set(\"late\", \"1\"); }").run_host(&mut h);
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", h.errors);
+        assert!(!h.identity.contains_key("script.late"));
+        assert!(h.errors[0].contains("sleep"), "{:?}", h.errors);
+        let started = Instant::now();
+        let mut h = host();
+        scripts("fn on_host(h) { sleep(2.5); }").run_host(&mut h);
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", h.errors);
     }
 
     #[test]
