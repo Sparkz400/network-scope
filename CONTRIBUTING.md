@@ -36,7 +36,7 @@ cargo deny check
 cargo audit
 ```
 
-A new dependency must use a license from the `allow` list in `deny.toml`; if it needs another one, say so in the pull request.
+The `secrets` workflow scans the whole git history with [gitleaks](https://github.com/gitleaks/gitleaks) on every push; run `gitleaks git .` locally before pushing if you handle configs or captures. A new dependency must use a license from the `allow` list in `deny.toml`; if it needs another one, say so in the pull request.
 
 CI runs all of the above on Windows, Linux and macOS. A pull request must pass CI.
 

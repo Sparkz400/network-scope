@@ -92,7 +92,7 @@ First public release. The [documentation](https://sparkz400.github.io/network-sc
 ### Security
 
 - **Bundled SQLite 3.54.1** (rusqlite 0.41): fixes RUSTSEC-2026-0459 / CVE-2026-119375, where a crafted database and `-wal` file pair could make queries return uninitialised memory. Only inventory files from an untrusted source were exposed.
-- Dependency checks in CI: `cargo deny` (advisories, licenses, sources) and `cargo audit` on every change and weekly; release files carry signed build provenance (`gh attestation verify`).
+- Checks in CI: `cargo deny` (advisories, licenses, sources) and `cargo audit` on every change and weekly, and a gitleaks secret scan of the full history on every push; release files carry signed build provenance (`gh attestation verify`).
 
 ### Not done
 
