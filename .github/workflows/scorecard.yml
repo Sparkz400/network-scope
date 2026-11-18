@@ -1,0 +1,39 @@
+name: scorecard
+
+# OpenSSF Scorecard: weekly check of security practices (branch protection, pinned actions,
+# token permissions, dependency updates, ...). Results appear under Security > Code scanning
+# and on https://scorecard.dev/viewer/?uri=github.com/Sparkz400/network-scope
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: "41 6 * * 1" # weekly, Monday 06:41 UTC
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload the SARIF results to code scanning
+      id-token: write # publish results and the badge
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif

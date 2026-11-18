@@ -24,9 +24,8 @@ jobs:
       - name: Linux GUI build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets --locked -- -D warnings
@@ -57,7 +56,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
       - name: Build installer

@@ -73,7 +73,7 @@ pub fn save(path: &Path, snapshot: &Snapshot) -> Result<i64, String> {
             timestamp,
             snapshot.targets,
             snapshot.complete,
-            snapshot.hosts.len(),
+            i64::try_from(snapshot.hosts.len()).unwrap_or(i64::MAX),
             data
         ],
     )
@@ -94,7 +94,7 @@ pub fn list(path: &Path) -> Result<Vec<Entry>, String> {
                 timestamp: r.get(1)?,
                 targets: r.get(2)?,
                 complete: r.get(3)?,
-                hosts: r.get(4)?,
+                hosts: usize::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
             })
         })
         .map_err(|e| e.to_string())?;

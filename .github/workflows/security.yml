@@ -1,0 +1,44 @@
+name: security
+
+# Dependency checks: RustSec advisories, licenses, banned/duplicate crates and sources.
+on:
+  push:
+    branches: [main]
+    paths: ["Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/security.yml"]
+  pull_request:
+    paths: ["Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/security.yml"]
+  schedule:
+    - cron: "17 5 * * 1" # weekly, Monday 05:17 UTC: new advisories appear without code changes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [advisories, "bans licenses sources"]
+    # A new advisory must not block unrelated pull requests; it still fails on main and weekly.
+    continue-on-error: ${{ matrix.checks == 'advisories' && github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
+
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # the weekly run opens an issue for each new advisory
+      checks: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use Network Scope in research or a published assessment, please cite it as below."
+type: software
+title: "Network Scope"
+abstract: >-
+  Portable network discovery and inventory for IT and OT networks: TCP/SYN/UDP scanning,
+  service, TLS and SMB detection, risk findings with version-based CVE hints, a SQLite inventory
+  with diffs, monitoring, and read-only identification and passive analysis of industrial
+  protocols (Modbus/TCP, S7, EtherNet/IP, BACnet/IP, OPC UA).
+authors:
+  - alias: Sparkz400
+version: 0.5.0
+license: MIT
+repository-code: "https://github.com/Sparkz400/network-scope"
+url: "https://sparkz400.github.io/network-scope/"
+keywords:
+  - network scanner
+  - asset inventory
+  - industrial control systems
+  - OT security
+  - Rust

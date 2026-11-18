@@ -1,0 +1,19 @@
+# Groups the automatically generated part of release notes (merged pull requests) by label.
+# The hand-written part comes from CHANGELOG.md; see .github/workflows/release.yml.
+changelog:
+  exclude:
+    labels: [skip-changelog]
+    authors: [dependabot]
+  categories:
+    - title: Breaking changes
+      labels: [breaking-change]
+    - title: Security
+      labels: [security]
+    - title: Features
+      labels: [enhancement, protocol]
+    - title: Fixes
+      labels: [bug]
+    - title: Documentation
+      labels: [documentation]
+    - title: Other changes
+      labels: ["*"]
