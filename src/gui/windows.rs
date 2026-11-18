@@ -1,4 +1,4 @@
-use super::{Job, Scanner};
+use super::{tables, Job, Scanner};
 use crate::{capture, devices, passive, risk, store, topology};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -113,10 +113,8 @@ impl Scanner {
         self.topology_open = open;
     }
 
-    pub(super) fn findings_window(&mut self, ctx: &egui::Context) {
-        if !self.findings_open {
-            return;
-        }
+    /// Findings of everything on screen, recomputed when results or observations change.
+    fn ensure_findings(&mut self) {
         if self.findings.stale(self.generation, self.live()) {
             // Borrow the data into a snapshot instead of deep-cloning it.
             let snapshot = store::Snapshot {
@@ -132,46 +130,62 @@ impl Scanner {
             self.observations = snapshot.observations;
             self.findings.set(self.generation, findings);
         }
+    }
+
+    pub(super) fn findings_window(&mut self, ctx: &egui::Context) {
+        if !self.findings_open {
+            return;
+        }
+        self.ensure_findings();
+        if self.findings_view.stale(self.findings.generation) {
+            self.findings_view.rows =
+                tables::finding_rows(&self.findings.value, &self.findings_view);
+        }
         let mut open = self.findings_open;
+        let mut focus = None;
+        let mut sort = None;
         let findings = &self.findings.value;
+        let view = &mut self.findings_view;
         egui::Window::new("Findings (weak configuration, risky services, CVE hints)")
             .open(&mut open)
             .default_size([900.0, 420.0])
             .show(ctx, |ui| {
-                ui.label(format!("{} findings. CVE entries are version-based hints; vendors often backport fixes.", findings.len()));
+                ui.label(format!(
+                    "{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host.",
+                    view.rows.len(),
+                    findings.len()
+                ));
                 if findings.is_empty() {
                     ui.label("Nothing found. Enable service detection in Settings to collect the evidence these checks use.");
                     return;
                 }
+                view.controls(ui, "findings_severity", "All severities");
+                tables::plain_labels(ui);
                 TableBuilder::new(ui)
                     .id_salt("findings_table")
                     .striped(true)
                     .resizable(true)
+                    .sense(egui::Sense::click())
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::initial(70.0))
+                    .column(Column::initial(80.0))
                     .column(Column::initial(140.0))
-                    .column(Column::initial(260.0))
+                    .column(Column::initial(260.0).clip(true))
                     .column(Column::initial(260.0).clip(true))
                     .column(Column::remainder())
                     .header(22.0, |mut row| {
-                        for h in ["Severity", "Host", "Finding", "Evidence", "CVE"] {
+                        for (i, h) in tables::FINDING_COLUMNS.iter().enumerate() {
                             row.col(|ui| {
-                                ui.strong(h);
+                                if tables::header(ui, view, i, h) {
+                                    sort = Some(i);
+                                }
                             });
                         }
                     })
                     .body(|body| {
-                        body.rows(22.0, findings.len(), |mut row| {
-                            let f = &findings[row.index()];
-                            let color = match f.severity {
-                                risk::Severity::Critical => egui::Color32::from_rgb(155, 28, 28),
-                                risk::Severity::High => egui::Color32::from_rgb(217, 72, 15),
-                                risk::Severity::Medium => egui::Color32::from_rgb(180, 120, 0),
-                                risk::Severity::Low => egui::Color32::from_rgb(43, 108, 176),
-                                risk::Severity::Info => egui::Color32::GRAY,
-                            };
+                        body.rows(22.0, view.rows.len(), |mut row| {
+                            let f = &findings[view.rows[row.index()]];
                             row.col(|ui| {
-                                ui.colored_label(color, f.severity.name());
+                                ui.colored_label(severity_color(f.severity), f.severity.name());
                             });
                             row.col(|ui| {
                                 ui.label(format!("{}{}", f.ip, f.port.map_or(String::new(), |p| format!(":{p}"))));
@@ -185,9 +199,18 @@ impl Scanner {
                             row.col(|ui| {
                                 ui.label(f.cve.join(", "));
                             });
+                            if row.response().clicked() {
+                                focus = Some(vec![f.ip]);
+                            }
                         });
                     });
             });
+        if let Some(column) = sort {
+            self.findings_view.click(column);
+        }
+        if let Some(ips) = focus {
+            self.focus_host(&ips);
+        }
         self.findings_open = open;
     }
     pub(super) fn devices_window(&mut self, ctx: &egui::Context) {
@@ -198,44 +221,59 @@ impl Scanner {
             let merged = devices::merge(&self.results, &self.observations);
             self.devices.set(self.generation, merged);
         }
+        self.ensure_findings();
+        let risk = tables::risk_by_ip(&self.findings.value);
+        // Both caches follow the same data generation; recompute when either moved.
+        let generation = self
+            .devices
+            .generation
+            .zip(self.findings.generation)
+            .map(|(d, f)| d.wrapping_mul(1_000_003) ^ f);
+        if self.devices_view.stale(generation) {
+            self.devices_view.rows =
+                tables::device_rows(&self.devices.value, &risk, &self.devices_view);
+        }
         let mut open = self.devices_open;
+        let mut focus = None;
+        let mut sort = None;
         let devices = &self.devices.value;
+        let view = &mut self.devices_view;
         egui::Window::new("Devices (active + passive merged)")
             .open(&mut open)
-            .default_size([900.0, 420.0])
+            .default_size([980.0, 420.0])
             .show(ctx, |ui| {
                 ui.label(format!(
-                    "{} devices. Records are keyed by MAC address, or by IP when no MAC is known.",
+                    "{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host.",
+                    view.rows.len(),
                     devices.len()
                 ));
+                view.controls(ui, "devices_severity", "Any risk");
+                tables::plain_labels(ui);
                 TableBuilder::new(ui)
                     .id_salt("devices_table")
                     .striped(true)
                     .resizable(true)
+                    .sense(egui::Sense::click())
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::initial(160.0).clip(true))
-                    .column(Column::initial(170.0))
                     .column(Column::initial(150.0).clip(true))
-                    .column(Column::initial(110.0))
+                    .column(Column::initial(150.0).clip(true))
+                    .column(Column::initial(150.0).clip(true))
+                    .column(Column::initial(110.0).clip(true))
                     .column(Column::initial(120.0).clip(true))
+                    .column(Column::initial(150.0).clip(true))
                     .column(Column::remainder())
                     .header(22.0, |mut row| {
-                        for h in [
-                            "Address",
-                            "MAC",
-                            "Manufacturer",
-                            "Type",
-                            "OS guess",
-                            "Open ports",
-                        ] {
+                        for (i, h) in tables::DEVICE_COLUMNS.iter().enumerate() {
                             row.col(|ui| {
-                                ui.strong(h);
+                                if tables::header(ui, view, i, h) {
+                                    sort = Some(i);
+                                }
                             });
                         }
                     })
                     .body(|body| {
-                        body.rows(22.0, devices.len(), |mut row| {
-                            let d = &devices[row.index()];
+                        body.rows(22.0, view.rows.len(), |mut row| {
+                            let d = &devices[view.rows[row.index()]];
                             row.col(|ui| {
                                 ui.label(
                                     d.ips
@@ -274,9 +312,23 @@ impl Scanner {
                                     .collect();
                                 ui.label(ports.join(", "));
                             });
+                            row.col(|ui| {
+                                if let Some(s) = tables::device_risk(d, &risk) {
+                                    ui.colored_label(severity_color(s), s.name());
+                                }
+                            });
+                            if row.response().clicked() {
+                                focus = Some(d.ips.clone());
+                            }
                         });
                     });
             });
+        if let Some(column) = sort {
+            self.devices_view.click(column);
+        }
+        if let Some(ips) = focus {
+            self.focus_host(&ips);
+        }
         self.devices_open = open;
     }
     pub(super) fn refresh_history(&mut self) {
@@ -450,75 +502,80 @@ impl Scanner {
     }
     pub(super) fn capture_window(&mut self, ctx: &egui::Context) {
         let mut open = self.capture_open;
-        egui::Window::new("Passive discovery / Profinet DCP")
+        egui::Window::new("Passive discovery / Profinet DCP / OT")
             .vscroll(true)
             .open(&mut open)
-            .default_width(660.0)
+            .default_width(760.0)
+            .default_pos([24.0, 40.0])
+            .default_height(620.0)
             .show(ctx, |ui| {
                 ui.label("Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP");
                 ui.label(
                     "Requires Npcap and permission to capture on the selected Ethernet interface.",
                 );
-                ui.add_enabled_ui(self.listening.is_none() && self.run.is_none(), |ui| {
-                    if ui.button("Refresh interfaces").clicked() {
-                        match capture::interfaces() {
-                            Ok(v) => self.interfaces = v,
-                            Err(e) => self.error = e,
+                ui.add_enabled_ui(
+                    self.listening.is_none() && self.run.is_none() && !self.ot.capturing(),
+                    |ui| {
+                        if ui.button("Refresh interfaces").clicked() {
+                            match capture::interfaces() {
+                                Ok(v) => self.interfaces = v,
+                                Err(e) => self.error = e,
+                            }
                         }
-                    }
-                    egui::ComboBox::from_label("Interface")
-                        .selected_text(if self.saved.settings.interface.is_empty() {
-                            "Choose interface"
-                        } else {
-                            &self.saved.settings.interface
-                        })
-                        .width(440.0)
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &self.interfaces {
-                                ui.selectable_value(
-                                    &mut self.saved.settings.interface,
-                                    id.clone(),
-                                    format!("{name} · {id}"),
-                                );
+                        egui::ComboBox::from_label("Interface")
+                            .selected_text(if self.saved.settings.interface.is_empty() {
+                                "Choose interface"
+                            } else {
+                                &self.saved.settings.interface
+                            })
+                            .width(440.0)
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &self.interfaces {
+                                    ui.selectable_value(
+                                        &mut self.saved.settings.interface,
+                                        id.clone(),
+                                        format!("{name} · {id}"),
+                                    );
+                                }
+                            });
+                        ui.horizontal(|ui| {
+                            ui.label("Duration");
+                            ui.add(
+                                egui::DragValue::new(&mut self.capture_seconds)
+                                    .range(1..=86400)
+                                    .suffix(" seconds"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Interface MAC (DCP / SYN)");
+                            ui.text_edit_singleline(&mut self.saved.settings.source_mac);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Interface IPv4 (SYN)");
+                            ui.text_edit_singleline(&mut self.saved.settings.source_ip);
+                        });
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.saved.settings.interface.is_empty(),
+                                    egui::Button::new("Start passive listening"),
+                                )
+                                .clicked()
+                            {
+                                self.begin_capture(false);
+                            }
+                            if ui
+                                .add_enabled(
+                                    !self.saved.settings.interface.is_empty(),
+                                    egui::Button::new("DCP Identify (read only)"),
+                                )
+                                .clicked()
+                            {
+                                self.begin_capture(true);
                             }
                         });
-                    ui.horizontal(|ui| {
-                        ui.label("Duration");
-                        ui.add(
-                            egui::DragValue::new(&mut self.capture_seconds)
-                                .range(1..=86400)
-                                .suffix(" seconds"),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Interface MAC (DCP / SYN)");
-                        ui.text_edit_singleline(&mut self.saved.settings.source_mac);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Interface IPv4 (SYN)");
-                        ui.text_edit_singleline(&mut self.saved.settings.source_ip);
-                    });
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                !self.saved.settings.interface.is_empty(),
-                                egui::Button::new("Start passive listening"),
-                            )
-                            .clicked()
-                        {
-                            self.begin_capture(false);
-                        }
-                        if ui
-                            .add_enabled(
-                                !self.saved.settings.interface.is_empty(),
-                                egui::Button::new("DCP Identify (read only)"),
-                            )
-                            .clicked()
-                        {
-                            self.begin_capture(true);
-                        }
-                    });
-                });
+                    },
+                );
                 if let Some(run) = &self.listening {
                     if ui.button("Stop capture").clicked() {
                         run.cancel.store(true, Ordering::Relaxed);
@@ -573,8 +630,19 @@ impl Scanner {
                 if !self.error.is_empty() {
                     ui.colored_label(egui::Color32::DARK_RED, &self.error);
                 }
+                self.ot_section(ui);
             });
         self.capture_open = open;
+    }
+}
+
+fn severity_color(s: risk::Severity) -> egui::Color32 {
+    match s {
+        risk::Severity::Critical => egui::Color32::from_rgb(155, 28, 28),
+        risk::Severity::High => egui::Color32::from_rgb(217, 72, 15),
+        risk::Severity::Medium => egui::Color32::from_rgb(180, 120, 0),
+        risk::Severity::Low => egui::Color32::from_rgb(43, 108, 176),
+        risk::Severity::Info => egui::Color32::GRAY,
     }
 }
 

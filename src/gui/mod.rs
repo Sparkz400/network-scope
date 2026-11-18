@@ -1,6 +1,9 @@
 mod controls;
+mod demo;
 mod details;
+mod ot;
 mod settings;
+mod tables;
 mod windows;
 
 use crate::{devices, passive, risk, scan, store, topology};
@@ -145,6 +148,12 @@ enum Job {
     Load(i64),
     ReadFile(PathBuf),
     WritePrefs(Vec<u8>),
+    /// Formats a snapshot (json/csv/html) and writes it to the file.
+    Export(Box<store::Snapshot>, String, PathBuf),
+    /// Writes the OT asset table as CSV (true) or JSON (false).
+    ExportAssets(Vec<crate::otpassive::Asset>, bool, PathBuf),
+    /// Loads a script file/folder and runs it on a copy of the host (token, path, host).
+    TestScript(u64, String, Box<scan::Host>),
 }
 enum Done {
     Saved(&'static str, usize, Result<i64, String>),
@@ -153,6 +162,11 @@ enum Done {
     Loaded(i64, Result<Box<store::Snapshot>, String>),
     Read(Result<String, String>),
     PrefsWritten(Result<(), String>),
+    Exported(PathBuf, Result<(), String>),
+    ScriptTested(u64, Result<crate::script::Outcome, String>),
+}
+fn write_file(path: &std::path::Path, data: Result<String, String>) -> Result<(), String> {
+    data.and_then(|d| std::fs::write(path, d).map_err(|e| format!("{}: {e}", path.display())))
 }
 fn run_job(job: Job) -> Done {
     let path = store::default_path();
@@ -172,6 +186,23 @@ fn run_job(job: Job) -> Done {
             std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display())),
         ),
         Job::WritePrefs(bytes) => Done::PrefsWritten(write_prefs(&bytes)),
+        Job::Export(snapshot, format, file) => {
+            let result = write_file(&file, store::export(&snapshot, &format));
+            Done::Exported(file, result)
+        }
+        Job::ExportAssets(assets, csv, file) => {
+            let data = if csv {
+                Ok(crate::otpassive::assets_csv(&assets))
+            } else {
+                serde_json::to_string_pretty(&assets).map_err(|e| e.to_string())
+            };
+            let result = write_file(&file, data);
+            Done::Exported(file, result)
+        }
+        Job::TestScript(token, path, host) => Done::ScriptTested(
+            token,
+            crate::script::Scripts::load(&path).map(|s| s.dry_run(&host)),
+        ),
     }
 }
 struct Worker {
@@ -213,11 +244,17 @@ struct Busy {
     loading: bool,
     importing: bool,
     prefs: bool,
+    exporting: usize,
+    testing: bool,
 }
 impl Busy {
     fn label(&self) -> Option<&'static str> {
         if self.saving > 0 {
             Some("Saving to inventory…")
+        } else if self.exporting > 0 {
+            Some("Writing export…")
+        } else if self.testing {
+            Some("Running script…")
         } else if self.loading {
             Some("Opening inventory…")
         } else if self.comparing {
@@ -292,6 +329,20 @@ struct Scanner {
     busy: Busy,
     prefs_written: Vec<u8>,
     prefs_dirty: Option<Instant>,
+    /// Row of the main table to scroll to on the next frame (set from Findings/Devices).
+    scroll_to: Option<IpAddr>,
+    findings_view: tables::View,
+    devices_view: tables::View,
+    script_test: Option<ScriptTest>,
+    script_tokens: u64,
+    ot: ot::OtState,
+}
+/// A script dry-run for the host in the details window.
+struct ScriptTest {
+    token: u64,
+    ip: IpAddr,
+    path: String,
+    result: Option<Result<crate::script::Outcome, String>>,
 }
 impl Scanner {
     fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
@@ -310,7 +361,7 @@ impl Scanner {
         };
         prune_notes(&mut saved.notes);
         let prefs_written = saved.to_disk();
-        Self {
+        let mut app = Self {
             saved,
             targets: "192.168.1.1-254".into(),
             results: vec![],
@@ -362,7 +413,19 @@ impl Scanner {
             busy: Busy::default(),
             prefs_written,
             prefs_dirty: None,
+            scroll_to: None,
+            findings_view: tables::View::default(),
+            devices_view: tables::View::default(),
+            script_test: None,
+            script_tokens: 0,
+            ot: ot::OtState::default(),
+        };
+        if app.screenshot.is_some() {
+            if let Ok(state) = std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE") {
+                app.seed_demo(&state);
+            }
         }
+        app
     }
     fn live(&self) -> bool {
         self.run.is_some() || self.listening.is_some()
@@ -375,6 +438,8 @@ impl Scanner {
             Job::Load(_) => self.busy.loading = true,
             Job::ReadFile(_) => self.busy.importing = true,
             Job::WritePrefs(_) => self.busy.prefs = true,
+            Job::Export(..) | Job::ExportAssets(..) => self.busy.exporting += 1,
+            Job::TestScript(..) => self.busy.testing = true,
         }
         let sent = self
             .worker
@@ -395,6 +460,11 @@ impl Scanner {
                         Ok(id) if kind == "capture" => {
                             self.status =
                                 format!("{observations} observations · saved capture #{id}")
+                        }
+                        Ok(id) if kind == "ot" => {
+                            self.status = format!(
+                                "OT passive: {observations} observations · saved capture #{id}"
+                            )
                         }
                         Ok(id) => self.status.push_str(&format!(" · saved #{id}")),
                         Err(e) => self.error = format!("Inventory could not be saved: {e}"),
@@ -443,6 +513,20 @@ impl Scanner {
                         self.error = format!("Preferences could not be saved: {e}");
                     }
                 }
+                Done::Exported(path, result) => {
+                    self.busy.exporting = self.busy.exporting.saturating_sub(1);
+                    match result {
+                        Ok(()) => self.status = format!("Saved {}", path.display()),
+                        Err(e) => self.error = format!("Export failed: {e}"),
+                    }
+                }
+                Done::ScriptTested(token, result) => {
+                    self.busy.testing = false;
+                    // A test for another host (or one replaced since) is dropped.
+                    if let Some(test) = self.script_test.as_mut().filter(|t| t.token == token) {
+                        test.result = Some(result);
+                    }
+                }
             }
         }
     }
@@ -478,6 +562,7 @@ impl Scanner {
         self.scan_settings = snapshot.settings;
         self.scan_complete = snapshot.complete;
         self.selected = None;
+        self.script_test = None;
         self.previous.clear();
         self.haystacks.clear();
         self.status = format!("Loaded inventory #{id}");
@@ -490,6 +575,7 @@ impl Scanner {
         self.reset_observations();
         self.haystacks.clear();
         self.selected = None;
+        self.script_test = None;
         self.scan_scope.clear();
         self.capture_scope.clear();
         self.scan_complete = true;
@@ -500,7 +586,7 @@ impl Scanner {
         self.data_changed();
     }
     fn start(&mut self) {
-        if self.listening.is_some() {
+        if self.listening.is_some() || self.ot.capturing() {
             self.error = "Stop passive capture before starting an active scan.".into();
             return;
         }
@@ -518,6 +604,7 @@ impl Scanner {
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
                 self.haystacks.clear();
                 self.selected = None;
+                self.script_test = None;
                 self.scan_complete = true;
                 self.scan_scope = self.targets.clone();
                 self.scan_settings = self.saved.settings.clone();
@@ -633,11 +720,36 @@ impl Scanner {
         self.refresh_rows();
         let mut snapshot = self.snapshot();
         snapshot.hosts = self.rows.iter().map(|&i| self.results[i].clone()).collect();
-        let data = store::export(&snapshot, extension);
-        match data.and_then(|data| std::fs::write(&path, data).map_err(|e| e.to_string())) {
-            Ok(()) => self.status = format!("Saved {}", path.display()),
-            Err(e) => self.error = e,
+        // Formatting and writing happen on the worker; the dialog stays on this thread.
+        self.status = format!("Writing {}…", path.display());
+        self.submit(Job::Export(Box::new(snapshot), extension.to_string(), path));
+    }
+    /// Selects a host of the active results (first of `ips` that is one), makes its row visible
+    /// in the main table and opens its details.
+    fn focus_host(&mut self, ips: &[IpAddr]) {
+        let Some(ip) = ips
+            .iter()
+            .copied()
+            .find(|ip| self.results.iter().any(|h| h.ip == *ip))
+        else {
+            self.status = format!(
+                "{} is not in the active scan results (seen passively only)",
+                ips.first()
+                    .map_or("This device".to_string(), |ip| ip.to_string())
+            );
+            return;
+        };
+        if self.selected != Some(ip) {
+            self.script_test = None;
         }
+        self.selected = Some(ip);
+        self.refresh_rows();
+        if !self.rows.iter().any(|&i| self.results[i].ip == ip) {
+            // Hidden by the filter or the search: show everything so the row can be reached.
+            self.filter = Filter::All;
+            self.search.clear();
+        }
+        self.scroll_to = Some(ip);
     }
     /// Saves preferences in the background shortly after the user stops interacting.
     fn save_prefs_debounced(&mut self, ctx: &egui::Context) {
@@ -669,6 +781,7 @@ impl eframe::App for Scanner {
         self.poll_jobs();
         self.poll();
         self.poll_capture();
+        self.poll_ot();
         self.controls(ctx);
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             if let Some(run) = &self.run {
@@ -707,7 +820,16 @@ impl eframe::App for Scanner {
         egui::CentralPanel::default().show(ctx, |ui| {
             let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
-            TableBuilder::new(ui)
+            let scroll_row = self.scroll_to.take().and_then(|ip| {
+                visible
+                    .iter()
+                    .position(|&i| self.results.get(i).is_some_and(|h| h.ip == ip))
+            });
+            let mut table = TableBuilder::new(ui);
+            if let Some(row) = scroll_row {
+                table = table.scroll_to_row(row, Some(egui::Align::Center));
+            }
+            table
                 .striped(true)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -739,6 +861,9 @@ impl eframe::App for Scanner {
                                 )
                                 .clicked()
                             {
+                                if self.selected != Some(host.ip) {
+                                    self.script_test = None;
+                                }
                                 self.selected = Some(host.ip);
                             }
                         });
@@ -819,7 +944,7 @@ impl eframe::App for Scanner {
         self.findings_window(ctx);
         self.capture_window(ctx);
         self.save_prefs_debounced(ctx);
-        if self.live() || self.screenshot.is_some() {
+        if self.live() || self.ot.running() || self.screenshot.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
         self.frames += 1;
@@ -856,6 +981,7 @@ impl eframe::App for Scanner {
         if let Some(run) = &self.run {
             run.cancel.store(true, Ordering::Relaxed);
         }
+        self.ot.cancel();
         // Queued saves finish first; the worker owns the database until then.
         self.worker.finish();
         if self.screenshot.is_some() {
@@ -914,7 +1040,17 @@ fn host_status(host: &scan::Host) -> &'static str {
 pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 450.0])
+            // Screenshot states show the larger windows; the plain screenshot keeps the default.
+            .with_inner_size(
+                if screenshot.is_some()
+                    && std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
+                        .is_ok_and(|s| !s.ends_with("-small"))
+                {
+                    [1100.0, 720.0]
+                } else {
+                    [800.0, 450.0]
+                },
+            )
             .with_min_inner_size([700.0, 400.0]),
         ..Default::default()
     };
