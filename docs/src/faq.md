@@ -34,7 +34,7 @@ OT identification only runs on standard ports of hosts that answered something. 
 
 ## A CVE finding is wrong; the host is patched
 
-CVE entries are version-based hints. Distributions backport fixes without changing version strings. Confirm with the vendor advisory or an authenticated check, and suppress the rule with a user `cves.json` entry of the same `id` if needed.
+CVE entries are version-based hints. Distributions backport fixes without changing version strings. Confirm with the vendor advisory or an authenticated check. A user `cves.json` entry with the same `id` replaces the built-in rule, for example with a narrower version range or an `exclude` list.
 
 ## The diff shows changes I do not care about
 
