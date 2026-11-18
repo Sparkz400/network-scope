@@ -3,7 +3,13 @@
 use crate::{core::Gate, tls};
 use regex::bytes::{Regex, RegexBuilder};
 use serde::Deserialize;
-use std::{collections::BTreeMap, net::IpAddr, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    net::IpAddr,
+    path::Path,
+    sync::{Arc, OnceLock, RwLock},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -35,6 +41,27 @@ pub fn is_ot_port(port: u16) -> bool {
 /// more than "must not be probed" (device classification, alerts).
 pub fn is_ot_port_candidate(port: u16) -> bool {
     is_ot_port(port) || port == 2222
+}
+
+/// UDP ports that never receive a probe payload from `probes.json`: the industrial TCP list
+/// plus UDP-only OT services (EtherNet/IP 2221-2223, BACnet/IP alternates 47808-47823,
+/// Foundation Fieldbus HSE 1089-1091, MELSEC 5006/5007, CODESYS 1740-1743, EtherCAT 34980,
+/// VxWorks WDB 17185) and the printer ports that are listen-only on TCP.
+pub fn is_ot_udp_port(port: u16) -> bool {
+    is_ot_port_candidate(port)
+        || matches!(
+            port,
+            1089..=1091
+                | 1740..=1743
+                | 2221..=2223
+                | 5006
+                | 5007
+                | 17185
+                | 34980
+                | 47808..=47823
+                | 515
+                | 9100..=9107
+        )
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -74,6 +101,9 @@ struct RawRule {
 #[derive(Deserialize)]
 struct RawProbe {
     name: String,
+    /// "tcp" (default) or "udp".
+    #[serde(default)]
+    proto: String,
     #[serde(default)]
     ports: Vec<u16>,
     #[serde(default)]
@@ -90,7 +120,7 @@ struct RawDb {
     probes: Vec<RawProbe>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Rule {
     re: Regex,
     service: String,
@@ -98,7 +128,7 @@ pub struct Rule {
     version: String,
     info: String,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Probe {
     pub name: String,
     pub ports: Vec<u16>,
@@ -108,7 +138,11 @@ pub struct Probe {
 }
 #[derive(Debug)]
 pub struct ProbeDb {
+    /// TCP probes (the null probe included).
     pub probes: Vec<Probe>,
+    /// `"proto": "udp"` probes: one datagram to the listed ports, used by `udp.rs` for ports
+    /// without a built-in protocol handler. Never sent to OT ports.
+    pub udp: Vec<Probe>,
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
@@ -155,63 +189,107 @@ fn expand(template: &str, caps: &regex::bytes::Captures) -> String {
 }
 
 impl ProbeDb {
-    fn parse(json: &str, origin: &str) -> Result<Vec<Probe>, String> {
+    /// (TCP probes, UDP probes)
+    fn parse(json: &str, origin: &str) -> Result<(Vec<Probe>, Vec<Probe>), String> {
         let raw: RawDb = serde_json::from_str(json).map_err(|e| format!("{origin}: {e}"))?;
-        raw.probes
+        let mut udp = vec![];
+        let mut tcp = vec![];
+        for p in raw.probes {
+            let is_udp = match p.proto.to_ascii_lowercase().as_str() {
+                "" | "tcp" => false,
+                "udp" => true,
+                other => return Err(format!("{origin}: {}: unknown proto {other:?}", p.name)),
+            };
+            if is_udp {
+                if p.ports.is_empty() || (p.send.is_empty() && p.send_hex.trim().is_empty()) {
+                    return Err(format!(
+                        "{origin}: {}: a UDP probe needs ports and a payload",
+                        p.name
+                    ));
+                }
+                if let Some(port) = p.ports.iter().find(|port| is_ot_udp_port(**port)) {
+                    return Err(format!(
+                        "{origin}: {}: UDP port {port} is an industrial or printer port and is never probed",
+                        p.name
+                    ));
+                }
+            }
+            let probe = Self::parse_probe(p, origin)?;
+            if is_udp {
+                udp.push(probe);
+            } else {
+                tcp.push(probe);
+            }
+        }
+        Ok((tcp, udp))
+    }
+    fn parse_probe(p: RawProbe, origin: &str) -> Result<Probe, String> {
+        let mut payload = p.send.into_bytes();
+        payload.extend(unhex(&p.send_hex).map_err(|e| format!("{origin}: {}: {e}", p.name))?);
+        let rules = p
+            .rules
             .into_iter()
-            .map(|p| {
-                let mut payload = p.send.into_bytes();
-                payload
-                    .extend(unhex(&p.send_hex).map_err(|e| format!("{origin}: {}: {e}", p.name))?);
-                let rules = p
-                    .rules
-                    .into_iter()
-                    .map(|r| {
-                        Ok(Rule {
-                            re: RegexBuilder::new(&r.re)
-                                .unicode(false)
-                                .dot_matches_new_line(true)
-                                .build()
-                                .map_err(|e| {
-                                    format!("{origin}: {}: bad regex {:?}: {e}", p.name, r.re)
-                                })?,
-                            service: r.service,
-                            product: r.product,
-                            version: r.version,
-                            info: r.info,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok(Probe {
-                    wait: Duration::from_millis(if p.wait_ms == 0 { 1200 } else { p.wait_ms }),
-                    name: p.name,
-                    ports: p.ports,
-                    payload,
-                    rules,
+            .map(|r| {
+                Ok(Rule {
+                    re: RegexBuilder::new(&r.re)
+                        .unicode(false)
+                        .dot_matches_new_line(true)
+                        .build()
+                        .map_err(|e| format!("{origin}: {}: bad regex {:?}: {e}", p.name, r.re))?,
+                    service: r.service,
+                    product: r.product,
+                    version: r.version,
+                    info: r.info,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Probe {
+            wait: Duration::from_millis(if p.wait_ms == 0 { 1200 } else { p.wait_ms }),
+            name: p.name,
+            ports: p.ports,
+            payload,
+            rules,
+        })
     }
     pub fn builtin() -> Self {
-        Self {
-            probes: Self::parse(BUILTIN, "built-in probes")
-                .expect("built-in probe database is valid"),
-        }
+        let (probes, udp) =
+            Self::parse(BUILTIN, "built-in probes").expect("built-in probe database is valid");
+        Self { probes, udp }
     }
     /// Built-in probes plus the user file (same probe name replaces, new names are added).
     pub fn with_user_file(path: &Path) -> Result<Self, String> {
         let mut db = Self::builtin();
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        for probe in Self::parse(&text, &path.display().to_string())? {
-            match db.probes.iter_mut().find(|p| p.name == probe.name) {
+        let (tcp, udp) = Self::parse(&text, &path.display().to_string())?;
+        for (probe, is_udp) in tcp
+            .into_iter()
+            .map(|p| (p, false))
+            .chain(udp.into_iter().map(|p| (p, true)))
+        {
+            // A name lives in one list: a user probe may also move a name from TCP to UDP.
+            let (same, other) = if is_udp {
+                (&mut db.udp, &mut db.probes)
+            } else {
+                (&mut db.probes, &mut db.udp)
+            };
+            other.retain(|p| p.name != probe.name);
+            match same.iter_mut().find(|p| p.name == probe.name) {
                 Some(slot) => *slot = probe,
-                None => db.probes.push(probe),
+                None => same.push(probe),
             }
         }
         Ok(db)
     }
     /// Loads the explicit path, else `%LOCALAPPDATA%/NetworkScope/probes.json` when it exists.
+    /// The UDP probes of the result become the ones `udp.rs` sends (see `udp_probes`).
     pub fn load(explicit: &str) -> Result<Self, String> {
+        let db = Self::load_files(explicit)?;
+        if let Ok(mut slot) = udp_slot().write() {
+            *slot = Some(Arc::new(db.udp.clone()));
+        }
+        Ok(db)
+    }
+    fn load_files(explicit: &str) -> Result<Self, String> {
         if !explicit.is_empty() {
             return Self::with_user_file(Path::new(explicit));
         }
@@ -239,6 +317,34 @@ impl ProbeDb {
             })
         })
     }
+}
+
+fn udp_slot() -> &'static RwLock<Option<Arc<Vec<Probe>>>> {
+    static SLOT: OnceLock<RwLock<Option<Arc<Vec<Probe>>>>> = OnceLock::new();
+    SLOT.get_or_init(|| RwLock::new(None))
+}
+
+/// The UDP probes of the most recently loaded probe database (the scan loads it with its
+/// `--probes` file). Before any load: the default user file when valid, else the built-in
+/// probes (tests: always built-in).
+pub fn udp_probes() -> Arc<Vec<Probe>> {
+    if let Some(p) = udp_slot().read().ok().and_then(|s| s.clone()) {
+        return p;
+    }
+    #[cfg(test)]
+    let probes = ProbeDb::builtin().udp;
+    #[cfg(not(test))]
+    let probes = ProbeDb::load_files("")
+        .unwrap_or_else(|_| ProbeDb::builtin())
+        .udp;
+    let probes = Arc::new(probes);
+    if let Ok(mut slot) = udp_slot().write() {
+        if let Some(existing) = slot.as_ref() {
+            return existing.clone();
+        }
+        *slot = Some(probes.clone());
+    }
+    probes
 }
 
 // ---- I/O helpers -------------------------------------------------------------------------
@@ -395,6 +501,8 @@ pub struct Kexinit {
     pub hostkey: Vec<String>,
     pub ciphers: Vec<String>,
     pub macs: Vec<String>,
+    /// All ten name-lists exactly as sent (not split or sanitised), for HASSH.
+    pub raw: Vec<String>,
 }
 
 /// Parses the server's SSH_MSG_KEXINIT binary packet (RFC 4253 section 7.1).
@@ -411,9 +519,11 @@ pub fn parse_kexinit(packet: &[u8]) -> Option<Kexinit> {
     }
     let mut i = 17;
     let mut lists = vec![];
+    let mut raw = vec![];
     for _ in 0..10 {
         let n = u32::from_be_bytes(payload.get(i..i + 4)?.try_into().ok()?) as usize;
         let text = payload.get(i + 4..i + 4 + n)?;
+        raw.push(String::from_utf8_lossy(text).into_owned());
         lists.push(
             String::from_utf8_lossy(text)
                 .split(',')
@@ -433,6 +543,7 @@ pub fn parse_kexinit(packet: &[u8]) -> Option<Kexinit> {
         hostkey: lists[1].clone(),
         ciphers: lists[2].clone(),
         macs: lists[4].clone(),
+        raw,
     })
 }
 
@@ -521,6 +632,18 @@ async fn ssh_fields<S: AsyncRead + AsyncWrite + Unpin>(
     f.insert("ssh.hostkeys".into(), k.hostkey.join(", "));
     f.insert("ssh.ciphers".into(), k.ciphers.join(", "));
     f.insert("ssh.macs".into(), k.macs.join(", "));
+    // HASSHServer: kex; encryption, MAC and compression server-to-client (lists 0, 3, 5, 7).
+    let (hassh, algorithms) =
+        crate::fingerprint::hassh_server(&k.raw[0], &k.raw[3], &k.raw[5], &k.raw[7]);
+    f.insert("ssh.hassh".into(), hassh);
+    f.insert(
+        "ssh.hassh_algorithms".into(),
+        algorithms
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(2000)
+            .collect(),
+    );
     let (weak, legacy) = assess_ssh(&k);
     if !weak.is_empty() {
         f.insert("ssh.weak".into(), weak.join("; "));
@@ -532,48 +655,133 @@ async fn ssh_fields<S: AsyncRead + AsyncWrite + Unpin>(
 }
 // ---- SMB ---------------------------------------------------------------------------------
 
-pub fn smb2_negotiate_request() -> Vec<u8> {
+/// Client capabilities offered so the server reports its own (MS-SMB2 3.3.5.4 only echoes
+/// leasing, multichannel and, for 3.0/3.0.2, encryption when the client sets them): DFS,
+/// leasing, large MTU, multichannel, persistent handles, directory leasing, encryption.
+const SMB2_CLIENT_CAPS: u32 = 0x7F;
+
+fn smb2_header(command: u16, message_id: u64) -> Vec<u8> {
     let mut m = vec![0xFE, b'S', b'M', b'B'];
-    m.extend(64u16.to_le_bytes());
-    m.extend([0; 2]);
-    m.extend([0; 4]);
-    m.extend([0; 2]);
-    m.extend(1u16.to_le_bytes());
-    m.extend([0; 4]);
-    m.extend([0; 4]);
-    m.extend([0; 8]);
-    m.extend([0; 4]);
-    m.extend([0; 4]);
-    m.extend([0; 8]);
-    m.extend([0; 16]);
-    assert_eq!(m.len(), 64);
-    m.extend(36u16.to_le_bytes());
-    m.extend(5u16.to_le_bytes());
-    m.extend(1u16.to_le_bytes());
-    m.extend([0; 2]);
-    m.extend([0; 4]);
-    m.extend([0x4e; 16]);
-    m.extend(112u32.to_le_bytes());
-    m.extend(1u16.to_le_bytes());
-    m.extend([0; 2]);
-    for dialect in [0x0202u16, 0x0210, 0x0300, 0x0302, 0x0311] {
-        m.extend(dialect.to_le_bytes());
-    }
-    m.extend([0; 2]);
-    assert_eq!(m.len(), 112);
-    m.extend(1u16.to_le_bytes());
-    m.extend(38u16.to_le_bytes());
-    m.extend([0; 4]);
-    m.extend(1u16.to_le_bytes());
-    m.extend(32u16.to_le_bytes());
-    m.extend(1u16.to_le_bytes());
-    m.extend([0x5a; 32]);
+    m.extend(64u16.to_le_bytes()); // structure size
+    m.extend([0; 2]); // credit charge
+    m.extend([0; 4]); // status
+    m.extend(command.to_le_bytes());
+    m.extend(1u16.to_le_bytes()); // credits requested
+    m.extend([0; 4]); // flags
+    m.extend([0; 4]); // next command
+    m.extend(message_id.to_le_bytes());
+    m.extend([0; 4]); // process id
+    m.extend([0; 4]); // tree id
+    m.extend([0; 8]); // session id
+    m.extend([0; 16]); // signature
+    m
+}
+
+fn netbios_frame(m: Vec<u8>) -> Vec<u8> {
     let mut packet = vec![0];
     packet.extend(&(m.len() as u32).to_be_bytes()[1..]);
     packet.extend(m);
     packet
 }
 
+/// SMB2 NEGOTIATE offering 2.0.2 to 3.1.1 with the 3.1.1 negotiate contexts: preauth
+/// integrity (SHA-512), encryption (AES-128/256 CCM/GCM), compression (LZNT1, LZ77,
+/// LZ77+Huffman, Pattern_V1, LZ4) and signing (HMAC-SHA256, AES-CMAC, AES-GMAC).
+pub fn smb2_negotiate_request() -> Vec<u8> {
+    let mut m = smb2_header(0, 0);
+    m.extend(36u16.to_le_bytes());
+    m.extend(5u16.to_le_bytes()); // dialect count
+    m.extend(1u16.to_le_bytes()); // security mode: signing enabled
+    m.extend([0; 2]);
+    m.extend(SMB2_CLIENT_CAPS.to_le_bytes());
+    m.extend([0x4e; 16]); // client GUID
+    m.extend(112u32.to_le_bytes()); // negotiate context offset
+    m.extend(4u16.to_le_bytes()); // negotiate context count
+    m.extend([0; 2]);
+    for dialect in [0x0202u16, 0x0210, 0x0300, 0x0302, 0x0311] {
+        m.extend(dialect.to_le_bytes());
+    }
+    m.extend([0; 2]);
+    assert_eq!(m.len(), 112);
+    let mut preauth = vec![];
+    preauth.extend(1u16.to_le_bytes()); // hash algorithm count
+    preauth.extend(32u16.to_le_bytes()); // salt length
+    preauth.extend(1u16.to_le_bytes()); // SHA-512
+    preauth.extend([0x5a; 32]);
+    let mut encryption = 4u16.to_le_bytes().to_vec();
+    for cipher in [0x0002u16, 0x0001, 0x0004, 0x0003] {
+        encryption.extend(cipher.to_le_bytes());
+    }
+    let mut compression = 5u16.to_le_bytes().to_vec();
+    compression.extend([0; 2]); // padding
+    compression.extend([0; 4]); // flags: no chaining
+    for algorithm in [1u16, 2, 3, 4, 5] {
+        compression.extend(algorithm.to_le_bytes());
+    }
+    let mut signing = 3u16.to_le_bytes().to_vec();
+    for algorithm in [2u16, 1, 0] {
+        signing.extend(algorithm.to_le_bytes());
+    }
+    let contexts: [(u16, Vec<u8>); 4] = [
+        (1, preauth),
+        (2, encryption),
+        (3, compression),
+        (8, signing),
+    ];
+    for (i, (kind, data)) in contexts.iter().enumerate() {
+        m.extend(kind.to_le_bytes());
+        m.extend((data.len() as u16).to_le_bytes());
+        m.extend([0; 4]);
+        m.extend(data);
+        if i + 1 < contexts.len() {
+            while !m.len().is_multiple_of(8) {
+                m.push(0);
+            }
+        }
+    }
+    netbios_frame(m)
+}
+
+/// NTLMSSP NEGOTIATE (no credentials) in a SPNEGO NegTokenInit, sent as SMB2 SESSION_SETUP.
+/// The server answers with an NTLM CHALLENGE naming its OS version and NetBIOS/DNS names;
+/// the exchange stops there, so no logon is attempted or logged as failed.
+pub fn smb2_session_setup_request() -> Vec<u8> {
+    let mut ntlm = b"NTLMSSP\0".to_vec();
+    ntlm.extend(1u32.to_le_bytes());
+    // Unicode, request target, NTLM, always sign, extended session security, version,
+    // 128-bit, key exchange, 56-bit.
+    ntlm.extend(0xE208_8205u32.to_le_bytes());
+    ntlm.extend([0; 16]); // empty domain and workstation fields
+    ntlm.extend([0; 8]); // version
+    fn der(tag: u8, content: &[u8]) -> Vec<u8> {
+        let mut v = vec![tag];
+        match content.len() {
+            n if n < 128 => v.push(n as u8),
+            n => v.extend([0x81, n as u8]),
+        }
+        v.extend(content);
+        v
+    }
+    let ntlm_oid = [
+        0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a,
+    ];
+    let mech_types = der(0xa0, &der(0x30, &ntlm_oid));
+    let mech_token = der(0xa2, &der(0x04, &ntlm));
+    let init = der(0xa0, &der(0x30, &[mech_types, mech_token].concat()));
+    let spnego_oid = [0x06, 0x06, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x02];
+    let token = der(0x60, &[spnego_oid.to_vec(), init].concat());
+    let mut m = smb2_header(1, 1);
+    m.extend(25u16.to_le_bytes());
+    m.push(0); // flags
+    m.push(1); // security mode: signing enabled
+    m.extend(1u32.to_le_bytes()); // capabilities: DFS
+    m.extend([0; 4]); // channel
+    m.extend(88u16.to_le_bytes()); // security buffer offset
+    m.extend((token.len() as u16).to_le_bytes());
+    m.extend([0; 8]); // previous session id
+    m.extend(token);
+    netbios_frame(m)
+}
 /// SMB1 SMB_COM_NEGOTIATE offering only the "NT LM 0.12" dialect: a server that selects it
 /// has SMBv1 enabled. Read-only, like the SMB2 negotiate.
 pub fn smb1_negotiate_request() -> Vec<u8> {
@@ -625,15 +833,7 @@ pub fn parse_smb(data: &[u8]) -> Option<Service> {
     }
     let mode = u16::from_le_bytes(data.get(70..72)?.try_into().ok()?);
     let dialect = u16::from_le_bytes(data.get(72..74)?.try_into().ok()?);
-    let version = match dialect {
-        0x0202 => "2.0.2",
-        0x0210 => "2.1",
-        0x02FF => "2.x",
-        0x0300 => "3.0",
-        0x0302 => "3.0.2",
-        0x0311 => "3.1.1",
-        _ => "unknown dialect",
-    };
+    let version = smb_dialect_name(dialect);
     Some(Service {
         name: "microsoft-ds".into(),
         product: "SMB".into(),
@@ -665,11 +865,394 @@ async fn negotiate_once(
     read_some(&mut s, limit, 4096).await
 }
 
-/// SMB2 negotiate (dialect and signing) plus a separate SMB1 negotiate offering only
+/// What an SMB2 NEGOTIATE response tells beyond dialect and signing (MS-SMB2 2.2.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SmbNegotiate {
+    pub dialect: u16,
+    pub security_mode: u16,
+    pub guid: [u8; 16],
+    pub capabilities: u32,
+    /// FILETIME (100 ns since 1601) of the server clock.
+    pub system_time: u64,
+    /// FILETIME of the server start; 0 on modern Windows.
+    pub start_time: u64,
+    pub preauth: Vec<u16>,
+    pub ciphers: Vec<u16>,
+    pub compression: Vec<u16>,
+    pub compression_chained: bool,
+    pub signing: Vec<u16>,
+    /// Authentication mechanisms named in the SPNEGO security buffer.
+    pub mechs: Vec<&'static str>,
+}
+
+pub fn parse_smb2_negotiate(data: &[u8]) -> Option<SmbNegotiate> {
+    let smb = data.get(4..)?;
+    if smb.get(..4)? != [0xFE, b'S', b'M', b'B'] || smb.get(8..12)? != [0; 4] {
+        return None;
+    }
+    let u16_at = |i: usize| Some(u16::from_le_bytes(smb.get(i..i + 2)?.try_into().ok()?));
+    let u32_at = |i: usize| Some(u32::from_le_bytes(smb.get(i..i + 4)?.try_into().ok()?));
+    let u64_at = |i: usize| Some(u64::from_le_bytes(smb.get(i..i + 8)?.try_into().ok()?));
+    let mut n = SmbNegotiate {
+        security_mode: u16_at(66)?,
+        dialect: u16_at(68)?,
+        ..Default::default()
+    };
+    // Short (truncated or minimal) replies still give dialect and signing.
+    let Some(guid) = smb.get(72..88) else {
+        return Some(n);
+    };
+    n.guid.copy_from_slice(guid);
+    n.capabilities = u32_at(88).unwrap_or(0);
+    n.system_time = u64_at(104).unwrap_or(0);
+    n.start_time = u64_at(112).unwrap_or(0);
+    if let (Some(off), Some(len)) = (u16_at(120), u16_at(122)) {
+        if let Some(blob) = smb.get(usize::from(off)..usize::from(off) + usize::from(len)) {
+            let has = |oid: &[u8]| blob.windows(oid.len()).any(|w| w == oid);
+            for (oid, name) in [
+                (
+                    &[0x2a, 0x86, 0x48, 0x82, 0xf7, 0x12, 0x01, 0x02, 0x02][..],
+                    "Kerberos (MS)",
+                ),
+                (
+                    &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02][..],
+                    "Kerberos",
+                ),
+                (
+                    &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x1e][..],
+                    "NEGOEX",
+                ),
+                (
+                    &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a][..],
+                    "NTLM",
+                ),
+            ] {
+                if has(oid) {
+                    n.mechs.push(name);
+                }
+            }
+        }
+    }
+    if n.dialect == 0x0311 {
+        let count = u16_at(70).unwrap_or(0);
+        let mut at = u32_at(124).unwrap_or(0) as usize;
+        for _ in 0..count.min(16) {
+            let (Some(kind), Some(len)) = (u16_at(at), u16_at(at + 2)) else {
+                break;
+            };
+            let len = usize::from(len);
+            let Some(body) = smb.get(at + 8..at + 8 + len) else {
+                break;
+            };
+            let list = |from: usize, count: usize| -> Vec<u16> {
+                (0..count.min(16))
+                    .filter_map(|i| {
+                        body.get(from + 2 * i..from + 2 * i + 2)
+                            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    })
+                    .collect()
+            };
+            let count_at = |i: usize| {
+                body.get(i..i + 2)
+                    .map_or(0, |b| usize::from(u16::from_le_bytes([b[0], b[1]])))
+            };
+            match kind {
+                1 => n.preauth = list(4, count_at(0)),
+                2 => n.ciphers = list(2, count_at(0)),
+                3 => {
+                    n.compression = list(8, count_at(0));
+                    n.compression_chained = body.get(4).is_some_and(|f| f & 1 != 0);
+                }
+                8 => n.signing = list(2, count_at(0)),
+                _ => {}
+            }
+            at += 8 + len;
+            at = at.div_ceil(8) * 8;
+        }
+    }
+    Some(n)
+}
+
+fn smb_dialect_name(dialect: u16) -> &'static str {
+    match dialect {
+        0x0202 => "2.0.2",
+        0x0210 => "2.1",
+        0x02FF => "2.x",
+        0x0300 => "3.0",
+        0x0302 => "3.0.2",
+        0x0311 => "3.1.1",
+        _ => "unknown dialect",
+    }
+}
+
+/// Server GUID in the usual registry form (first three groups little-endian).
+pub fn guid_string(g: &[u8; 16]) -> String {
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{}",
+        u32::from_le_bytes([g[0], g[1], g[2], g[3]]),
+        u16::from_le_bytes([g[4], g[5]]),
+        u16::from_le_bytes([g[6], g[7]]),
+        g[8],
+        g[9],
+        g[10..]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn filetime_unix(ft: u64) -> Option<i64> {
+    (ft > 0).then(|| (ft / 10_000_000) as i64 - 11_644_473_600)
+}
+
+/// Coarse clock offset: stable from scan to scan while the server clock is right.
+fn clock_skew(seconds: i64) -> String {
+    let a = seconds.unsigned_abs();
+    let sign = if seconds < 0 { "-" } else { "+" };
+    if a < 120 {
+        "in sync (< 2 min)".into()
+    } else if a < 7200 {
+        format!("{sign}{} min", a / 60)
+    } else if a < 172_800 {
+        format!("{sign}{} h", a / 3600)
+    } else {
+        format!("{sign}{} days", a / 86_400)
+    }
+}
+
+fn names(ids: &[u16], table: &[(u16, &str)]) -> String {
+    ids.iter()
+        .map(|id| {
+            table
+                .iter()
+                .find(|t| t.0 == *id)
+                .map_or_else(|| format!("0x{id:04x}"), |t| t.1.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+const SMB_CIPHERS: &[(u16, &str)] = &[
+    (0, "none"),
+    (1, "AES-128-CCM"),
+    (2, "AES-128-GCM"),
+    (3, "AES-256-CCM"),
+    (4, "AES-256-GCM"),
+];
+const SMB_COMPRESSION: &[(u16, &str)] = &[
+    (0, "none"),
+    (1, "LZNT1"),
+    (2, "LZ77"),
+    (3, "LZ77+Huffman"),
+    (4, "Pattern_V1"),
+    (5, "LZ4"),
+];
+const SMB_SIGNING: &[(u16, &str)] = &[(0, "HMAC-SHA256"), (1, "AES-CMAC"), (2, "AES-GMAC")];
+
+/// Identity fields (`smb.<field>`) from a NEGOTIATE response. `now` is the local Unix time
+/// for the clock offset. Only values that stay the same between scans are stored.
+pub fn smb2_fields(n: &SmbNegotiate, now: i64) -> Fields {
+    let mut f = Fields::new();
+    f.insert("smb.dialect".into(), smb_dialect_name(n.dialect).into());
+    if n.guid != [0; 16] {
+        f.insert("smb.guid".into(), guid_string(&n.guid));
+    }
+    let caps: Vec<&str> = [
+        (0x01, "DFS"),
+        (0x02, "leasing"),
+        (0x04, "large MTU"),
+        (0x08, "multichannel"),
+        (0x10, "persistent handles"),
+        (0x20, "directory leasing"),
+        (0x40, "encryption"),
+        (0x80, "notifications"),
+    ]
+    .iter()
+    .filter(|(bit, _)| n.capabilities & bit != 0)
+    .map(|(_, name)| *name)
+    .collect();
+    if !caps.is_empty() {
+        f.insert("smb.capabilities".into(), caps.join(", "));
+    }
+    if let Some(t) = filetime_unix(n.system_time) {
+        f.insert("smb.clock_skew".into(), clock_skew(t - now));
+    }
+    if let Some(t) = filetime_unix(n.start_time) {
+        f.insert("smb.boot_time".into(), crate::tls::date(t));
+    }
+    // Encryption: 3.1.1 negotiates a cipher context; 3.0/3.0.2 announce a capability.
+    let encryption = match n.dialect {
+        0x0311 => match n.ciphers.iter().find(|c| **c != 0) {
+            Some(c) => names(&[*c], SMB_CIPHERS),
+            None => "not supported".into(),
+        },
+        0x0300 | 0x0302 if n.capabilities & 0x40 != 0 => "supported".into(),
+        0x0300 | 0x0302 => "not supported".into(),
+        _ => "not supported (SMB 2.x)".into(),
+    };
+    f.insert("smb.encryption".into(), encryption);
+    if n.dialect == 0x0311 {
+        if !n.preauth.is_empty() {
+            f.insert(
+                "smb.preauth_integrity".into(),
+                names(&n.preauth, &[(1, "SHA-512")]),
+            );
+        }
+        let compression: Vec<u16> = n.compression.iter().copied().filter(|a| *a != 0).collect();
+        f.insert(
+            "smb.compression".into(),
+            if compression.is_empty() {
+                "none".into()
+            } else {
+                format!(
+                    "{}{}",
+                    names(&compression, SMB_COMPRESSION),
+                    if n.compression_chained {
+                        " (chained)"
+                    } else {
+                        ""
+                    }
+                )
+            },
+        );
+        if !n.signing.is_empty() {
+            f.insert(
+                "smb.signing_algorithms".into(),
+                names(&n.signing, SMB_SIGNING),
+            );
+        }
+    }
+    if !n.mechs.is_empty() {
+        f.insert("smb.auth_mechs".into(), n.mechs.join(", "));
+    }
+    f
+}
+
+/// OS version and names from the NTLM CHALLENGE inside a SESSION_SETUP response
+/// (MS-NLMP 2.2.1.2, 2.2.2.1, 2.2.2.10).
+pub fn parse_ntlm_challenge(data: &[u8]) -> Fields {
+    let mut f = Fields::new();
+    let Some(at) = data.windows(8).position(|w| w == b"NTLMSSP\0") else {
+        return f;
+    };
+    let m = &data[at..];
+    if m.get(8..12) != Some(&[2, 0, 0, 0]) {
+        return f;
+    }
+    let u16_at = |i: usize| m.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let flags = m
+        .get(20..24)
+        .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    if flags & 0x0200_0000 != 0 {
+        if let Some(v) = m.get(48..56) {
+            let build = u16::from_le_bytes([v[2], v[3]]);
+            if v[0] != 0 {
+                f.insert(
+                    "smb.os_version".into(),
+                    format!("{}.{}.{build}", v[0], v[1]),
+                );
+            }
+        }
+    }
+    let (Some(len), Some(off)) = (
+        u16_at(40),
+        m.get(44..48)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize),
+    ) else {
+        return f;
+    };
+    let Some(info) = m.get(off..off + usize::from(len)) else {
+        return f;
+    };
+    let mut i = 0;
+    while let Some(head) = info.get(i..i + 4) {
+        let id = u16::from_le_bytes([head[0], head[1]]);
+        let n = usize::from(u16::from_le_bytes([head[2], head[3]]));
+        if id == 0 {
+            break;
+        }
+        let Some(value) = info.get(i + 4..i + 4 + n) else {
+            break;
+        };
+        let key = match id {
+            1 => Some("smb.netbios_name"),
+            2 => Some("smb.netbios_domain"),
+            3 => Some("smb.dns_name"),
+            4 => Some("smb.dns_domain"),
+            5 => Some("smb.dns_forest"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            let units: Vec<u16> = value
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect();
+            let text: String = String::from_utf16_lossy(&units)
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(100)
+                .collect();
+            if !text.is_empty() {
+                f.insert(key.into(), text);
+            }
+        }
+        i += 4 + n;
+    }
+    f
+}
+
+/// Reads one NetBIOS-framed message (or what arrives within `limit`).
+async fn read_frame<S: AsyncRead + Unpin>(s: &mut S, limit: Duration) -> Vec<u8> {
+    let mut data = vec![];
+    let mut chunk = [0u8; 4096];
+    let deadline = tokio::time::Instant::now() + limit;
+    while data.len() < 65_536 {
+        if data.len() >= 4 {
+            let need = 4
+                + ((usize::from(data[1]) << 16)
+                    | (usize::from(data[2]) << 8)
+                    | usize::from(data[3]));
+            if data.len() >= need {
+                break;
+            }
+        }
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(left, s.read(&mut chunk)).await {
+            Ok(Ok(n)) if n > 0 => data.extend_from_slice(&chunk[..n]),
+            _ => break,
+        }
+    }
+    data
+}
+
+/// NEGOTIATE, then (same connection) the credential-less SESSION_SETUP for the NTLM
+/// challenge. Returns the negotiate reply and the NTLM fields.
+async fn smb2_exchange(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> (Vec<u8>, Fields) {
+    let Some(mut s) = connect(ip, port, limit, gate).await else {
+        return (vec![], Fields::new());
+    };
+    if s.write_all(&smb2_negotiate_request()).await.is_err() {
+        return (vec![], Fields::new());
+    }
+    let reply = read_frame(&mut s, limit).await;
+    let mut ntlm = Fields::new();
+    if parse_smb2_negotiate(&reply).is_some()
+        && s.write_all(&smb2_session_setup_request()).await.is_ok()
+    {
+        ntlm = parse_ntlm_challenge(&read_frame(&mut s, limit).await);
+    }
+    (reply, ntlm)
+}
+
+/// SMB2 negotiate (dialect, signing, GUID, capabilities, 3.1.1 contexts) with the NTLM
+/// challenge on the same connection, plus a separate SMB1 negotiate offering only
 /// "NT LM 0.12": modern servers answer the SMB2 request with SMB2 even when SMB1 is still
 /// enabled, so only the SMB1-only offer reveals it. Two connections, both through the gate.
 async fn smb_negotiate(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> Option<Outcome> {
-    let smb2 = parse_smb(&negotiate_once(ip, port, limit, gate, &smb2_negotiate_request()).await);
+    let (reply, ntlm) = smb2_exchange(ip, port, limit, gate).await;
+    let smb2 = parse_smb(&reply);
     let smb1 =
         smb1_accepted(&negotiate_once(ip, port, limit, gate, &smb1_negotiate_request()).await);
     let mut out = Outcome::default();
@@ -684,6 +1267,13 @@ async fn smb_negotiate(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> O
                 }
                 .into(),
             );
+            if let Some(n) = parse_smb2_negotiate(&reply) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                out.fields.extend(smb2_fields(&n, now));
+            }
+            out.fields.extend(ntlm);
             out.service = Some(svc);
         }
         (None, true) => {
@@ -699,7 +1289,6 @@ async fn smb_negotiate(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> O
     }
     Some(out)
 }
-
 // ---- RDP ---------------------------------------------------------------------------------
 
 /// X.224 Connection Request with an RDP Negotiation Request for PROTOCOL_RDP only (0x00).
@@ -1021,6 +1610,9 @@ pub fn identity_entries(port: u16, out: &Outcome) -> Fields {
             }
             if !s.version.is_empty() {
                 f.insert(format!("svc.{port}.version"), s.version.clone());
+            }
+            if let Some(cpe) = crate::risk::cve_db().cpe(&s.product, &s.version) {
+                f.insert(format!("svc.{port}.cpe"), cpe);
             }
         }
         None => {
@@ -1419,14 +2011,27 @@ mod tests {
             "{ids:?}"
         );
         assert!(ids[&format!("ssh.{port}.legacy")].contains("aes128-cbc"));
+        let text = "diffie-hellman-group1-sha1;aes128-cbc;hmac-sha1;none";
+        assert_eq!(ids[&format!("ssh.{port}.hassh_algorithms")], text);
+        assert_eq!(
+            ids[&format!("ssh.{port}.hassh")],
+            crate::fingerprint::hex(&crate::fingerprint::md5(text.as_bytes()))
+        );
     }
 
     #[test]
     fn smb_request_and_responses() {
         let req = smb2_negotiate_request();
-        assert_eq!(req.len(), 4 + 158);
-        assert_eq!(&req[..4], &[0, 0, 0, 158]);
+        assert_eq!(req.len(), 4 + 232);
+        assert_eq!(&req[..4], &[0, 0, 0, 232]);
         assert_eq!(&req[4..8], &[0xFE, b'S', b'M', b'B']);
+        // Contexts start 8-aligned at 112: preauth, encryption, compression, signing.
+        let smb = &req[4..];
+        assert_eq!(u16::from_le_bytes([smb[96], smb[97]]), 4, "context count");
+        for (at, kind) in [(112, 1u16), (160, 2), (184, 3), (216, 8)] {
+            assert_eq!(u16::from_le_bytes([smb[at], smb[at + 1]]), kind, "at {at}");
+        }
+        assert_eq!(u32::from_le_bytes(smb[72..76].try_into().unwrap()), 0x7F);
         let mut resp = vec![0u8; 4 + 64 + 8];
         resp[4..8].copy_from_slice(&[0xFE, b'S', b'M', b'B']);
         resp[70..72].copy_from_slice(&3u16.to_le_bytes());
@@ -1868,5 +2473,293 @@ mod tests {
         assert_eq!(parse_rdp_standard_reply(&reply(3, 5)), Some("NLA required"));
         assert_eq!(parse_rdp_standard_reply(&reply(3, 2)), None);
         assert_eq!(parse_rdp_standard_reply(b"HTTP/1.1"), None);
+    }
+
+    /// A Windows-like SMB 3.1.1 NEGOTIATE response with GUID, capabilities, times, a SPNEGO
+    /// hint and the four negotiate contexts.
+    fn smb311_reply(compression: &[u16], cipher: u16) -> Vec<u8> {
+        let mut smb = vec![0u8; 64];
+        smb[..4].copy_from_slice(&[0xFE, b'S', b'M', b'B']);
+        let mut body = vec![0u8; 64];
+        body[0..2].copy_from_slice(&65u16.to_le_bytes());
+        body[2..4].copy_from_slice(&1u16.to_le_bytes()); // signing enabled
+        body[4..6].copy_from_slice(&0x0311u16.to_le_bytes());
+        body[6..8].copy_from_slice(&4u16.to_le_bytes());
+        body[8..24].copy_from_slice(&[
+            0x78, 0x56, 0x34, 0x12, 0xbc, 0x9a, 0xf0, 0xde, 1, 2, 3, 4, 5, 6, 7, 8,
+        ]);
+        body[24..28].copy_from_slice(&0x2Fu32.to_le_bytes()); // DFS, leasing, MTU, MC, PH
+                                                              // 2024-01-01T00:00:00Z as FILETIME.
+        let ft = (1_704_067_200u64 + 11_644_473_600) * 10_000_000;
+        body[40..48].copy_from_slice(&ft.to_le_bytes());
+        let mech = [
+            0x06u8, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a,
+        ];
+        body[56..58].copy_from_slice(&128u16.to_le_bytes());
+        body[58..60].copy_from_slice(&(mech.len() as u16).to_le_bytes());
+        smb.extend(body);
+        smb.extend(mech);
+        while !smb.len().is_multiple_of(8) {
+            smb.push(0);
+        }
+        let ctx_at = smb.len() as u32;
+        smb[64 + 60..64 + 64].copy_from_slice(&ctx_at.to_le_bytes());
+        let mut comp = (compression.len() as u16).to_le_bytes().to_vec();
+        comp.extend([0, 0, 0, 0, 0, 0]);
+        for a in compression {
+            comp.extend(a.to_le_bytes());
+        }
+        let contexts: Vec<(u16, Vec<u8>)> = vec![
+            (
+                1,
+                [1u16, 32, 1]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .chain([9u8; 32])
+                    .collect(),
+            ),
+            (
+                2,
+                [1u16, cipher]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+            ),
+            (3, comp),
+            (8, [1u16, 2].iter().flat_map(|v| v.to_le_bytes()).collect()),
+        ];
+        for (i, (kind, data)) in contexts.iter().enumerate() {
+            smb.extend(kind.to_le_bytes());
+            smb.extend((data.len() as u16).to_le_bytes());
+            smb.extend([0; 4]);
+            smb.extend(data);
+            if i + 1 < contexts.len() {
+                while !smb.len().is_multiple_of(8) {
+                    smb.push(0);
+                }
+            }
+        }
+        netbios_frame(smb)
+    }
+
+    fn ntlm_challenge(version: [u8; 8]) -> Vec<u8> {
+        let mut info = vec![];
+        for (id, text) in [
+            (1u16, "DESKTOP-42"),
+            (2, "LAB"),
+            (3, "desktop-42.lab.local"),
+            (4, "lab.local"),
+            (5, "lab.local"),
+        ] {
+            let units: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            info.extend(id.to_le_bytes());
+            info.extend((units.len() as u16).to_le_bytes());
+            info.extend(units);
+        }
+        info.extend([7, 0, 8, 0, 1, 2, 3, 4, 5, 6, 7, 8]); // timestamp: ignored
+        info.extend([0, 0, 0, 0]);
+        let mut m = b"NTLMSSP\0".to_vec();
+        m.extend(2u32.to_le_bytes());
+        m.extend([0; 8]); // target name
+        m.extend(0xE289_8215u32.to_le_bytes());
+        m.extend([0x11; 8]); // challenge
+        m.extend([0; 8]);
+        m.extend((info.len() as u16).to_le_bytes());
+        m.extend((info.len() as u16).to_le_bytes());
+        m.extend(56u32.to_le_bytes());
+        m.extend(version);
+        m.extend(info);
+        // Wrapped in some SPNEGO/SMB2 bytes, as it arrives.
+        let mut reply = vec![0u8; 4 + 64 + 8 + 9];
+        reply.extend(m);
+        reply
+    }
+
+    #[test]
+    fn smb2_negotiate_details_and_contexts() {
+        let reply = smb311_reply(&[1, 2, 3], 2);
+        let n = parse_smb2_negotiate(&reply).unwrap();
+        assert_eq!(n.dialect, 0x0311);
+        assert_eq!(guid_string(&n.guid), "12345678-9abc-def0-0102-030405060708");
+        assert_eq!(n.ciphers, [2]);
+        assert_eq!(n.compression, [1, 2, 3]);
+        assert_eq!(n.signing, [2]);
+        assert_eq!(n.preauth, [1]);
+        assert_eq!(n.mechs, ["NTLM"]);
+        let f = smb2_fields(&n, 1_704_067_200 + 30);
+        assert_eq!(f["smb.dialect"], "3.1.1");
+        assert_eq!(f["smb.guid"], "12345678-9abc-def0-0102-030405060708");
+        assert_eq!(
+            f["smb.capabilities"],
+            "DFS, leasing, large MTU, multichannel, directory leasing"
+        );
+        assert_eq!(f["smb.clock_skew"], "in sync (< 2 min)");
+        assert_eq!(f["smb.encryption"], "AES-128-GCM");
+        assert_eq!(f["smb.compression"], "LZNT1, LZ77, LZ77+Huffman");
+        assert_eq!(f["smb.signing_algorithms"], "AES-GMAC");
+        assert_eq!(f["smb.preauth_integrity"], "SHA-512");
+        assert!(!f.contains_key("smb.boot_time"));
+        assert_eq!(
+            smb2_fields(&n, 1_704_067_200 - 3 * 3600)["smb.clock_skew"],
+            "+3 h"
+        );
+        // No common cipher and no compression.
+        let f = smb2_fields(&parse_smb2_negotiate(&smb311_reply(&[], 0)).unwrap(), 0);
+        assert_eq!(f["smb.encryption"], "not supported");
+        assert_eq!(f["smb.compression"], "none");
+        // SMB 3.0.2 announces encryption as a capability; 2.x has none.
+        let mut n30 = n.clone();
+        n30.dialect = 0x0302;
+        n30.capabilities = 0x40;
+        assert_eq!(smb2_fields(&n30, 0)["smb.encryption"], "supported");
+        assert!(!smb2_fields(&n30, 0).contains_key("smb.compression"));
+        n30.capabilities = 0;
+        assert_eq!(smb2_fields(&n30, 0)["smb.encryption"], "not supported");
+        n30.dialect = 0x0210;
+        assert_eq!(
+            smb2_fields(&n30, 0)["smb.encryption"],
+            "not supported (SMB 2.x)"
+        );
+        // The minimal 76-byte reply of older tests still parses.
+        let short = parse_smb2_negotiate(&smb2_reply(1)).unwrap();
+        assert_eq!((short.dialect, short.guid), (0x0311, [0; 16]));
+        assert_eq!(parse_smb2_negotiate(&reply[..40]), None);
+        // Hostile context offsets and counts must not panic.
+        let mut evil = reply.clone();
+        evil[4 + 64 + 60..4 + 64 + 64].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        assert!(parse_smb2_negotiate(&evil).unwrap().ciphers.is_empty());
+    }
+
+    #[test]
+    fn ntlm_challenge_names_os_and_host() {
+        let req = smb2_session_setup_request();
+        assert_eq!(
+            usize::from(req[3]) + (usize::from(req[2]) << 8),
+            req.len() - 4
+        );
+        assert_eq!(u16::from_le_bytes([req[16], req[17]]), 1, "SESSION_SETUP");
+        assert!(req.windows(8).any(|w| w == b"NTLMSSP\0"));
+        let f = parse_ntlm_challenge(&ntlm_challenge([10, 0, 0x63, 0x47, 0, 0, 0, 15]));
+        assert_eq!(f["smb.os_version"], "10.0.18275");
+        assert_eq!(f["smb.netbios_name"], "DESKTOP-42");
+        assert_eq!(f["smb.netbios_domain"], "LAB");
+        assert_eq!(f["smb.dns_name"], "desktop-42.lab.local");
+        assert_eq!(f["smb.dns_forest"], "lab.local");
+        assert!(!parse_ntlm_challenge(&ntlm_challenge([0; 8])).contains_key("smb.os_version"));
+        assert!(parse_ntlm_challenge(b"no ntlm here").is_empty());
+        let full = ntlm_challenge([10, 0, 0x63, 0x47, 0, 0, 0, 15]);
+        for cut in [90, 120, 150, full.len() - 3] {
+            let _ = parse_ntlm_challenge(&full[..cut]);
+        }
+    }
+
+    #[tokio::test]
+    async fn live_smb_negotiate_collects_identity() {
+        let port = serve(|mut s| {
+            Box::pin(async move {
+                let mut buf = [0u8; 1024];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                if n > 8 && buf[4] == 0xFE {
+                    let _ = s.write_all(&smb311_reply(&[1], 4)).await;
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n > 20 && buf[16] == 1 {
+                        let mut frame = ntlm_challenge([10, 0, 0xBB, 0x47, 0, 0, 0, 15]);
+                        let len = frame.len() - 4;
+                        frame[1..4].copy_from_slice(&(len as u32).to_be_bytes()[1..]);
+                        frame[4..8].copy_from_slice(&[0xFE, b'S', b'M', b'B']);
+                        let _ = s.write_all(&frame).await;
+                    }
+                }
+            })
+        })
+        .await;
+        let out = smb_negotiate(
+            "127.0.0.1".parse().unwrap(),
+            port,
+            Duration::from_secs(1),
+            &Gate::unlimited(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.service.as_ref().unwrap().summary(),
+            "microsoft-ds SMB 3.1.1 (signing enabled, not required)"
+        );
+        let ids = identity_entries(445, &out);
+        assert_eq!(ids["smb.445.guid"], "12345678-9abc-def0-0102-030405060708");
+        assert_eq!(ids["smb.445.encryption"], "AES-256-GCM");
+        assert_eq!(ids["smb.445.compression"], "LZNT1");
+        assert_eq!(ids["smb.445.os_version"], "10.0.18363");
+        assert_eq!(ids["smb.445.netbios_name"], "DESKTOP-42");
+        assert_eq!(ids["smb.445.smb1"], "refused");
+    }
+    #[test]
+    fn udp_probes_load_merge_and_validate() {
+        let db = ProbeDb::builtin();
+        assert!(db.udp.iter().any(|p| p.name == "udp-sip"));
+        assert!(
+            !db.probes.iter().any(|p| p.name.starts_with("udp-")),
+            "UDP probes never become TCP candidates"
+        );
+        let path = std::env::temp_dir().join(format!("ns-udp-probes-{}.json", std::process::id()));
+        let load = |json: &str| {
+            std::fs::write(&path, json).unwrap();
+            ProbeDb::with_user_file(&path)
+        };
+        let db = load(
+            r#"{"probes":[
+              {"name":"udp-sip","proto":"udp","ports":[5062],"send":"X","rules":[]},
+              {"name":"lab-udp","proto":"UDP","ports":[7001],"send_hex":"01","rules":[{"re":"^ok","service":"labd"}]}]}"#,
+        )
+        .unwrap();
+        let sip = db.udp.iter().find(|p| p.name == "udp-sip").unwrap();
+        assert_eq!(
+            (sip.ports.as_slice(), sip.payload.as_slice()),
+            (&[5062u16][..], &b"X"[..])
+        );
+        assert!(db.udp.iter().any(|p| p.name == "lab-udp"));
+        assert_eq!(db.udp.len(), ProbeDb::builtin().udp.len() + 1);
+        assert!(!db.probes.iter().any(|p| p.name == "lab-udp"));
+        // A user probe may move a name between TCP and UDP.
+        let db = load(
+            r#"{"probes":[{"name":"redis","proto":"udp","ports":[6379],"send":"x","rules":[]}]}"#,
+        )
+        .unwrap();
+        assert!(!db.probes.iter().any(|p| p.name == "redis"));
+        assert!(db.udp.iter().any(|p| p.name == "redis"));
+        for (json, want) in [
+            (
+                r#"{"probes":[{"name":"b","proto":"udp","ports":[47808],"send":"x","rules":[]}]}"#,
+                "industrial",
+            ),
+            (
+                r#"{"probes":[{"name":"b","proto":"udp","ports":[34964],"send":"x","rules":[]}]}"#,
+                "industrial",
+            ),
+            (
+                r#"{"probes":[{"name":"b","proto":"udp","ports":[2222],"send":"x","rules":[]}]}"#,
+                "industrial",
+            ),
+            (
+                r#"{"probes":[{"name":"b","proto":"udp","ports":[9100],"send":"x","rules":[]}]}"#,
+                "printer",
+            ),
+            (
+                r#"{"probes":[{"name":"b","proto":"udp","ports":[],"send":"x","rules":[]}]}"#,
+                "needs ports",
+            ),
+            (
+                r#"{"probes":[{"name":"b","proto":"udp","ports":[7000],"rules":[]}]}"#,
+                "payload",
+            ),
+            (
+                r#"{"probes":[{"name":"b","proto":"sctp","ports":[7000],"send":"x","rules":[]}]}"#,
+                "unknown proto",
+            ),
+        ] {
+            let err = load(json).unwrap_err();
+            assert!(err.contains(want), "{json}: {err}");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
