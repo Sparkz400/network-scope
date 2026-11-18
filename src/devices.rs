@@ -1386,7 +1386,16 @@ mod tests {
             serde_json::from_str(&history_output(&h, "json").unwrap()).unwrap();
         assert_eq!(json["events"][1]["kind"], "port-opened");
         assert!(history_output(&h, "xml").is_err());
-        let empty = HistoryBuilder::new(HistoryKey::parse("10.1.1.1").unwrap(), "10.1.1.1");
-        assert!(history_text(&empty.finish()).contains("Not seen"));
+        let mut empty = HistoryBuilder::new(HistoryKey::parse("10.1.1.1").unwrap(), "10.1.1.1");
+        // A scanned address that did not respond is not a sighting.
+        let mut silent = history_snapshot("10.1.1.1", "", &[]);
+        silent.hosts[0].responding = false;
+        empty.add(7, 700, &silent);
+        let empty = empty.finish();
+        assert_eq!(
+            (empty.sightings, empty.scans, empty.first_seen),
+            (0, 1, None)
+        );
+        assert!(history_text(&empty).contains("Not seen"));
     }
 }

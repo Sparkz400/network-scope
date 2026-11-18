@@ -23,7 +23,12 @@ New option keys must be added to the option allowlist in `ui.rs` `options()`: `i
   - `new_findings`, `resolved_findings` and `unconfirmed_findings`: full `risk::Finding` objects, matched by `Finding::key`.
   - `ignored_keys`: the patterns that were skipped.
 - `text` gives the change lines, then `new finding: …`, `resolved finding: …` and `finding not re-checked …` lines, or `No changes.` when there is nothing.
-- A finding counts as "resolved" only if its host answered in the new scan. A passive (port-less) finding also counts as resolved if the new snapshot has any observations. Otherwise it is "unconfirmed" and never counted as resolved.
+- A finding counts as "resolved" only if the new scan looked at its evidence again:
+  - its host answered;
+  - for a TCP port, the ports were checked;
+  - for a UDP port, the port was probed in both scans.
+
+  A passive (port-less) finding on a silent host counts as resolved if the new snapshot has any observations. Anything else is "unconfirmed" and is never counted as resolved.
 - `--ignore` is a comma-separated list that is added to the built-in volatile keys (`*.days_left`). Matching rules:
   - an exact key, for example `snmp.uptime`
   - a glob where `*` matches any run of characters, for example `http.*.title`
@@ -44,7 +49,7 @@ if let Some(q) = opts.get("history") {
   - `first_seen`, `first_scan`, `last_seen`, `last_scan`
   - `sightings` and `scans`
   - `ips`, `macs`, `hostnames`
-  - `open_tcp`: the open ports from the latest comparable scan
+  - `open_tcp`: the open ports from the latest completed active scan that checked the device's ports
   - `events`, each with `scan_id`, `timestamp`, `kind` and `detail`. The kinds are `first-seen`, `ip-changed`, `mac-changed`, `hostname-changed`, `port-opened`, `port-closed`, `udp-answering` and `udp-silent`.
 - `devices::history_text(&h)` gives the plain-text rendering.
 - Rules:
@@ -59,10 +64,11 @@ if let Some(q) = opts.get("history") {
 - `md`: a Markdown summary with the scope, totals, findings by severity, findings, findings by host, devices, and changes since a baseline when one is given. All cells are escaped. `report::markdown(snapshot, baseline, ts)` takes a baseline exactly like `report::html`, so `export ID --format md --baseline B` can reuse `report_html`'s baseline loading.
 - `jsonl`: one compact JSON object per responding host. Fields: `timestamp`, `scope`, `complete`, `ip`, `mac`, `vendor`, `hostname`, `device_type`, `os`, `open_tcp`, `open_udp`, `services` (port, protocol, summary, product, version, cpe), `findings` (key, severity, id, title, port, evidence, cve), `identity` and `note`. Passive-only devices are not included; `devices ID --format json` covers those.
 - In `ui.rs`, the scan format whitelist (`["json", "csv", "html", "nmap"]` at about line 509) must gain `"md"` and `"jsonl"`. The error text there should become "Choose json, csv, html, nmap, md or jsonl".
-- In `export`, add: `"md" | "markdown" => report::markdown(&snapshot, baseline, stamp)`. Otherwise call `store::export_at(&snapshot, other, stamp)` so md/jsonl carry the stored time.
+- In `export`, add `"md" | "markdown" => report::markdown(&snapshot, baseline, stamp)`. `baseline` currently exists only inside `report_html`, so factor the `--baseline` loading out of it first. Otherwise call `store::export_at(&snapshot, other, stamp)` so md/jsonl carry the stored time.
+- md/jsonl already work today through `export ID --format md|jsonl` and `listen`/`dcp`, because they call `store::export` without a whitelist. Until the calls are switched to `export_at`, the time shows as "time not recorded" (0). Only `scan` rejects the new formats.
 - Update the HELP text: `export ID --format json|csv|html|nmap|md|jsonl`, and `--format json|csv|html|nmap|md|jsonl` under scan options.
 
-## Fix 6: `scan --format html|nmap` exported with timestamp 0
+## Fix 6: `scan --format html|nmap` exported with timestamp 0 (cause fixed in store.rs; call-site change pending)
 - **Cause (store.rs):** `store::export` hardcoded `0` for the html and nmap formats.
 - **Fix in store.rs:** the new `store::export_at(snapshot, format, timestamp)`.
   - `export` keeps 0 on purpose. The GUI can export a historic snapshot that was opened from the inventory, and for that snapshot "time not recorded" is better than a made-up current time.
@@ -89,6 +95,8 @@ if let Some(q) = opts.get("history") {
   - nmap's Windows OpenSSH no longer triggers regreSSHion, because `for_Windows_x` was previously parsed as a portable OpenSSH version.
   - The `svc.<port>` summary keeps nmap's wording, for example "http Apache httpd 2.4.49 (Unix)". The exception is files written by network-scope (`scanner="network-scope"`): there the summary uses our names, so export → import is lossless and diffs to empty.
   - `<cpe>` children of `<service>` go into `svc.<port>.cpe`. When there are several, they are joined with a single space; values containing whitespace are dropped.
+- **Re-exporting an nmap import** writes nmap's product/version again, for example `OpenSSH` / `for_Windows_8.9`. Re-importing that file (`scanner="network-scope"`) gives the same product/version/cpe keys, but the `svc.<port>` summary changes to our wording (for example "Apache httpd" becomes "Apache").
+- **Older imports:** imports stored before this change have `svc.<p>.product` in nmap spelling (for example `Apache httpd`). A fresh import of the same file stores `Apache`, so diffing an old import against a new one shows `identity_changed` for those keys once.
 - **For the CPE agent:** please store `svc.<port>.cpe` in the same way (one or more CPE names separated by a space) so the report and nmap export treat both sources alike. Report, Markdown and JSONL show the value as it is.
 
 ## `allow(dead_code)` to remove once wired

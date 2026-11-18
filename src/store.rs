@@ -451,10 +451,10 @@ pub struct DiffReport {
     pub changes: Vec<Change>,
     /// Findings (matched by `risk::Finding::key`) present only in the new scan.
     pub new_findings: Vec<crate::risk::Finding>,
-    /// Findings present only in the old scan whose host answered in the new scan.
+    /// Findings present only in the old scan whose evidence the new scan checked again.
     pub resolved_findings: Vec<crate::risk::Finding>,
-    /// Findings present only in the old scan whose host did not answer in the new scan: the scan
-    /// cannot tell whether they were fixed.
+    /// Findings present only in the old scan that the new scan did not re-check (host silent,
+    /// port not checked or UDP port not probed): it cannot tell whether they were fixed.
     pub unconfirmed_findings: Vec<crate::risk::Finding>,
     /// Identity key patterns that were skipped (built-in volatile keys plus the user list).
     pub ignored_keys: Vec<String>,
@@ -481,10 +481,7 @@ impl DiffReport {
         for (label, list) in [
             ("new finding", &self.new_findings),
             ("resolved finding", &self.resolved_findings),
-            (
-                "finding not re-checked (host did not respond)",
-                &self.unconfirmed_findings,
-            ),
+            ("finding not re-checked", &self.unconfirmed_findings),
         ] {
             out.extend(list.iter().map(|f| format!("{label}: {}", finding(f))));
         }
@@ -738,8 +735,9 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
 type Findings = Vec<crate::risk::Finding>;
 
 /// New, resolved and unconfirmed findings by `Finding::key`. A finding that disappeared counts as
-/// resolved only when the new scan heard from its host (or, for findings from passive traffic,
-/// captured traffic at all); otherwise it is unconfirmed.
+/// resolved only when the new scan looked at its evidence again: the host answered and the port
+/// was checked again (TCP ports checked; UDP port probed in both scans), or, for findings from
+/// passive traffic of a silent host, traffic was captured at all. Otherwise it is unconfirmed.
 fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings) {
     let (fa, fb) = (
         crate::risk::analyze_snapshot(a),
@@ -751,20 +749,29 @@ fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings)
             .collect::<std::collections::HashSet<_>>()
     };
     let (ka, kb) = (keys(&fa), keys(&fb));
-    let answered: std::collections::HashSet<IpAddr> = b
+    let old: HashMap<IpAddr, &crate::scan::Host> = a.hosts.iter().map(|h| (h.ip, h)).collect();
+    let answered: HashMap<IpAddr, &crate::scan::Host> = b
         .hosts
         .iter()
         .filter(|h| h.responding)
-        .map(|h| h.ip)
+        .map(|h| (h.ip, h))
         .collect();
+    let udp_probed = udp_probed_in_both(&a.settings, &b.settings);
+    // The new scan looked again at the evidence: the host answered, and a per-port finding's port
+    // was checked again (TCP: ports checked; UDP: probed in both scans).
+    let rechecked = |f: &crate::risk::Finding| {
+        let Some(now) = answered.get(&f.ip) else {
+            return f.port.is_none() && !b.observations.is_empty();
+        };
+        let Some(port) = f.port else { return true };
+        let was_udp = old.get(&f.ip).is_some_and(|h| h.udp_open.contains(&port));
+        let was_tcp = old.get(&f.ip).is_some_and(|h| h.open.contains(&port));
+        (!was_udp || udp_probed.contains(&port)) && (!was_tcp || now.ports_checked)
+    };
     let new = fb.into_iter().filter(|f| !ka.contains(&f.key())).collect();
     let (mut resolved, mut unconfirmed) = (vec![], vec![]);
     for f in fa.into_iter().filter(|f| !kb.contains(&f.key())) {
-        let checked = if f.port.is_none() && !answered.contains(&f.ip) {
-            !b.observations.is_empty()
-        } else {
-            answered.contains(&f.ip)
-        };
+        let checked = rechecked(&f);
         if checked {
             resolved.push(f);
         } else {
@@ -1272,6 +1279,25 @@ mod tests {
         assert!(!diff(&a, &b).unwrap().iter().any(|l| l.contains("finding")));
         let same = diff_report(&a, &a, &IgnoreList::new(&[])).unwrap();
         assert_eq!(same.text(), "No changes.");
+        // A UDP finding whose port the new scan did not probe is not "resolved".
+        let mut a = snapshot();
+        a.settings.udp = true;
+        a.settings.udp_ports = "161".into();
+        a.hosts[0].udp_open = vec![161];
+        a.hosts[0]
+            .identity
+            .insert("udp.161".into(), "SNMP sysDescr: x".into());
+        let mut b = a.clone();
+        b.settings.udp_ports = "53".into();
+        b.hosts[0].udp_open.clear();
+        b.hosts[0].identity.remove("udp.161");
+        let r = diff_report(&a, &b, &IgnoreList::new(&[])).unwrap();
+        assert!(r.resolved_findings.is_empty(), "{r:?}");
+        assert_eq!(ids(&r.unconfirmed_findings), ["127.0.0.1|161|snmp-public"]);
+        // Probed in both and silent now: resolved.
+        b.settings.udp_ports = "161".into();
+        let r = diff_report(&a, &b, &IgnoreList::new(&[])).unwrap();
+        assert_eq!(ids(&r.resolved_findings), ["127.0.0.1|161|snmp-public"]);
     }
 
     #[test]

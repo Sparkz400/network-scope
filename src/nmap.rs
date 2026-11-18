@@ -166,8 +166,16 @@ fn service_attrs(h: &Host, port: u16) -> Option<String> {
     // product/version, even when the identity keys do not spell it out.
     // Product names from our identity keys are written the way nmap spells them; free text
     // recovered from the summary is written as it is.
-    let (product, version) = if middle == joined {
-        to_nmap_product(product, version)
+    let mapped = to_nmap_product(product, version);
+    let nmap_joined = [mapped.0.as_str(), mapped.1.as_str()]
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let (product, version) = if middle == joined || middle == nmap_joined {
+        // Our wording, or nmap's wording kept by an import of an nmap file.
+        mapped
     } else if !version.is_empty() && middle.ends_with(&format!(" {version}")) {
         to_nmap_product(
             middle[..middle.len() - version.len() - 1].trim_end(),
@@ -1089,6 +1097,24 @@ mod tests {
             "Windows OpenSSH is not the portable release"
         );
         assert!(cves.contains(&(Some(2222), "CVE-2024-6387")), "{cves:?}");
+        // Re-exporting an nmap import writes nmap's product/version again, and reads back the same.
+        let again = export(&s, 0);
+        assert!(
+            again.contains("product=\"OpenSSH\" version=\"for_Windows_8.9\""),
+            "{again}"
+        );
+        assert!(again.contains("product=\"Microsoft IIS httpd\" version=\"6.0\""));
+        assert!(again.contains("<cpe>cpe:/o:microsoft:windows</cpe>"));
+        let back = import(&again).unwrap();
+        for k in [
+            "svc.22.product",
+            "svc.22.version",
+            "svc.80.product",
+            "svc.80.version",
+            "svc.80.cpe",
+        ] {
+            assert_eq!(back.hosts[0].identity[k], id[k], "{k}");
+        }
     }
 
     #[test]

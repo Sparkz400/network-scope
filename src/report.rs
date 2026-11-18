@@ -343,7 +343,7 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
                     ("New findings", &report.new_findings),
                     ("Resolved findings", &report.resolved_findings),
                     (
-                        "Findings not re-checked (host did not respond)",
+                        "Findings not re-checked (host silent or port not probed)",
                         &report.unconfirmed_findings,
                     ),
                 ] {
@@ -683,7 +683,7 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
                     ("New findings", &report.new_findings),
                     ("Resolved findings", &report.resolved_findings),
                     (
-                        "Findings not re-checked (host did not respond)",
+                        "Findings not re-checked (host silent or port not probed)",
                         &report.unconfirmed_findings,
                     ),
                 ] {
