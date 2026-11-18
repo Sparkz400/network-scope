@@ -1,4 +1,6 @@
-//! Offline capture files: classic pcap (all four magic variants) and pcapng, Ethernet frames only.
+//! Offline capture files: classic pcap (all four magic variants) and pcapng. Ethernet frames are
+//! returned as recorded; Linux cooked captures (SLL, SLL2) and raw IPv4/IPv6 are translated into
+//! Ethernet-style frames (synthesised 14-byte header) so the decoders see one format.
 //! Pure Rust: no capture driver is needed to analyse a file recorded elsewhere.
 use std::io::Read;
 
@@ -6,6 +8,162 @@ pub const MAX_FRAME: usize = 262_144;
 /// Largest pcapng block read into memory; bigger blocks are skipped (read and discarded).
 const MAX_BLOCK: usize = MAX_FRAME + 4096;
 const LINKTYPE_ETHERNET: u32 = 1;
+const LINKTYPE_RAW: u32 = 101;
+const LINKTYPE_LINUX_SLL: u32 = 113;
+const LINKTYPE_IPV4: u32 = 228;
+const LINKTYPE_IPV6: u32 = 229;
+const LINKTYPE_LINUX_SLL2: u32 = 276;
+
+/// Link types whose frames `Reader` returns (translated to Ethernet where needed).
+fn supported(link: u32) -> bool {
+    matches!(
+        link,
+        LINKTYPE_ETHERNET
+            | LINKTYPE_RAW
+            | LINKTYPE_LINUX_SLL
+            | LINKTYPE_IPV4
+            | LINKTYPE_IPV6
+            | LINKTYPE_LINUX_SLL2
+    )
+}
+
+/// A 14-byte Ethernet header followed by `payload`. A group destination (broadcast or
+/// multicast) sets the I/G bit, which the decoders use to tell group traffic from unicast.
+fn ethernet(dst_group: bool, broadcast: bool, src: [u8; 6], kind: u16, payload: &[u8]) -> Vec<u8> {
+    let mut f = Vec::with_capacity(14 + payload.len());
+    f.extend(if broadcast {
+        [0xff; 6]
+    } else if dst_group {
+        [0x01, 0, 0x5e, 0, 0, 0]
+    } else {
+        [0; 6]
+    });
+    f.extend(src);
+    f.extend(kind.to_be_bytes());
+    f.extend(payload);
+    f
+}
+
+/// Linux cooked capture: packet type, link-layer address and protocol to Ethernet. Frames whose
+/// protocol is not an ethertype (802.3 length, LLC, CAN, netlink...) give `None`.
+fn cooked(
+    pkttype: u16,
+    halen: usize,
+    addr: &[u8],
+    protocol: u16,
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    if protocol < 0x0600 {
+        return None;
+    }
+    let mut src = [0u8; 6];
+    if halen == 6 {
+        src.copy_from_slice(addr.get(..6)?);
+    }
+    // 1 = broadcast, 2 = multicast (to us); anything else is unicast or outgoing.
+    Some(ethernet(pkttype == 2, pkttype == 1, src, protocol, payload))
+}
+
+/// The frame of link type `link` as Ethernet, or `None` when it cannot be expressed as one
+/// (the reader then skips it).
+fn to_ethernet(link: u32, data: &[u8]) -> Option<Vec<u8>> {
+    let be16 =
+        |i: usize| -> Option<u16> { Some(u16::from_be_bytes([*data.get(i)?, *data.get(i + 1)?])) };
+    match link {
+        LINKTYPE_ETHERNET => Some(data.to_vec()),
+        LINKTYPE_LINUX_SLL => {
+            // pkttype(2) hatype(2) halen(2) addr(8) protocol(2), always big-endian
+            let body = data.get(16..)?;
+            cooked(
+                be16(0)?,
+                usize::from(be16(4)?),
+                &data[6..14],
+                be16(14)?,
+                body,
+            )
+        }
+        LINKTYPE_LINUX_SLL2 => {
+            // protocol(2) reserved(2) ifindex(4) hatype(2) pkttype(1) halen(1) addr(8)
+            let body = data.get(20..)?;
+            cooked(
+                u16::from(data[10]),
+                usize::from(data[11]),
+                &data[12..20],
+                be16(0)?,
+                body,
+            )
+        }
+        LINKTYPE_RAW | LINKTYPE_IPV4 | LINKTYPE_IPV6 => {
+            let kind = match (link, data.first()? >> 4) {
+                (LINKTYPE_RAW | LINKTYPE_IPV4, 4) => 0x0800,
+                (LINKTYPE_RAW | LINKTYPE_IPV6, 6) => 0x86dd,
+                _ => return None,
+            };
+            Some(ethernet(false, false, [0; 6], kind, data))
+        }
+        _ => None,
+    }
+}
+
+/// Progress of reading a capture file, for progress bars and stderr status lines.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Progress {
+    /// Frames returned so far.
+    pub frames: u64,
+    /// Bytes of the file consumed so far.
+    pub bytes: u64,
+    /// File size in bytes; 0 when unknown.
+    pub total_bytes: u64,
+    /// Seconds since reading started.
+    pub elapsed: f64,
+    /// The file has been read completely (the last report).
+    pub done: bool,
+}
+#[allow(dead_code)] // used by the CLI/GUI progress display (wired by their owner)
+impl Progress {
+    /// 0-100, or `None` when the file size is unknown.
+    pub fn percent(&self) -> Option<f64> {
+        (self.total_bytes > 0)
+            .then(|| (self.bytes as f64 * 100.0 / self.total_bytes as f64).min(100.0))
+    }
+    pub fn frames_per_second(&self) -> f64 {
+        if self.elapsed > 0.0 {
+            self.frames as f64 / self.elapsed
+        } else {
+            0.0
+        }
+    }
+    /// One status line, e.g. "42.0% 1200000 frames, 80.1 MB of 190.7 MB, 250000 frames/s".
+    pub fn line(&self) -> String {
+        let mb = |b: u64| b as f64 / 1_000_000.0;
+        let size = if self.total_bytes > 0 {
+            format!("{:.1} MB of {:.1} MB", mb(self.bytes), mb(self.total_bytes))
+        } else {
+            format!("{:.1} MB", mb(self.bytes))
+        };
+        format!(
+            "{}{} frames, {size}, {:.0} frames/s",
+            self.percent()
+                .map_or(String::new(), |p| format!("{p:.1}% ")),
+            self.frames,
+            self.frames_per_second()
+        )
+    }
+}
+
+/// Counts the bytes taken from the inner reader.
+#[derive(Debug)]
+struct Counted<R> {
+    inner: R,
+    count: u64,
+}
+impl<R: Read> Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count += n as u64;
+        Ok(n)
+    }
+}
 
 /// A pcapng interface: its link type and timestamp resolution (`if_tsresol`).
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +186,8 @@ impl Interface {
     }
 }
 
+const SUPPORTED_TEXT: &str = "only Ethernet, Linux cooked (SLL/SLL2) and raw IP captures are read";
+
 fn link_name(link: u32) -> &'static str {
     match link {
         0 => " (BSD loopback)",
@@ -36,6 +196,7 @@ fn link_name(link: u32) -> &'static str {
         113 => " (Linux cooked capture SLL)",
         127 => " (802.11 radiotap)",
         228 => " (raw IPv4)",
+        229 => " (raw IPv6)",
         276 => " (Linux cooked capture SLL2)",
         _ => "",
     }
@@ -43,9 +204,11 @@ fn link_name(link: u32) -> &'static str {
 
 #[derive(Debug)]
 pub struct Reader<R: Read> {
-    input: R,
+    input: Counted<R>,
     big_endian: bool,
     ng: bool,
+    /// classic pcap: the file's link type
+    link: u32,
     interfaces: Vec<Interface>,
     /// classic pcap: bytes of frame check sequence at the end of every frame
     fcs: usize,
@@ -69,7 +232,11 @@ fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<bool, String>
 }
 
 impl<R: Read> Reader<R> {
-    pub fn new(mut input: R) -> Result<Self, String> {
+    pub fn new(input: R) -> Result<Self, String> {
+        let mut input = Counted {
+            inner: input,
+            count: 0,
+        };
         let mut magic = [0u8; 4];
         if !read_exact_or_eof(&mut input, &mut magic)? {
             return Err("Empty capture file".into());
@@ -78,6 +245,7 @@ impl<R: Read> Reader<R> {
             input,
             big_endian: false,
             ng: false,
+            link: LINKTYPE_ETHERNET,
             interfaces: vec![],
             fcs: 0,
             returned: 0,
@@ -104,16 +272,25 @@ impl<R: Read> Reader<R> {
         // in 16-bit words.
         let word = r.u32(&header[16..20]);
         let link = word & 0x0fff_ffff;
-        if link != LINKTYPE_ETHERNET {
+        if !supported(link) {
             return Err(format!(
-                "Unsupported link type {link}{}: only Ethernet captures are read",
+                "Unsupported link type {link}{}: {SUPPORTED_TEXT}",
                 link_name(link)
             ));
         }
+        r.link = link;
         if word & 0x1000_0000 != 0 {
             r.fcs = (word >> 29) as usize * 2;
         }
         Ok(r)
+    }
+    /// Bytes of the file consumed so far (headers, frames and skipped blocks).
+    pub fn bytes_read(&self) -> u64 {
+        self.input.count
+    }
+    /// Frames returned so far.
+    pub fn frames(&self) -> u64 {
+        self.returned
     }
     fn u32(&self, b: &[u8]) -> u32 {
         let a = [b[0], b[1], b[2], b[3]];
@@ -189,9 +366,24 @@ impl<R: Read> Reader<R> {
     /// Next Ethernet frame with its timestamp in seconds; `None` at the end of the file.
     pub fn next_frame(&mut self) -> Result<Option<(i64, Vec<u8>)>, String> {
         if self.ng {
-            self.next_ng()
-        } else {
-            self.next_classic()
+            return self.next_ng();
+        }
+        loop {
+            let Some((ts, data)) = self.next_classic()? else {
+                return Ok(None);
+            };
+            let frame = if self.link == LINKTYPE_ETHERNET {
+                Some(data)
+            } else {
+                to_ethernet(self.link, &data)
+            };
+            match frame {
+                Some(frame) => {
+                    self.returned += 1;
+                    return Ok(Some((ts, frame)));
+                }
+                None => self.skipped += 1,
+            }
         }
     }
     fn next_classic(&mut self) -> Result<Option<(i64, Vec<u8>)>, String> {
@@ -220,7 +412,7 @@ impl<R: Read> Reader<R> {
             Some(_) => self.returned += 1,
             None if self.returned == 0 && !self.other_links.is_empty() => {
                 return Err(format!(
-                    "Unsupported link type {}: only Ethernet captures are read",
+                    "Unsupported link type {}: {SUPPORTED_TEXT}",
                     self.other_links
                         .iter()
                         .map(|&l| format!("{l}{}", link_name(u32::from(l))))
@@ -296,9 +488,11 @@ impl<R: Read> Reader<R> {
                         return Err("Truncated pcapng packet".into());
                     };
                     match self.interfaces.get(iface) {
-                        Some(i) if u32::from(i.link) == LINKTYPE_ETHERNET => {
+                        Some(i) if supported(u32::from(i.link)) => {
                             let ts = (u64::from(hi) << 32) | u64::from(lo);
-                            return Ok(Some((i.seconds(ts), data.to_vec())));
+                            if let Some(frame) = to_ethernet(u32::from(i.link), data) {
+                                return Ok(Some((i.seconds(ts), frame)));
+                            }
                         }
                         Some(i) => {
                             self.other_links.insert(i.link);
@@ -310,9 +504,12 @@ impl<R: Read> Reader<R> {
                 3 if body.len() >= 4 => {
                     let orig = self.u32(&body[..4]) as usize;
                     match self.interfaces.first() {
-                        Some(i) if u32::from(i.link) == LINKTYPE_ETHERNET => {
+                        Some(i) if supported(u32::from(i.link)) => {
                             let data = &body[4..];
-                            return Ok(Some((0, data[..orig.min(data.len())].to_vec())));
+                            let data = &data[..orig.min(data.len())];
+                            if let Some(frame) = to_ethernet(u32::from(i.link), data) {
+                                return Ok(Some((0, frame)));
+                            }
                         }
                         Some(i) => {
                             self.other_links.insert(i.link);
@@ -572,14 +769,159 @@ mod tests {
         p[20..24].copy_from_slice(&(1u32 | 0x1000_0000 | (2 << 29)).to_le_bytes());
         assert_eq!(read_all(&p).unwrap(), [(5, vec![1, 2, 3, 4])]);
         // Unsupported link types say what they are.
-        let mut sll = write_pcap(&frames());
-        sll[20..24].copy_from_slice(&113u32.to_le_bytes());
-        let e = Reader::new(&sll[..]).unwrap_err();
-        assert!(e.contains("113") && e.contains("SLL"), "{e}");
+        let mut wifi = write_pcap(&frames());
+        wifi[20..24].copy_from_slice(&127u32.to_le_bytes());
+        let e = Reader::new(&wifi[..]).unwrap_err();
+        assert!(e.contains("127") && e.contains("radiotap"), "{e}");
         let mut f = ng_shb();
-        f.extend(ng_idb(113, None));
+        f.extend(ng_idb(127, None));
         f.extend(ng_epb(0, 0, &[1]));
         let e = read_all(&f).unwrap_err();
-        assert!(e.contains("113") && e.contains("SLL"), "{e}");
+        assert!(e.contains("127") && e.contains("radiotap"), "{e}");
+    }
+
+    const IP_PACKET: [u8; 20] = [
+        0x45, 0, 0, 20, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+    ];
+    fn sll(pkttype: u16, protocol: u16, payload: &[u8]) -> Vec<u8> {
+        let mut h = pkttype.to_be_bytes().to_vec();
+        h.extend(1u16.to_be_bytes()); // ARPHRD_ETHER
+        h.extend(6u16.to_be_bytes());
+        h.extend([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0]);
+        h.extend(protocol.to_be_bytes());
+        h.extend(payload);
+        h
+    }
+    fn sll2(pkttype: u8, protocol: u16, payload: &[u8]) -> Vec<u8> {
+        let mut h = protocol.to_be_bytes().to_vec();
+        h.extend([0, 0]);
+        h.extend(3u32.to_be_bytes());
+        h.extend(1u16.to_be_bytes());
+        h.extend([pkttype, 6]);
+        h.extend([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0]);
+        h.extend(payload);
+        h
+    }
+    fn with_link(mut file: Vec<u8>, link: u32) -> Vec<u8> {
+        file[20..24].copy_from_slice(&link.to_le_bytes());
+        file
+    }
+
+    #[test]
+    fn linux_cooked_captures_become_ethernet() {
+        let want = |dst: [u8; 6]| {
+            let mut f = dst.to_vec();
+            f.extend([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x08, 0x00]);
+            f.extend(IP_PACKET);
+            f
+        };
+        let records = vec![
+            (1, sll(0, 0x0800, &IP_PACKET)),    // to us: unicast
+            (2, sll(1, 0x0800, &IP_PACKET)),    // broadcast
+            (3, sll(2, 0x0800, &IP_PACKET)),    // multicast
+            (4, sll(0, 0x0004, &[0xaa, 0xaa])), // 802.2 LLC: not an ethertype, skipped
+            (5, vec![1, 2, 3]),                 // shorter than the header, skipped
+        ];
+        let file = with_link(write_pcap(&records), 113);
+        let mut r = Reader::new(&file[..]).unwrap();
+        let mut got = vec![];
+        while let Some(f) = r.next_frame().unwrap() {
+            got.push(f);
+        }
+        assert_eq!(
+            got,
+            [
+                (1, want([0; 6])),
+                (2, want([0xff; 6])),
+                (3, want([1, 0, 0x5e, 0, 0, 0]))
+            ]
+        );
+        assert_eq!((r.skipped, r.frames()), (2, 3));
+        // SLL2, classic pcap and pcapng
+        let records = vec![(7, sll2(1, 0x0800, &IP_PACKET)), (8, sll2(0, 0x0001, &[]))];
+        assert_eq!(
+            read_all(&with_link(write_pcap(&records), 276)).unwrap(),
+            [(7, want([0xff; 6]))]
+        );
+        let mut f = ng_shb();
+        f.extend(ng_idb(113, None));
+        f.extend(ng_idb(276, None));
+        f.extend(ng_epb(0, 9_000_000, &sll(4, 0x0800, &IP_PACKET)));
+        f.extend(ng_epb(1, 10_000_000, &sll2(0, 0x0800, &IP_PACKET)));
+        assert_eq!(
+            read_all(&f).unwrap(),
+            [(9, want([0; 6])), (10, want([0; 6]))]
+        );
+        // the result is what the passive decoders read
+        let mut lldp = vec![0x02, 0x07, 0x04, 1, 2, 3, 4, 5, 6, 0x0a, 0x03];
+        lldp.extend(b"sw1");
+        lldp.extend([0, 0]);
+        let frame = read_all(&with_link(write_pcap(&[(1, sll(2, 0x88cc, &lldp))]), 113)).unwrap();
+        let o = crate::passive::decode(&frame[0].1).unwrap();
+        assert_eq!(
+            (o.protocol.as_str(), o.mac.as_str()),
+            ("LLDP", "00:11:22:33:44:55")
+        );
+        assert_eq!(o.fields["name"], "sw1");
+    }
+
+    #[test]
+    fn raw_ip_captures_become_ethernet() {
+        let mut v6 = vec![0x60, 0, 0, 0, 0, 0, 17, 64];
+        v6.extend([0; 32]);
+        let eth = |kind: [u8; 2], ip: &[u8]| {
+            let mut f = vec![0; 12];
+            f.extend(kind);
+            f.extend(ip);
+            f
+        };
+        let records = vec![(1, IP_PACKET.to_vec()), (2, v6.clone()), (3, vec![0x20; 4])];
+        assert_eq!(
+            read_all(&with_link(write_pcap(&records), 101)).unwrap(),
+            [(1, eth([8, 0], &IP_PACKET)), (2, eth([0x86, 0xdd], &v6))]
+        );
+        // 228 is IPv4 only, 229 IPv6 only
+        assert_eq!(
+            read_all(&with_link(write_pcap(&records), 228))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            read_all(&with_link(write_pcap(&records), 229)).unwrap(),
+            [(2, eth([0x86, 0xdd], &v6))]
+        );
+    }
+
+    #[test]
+    fn progress_counts_bytes_and_frames() {
+        let file = write_pcap(&frames());
+        let mut r = Reader::new(&file[..]).unwrap();
+        assert_eq!(r.bytes_read(), 24);
+        while r.next_frame().unwrap().is_some() {}
+        assert_eq!((r.bytes_read(), r.frames()), (file.len() as u64, 3));
+        let ng = write_pcapng(&frames(), false);
+        let mut r = Reader::new(&ng[..]).unwrap();
+        while r.next_frame().unwrap().is_some() {}
+        assert_eq!((r.bytes_read(), r.frames()), (ng.len() as u64, 3));
+
+        let p = Progress {
+            frames: 500,
+            bytes: 250,
+            total_bytes: 1000,
+            elapsed: 2.0,
+            done: false,
+        };
+        assert_eq!(p.percent(), Some(25.0));
+        assert_eq!(p.frames_per_second(), 250.0);
+        assert_eq!(p.line(), "25.0% 500 frames, 0.0 MB of 0.0 MB, 250 frames/s");
+        let unknown = Progress {
+            total_bytes: 0,
+            elapsed: 0.0,
+            ..p
+        };
+        assert_eq!(unknown.percent(), None);
+        assert_eq!(unknown.frames_per_second(), 0.0);
+        assert!(!unknown.line().contains('%'));
     }
 }
