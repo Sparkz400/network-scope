@@ -1,7 +1,13 @@
 //! Traceroute: all TTLs are probed in parallel (one blocking ICMP probe each), then assembled.
 use crate::{core::Gate, platform::HopReply};
 use serde::{Deserialize, Serialize};
-use std::{net::IpAddr, sync::Arc};
+use std::{
+    net::IpAddr,
+    sync::{
+        atomic::{AtomicU16, Ordering},
+        Arc,
+    },
+};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +37,20 @@ pub fn assemble(mut replies: Vec<(u8, HopReply)>) -> Vec<Hop> {
         .collect()
 }
 
+/// ICMP identifier for one trace. Unique per concurrent trace in this process (so
+/// raw-socket replies of parallel traces are not confused) and never equal to the
+/// process-id identifier that ping echoes use.
+pub fn next_trace_id() -> u16 {
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let echo_id = (std::process::id() & 0xffff) as u16;
+    loop {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed) ^ echo_id ^ 0x8000;
+        if id != echo_id {
+            return id;
+        }
+    }
+}
+
 pub async fn trace(
     ip: IpAddr,
     max_hops: u8,
@@ -40,6 +60,7 @@ pub async fn trace(
 ) -> Result<Vec<Hop>, String> {
     let mut set = JoinSet::new();
     let hops = max_hops.clamp(1, 64);
+    let id = next_trace_id();
     for ttl in 1..=hops {
         gate.wait().await;
         let Ok(permit) = blocking.clone().acquire_owned().await else {
@@ -47,7 +68,7 @@ pub async fn trace(
         };
         set.spawn_blocking(move || {
             let _permit = permit;
-            (ttl, crate::platform::hop(ip, ttl, timeout_ms))
+            (ttl, crate::platform::hop(ip, ttl, timeout_ms, id))
         });
     }
     let (mut replies, mut error) = (vec![], None);
@@ -100,6 +121,14 @@ mod tests {
         assert_eq!(hops.len(), 2);
         assert!(assemble(vec![(1, reply(None, false))]).is_empty());
         assert!(assemble(vec![]).is_empty());
+    }
+
+    #[test]
+    fn trace_ids_are_distinct_and_not_the_echo_id() {
+        let echo_id = (std::process::id() & 0xffff) as u16;
+        let ids: std::collections::HashSet<u16> = (0..1000).map(|_| next_trace_id()).collect();
+        assert_eq!(ids.len(), 1000);
+        assert!(!ids.contains(&echo_id));
     }
 
     #[tokio::test]
