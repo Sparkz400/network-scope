@@ -25,6 +25,7 @@ network-scope devices ID [--format json|csv]   One record per device (active + p
 network-scope topology ID [--format ascii|dot] Network path map from traceroute data
 network-scope trace TARGET [--max-hops 20] [--timeout 1000]
 network-scope probes [--probes FILE]           List/validate the service probe database
+network-scope completions powershell|bash      Print a shell completion script
 
 Scan options:
   --ports 80,443,502,102,4840,44818 --workers 1024 --timeout 2000
@@ -46,6 +47,7 @@ Scan options:
   --syn           IPv4 LAN SYN via Npcap; unavailable -> TCP connect fallback
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
+  --quiet         No progress messages on stderr (errors still print); any command
 
 Safe Mode is on by default: 8 hosts max, >=100 ms between probes, no SYN.
 Targets are streamed: ranges up to 16,777,216 addresses (/8) are accepted; above
@@ -53,9 +55,11 @@ Targets are streamed: ranges up to 16,777,216 addresses (/8) are accepted; above
 Read-only traffic can still affect fragile equipment; passive listen sends none.
 OT queries run only on their standard open ports; BACnet uses unicast UDP Who-Is.
 Npcap is optional for TCP connect; capture/DCP/SYN require its driver and access.
-TUI: Space pause/resume, Q stop and save a partial scan. No scan starts by itself.
+TUI: Space pause/resume, Q/Esc stop and save a partial scan, Up/Down select,
+Enter host details (Enter/Backspace back), S change sort. No scan starts by itself.
 "#;
-const FLAGS: [&str; 15] = [
+const FLAGS: [&str; 16] = [
+    "quiet",
     "tcp-only",
     "arp",
     "ot",
@@ -103,6 +107,121 @@ const VALUES: [&str; 29] = [
     "rack",
     "slot",
 ];
+/// Every command `run` accepts (the completion scripts offer these).
+const COMMANDS: [&str; 21] = [
+    "scan",
+    "listen",
+    "dcp",
+    "interfaces",
+    "history",
+    "diff",
+    "export",
+    "report",
+    "import",
+    "findings",
+    "monitor",
+    "alerts",
+    "scripts",
+    "ot-listen",
+    "ot-assets",
+    "devices",
+    "topology",
+    "trace",
+    "probes",
+    "completions",
+    "help",
+];
+/// Options that take a file name (completed with file names).
+const FILE_VALUES: [&str; 6] = ["output", "db", "pcap", "script", "probes", "alerts"];
+const FORMATS: &str = "json csv html nmap ascii dot";
+fn completions(shell: &str) -> Result<String, String> {
+    let commands = COMMANDS.join(" ");
+    let options = FLAGS
+        .iter()
+        .chain(VALUES.iter())
+        .map(|o| format!("--{o}"))
+        .collect::<Vec<_>>();
+    let values = VALUES.iter().map(|o| format!("--{o}")).collect::<Vec<_>>();
+    let files = FILE_VALUES
+        .iter()
+        .map(|o| format!("--{o}"))
+        .collect::<Vec<_>>();
+    let quoted = |list: &[String]| {
+        list.iter()
+            .map(|o| format!("'{o}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    match shell {
+        "bash" => Ok(format!(
+            r#"# network-scope completion for bash. Load with: source <(network-scope completions bash)
+_network_scope() {{
+    local cur="${{COMP_WORDS[COMP_CWORD]}}"
+    local prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+    local values=" {values} "
+    if [[ $COMP_CWORD -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "{commands} --quiet" -- "$cur") )
+        return
+    fi
+    case "$prev" in
+        --format) COMPREPLY=( $(compgen -W "{FORMATS}" -- "$cur") ); return ;;
+        {file_case}) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
+    esac
+    if [[ "$values" == *" $prev "* ]]; then
+        return
+    fi
+    if [[ "${{COMP_WORDS[1]}}" == completions ]]; then
+        COMPREPLY=( $(compgen -W "bash powershell" -- "$cur") )
+        return
+    fi
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=( $(compgen -W "{options}" -- "$cur") )
+    fi
+}}
+complete -o default -F _network_scope network-scope network-scope.exe
+"#,
+            values = values.join(" "),
+            options = options.join(" "),
+            file_case = files.join("|"),
+        )),
+        "powershell" => Ok(format!(
+            r#"# network-scope completion for PowerShell. Load with:
+#   network-scope completions powershell | Out-String | Invoke-Expression
+Register-ArgumentCompleter -Native -CommandName 'network-scope','network-scope.exe' -ScriptBlock {{
+    param($wordToComplete, $commandAst, $cursorPosition)
+    $commands = @({commands_q},'--quiet')
+    $options = @({options_q})
+    $values = @({values_q})
+    $formats = @('{formats_q}')
+    $words = @($commandAst.CommandElements | ForEach-Object {{ $_.ToString() }})
+    $before = $words.Count
+    if ($wordToComplete -ne '') {{ $before-- }}
+    $prev = if ($before -ge 1) {{ $words[$before - 1] }} else {{ '' }}
+    if ($before -le 1) {{ $candidates = $commands }}
+    elseif ($prev -eq '--format') {{ $candidates = $formats }}
+    elseif ($values -contains $prev) {{ return }}
+    elseif ($words[1] -eq 'completions') {{ $candidates = @('bash','powershell') }}
+    elseif ($wordToComplete -eq '' -or $wordToComplete.StartsWith('-')) {{ $candidates = $options }}
+    else {{ return }}
+    $candidates | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+    }}
+}}
+"#,
+            commands_q = quoted(&COMMANDS.iter().map(|c| c.to_string()).collect::<Vec<_>>()),
+            options_q = quoted(&options),
+            values_q = quoted(&values),
+            formats_q = FORMATS.replace(' ', "','"),
+        )),
+        _ => Err("Choose powershell or bash".into()),
+    }
+}
+/// Progress and status messages; `--quiet` suppresses them (errors are returned, not printed here).
+fn progress(opts: &BTreeMap<String, String>, message: impl std::fmt::Display) {
+    if !opts.contains_key("quiet") {
+        eprintln!("{message}");
+    }
+}
 fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);
     let mut positional = vec![];
@@ -246,12 +365,21 @@ fn output(data: &str, opts: &BTreeMap<String, String>) -> Result<(), String> {
     }
 }
 pub fn run(args: &[String]) -> Result<(), String> {
+    // Global options may also come before the command (`network-scope --quiet scan ...`).
+    let split = args
+        .iter()
+        .position(|a| a != "--quiet")
+        .unwrap_or(args.len());
+    let (global, args) = args.split_at(split);
     if args.is_empty() || ["help", "--help", "-h"].contains(&args[0].as_str()) {
         println!("{HELP}");
         return Ok(());
     }
     let command = &args[0];
-    let (pos, opts) = options(&args[1..])?;
+    let (pos, mut opts) = options(&args[1..])?;
+    if !global.is_empty() {
+        opts.insert("quiet".into(), "true".into());
+    }
     let db = opts
         .get("db")
         .map(PathBuf::from)
@@ -263,6 +391,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             .map_err(|_| "Invalid scan ID".into())
     };
     match command.as_str() {
+        "completions" => output(
+            completions(pos.first().ok_or("Provide the shell: powershell or bash")?)?.trim_end(),
+            &opts,
+        ),
         "interfaces" => output(
             &serde_json::to_string_pretty(&crate::capture::interfaces()?)
                 .map_err(|e| e.to_string())?,
@@ -307,7 +439,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let xml = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
             let snapshot = nmap::import(&xml)?;
             let scan_id = store::save(&db, &snapshot)?;
-            eprintln!("Imported {} hosts as scan #{scan_id}", snapshot.hosts.len());
+            progress(
+                &opts,
+                format_args!("Imported {} hosts as scan #{scan_id}", snapshot.hosts.len()),
+            );
             Ok(())
         }
         "findings" => {
@@ -400,8 +535,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 if !(1..=604_800).contains(&seconds) {
                     return Err("Seconds must be 1-604800".into());
                 }
-                eprintln!(
-                    "Listening passively on {interface} for {seconds} s. Nothing is transmitted."
+                progress(
+                    &opts,
+                    format_args!(
+                        "Listening passively on {interface} for {seconds} s. Nothing is transmitted."
+                    ),
                 );
                 let cancel = std::sync::atomic::AtomicBool::new(false);
                 crate::otpassive::listen_live(interface, seconds, &cancel, &mut tracker)?;
@@ -416,10 +554,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 notes: BTreeMap::new(),
             };
             let scan_id = store::save(&db, &snapshot)?;
-            eprintln!(
-                "Saved passive OT capture #{scan_id}: {} frames, {} observations",
-                tracker.frames,
-                snapshot.observations.len()
+            progress(
+                &opts,
+                format_args!(
+                    "Saved passive OT capture #{scan_id}: {} frames, {} observations",
+                    tracker.frames,
+                    snapshot.observations.len()
+                ),
             );
             ot_assets_output(&snapshot, &opts)
         }
@@ -530,9 +671,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 notes: BTreeMap::new(),
             };
             let id = store::save(&db, &snapshot)?;
-            eprintln!(
-                "Saved scan #{id} ({})",
-                if complete { "complete" } else { "partial" }
+            progress(
+                &opts,
+                format_args!(
+                    "Saved scan #{id} ({})",
+                    if complete { "complete" } else { "partial" }
+                ),
             );
             output(&store::export(&snapshot, format)?, &opts)?;
             if errors.is_empty() {
@@ -578,13 +722,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 notes: BTreeMap::new(),
             };
             let id = store::save(&db, &snapshot)?;
-            eprintln!(
-                "Saved capture #{id} ({})",
-                if error.is_none() {
-                    "complete"
-                } else {
-                    "partial"
-                }
+            progress(
+                &opts,
+                format_args!(
+                    "Saved capture #{id} ({})",
+                    if error.is_none() {
+                        "complete"
+                    } else {
+                        "partial"
+                    }
+                ),
             );
             output(
                 &store::export(
@@ -779,16 +926,211 @@ fn install_panic_hook() {
         }));
     });
 }
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum TuiSort {
+    #[default]
+    Newest,
+    Address,
+    OpenPorts,
+}
+impl TuiSort {
+    fn next(self) -> Self {
+        match self {
+            Self::Newest => Self::Address,
+            Self::Address => Self::OpenPorts,
+            Self::OpenPorts => Self::Newest,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Newest => "newest",
+            Self::Address => "address",
+            Self::OpenPorts => "open ports",
+        }
+    }
+}
+#[derive(PartialEq, Eq, Debug)]
+enum TuiAction {
+    None,
+    Stop,
+    Pause,
+}
+/// Live view state: sort order, selection (kept by address across re-sorts) and detail view.
+#[derive(Default)]
+struct TuiView {
+    sort: TuiSort,
+    selected: Option<std::net::IpAddr>,
+    detail: bool,
+    /// Indexes into the host list in display order.
+    order: Vec<usize>,
+    key: Option<(usize, TuiSort)>,
+}
+impl TuiView {
+    /// Re-sorts only when hosts arrived or the sort mode changed.
+    fn refresh(&mut self, hosts: &[scan::Host]) {
+        let key = (hosts.len(), self.sort);
+        if self.key == Some(key) {
+            return;
+        }
+        self.key = Some(key);
+        let mut order: Vec<usize> = (0..hosts.len()).collect();
+        match self.sort {
+            TuiSort::Newest => order.reverse(),
+            TuiSort::Address => order.sort_by_key(|&i| hosts[i].ip),
+            TuiSort::OpenPorts => order.sort_by(|&a, &b| {
+                let n = |h: &scan::Host| h.open.len() + h.udp_open.len();
+                n(&hosts[b])
+                    .cmp(&n(&hosts[a]))
+                    .then(hosts[a].ip.cmp(&hosts[b].ip))
+            }),
+        }
+        self.order = order;
+    }
+    fn position(&self, hosts: &[scan::Host]) -> Option<usize> {
+        let ip = self.selected?;
+        self.order.iter().position(|&i| hosts[i].ip == ip)
+    }
+    /// Visible slice of `order` for a list of `height` rows, keeping the selection in view.
+    fn window(&self, hosts: &[scan::Host], height: usize) -> (usize, usize) {
+        let start = match self.position(hosts) {
+            Some(p) if height > 0 && p >= height => p + 1 - height,
+            _ => 0,
+        };
+        (start, (start + height).min(self.order.len()))
+    }
+    fn detail_host<'a>(&self, hosts: &'a [scan::Host]) -> Option<&'a scan::Host> {
+        if !self.detail {
+            return None;
+        }
+        let ip = self.selected?;
+        hosts.iter().find(|h| h.ip == ip)
+    }
+    fn key(&mut self, code: crossterm::event::KeyCode, hosts: &[scan::Host]) -> TuiAction {
+        use crossterm::event::KeyCode;
+        if stop_key(code) {
+            return TuiAction::Stop;
+        }
+        self.refresh(hosts);
+        let len = self.order.len();
+        let current = self.position(hosts);
+        let target = match code {
+            KeyCode::Char(' ') => return TuiAction::Pause,
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.sort = self.sort.next();
+                self.refresh(hosts);
+                return TuiAction::None;
+            }
+            KeyCode::Enter => {
+                if self.detail {
+                    self.detail = false;
+                } else if current.is_some() {
+                    self.detail = true;
+                } else if let Some(&first) = self.order.first() {
+                    self.selected = Some(hosts[first].ip);
+                    self.detail = true;
+                }
+                return TuiAction::None;
+            }
+            KeyCode::Backspace | KeyCode::Left => {
+                self.detail = false;
+                return TuiAction::None;
+            }
+            _ if self.detail || len == 0 => return TuiAction::None,
+            KeyCode::Down => current.map_or(0, |p| (p + 1).min(len - 1)),
+            KeyCode::Up => current.map_or(0, |p| p.saturating_sub(1)),
+            KeyCode::PageDown => current.map_or(0, |p| (p + 10).min(len - 1)),
+            KeyCode::PageUp => current.map_or(0, |p| p.saturating_sub(10)),
+            KeyCode::Home => 0,
+            KeyCode::End => len - 1,
+            _ => return TuiAction::None,
+        };
+        self.selected = Some(hosts[self.order[target]].ip);
+        TuiAction::None
+    }
+}
+/// Detail view text: ports with their identified services, identity and findings.
+fn detail_lines(h: &scan::Host) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "Status: {}{}",
+            if h.responding {
+                "responding"
+            } else {
+                "no reply"
+            },
+            h.ping.map_or(String::new(), |p| format!(" · ping {p} ms"))
+        ),
+        format!(
+            "Hostname: {}",
+            if h.hostname.is_empty() {
+                "-"
+            } else {
+                &h.hostname
+            }
+        ),
+        format!("MAC: {}", if h.mac.is_empty() { "-" } else { &h.mac }),
+        String::new(),
+        format!("Open TCP ports ({})", h.open.len()),
+    ];
+    for p in &h.open {
+        let service = h.identity.get(&format!("svc.{p}"));
+        lines.push(format!(
+            "  {p:>5}/tcp  {}",
+            service.map_or("", String::as_str)
+        ));
+    }
+    if !h.udp_open.is_empty() {
+        lines.push(format!("Open UDP ports ({})", h.udp_open.len()));
+        for p in &h.udp_open {
+            let service = h.identity.get(&format!("udp.{p}"));
+            lines.push(format!(
+                "  {p:>5}/udp  {}",
+                service.map_or("", String::as_str)
+            ));
+        }
+    }
+    let identity: Vec<String> = h
+        .identity
+        .iter()
+        .filter(|(k, _)| {
+            !k.starts_with("svc.") && !k.starts_with("udp.") && !k.starts_with("finding.")
+        })
+        .map(|(k, v)| format!("  {k}: {v}"))
+        .collect();
+    if !identity.is_empty() {
+        lines.push(String::new());
+        lines.push("Identity".into());
+        lines.extend(identity);
+    }
+    let findings = risk::analyze_host(h);
+    lines.push(String::new());
+    lines.push(format!("Findings ({})", findings.len()));
+    for f in &findings {
+        lines.push(format!(
+            "  [{}] {}{}: {}",
+            f.severity.name(),
+            f.title,
+            f.port.map_or(String::new(), |p| format!(" (port {p})")),
+            f.evidence
+        ));
+    }
+    for e in &h.errors {
+        lines.push(format!("Error: {e}"));
+    }
+    lines
+}
 fn tui(run: &scan::Running) -> Collected {
     use crossterm::{
-        event::{self, Event, KeyCode, KeyEventKind},
+        event::{self, Event, KeyEventKind},
         execute,
         terminal::{enable_raw_mode, EnterAlternateScreen},
     };
     use ratatui::{
         backend::CrosstermBackend,
         layout::Constraint,
-        widgets::{Block, Borders, Row, Table},
+        style::{Modifier, Style},
+        text::Line,
+        widgets::{Block, Borders, Paragraph, Row, Table, Wrap},
         Terminal,
     };
     /// Undoes only what was set up, then prints panics of other threads seen meanwhile.
@@ -847,6 +1189,7 @@ fn tui(run: &scan::Running) -> Collected {
     let mut hosts = vec![];
     let mut errors = vec![];
     let mut seen = 0usize;
+    let mut view = TuiView::default();
     let sparse = run.total > scan::MAX_HOSTS;
     let mut done = false;
     while !done {
@@ -872,33 +1215,58 @@ fn tui(run: &scan::Running) -> Collected {
         if done {
             break;
         }
+        view.refresh(&hosts);
+        let paused = run.pause.load(Ordering::Relaxed);
         let drawn = terminal.draw(|f| {
-            let rows = hosts
-                .iter()
-                .rev()
-                .take(f.area().height.saturating_sub(4) as usize)
-                .map(|h: &scan::Host| {
-                    Row::new(vec![
-                        h.ip.to_string(),
-                        if h.responding {
-                            "Responding"
-                        } else {
-                            "No reply"
-                        }
-                        .into(),
-                        h.open
-                            .iter()
-                            .map(u16::to_string)
-                            .collect::<Vec<_>>()
-                            .join(","),
-                        h.identity
-                            .keys()
-                            .filter(|k| k.ends_with("name") || k.ends_with("firmware"))
-                            .map(|k| format!("{k}: {}", h.identity[k]))
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                    ])
-                });
+            let area = f.area();
+            let progress = format!(
+                "{seen}/{} · {}",
+                run.total,
+                if paused { "paused" } else { "scanning" }
+            );
+            if let Some(host) = view.detail_host(&hosts) {
+                let lines: Vec<Line> = detail_lines(host).into_iter().map(Line::from).collect();
+                f.render_widget(
+                    Paragraph::new(lines)
+                        .wrap(Wrap { trim: false })
+                        .block(Block::default().borders(Borders::ALL).title(format!(
+                            " {} · {progress} · Enter/Backspace back · Space pause / Q stop ",
+                            host.ip
+                        ))),
+                    area,
+                );
+                return;
+            }
+            let height = area.height.saturating_sub(3) as usize;
+            let (start, end) = view.window(&hosts, height);
+            let rows = view.order[start..end].iter().map(|&i| {
+                let h: &scan::Host = &hosts[i];
+                let row = Row::new(vec![
+                    h.ip.to_string(),
+                    if h.responding {
+                        "Responding"
+                    } else {
+                        "No reply"
+                    }
+                    .into(),
+                    h.open
+                        .iter()
+                        .map(u16::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    h.identity
+                        .keys()
+                        .filter(|k| k.ends_with("name") || k.ends_with("firmware"))
+                        .map(|k| format!("{k}: {}", h.identity[k]))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ]);
+                if view.selected == Some(h.ip) {
+                    row.style(Style::default().add_modifier(Modifier::REVERSED))
+                } else {
+                    row
+                }
+            });
             f.render_widget(
                 Table::new(
                     rows,
@@ -911,26 +1279,22 @@ fn tui(run: &scan::Running) -> Collected {
                 )
                 .header(Row::new(["IP", "Status", "Ports", "Identity"]))
                 .block(Block::default().borders(Borders::ALL).title(format!(
-                    " Network Scope · {}/{} · {} · Space pause / Q stop ",
-                    seen,
-                    run.total,
-                    if run.pause.load(Ordering::Relaxed) {
-                        "paused"
-                    } else {
-                        "scanning"
-                    }
+                    " Network Scope · {progress} · sort: {} (S) · ↑↓ Enter details · Space pause / Q stop ",
+                    view.sort.name()
                 ))),
-                f.area(),
+                area,
             );
         });
         let input = drawn.and_then(|_| {
             if event::poll(Duration::from_millis(60))? {
                 if let Event::Key(k) = event::read()? {
                     if k.kind == KeyEventKind::Press {
-                        if stop_key(k.code) {
-                            run.cancel.store(true, Ordering::Relaxed);
-                        } else if k.code == KeyCode::Char(' ') {
-                            run.pause.fetch_xor(true, Ordering::Relaxed);
+                        match view.key(k.code, &hosts) {
+                            TuiAction::Stop => run.cancel.store(true, Ordering::Relaxed),
+                            TuiAction::Pause => {
+                                run.pause.fetch_xor(true, Ordering::Relaxed);
+                            }
+                            TuiAction::None => {}
                         }
                     }
                 }
@@ -1145,5 +1509,165 @@ mod tests {
         assert!(stop_key(KeyCode::Char('Q')));
         assert!(stop_key(KeyCode::Esc));
         assert!(!stop_key(KeyCode::Char(' ')));
+    }
+
+    fn tui_host(ip: &str, open: Vec<u16>) -> scan::Host {
+        scan::Host {
+            ip: ip.parse().unwrap(),
+            responding: true,
+            ping: Some(1),
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open,
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::from([("svc.23".to_string(), "telnet".to_string())]),
+            udp_open: vec![],
+            trace: vec![],
+        }
+    }
+
+    #[test]
+    fn tui_selection_detail_and_sort_keys() {
+        use crossterm::event::KeyCode;
+        let hosts = vec![
+            tui_host("10.0.0.3", vec![80]),
+            tui_host("10.0.0.1", vec![]),
+            tui_host("10.0.0.2", vec![22, 23, 80]),
+        ];
+        let mut v = TuiView::default();
+        v.refresh(&hosts);
+        assert_eq!(v.order, [2, 1, 0], "newest first");
+        // Enter without a selection opens the first row.
+        assert_eq!(v.key(KeyCode::Enter, &hosts), TuiAction::None);
+        assert!(v.detail);
+        assert_eq!(v.detail_host(&hosts).unwrap().ip, hosts[2].ip);
+        // Arrows do nothing in the detail view; Esc and Q still stop, Space still pauses.
+        v.key(KeyCode::Down, &hosts);
+        assert_eq!(v.selected, Some(hosts[2].ip));
+        assert_eq!(v.key(KeyCode::Esc, &hosts), TuiAction::Stop);
+        assert_eq!(v.key(KeyCode::Char('Q'), &hosts), TuiAction::Stop);
+        assert_eq!(v.key(KeyCode::Char(' '), &hosts), TuiAction::Pause);
+        v.key(KeyCode::Backspace, &hosts);
+        assert!(!v.detail && v.detail_host(&hosts).is_none());
+        v.key(KeyCode::Down, &hosts);
+        assert_eq!(v.selected, Some(hosts[1].ip));
+        // Sorting keeps the selected host.
+        v.key(KeyCode::Char('s'), &hosts);
+        assert_eq!(v.sort, TuiSort::Address);
+        assert_eq!(v.order, [1, 2, 0]);
+        assert_eq!(v.position(&hosts), Some(0));
+        v.key(KeyCode::Char('S'), &hosts);
+        assert_eq!(v.order, [2, 0, 1], "most open ports first");
+        v.key(KeyCode::End, &hosts);
+        assert_eq!(v.selected, Some(hosts[1].ip));
+        v.key(KeyCode::Up, &hosts);
+        assert_eq!(v.selected, Some(hosts[0].ip));
+        v.key(KeyCode::Char('s'), &hosts);
+        assert_eq!(v.sort, TuiSort::Newest);
+        // The window follows the selection.
+        let many: Vec<scan::Host> = (1..=50)
+            .map(|i| tui_host(&format!("10.0.1.{i}"), vec![]))
+            .collect();
+        let mut v = TuiView::default();
+        v.key(KeyCode::End, &many);
+        assert_eq!(v.window(&many, 10), (40, 50));
+        v.key(KeyCode::Home, &many);
+        assert_eq!(v.window(&many, 10), (0, 10));
+        assert_eq!(TuiView::default().window(&[], 10), (0, 0));
+    }
+
+    #[test]
+    fn tui_details_show_ports_services_and_findings() {
+        let h = tui_host("10.0.0.2", vec![23]);
+        let text = detail_lines(&h).join("\n");
+        assert!(text.contains("23/tcp  telnet"), "{text}");
+        assert!(text.contains("Findings ("), "{text}");
+        let findings = risk::analyze_host(&h);
+        for f in &findings {
+            assert!(text.contains(&f.title), "{text}");
+        }
+    }
+
+    #[test]
+    fn completions_cover_every_command_and_option() {
+        for shell in ["bash", "powershell"] {
+            let script = completions(shell).unwrap();
+            for c in COMMANDS {
+                assert!(script.contains(c), "{shell}: {c}");
+            }
+            for o in FLAGS.iter().chain(VALUES.iter()) {
+                assert!(script.contains(&format!("--{o}")), "{shell}: --{o}");
+            }
+        }
+        assert!(completions("bash")
+            .unwrap()
+            .contains("complete -o default -F _network_scope"));
+        assert!(completions("powershell")
+            .unwrap()
+            .contains("Register-ArgumentCompleter -Native"));
+        assert!(completions("fish").is_err());
+        for f in FILE_VALUES {
+            assert!(VALUES.contains(&f), "--{f}");
+        }
+    }
+
+    #[test]
+    fn commands_table_matches_the_dispatcher() {
+        let src = include_str!("ui.rs");
+        let body = src
+            .split("match command.as_str() {")
+            .nth(1)
+            .unwrap()
+            .split("_ => Err(format!(\"Unknown command")
+            .next()
+            .unwrap();
+        let mut arms = std::collections::BTreeSet::new();
+        for line in body.lines() {
+            // Arms of this match are indented by exactly eight spaces.
+            if let Some(rest) = line.strip_prefix("        \"") {
+                if !line.contains("=>") {
+                    continue;
+                }
+                for name in format!("\"{rest}").split("=>").next().unwrap().split('|') {
+                    arms.insert(name.trim().trim_matches('"').to_string());
+                }
+            }
+        }
+        assert!(arms.len() >= 19, "{arms:?}");
+        for a in &arms {
+            assert!(COMMANDS.contains(&a.as_str()), "{a} missing from COMMANDS");
+        }
+        for c in COMMANDS {
+            assert!(c == "help" || arms.contains(c), "{c} is not dispatched");
+        }
+    }
+
+    #[test]
+    fn quiet_is_accepted_before_and_after_the_command() {
+        let (_, opts) = options(&args(&["history", "--quiet"])).unwrap();
+        assert!(opts.contains_key("quiet"));
+        // Before the command it is a global option, not an unknown command.
+        let dir = std::env::temp_dir().join(format!("ns-quiet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("c.txt");
+        run(&args(&[
+            "--quiet",
+            "completions",
+            "bash",
+            "--output",
+            out.to_str().unwrap(),
+        ]))
+        .unwrap();
+        assert!(std::fs::read_to_string(&out)
+            .unwrap()
+            .contains("_network_scope"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(run(&args(&["completions"]))
+            .unwrap_err()
+            .contains("powershell"));
     }
 }
