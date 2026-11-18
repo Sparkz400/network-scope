@@ -98,7 +98,7 @@ fn error_text(error: &ErrorBuffer) -> String {
     let bytes: Vec<u8> = error
         .iter()
         .take_while(|c| **c != 0)
-        .map(|c| *c as u8)
+        .map(|c| c.to_ne_bytes()[0])
         .collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
@@ -301,10 +301,10 @@ mod tests {
         // `[0i8; 256]` did not compile where c_char is u8 (aarch64 Linux).
         let mut error: ErrorBuffer = [0; 256];
         for (i, b) in b"no such device".iter().enumerate() {
-            error[i] = *b as c_char;
+            error[i] = c_char::from_ne_bytes([*b]);
         }
         assert_eq!(error_text(&error), "no such device");
-        let full: ErrorBuffer = [b'x' as c_char; 256];
+        let full: ErrorBuffer = [c_char::from_ne_bytes(*b"x"); 256];
         assert_eq!(
             error_text(&full).len(),
             256,

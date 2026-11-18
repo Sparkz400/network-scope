@@ -292,10 +292,14 @@ fn next_queued(
 ) -> Option<Key> {
     for queue in [retransmit, fresh] {
         while let Some(&key) = queue.front() {
-            if pending.get(&key).is_some_and(|p| p.queued) {
+            // A closed reply channel means the caller was aborted (Stop): never send.
+            if pending
+                .get(&key)
+                .is_some_and(|p| p.queued && !p.reply.is_closed())
+            {
                 return Some(key);
             }
-            // Answered, failed or already sent through the other queue.
+            // Answered, failed, abandoned or already sent through the other queue.
             queue.pop_front();
         }
     }
@@ -428,6 +432,15 @@ fn io_loop<W: Wire>(
         let now = Instant::now();
         if now >= next_sweep {
             next_sweep = now + Duration::from_millis(5);
+            // Probes whose caller is gone (Stop aborts host tasks) are dropped, so no
+            // queued SYN or retransmit leaves after the scan was stopped.
+            pending.retain(|key, p| {
+                let keep = !p.reply.is_closed();
+                if !keep {
+                    cookies.remove(key);
+                }
+                keep
+            });
             let mut expired = vec![];
             for (key, p) in pending.iter_mut() {
                 // Queued probes have no running reply window and never expire.
@@ -673,7 +686,7 @@ mod tests {
     fn retransmit_waits_double_up_to_the_cap() {
         let (tx, sent) = engine(Gate::unlimited(), None);
         let doubling = submit(&tx, 1, 40, 1000, 2);
-        let capped = submit(&tx, 2, 40, 40, 2);
+        let capped = submit(&tx, 2, 100, 100, 2);
         assert_eq!(
             doubling.blocking_recv().unwrap().unwrap().0,
             PortState::Unanswered
@@ -691,7 +704,7 @@ mod tests {
         assert_eq!(c.len(), 3);
         let g2 = c[2] - c[1];
         assert!(
-            g2 >= Duration::from_millis(40) && g2 < Duration::from_millis(78),
+            g2 >= Duration::from_millis(100) && g2 < Duration::from_millis(190),
             "wait capped at the port timeout: {g2:?}"
         );
     }
@@ -713,6 +726,20 @@ mod tests {
             "retransmit queued behind new probes: {order:?}"
         );
         assert_eq!(order.len(), 12);
+    }
+
+    #[test]
+    fn stopped_probes_are_never_sent() {
+        // 20 probes behind a 20/s gate; the caller is aborted after the first sends.
+        let (tx, sent) = engine(Gate::per_second(20.0, 1.0), None);
+        let answers: Vec<_> = (1..=20).map(|p| submit(&tx, p, 1000, 1000, 2)).collect();
+        std::thread::sleep(Duration::from_millis(60));
+        drop(answers);
+        std::thread::sleep(Duration::from_millis(30));
+        let after_stop = sent.lock().unwrap().len();
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(sent.lock().unwrap().len(), after_stop, "SYNs kept leaving");
+        assert!(after_stop <= 3, "{after_stop}");
     }
 
     #[test]
