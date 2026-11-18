@@ -71,11 +71,12 @@ new src/notify.rs (+ `mod notify;` in src/main.rs). src/ot/opcua.rs unchanged.
 
 ## 4. Alert de-duplication across cycles (monitor.rs)
 
-- `monitor::alert_key(&Alert)`: kind + subject + stable detail. Port alerts keep the message
-  (protocol + port); `new-finding` uses the title (text before " - "); `rogue-dhcp` without an
+- `monitor::alert_key(&Alert)`: kind + subject + stable detail. `rogue-dhcp` without an
   allow-list uses the sorted set of server IPs (the offered address changes every cycle);
-  `new-device`, `device-missing`, `capture-incomplete`, `dhcp-discover-failed` and per-server
-  `rogue-dhcp` use kind + subject only.
+  `capture-incomplete`, `dhcp-discover-failed` and per-server `rogue-dhcp` use kind + subject
+  only (their counters change every cycle). Everything else (`new-device`, `device-missing`,
+  `new-finding`, port and address alerts) uses the full message: the subject of device alerts
+  is only the first IP, and findings must stay as fine-grained as `risk::Finding::key`.
 - `monitor::Dedup` (in memory): a key raised once is suppressed while it keeps being produced; it
   is raised again after a **complete** cycle without it (resolved, then recurred) or after
   `renotify` (default 24 h). An incomplete cycle (cancelled scan; comparisons are skipped) never
@@ -116,7 +117,13 @@ With the default (low) it names `port-closed (info)`.
 - Framing is validated (protocol id 0 / TPKT 3,0 / 0x68 / known ENIP commands / OPC UA message
   types) before anything is buffered; a length field followed by bytes that are not a message is
   decoded as one piece, as before.
-- `Tracker::flush(ts)` is called by `read_pcap_file*` and `listen_live`; callers that `feed()`
+- A buffered start that turns out not to be a message (e.g. a 1-byte TCP keep-alive probe) is
+  decoded separately from the next segment, so it cannot swallow the following message.
+  Given-up fragments are decoded with the capture time of their last segment.
+- Behaviour change: on these five ports the `packets` counter of an observed server/client now
+  counts messages (a message split over 3 segments counts once; 2 messages in one segment
+  count twice), not segments.
+- `Tracker::flush()` is called by `read_pcap_file*` and `listen_live`; callers that `feed()`
   frames themselves should call it before `observations()`.
 - `Tracker::set_reassembly(false)` turns buffering off; `Tracker::reassembly_stats()` returns
   (messages reassembled, partial messages given up).
