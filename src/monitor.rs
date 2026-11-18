@@ -498,6 +498,9 @@ pub struct RunConfig {
     pub dhcp_discover: bool,
     pub interface: String,
     pub listen_seconds: u64,
+    /// `--quiet`: no hint, per-cycle summary or capture warnings on stderr (the capture
+    /// warning is still raised as a `capture-incomplete` alert; delivery failures still print).
+    pub quiet: bool,
 }
 
 fn now() -> i64 {
@@ -542,7 +545,7 @@ pub fn run(
 ) -> Result<(), String> {
     let targets = scan::parse_targets(targets_text, settings.skip_edges, scan::MAX_STREAM)?;
     let ports = scan::parse_ports(&settings.ports)?;
-    if let Some(hint) = severity_hint(&cfg.policy) {
+    if let Some(hint) = severity_hint(&cfg.policy).filter(|_| !cfg.quiet) {
         eprintln!("{hint}");
     }
     let notify = &cfg.policy.notify;
@@ -568,7 +571,9 @@ pub fn run(
             let listening = crate::passive::start(cfg.interface.clone(), cfg.listen_seconds, None);
             // A capture problem never ends monitoring: the cycle continues with what was seen.
             for warning in collect_observations(&mut observations, &listening.receiver) {
-                eprintln!("Cycle {cycle}: warning: {warning}");
+                if !cfg.quiet {
+                    eprintln!("Cycle {cycle}: warning: {warning}");
+                }
                 notices.push(alert(
                     now(),
                     Severity::Low,
@@ -667,16 +672,18 @@ pub fn run(
             store::touch_devices(db, &keys, t)?;
         }
         store::save_alerts(db, id, &alerts)?;
-        eprintln!(
-            "Cycle {cycle}: scan #{id}, {} hosts, {} alerts{}",
-            snapshot.hosts.len(),
-            alerts.len(),
-            if suppressed > 0 {
-                format!(" ({suppressed} still-active alerts not repeated)")
-            } else {
-                String::new()
-            }
-        );
+        if !cfg.quiet {
+            eprintln!(
+                "Cycle {cycle}: scan #{id}, {} hosts, {} alerts{}",
+                snapshot.hosts.len(),
+                alerts.len(),
+                if suppressed > 0 {
+                    format!(" ({suppressed} still-active alerts not repeated)")
+                } else {
+                    String::new()
+                }
+            );
+        }
         for a in &alerts {
             emit(a);
         }

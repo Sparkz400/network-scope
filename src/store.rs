@@ -210,8 +210,10 @@ pub fn list_alerts(path: &Path, limit: usize) -> Result<Vec<crate::monitor::Aler
 }
 /// Identity keys whose values change on every scan without anything changing on the device
 /// (matched by suffix). Certificate expiry is still reported through `tls.<port>.expired`, which
-/// only changes when the certificate actually crosses its expiry date.
-pub const VOLATILE_IDENTITY_SUFFIXES: &[&str] = &[".days_left"];
+/// only changes when the certificate actually crosses its expiry date. The SMB clock offset
+/// (`smb.<port>.clock_skew`) drifts with the server clock and the SMB server start date
+/// (`smb.<port>.boot_time`) changes on every reboot; neither is a change of the device.
+pub const VOLATILE_IDENTITY_SUFFIXES: &[&str] = &[".days_left", ".clock_skew", ".boot_time"];
 
 /// Identity keys a diff skips: the built-in volatile suffixes plus user patterns.
 ///
@@ -243,7 +245,6 @@ impl IgnoreList {
         Self { patterns }
     }
     /// Comma-separated user list (the `--ignore` option), on top of the built-in keys.
-    #[allow(dead_code)] // Pending CLI wiring of `diff --ignore` (see NOTES-store-features.md).
     pub fn parse(list: &str) -> Self {
         Self::new(&list.split(',').map(str::to_string).collect::<Vec<_>>())
     }
@@ -495,7 +496,6 @@ impl DiffReport {
 
 /// Renders a diff for the CLI: `json` (the `DiffReport`), `text` (lines plus findings) or
 /// `lines` (the original JSON array of change lines, the default output of `diff`).
-#[allow(dead_code)] // Pending CLI wiring of `diff --format` (see NOTES-store-features.md).
 pub fn diff_output(
     a: &Snapshot,
     b: &Snapshot,
@@ -784,7 +784,6 @@ fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings)
 /// Timeline of one device (MAC or IP address) across every saved scan and capture, oldest first:
 /// first/last seen, address, MAC and hostname changes, and port changes between comparable
 /// completed scans. For the GUI and `devices --history`.
-#[allow(dead_code)] // Pending CLI/GUI wiring (see NOTES-store-features.md).
 pub fn device_history(path: &Path, query: &str) -> Result<crate::devices::DeviceHistory, String> {
     let key = crate::devices::HistoryKey::parse(query)?;
     let needles = key.needles();
@@ -815,12 +814,6 @@ pub fn device_history(path: &Path, query: &str) -> Result<crate::devices::Device
         }
     }
     Ok(history.finish())
-}
-
-/// Export with no scan time (the HTML report and nmap XML then say "time not recorded").
-/// Prefer [`export_at`] with the inventory timestamp when it is known.
-pub fn export(snapshot: &Snapshot, format: &str) -> Result<String, String> {
-    export_at(snapshot, format, 0)
 }
 
 /// Export in `json`, `csv`, `html`, `nmap`/`xml`, `md`/`markdown` or `jsonl`, stamping the
@@ -968,6 +961,17 @@ mod tests {
         assert_eq!(diff(&a, &b).unwrap(), Vec::<String>::new());
         // Gaining or losing only the volatile key is not reported either.
         b.hosts[0].identity.remove("tls.443.days_left");
+        assert_eq!(diff(&a, &b).unwrap(), Vec::<String>::new());
+        // SMB clock offset and server start date drift without a device change.
+        a.hosts[0]
+            .identity
+            .insert("smb.445.clock_skew".into(), "in sync (< 2 min)".into());
+        b.hosts[0]
+            .identity
+            .insert("smb.445.clock_skew".into(), "+5 min".into());
+        b.hosts[0]
+            .identity
+            .insert("smb.445.boot_time".into(), "2026-11-01".into());
         assert_eq!(diff(&a, &b).unwrap(), Vec::<String>::new());
         // Expiry is reported once, when the expired flag flips.
         b.hosts[0]
@@ -1159,7 +1163,7 @@ mod tests {
         s.hosts[0]
             .identity
             .insert("name".into(), "<script>alert(1)</script>".into());
-        let html = export(&s, "html").unwrap();
+        let html = export_at(&s, "html", 0).unwrap();
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
     }
@@ -1344,11 +1348,13 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
         assert_eq!(v["timestamp"], ts);
         // Without a known time the exports say so instead of inventing 1970.
-        assert!(export(&s, "html").unwrap().contains("time not recorded"));
-        assert!(export(&s, "markdown")
+        assert!(export_at(&s, "html", 0)
             .unwrap()
             .contains("time not recorded"));
-        assert!(export(&s, "pdf").unwrap_err().contains("md or jsonl"));
+        assert!(export_at(&s, "markdown", 0)
+            .unwrap()
+            .contains("time not recorded"));
+        assert!(export_at(&s, "pdf", 0).unwrap_err().contains("md or jsonl"));
     }
 
     #[test]

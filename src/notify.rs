@@ -79,7 +79,6 @@ fn host_port(text: &str, default_port: u16) -> Result<(String, u16), String> {
 
 impl Sink {
     /// `http://host[:port][/path]`.
-    #[allow(dead_code)] // the CLI/GUI owner parses --webhook with it
     pub fn webhook(url: &str) -> Result<Self, String> {
         let url = url.trim();
         if url.to_ascii_lowercase().starts_with("https://") {
@@ -111,7 +110,6 @@ impl Sink {
     }
     /// `udp://host[:port]` (default port 514), `tcp://host[:port]` (default 601) or
     /// `host[:port]` (UDP).
-    #[allow(dead_code)] // the CLI/GUI owner parses --syslog with it
     pub fn syslog(spec: &str) -> Result<Self, String> {
         let spec = spec.trim();
         let (transport, rest) = if let Some(r) = spec.strip_prefix("tcp://") {

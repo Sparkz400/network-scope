@@ -9,22 +9,26 @@ network-scope listen --interface ID [--seconds 60]  Passive capture only
 network-scope dcp --interface ID --source-mac MAC  Read-only DCP Identify
 network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
-network-scope diff OLD_ID NEW_ID [--db FILE]
-network-scope export ID --format json|csv|html|nmap [--output FILE] [--db FILE]
+network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
+network-scope export ID --format json|csv|html|nmap|md|jsonl [--baseline ID] [--output FILE]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
 network-scope findings ID [--min-severity low] Weak TLS/SSH, risky services, CVE hints
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
         [--interface ID --listen-seconds 30] [--alerts FILE]   Repeat scans and alert on changes
+        [--webhook http://URL,...] [--syslog [udp://|tcp://]HOST[:PORT],...]
+        [--alert-timeout 5] [--no-dedup] [--renotify-hours 24]
 network-scope alerts [--db FILE]               Alerts raised by monitor runs
 network-scope scripts PATH                     Check Rhai scripts (use --script PATH with scan)
-network-scope ot-listen --interface ID --seconds N | --pcap FILE   Passive OT asset discovery
+network-scope ot-listen --interface ID --seconds N | --pcap FILE [--progress] [--no-reassembly]
+                                               Passive OT asset discovery
 network-scope ot-assets ID [--format json|csv]  OT asset inventory from a passive capture
 network-scope devices ID [--format json|csv]   One record per device (active + passive merged)
+network-scope devices --history MAC|IP [--format text|json]   Timeline of one device across saved scans
 network-scope topology ID [--format ascii|dot] Network path map from traceroute data
-network-scope trace TARGET [--max-hops 20] [--timeout 1000]
-network-scope probes [--probes FILE]           List/validate the service probe database
+network-scope trace TARGET [--max-hops 20] [--timeout 1000] [--trace-method icmp|udp|tcp --trace-port N]
+network-scope probes [--probes FILE]           List/validate the TCP and UDP probe database
 network-scope completions powershell|bash      Print a shell completion script
 
 Scan options:
@@ -33,23 +37,29 @@ Scan options:
   --retries 1     Extra attempts for unanswered ports (timeout doubles each time)
   --rate PPS      Cap probe rate outside Safe Mode (0 = unlimited)
   --parallel 64   Concurrent port probes per host outside Safe Mode
-  --tcp-only --arp --ot --dns --tui --format json|csv|html --output FILE
+  --tcp-only --arp --ot --dns --tui --format json|csv|html|nmap|md|jsonl --output FILE
   --services      Identify services: banners, HTTP, TLS (certificate, versions, ciphers), SMB, RDP, databases...
   --udp           Probe UDP: DNS, DHCP, NTP, NetBIOS, SNMP (community "public"), SSDP, mDNS
-  --udp-ports 53,123,161   Replace the default UDP port list
+  --udp-ports 53,123,161   Replace the default UDP port list (OT and printer ports are skipped)
   --os            OS family, manufacturer (IEEE OUI) and device type guess
   --deep          Same as --services --udp --os
   --trace         Record the router path to each responding host (--max-hops 20)
-  --probes FILE   Extra service probes, merged over data/probes.json by probe name
+  --trace-method icmp|tcp|udp  Traceroute method (implies --trace; tcp/udp only with --fast)
+  --trace-port N  TCP traceroute port (default: first open port; never OT or printer ports)
+  --probes FILE   Extra service probes (TCP and UDP), merged over data/probes.json by name
+  --cves FILE     Extra CVE/CPE rules, merged over data/cves.json by id; any command
   --script PATH   Rhai script (or folder of .rhai files) run against every host
   --db FILE       Defaults to LOCALAPPDATA/NetworkScope/inventory.sqlite
   --fast          Disable conservative rate limits (read-only OT still applies)
-  --syn           IPv4 LAN SYN via Npcap; unavailable -> TCP connect fallback
-  --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN
+  --syn           IPv4 SYN via Npcap (routed targets via the gateway MAC); else TCP connect
+  --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
+  --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
+  --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
   --quiet         No progress messages on stderr (errors still print); any command
 
-Safe Mode is on by default: 8 hosts max, >=100 ms between probes, no SYN.
+Safe Mode is on by default: 8 hosts max, >=100 ms between probes, no SYN, no ARP
+sweep, ICMP traceroute only. --fast lifts it.
 Targets are streamed: ranges up to 16,777,216 addresses (/8) are accepted; above
 65,536 only responding hosts are kept in memory and saved.
 Read-only traffic can still affect fragile equipment; passive listen sends none.
@@ -58,8 +68,13 @@ Npcap is optional for TCP connect; capture/DCP/SYN require its driver and access
 TUI: Space pause/resume, Q/Esc stop and save a partial scan, Up/Down select,
 Enter host details (Enter/Backspace back), S change sort. No scan starts by itself.
 "#;
-const FLAGS: [&str; 16] = [
+const FLAGS: [&str; 21] = [
     "quiet",
+    "arp-sweep",
+    "adaptive-syn",
+    "no-dedup",
+    "progress",
+    "no-reassembly",
     "tcp-only",
     "arp",
     "ot",
@@ -76,8 +91,17 @@ const FLAGS: [&str; 16] = [
     "dhcp-discover",
     "report-missing",
 ];
-const VALUES: [&str; 29] = [
+const VALUES: [&str; 38] = [
     "ports",
+    "ignore",
+    "history",
+    "cves",
+    "webhook",
+    "syslog",
+    "alert-timeout",
+    "renotify-hours",
+    "trace-method",
+    "trace-port",
     "top-ports",
     "udp-ports",
     "max-hops",
@@ -132,8 +156,8 @@ const COMMANDS: [&str; 21] = [
     "help",
 ];
 /// Options that take a file name (completed with file names).
-const FILE_VALUES: [&str; 6] = ["output", "db", "pcap", "script", "probes", "alerts"];
-const FORMATS: &str = "json csv html nmap ascii dot";
+const FILE_VALUES: [&str; 7] = ["output", "db", "pcap", "script", "probes", "alerts", "cves"];
+const FORMATS: &str = "json csv html nmap md jsonl lines text ascii dot";
 fn completions(shell: &str) -> Result<String, String> {
     let commands = COMMANDS.join(" ");
     let options = FLAGS
@@ -178,7 +202,7 @@ _network_scope() {{
         COMPREPLY=( $(compgen -W "{options}" -- "$cur") )
     fi
 }}
-complete -o default -F _network_scope network-scope network-scope.exe
+complete -o default -F _network_scope network-scope network-scope.exe network-scope-cli network-scope-cli.exe
 "#,
             values = values.join(" "),
             options = options.join(" "),
@@ -187,7 +211,7 @@ complete -o default -F _network_scope network-scope network-scope.exe
         "powershell" => Ok(format!(
             r#"# network-scope completion for PowerShell. Load with:
 #   network-scope completions powershell | Out-String | Invoke-Expression
-Register-ArgumentCompleter -Native -CommandName 'network-scope','network-scope.exe' -ScriptBlock {{
+Register-ArgumentCompleter -Native -CommandName 'network-scope','network-scope.exe','network-scope-cli','network-scope-cli.exe' -ScriptBlock {{
     param($wordToComplete, $commandAst, $cursorPosition)
     $commands = @({commands_q},'--quiet')
     $options = @({options_q})
@@ -291,6 +315,16 @@ fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Settings, Stri
     s.udp = deep || opts.contains_key("udp");
     s.os_detect = deep || opts.contains_key("os");
     s.trace = opts.contains_key("trace");
+    // Opt-in transmitting features; the engine ignores them in Safe Mode (without --fast).
+    s.arp_sweep = opts.contains_key("arp-sweep");
+    s.syn_adaptive = opts.contains_key("adaptive-syn");
+    if let Some(m) = opts.get("trace-method") {
+        s.trace_method = trace_method(m)?;
+        s.trace = true;
+    }
+    if let Some(p) = opts.get("trace-port") {
+        s.trace_port = trace_port(p)?;
+    }
     s.trace_hops = number(opts, "max-hops", 20)?;
     if !(1..=64).contains(&s.trace_hops) {
         return Err("Max hops must be 1-64".into());
@@ -322,24 +356,104 @@ fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Settings, Stri
     s.scripts = opts.get("script").cloned().unwrap_or_default();
     Ok(s)
 }
+fn trace_method(text: &str) -> Result<crate::trace::TraceMethod, String> {
+    serde_json::from_value(serde_json::Value::String(text.to_lowercase()))
+        .map_err(|_| "Trace method must be icmp, tcp or udp".to_string())
+}
+fn trace_port(text: &str) -> Result<u16, String> {
+    let port: u16 = text
+        .parse()
+        .ok()
+        .filter(|p| *p != 0)
+        .ok_or("Trace port must be 1-65535")?;
+    if !crate::trace::trace_port_allowed(port) {
+        return Err(format!(
+            "Trace port {port} is an OT or printer port; TCP traceroute never uses those"
+        ));
+    }
+    Ok(port)
+}
+/// The `--baseline ID` snapshot and its time, for reports with a "changes since" section.
+fn baseline(
+    db: &std::path::Path,
+    opts: &BTreeMap<String, String>,
+) -> Result<Option<(store::Snapshot, i64)>, String> {
+    match opts.get("baseline") {
+        Some(b) => {
+            let b: i64 = b.parse().map_err(|_| "Invalid --baseline".to_string())?;
+            Ok(Some((store::load(db, b)?, store::timestamp(db, b)?)))
+        }
+        None => Ok(None),
+    }
+}
 fn report_html(
     db: &std::path::Path,
     snapshot: &store::Snapshot,
     stamp: i64,
     opts: &BTreeMap<String, String>,
 ) -> Result<String, String> {
-    let baseline = match opts.get("baseline") {
-        Some(b) => {
-            let b: i64 = b.parse().map_err(|_| "Invalid --baseline".to_string())?;
-            Some((store::load(db, b)?, store::timestamp(db, b)?))
-        }
-        None => None,
-    };
+    let baseline = baseline(db, opts)?;
     Ok(crate::report::html(
         snapshot,
         baseline.as_ref().map(|(s, t)| (s, *t)),
         stamp,
     ))
+}
+/// Monitor alert policy from the command line, including the opt-in webhook/syslog sinks.
+fn monitor_policy(opts: &BTreeMap<String, String>) -> Result<monitor::Policy, String> {
+    let mut policy = monitor::Policy {
+        learn: opts.contains_key("learn"),
+        report_missing: opts.contains_key("report-missing"),
+        ..Default::default()
+    };
+    if let Some(list) = opts.get("dhcp-allow") {
+        for item in list.split(',').filter(|i| !i.trim().is_empty()) {
+            policy.dhcp_allow.insert(
+                item.trim()
+                    .parse()
+                    .map_err(|_| format!("Invalid DHCP server address: {item}"))?,
+            );
+        }
+    }
+    if let Some(m) = opts.get("min-severity") {
+        policy.min_severity = risk::Severity::parse(m)
+            .ok_or("Severity must be info, low, medium, high or critical")?;
+    }
+    let list = |key: &str| {
+        opts.get(key)
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    for url in list("webhook") {
+        policy
+            .notify
+            .sinks
+            .push(crate::notify::Sink::webhook(&url)?);
+    }
+    for dest in list("syslog") {
+        policy
+            .notify
+            .sinks
+            .push(crate::notify::Sink::syslog(&dest)?);
+    }
+    let timeout: u64 = number(opts, "alert-timeout", 5)?;
+    if !(1..=60).contains(&timeout) {
+        return Err("Alert timeout must be 1-60 seconds".into());
+    }
+    policy.notify.timeout = Duration::from_secs(timeout);
+    policy.notify.dedup = !opts.contains_key("no-dedup");
+    let hours: u64 = number(opts, "renotify-hours", 24)?;
+    if hours > 24 * 365 {
+        return Err("Renotify hours must be 0-8760".into());
+    }
+    policy.notify.renotify = (hours > 0).then(|| Duration::from_secs(hours * 3600));
+    Ok(policy)
 }
 fn ot_assets_output(
     snapshot: &store::Snapshot,
@@ -390,6 +504,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             .parse()
             .map_err(|_| "Invalid scan ID".into())
     };
+    if let Some(file) = opts.get("cves") {
+        risk::load_cves(Some(std::path::Path::new(file)))?;
+    }
     match command.as_str() {
         "completions" => output(
             completions(pos.first().ok_or("Provide the shell: powershell or bash")?)?.trim_end(),
@@ -404,14 +521,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
             &serde_json::to_string_pretty(&store::list(&db)?).map_err(|e| e.to_string())?,
             &opts,
         ),
-        "diff" => output(
-            &serde_json::to_string_pretty(&store::diff(
-                &store::load(&db, id(0)?)?,
-                &store::load(&db, id(1)?)?,
-            )?)
-            .map_err(|e| e.to_string())?,
-            &opts,
-        ),
+        "diff" => {
+            let ignore =
+                store::IgnoreList::parse(opts.get("ignore").map(String::as_str).unwrap_or(""));
+            let format = opts.get("format").map(String::as_str).unwrap_or("lines");
+            output(
+                &store::diff_output(
+                    &store::load(&db, id(0)?)?,
+                    &store::load(&db, id(1)?)?,
+                    format,
+                    &ignore,
+                )?,
+                &opts,
+            )
+        }
         "export" => {
             let snapshot = store::load(&db, id(0)?)?;
             let format = opts.get("format").map(String::as_str).unwrap_or("json");
@@ -419,7 +542,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let text = match format {
                 "html" => report_html(&db, &snapshot, stamp, &opts)?,
                 "nmap" | "xml" => nmap::export(&snapshot, stamp),
-                other => store::export(&snapshot, other)?,
+                "md" | "markdown" => {
+                    let baseline = baseline(&db, &opts)?;
+                    crate::report::markdown(
+                        &snapshot,
+                        baseline.as_ref().map(|(s, t)| (s, *t)),
+                        stamp,
+                    )
+                }
+                other => store::export_at(&snapshot, other, stamp)?,
             };
             output(&text, &opts)
         }
@@ -477,24 +608,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let targets = pos.join(" ");
             let mut s = scan_settings(&opts)?;
             s.scan_nonresponders = true;
-            let mut policy = monitor::Policy {
-                learn: opts.contains_key("learn"),
-                report_missing: opts.contains_key("report-missing"),
-                ..Default::default()
-            };
-            if let Some(list) = opts.get("dhcp-allow") {
-                for item in list.split(',').filter(|i| !i.trim().is_empty()) {
-                    policy.dhcp_allow.insert(
-                        item.trim()
-                            .parse()
-                            .map_err(|_| format!("Invalid DHCP server address: {item}"))?,
-                    );
-                }
-            }
-            if let Some(m) = opts.get("min-severity") {
-                policy.min_severity = risk::Severity::parse(m)
-                    .ok_or("Severity must be info, low, medium, high or critical")?;
-            }
+            let policy = monitor_policy(&opts)?;
             let cfg = monitor::RunConfig {
                 interval: Duration::from_secs(number(&opts, "interval", 300u64)?.clamp(1, 86_400)),
                 cycles: number(&opts, "cycles", 0)?,
@@ -502,6 +616,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 dhcp_discover: opts.contains_key("dhcp-discover"),
                 interface: opts.get("interface").cloned().unwrap_or_default(),
                 listen_seconds: number(&opts, "listen-seconds", 30)?,
+                quiet: opts.contains_key("quiet"),
             };
             let mut file = match opts.get("alerts") {
                 Some(p) => Some(
@@ -524,8 +639,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         "ot-listen" => {
             let mut tracker = crate::otpassive::Tracker::new();
+            tracker.set_reassembly(!opts.contains_key("no-reassembly"));
             let label = if let Some(path) = opts.get("pcap") {
-                crate::otpassive::read_pcap_file(path, &mut tracker)?;
+                if opts.contains_key("progress") && !opts.contains_key("quiet") {
+                    crate::otpassive::read_pcap_file_with_progress(
+                        path,
+                        &mut tracker,
+                        None,
+                        &mut |p| {
+                            eprint!("\r{}{}", p.line(), if p.done { "\n" } else { "   " });
+                        },
+                    )?;
+                } else {
+                    crate::otpassive::read_pcap_file(path, &mut tracker)?;
+                }
                 format!("ot-passive:{path}")
             } else {
                 let interface = opts
@@ -554,18 +681,36 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 notes: BTreeMap::new(),
             };
             let scan_id = store::save(&db, &snapshot)?;
+            let (reassembled, abandoned) = tracker.reassembly_stats();
             progress(
                 &opts,
                 format_args!(
-                    "Saved passive OT capture #{scan_id}: {} frames, {} observations",
+                    "Saved passive OT capture #{scan_id}: {} frames, {} observations{}",
                     tracker.frames,
-                    snapshot.observations.len()
+                    snapshot.observations.len(),
+                    if reassembled + abandoned > 0 {
+                        format!(
+                            ", {reassembled} messages reassembled, {abandoned} partial messages"
+                        )
+                    } else {
+                        String::new()
+                    }
                 ),
             );
             ot_assets_output(&snapshot, &opts)
         }
         "ot-assets" => ot_assets_output(&store::load(&db, id(0)?)?, &opts),
         "devices" => {
+            if let Some(q) = opts.get("history") {
+                let h = store::device_history(&db, q)?;
+                return output(
+                    &devices::history_output(
+                        &h,
+                        opts.get("format").map(String::as_str).unwrap_or("text"),
+                    )?,
+                    &opts,
+                );
+            }
             let snapshot = store::load(&db, id(0)?)?;
             let devices = devices::merge(&snapshot.hosts, &snapshot.observations);
             match opts.get("format").map(String::as_str).unwrap_or("json") {
@@ -601,13 +746,41 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .build()
                 .map_err(|e| e.to_string())?;
             let blocking = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
-            let path = runtime.block_on(crate::trace::trace(
-                target,
-                hops,
-                timeout,
-                &blocking,
-                &crate::core::Gate::unlimited(),
-            ))?;
+            let gate = crate::core::Gate::unlimited();
+            let method = match opts.get("trace-method") {
+                Some(m) => trace_method(m)?,
+                None => crate::trace::TraceMethod::Icmp,
+            };
+            let v4 = || match target {
+                std::net::IpAddr::V4(v4) => Ok(v4),
+                _ => Err("TCP/UDP traceroute is IPv4 only".to_string()),
+            };
+            let path = match method {
+                crate::trace::TraceMethod::Icmp => runtime
+                    .block_on(crate::trace::trace(target, hops, timeout, &blocking, &gate))?,
+                crate::trace::TraceMethod::Udp => runtime.block_on(crate::trace::trace_udp(
+                    v4()?,
+                    hops,
+                    timeout,
+                    &blocking,
+                    &gate,
+                ))?,
+                crate::trace::TraceMethod::Tcp => {
+                    let port = trace_port(
+                        opts.get("trace-port")
+                            .ok_or("TCP traceroute needs --trace-port N (an open port)")?,
+                    )?;
+                    let settings = scan_settings(&opts)?;
+                    crate::trace::assemble(crate::syn::tcp_trace(
+                        &settings,
+                        v4()?,
+                        port,
+                        hops,
+                        timeout,
+                        &gate,
+                    )?)
+                }
+            };
             let mut text = format!("Path to {target}\n");
             for h in &path {
                 text.push_str(&format!(
@@ -623,10 +796,19 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let db = crate::service::ProbeDb::load(
                 opts.get("probes").map(String::as_str).unwrap_or(""),
             )?;
-            let mut text = format!("{} probes\n", db.probes.len());
-            for p in &db.probes {
+            let mut text = format!(
+                "{} TCP probes, {} UDP probes\n",
+                db.probes.len(),
+                db.udp.len()
+            );
+            let tagged = db
+                .probes
+                .iter()
+                .map(|p| ("tcp", p))
+                .chain(db.udp.iter().map(|p| ("udp", p)));
+            for (proto, p) in tagged {
                 text.push_str(&format!(
-                    "{:<12} ports {:<16} {} bytes sent, {} rules\n",
+                    "{proto} {:<12} ports {:<16} {} bytes sent, {} rules\n",
                     p.name,
                     if p.ports.is_empty() {
                         "any (listen)".to_string()
@@ -647,8 +829,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let targets = pos.join(" ");
             let s = scan_settings(&opts)?;
             let format = opts.get("format").map(String::as_str).unwrap_or("json");
-            if !["json", "csv", "html", "nmap"].contains(&format) {
-                return Err("Choose json, csv, html or nmap".into());
+            if !["json", "csv", "html", "nmap", "md", "jsonl"].contains(&format) {
+                return Err("Choose json, csv, html, nmap, md or jsonl".into());
             }
             let hosts = scan::parse_targets(&targets, s.skip_edges, scan::MAX_STREAM)?;
             let ports = scan::parse_ports(&s.ports)?;
@@ -678,7 +860,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     if complete { "complete" } else { "partial" }
                 ),
             );
-            output(&store::export(&snapshot, format)?, &opts)?;
+            output(
+                &store::export_at(&snapshot, format, store::timestamp(&db, id)?)?,
+                &opts,
+            )?;
             if errors.is_empty() {
                 Ok(())
             } else {
@@ -734,9 +919,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 ),
             );
             output(
-                &store::export(
+                &store::export_at(
                     &snapshot,
                     opts.get("format").map(String::as_str).unwrap_or("json"),
+                    store::timestamp(&db, id)?,
                 )?,
                 &opts,
             )?;
@@ -828,17 +1014,27 @@ pub fn merge_indexed(
 }
 /// Collects a passive capture; on an error (capture failure or the observation cap) it stops and
 /// returns everything gathered so far together with the error.
+/// Collects a capture. Error items (a full capture queue, a read error, the observation cap)
+/// are warnings: they are printed once each, mark the capture partial and collection goes on
+/// with what still arrives, as in the GUI and `monitor`.
 fn drain_observations(
     items: impl IntoIterator<Item = Result<passive::Observation, String>>,
 ) -> (Vec<passive::Observation>, Option<String>) {
     let mut observations = vec![];
     let mut index = ObservationIndex::default();
+    let mut errors: Vec<String> = vec![];
     for item in items {
         if let Err(e) = item.and_then(|o| merge_indexed(&mut observations, &mut index, o)) {
-            return (observations, Some(e));
+            if !errors.contains(&e) {
+                eprintln!("Warning: {e}");
+                errors.push(e);
+            }
         }
     }
-    (observations, None)
+    (
+        observations,
+        (!errors.is_empty()).then(|| errors.join("; ")),
+    )
 }
 /// Applies one scan event and returns true on `Done`. Errors never discard results: they are
 /// recorded and mark the scan partial (the engine always follows with `Done`).
@@ -1395,6 +1591,50 @@ mod tests {
     }
 
     #[test]
+    fn new_scan_and_monitor_options_parse() {
+        let (_, opts) = options(&args(&[
+            "--arp-sweep",
+            "--adaptive-syn",
+            "--trace-method",
+            "TCP",
+            "--trace-port",
+            "8443",
+        ]))
+        .unwrap();
+        let s = scan_settings(&opts).unwrap();
+        assert!(s.arp_sweep && s.syn_adaptive && s.trace && s.safe);
+        assert_eq!(s.trace_method, crate::trace::TraceMethod::Tcp);
+        assert_eq!(s.trace_port, 8443);
+        assert!(trace_method("ping").is_err());
+        assert!(trace_port("502").unwrap_err().contains("OT or printer"));
+        assert!(trace_port("9100").is_err());
+        assert!(trace_port("0").is_err());
+        let (_, opts) = options(&args(&[
+            "--webhook",
+            "http://127.0.0.1:9000/hook",
+            "--syslog",
+            "udp://127.0.0.1,tcp://127.0.0.1:6514",
+            "--alert-timeout",
+            "10",
+            "--no-dedup",
+            "--renotify-hours",
+            "0",
+        ]))
+        .unwrap();
+        let p = monitor_policy(&opts).unwrap();
+        assert_eq!(p.notify.sinks.len(), 3);
+        assert_eq!(p.notify.timeout, Duration::from_secs(10));
+        assert!(!p.notify.dedup);
+        assert_eq!(p.notify.renotify, None);
+        let defaults = monitor_policy(&BTreeMap::new()).unwrap();
+        assert!(defaults.notify.sinks.is_empty() && defaults.notify.dedup);
+        let https = BTreeMap::from([("webhook".to_string(), "https://x".to_string())]);
+        assert!(monitor_policy(&https).unwrap_err().contains("HTTPS"));
+        let slow = BTreeMap::from([("alert-timeout".to_string(), "600".to_string())]);
+        assert!(monitor_policy(&slow).is_err());
+    }
+
+    #[test]
     fn indexed_merge_matches_linear_merge() {
         let input = vec![
             obs("aa", "mDNS", Some("10.0.0.1"), ("name", "a")),
@@ -1457,7 +1697,7 @@ mod tests {
             Ok(obs("cc", "ARP", None, ("a", "1"))),
         ];
         let (list, error) = drain_observations(items);
-        assert_eq!(list.len(), 2);
+        assert_eq!(list.len(), 3, "observations after a warning are kept");
         assert_eq!(error.as_deref(), Some("Capture queue full"));
         let many =
             (0..MAX_OBSERVATIONS + 5).map(|i| Ok(obs(&format!("{i}"), "ARP", None, ("a", "1"))));

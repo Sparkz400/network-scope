@@ -712,12 +712,10 @@ impl Tracker {
         Self::default()
     }
     /// TCP reassembly-lite is on by default; `false` decodes every segment on its own.
-    #[allow(dead_code)] // wired by the CLI/GUI owner (`--no-reassembly`)
     pub fn set_reassembly(&mut self, on: bool) {
         self.reassembly.disabled = !on;
     }
     /// (messages completed from several segments, partial messages given up)
-    #[allow(dead_code)] // for CLI/GUI status output
     pub fn reassembly_stats(&self) -> (u64, u64) {
         (self.reassembly.reassembled, self.reassembly.abandoned)
     }

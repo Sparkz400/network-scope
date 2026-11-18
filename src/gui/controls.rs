@@ -60,6 +60,16 @@ impl Scanner {
                     }
                     if ui
                         .add_enabled(
+                            !self.results.is_empty() || !self.observations.is_empty(),
+                            egui::Button::new("Export Markdown summary…"),
+                        )
+                        .clicked()
+                    {
+                        self.export("md");
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(
                             !self.live() && !self.busy.loading,
                             egui::Button::new("Clear results and captures"),
                         )

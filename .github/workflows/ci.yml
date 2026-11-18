@@ -45,6 +45,9 @@ jobs:
           path: |
             target/release/network-scope
             target/release/network-scope.exe
+            target/release/network-scope-cli
+            target/release/network-scope-cli.exe
+          if-no-files-found: error
 
   installer:
     name: windows installer
@@ -58,6 +61,7 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
+          if (-not (Test-Path target\release\network-scope-cli.exe)) { throw "network-scope-cli.exe was not built" }
           choco install innosetup -y --no-progress
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" installer\network-scope.iss

@@ -119,7 +119,6 @@ pub struct Progress {
     /// The file has been read completely (the last report).
     pub done: bool,
 }
-#[allow(dead_code)] // used by the CLI/GUI progress display (wired by their owner)
 impl Progress {
     /// 0-100, or `None` when the file size is unknown.
     pub fn percent(&self) -> Option<f64> {
