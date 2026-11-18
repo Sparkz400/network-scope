@@ -106,6 +106,12 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
         .any(|n| lower.contains(&n.to_ascii_lowercase()))
 }
 
+/// `key` is `base` itself or a sub-key of it (`svc.22`, `svc.22.product`), never `svc.220`.
+fn key_under(key: &str, base: &str) -> bool {
+    key.strip_prefix(base)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
 /// `identity` is the host's service evidence (keys such as `svc.22`, `http.80.server`).
 pub fn guess(
     ttl: Option<u8>,
@@ -163,18 +169,49 @@ pub fn guess(
             _ => {}
         }
     }
-    let text = |keys: &[&str]| -> String {
+    // Service evidence by detected service name, not by port: SSH on 2222 counts, and the
+    // value of `svc.220` (FTP) never counts as SSH evidence.
+    let by_service = |names: &[&str]| -> String {
         identity
             .iter()
-            .filter(|(k, _)| keys.iter().any(|p| k.starts_with(p) || k.ends_with(p)))
+            .filter_map(|(k, v)| {
+                let port = k.strip_prefix("svc.")?;
+                let name = v.split_whitespace().next().unwrap_or("");
+                let name = name.strip_prefix("ssl/").unwrap_or(name);
+                (!port.contains('.') && names.contains(&name)).then_some(port)
+            })
+            .flat_map(|port| {
+                let base = format!("svc.{port}");
+                identity
+                    .iter()
+                    .filter(move |(k, _)| key_under(k, &base))
+                    .map(|(_, v)| v.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let suffixed = |suffixes: &[&str]| -> String {
+        identity
+            .iter()
+            .filter(|(k, _)| suffixes.iter().any(|s| k.ends_with(s)))
             .map(|(_, v)| v.as_str())
             .collect::<Vec<_>>()
             .join(" | ")
     };
-    let ssh = text(&["svc.22", "ssh.banner"]);
-    let http = text(&[".server", ".powered_by"]);
-    let snmp = text(&["udp.161"]);
-    let smb = text(&["svc.445", "svc.139"]);
+    let ssh = by_service(&["ssh"]);
+    let http = suffixed(&[".server", ".powered_by"]);
+    let snmp = identity
+        .iter()
+        .filter(|(k, _)| key_under(k, "udp.161"))
+        .map(|(_, v)| v.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let smb = identity
+        .iter()
+        .filter(|(k, _)| key_under(k, "svc.445") || key_under(k, "svc.139"))
+        .map(|(_, v)| v.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
     let all = identity
         .values()
         .filter(|v| !v.starts_with("unidentified"))
@@ -189,7 +226,7 @@ pub fn guess(
     ) {
         s.add(LINUX, 45, "SSH banner names a Linux distribution");
     }
-    if contains_any(&ssh, &["for_windows", "microsoft"]) {
+    if contains_any(&ssh, &["for_windows", "for windows", "microsoft"]) {
         s.add(WINDOWS, 45, "SSH banner names Windows");
     }
     if contains_any(&ssh, &["freebsd", "openbsd", "netbsd"]) {
@@ -239,7 +276,7 @@ pub fn guess(
     if !smb.is_empty() && (open.contains(&3389) || open.contains(&135)) {
         s.add(WINDOWS, 15, "SMB together with RDP/RPC");
     }
-    if identity.keys().any(|k| k.starts_with("udp.137")) {
+    if identity.keys().any(|k| key_under(k, "udp.137")) {
         s.add(WINDOWS, 15, "NetBIOS name service answered");
     }
     if open.contains(&62078)
@@ -349,6 +386,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(g.name, LINUX);
+    }
+
+    #[test]
+    fn ssh_evidence_is_matched_by_service_not_port_prefix() {
+        // SSH on 2222 counts.
+        let g = guess(
+            Some(61),
+            None,
+            &id(&[(
+                "svc.2222",
+                "ssh OpenSSH 8.9p1 (protocol 2.0 Ubuntu-3ubuntu0.1)",
+            )]),
+            &[2222],
+            "",
+        )
+        .unwrap();
+        assert_eq!(g.name, LINUX);
+        // A non-SSH service on 220/2222 whose text names a distribution is not SSH evidence.
+        assert_eq!(
+            guess(
+                Some(61),
+                None,
+                &id(&[("svc.220", "imap Debian"), ("svc.2222", "unidentified")]),
+                &[220, 2222],
+                "",
+            ),
+            None
+        );
+        // OpenSSH for Windows as the banner rule reports it (with spaces).
+        let g = guess(
+            None,
+            None,
+            &id(&[
+                ("svc.22", "ssh OpenSSH for Windows 9.5 (protocol 2.0)"),
+                ("svc.22.product", "OpenSSH for Windows"),
+            ]),
+            &[22],
+            "",
+        )
+        .unwrap();
+        assert_eq!(g.name, WINDOWS);
+        assert!(key_under("udp.137", "udp.137") && key_under("udp.137.name", "udp.137"));
+        assert!(!key_under("udp.1370", "udp.137"));
     }
 
     #[test]

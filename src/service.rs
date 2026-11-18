@@ -18,13 +18,23 @@ const TLS_PORTS: [u16; 17] = [
 ];
 /// Industrial and safety-relevant ports are left to the dedicated read-only identification:
 /// generic probing (a banner wait, an HTTP request) could disturb fragile controllers.
-const OT_PORTS: [u16; 17] = [
-    102, 502, 789, 1911, 1962, 2222, 2404, 4840, 9600, 18245, 20000, 34962, 34963, 34964, 44818,
-    47808, 48898,
+/// 2222/tcp (EtherNet/IP I/O, Allen-Bradley CSP) is not listed: it is also a very common SSH
+/// port, so service detection runs there in listen-only mode (`SendPolicy::SshOrSilent`) and
+/// the findings treat it as industrial unless SSH answered. See `is_ot_port_candidate`.
+const OT_PORTS: [u16; 16] = [
+    102, 502, 789, 1911, 1962, 2404, 4840, 9600, 18245, 20000, 34962, 34963, 34964, 44818, 47808,
+    48898,
 ];
 
+/// Ports excluded from generic service detection.
 pub fn is_ot_port(port: u16) -> bool {
     OT_PORTS.contains(&port)
+}
+
+/// Industrial ports including the ambiguous 2222/tcp; use this where "might be OT" matters
+/// more than "must not be probed" (device classification, alerts).
+pub fn is_ot_port_candidate(port: u16) -> bool {
+    is_ot_port(port) || port == 2222
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,13 +112,20 @@ pub struct ProbeDb {
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    if !clean.len().is_multiple_of(2) {
+    // Validate per character: slicing the string by byte offsets panics on multi-byte input.
+    let nibbles: Vec<u8> = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| {
+            c.to_digit(16)
+                .map(|d| d as u8)
+                .ok_or_else(|| format!("send_hex contains a non-hex character {c:?}"))
+        })
+        .collect::<Result<_, _>>()?;
+    if !nibbles.len().is_multiple_of(2) {
         return Err("send_hex has an odd number of digits".into());
     }
-    (0..clean.len() / 2)
-        .map(|i| u8::from_str_radix(&clean[2 * i..2 * i + 2], 16).map_err(|e| e.to_string()))
-        .collect()
+    Ok(nibbles.chunks(2).map(|d| (d[0] << 4) | d[1]).collect())
 }
 fn sanitize(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
@@ -314,15 +331,30 @@ pub fn parse_http(data: &[u8]) -> Option<Http> {
     Some(h)
 }
 
+/// RFC 7230 section 5.4: the Host header carries the port unless it is the scheme default
+/// (80/443), and an IPv6 literal is bracketed (`[fe80::1]:8080`).
+fn http_request(ip: IpAddr, port: u16) -> String {
+    let addr = match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{v6}]"),
+    };
+    let host = if matches!(port, 80 | 443) {
+        addr
+    } else {
+        format!("{addr}:{port}")
+    };
+    format!(
+        "GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: NetworkScope\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+    )
+}
+
 async fn http_get<S: AsyncRead + AsyncWrite + Unpin>(
     s: &mut S,
     ip: IpAddr,
+    port: u16,
     limit: Duration,
 ) -> Option<Http> {
-    let request = format!(
-        "GET / HTTP/1.1\r\nHost: {ip}\r\nUser-Agent: NetworkScope\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-    );
-    s.write_all(request.as_bytes()).await.ok()?;
+    s.write_all(http_request(ip, port).as_bytes()).await.ok()?;
     let data = read_some(s, limit, 32 * 1024).await;
     parse_http(&data)
 }
@@ -542,9 +574,45 @@ pub fn smb2_negotiate_request() -> Vec<u8> {
     packet
 }
 
+/// SMB1 SMB_COM_NEGOTIATE offering only the "NT LM 0.12" dialect: a server that selects it
+/// has SMBv1 enabled. Read-only, like the SMB2 negotiate.
+pub fn smb1_negotiate_request() -> Vec<u8> {
+    let mut m = vec![0xFF, b'S', b'M', b'B', 0x72];
+    m.extend([0; 4]); // status
+    m.push(0x18); // flags: canonical paths, case-insensitive
+    m.extend(0xC001u16.to_le_bytes()); // flags2: unicode, NT status, long names
+    m.extend([0; 12]); // PID high, security features, reserved
+    m.extend([0; 2]); // TID
+    m.extend(0xFEFFu16.to_le_bytes()); // PID low
+    m.extend([0; 2]); // UID
+    m.extend([0; 2]); // MID
+    assert_eq!(m.len(), 32);
+    m.push(0); // word count
+    let dialects = b"\x02NT LM 0.12\x00";
+    m.extend((dialects.len() as u16).to_le_bytes());
+    m.extend(dialects);
+    let mut packet = vec![0];
+    packet.extend(&(m.len() as u32).to_be_bytes()[1..]);
+    packet.extend(m);
+    packet
+}
+
+/// True when `data` is an SMB1 negotiate response that selected our only dialect (index 0).
+/// Servers with SMB1 disabled close the connection or answer with index 0xFFFF.
+pub fn smb1_accepted(data: &[u8]) -> bool {
+    data.get(4..8) == Some(&[0xFF, b'S', b'M', b'B'])
+        && data.get(8) == Some(&0x72)
+        && data.get(9..13) == Some(&[0; 4])
+        && data.get(36).is_some_and(|wc| *wc >= 1)
+        && data.get(37..39) == Some(&[0, 0])
+}
+
 pub fn parse_smb(data: &[u8]) -> Option<Service> {
     let magic = data.get(4..8)?;
     if magic == [0xFF, b'S', b'M', b'B'] {
+        if !smb1_accepted(data) {
+            return None;
+        }
         return Some(Service {
             name: "microsoft-ds".into(),
             product: "SMBv1".into(),
@@ -581,7 +649,144 @@ pub fn parse_smb(data: &[u8]) -> Option<Service> {
     })
 }
 
+async fn negotiate_once(
+    ip: IpAddr,
+    port: u16,
+    limit: Duration,
+    gate: &Gate,
+    request: &[u8],
+) -> Vec<u8> {
+    let Some(mut s) = connect(ip, port, limit, gate).await else {
+        return vec![];
+    };
+    if s.write_all(request).await.is_err() {
+        return vec![];
+    }
+    read_some(&mut s, limit, 4096).await
+}
+
+/// SMB2 negotiate (dialect and signing) plus a separate SMB1 negotiate offering only
+/// "NT LM 0.12": modern servers answer the SMB2 request with SMB2 even when SMB1 is still
+/// enabled, so only the SMB1-only offer reveals it. Two connections, both through the gate.
+async fn smb_negotiate(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> Option<Outcome> {
+    let smb2 = parse_smb(&negotiate_once(ip, port, limit, gate, &smb2_negotiate_request()).await);
+    let smb1 =
+        smb1_accepted(&negotiate_once(ip, port, limit, gate, &smb1_negotiate_request()).await);
+    let mut out = Outcome::default();
+    match (smb2, smb1) {
+        (Some(svc), smb1) => {
+            out.fields.insert(
+                "smb.smb1".into(),
+                if smb1 || svc.product == "SMBv1" {
+                    "accepted"
+                } else {
+                    "refused"
+                }
+                .into(),
+            );
+            out.service = Some(svc);
+        }
+        (None, true) => {
+            out.fields.insert("smb.smb1".into(), "accepted".into());
+            out.service = Some(Service {
+                name: "microsoft-ds".into(),
+                product: "SMBv1".into(),
+                info: "SMBv1 enabled (legacy, insecure)".into(),
+                ..Default::default()
+            });
+        }
+        (None, false) => return None,
+    }
+    Some(out)
+}
+
+// ---- RDP ---------------------------------------------------------------------------------
+
+/// X.224 Connection Request with an RDP Negotiation Request for PROTOCOL_RDP only (0x00).
+pub fn rdp_standard_request() -> Vec<u8> {
+    vec![
+        0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0, 0, 0, 0, 0, 0x01, 0x00, 0x08, 0x00, 0, 0, 0, 0,
+    ]
+}
+
+/// A server selects HYBRID (NLA) whenever the client offers it, whether or not NLA is
+/// required. Offering only standard RDP security tells (MS-RDPBCGR 2.2.1.2.1/2.2.1.2.2):
+/// accepted -> NLA not required; SSL_REQUIRED_BY_SERVER -> TLS without NLA is accepted;
+/// HYBRID_REQUIRED_BY_SERVER -> NLA is required.
+pub fn parse_rdp_standard_reply(data: &[u8]) -> Option<&'static str> {
+    if data.get(..2) != Some(&[3, 0]) || data.get(5) != Some(&0xd0) {
+        return None;
+    }
+    let value = u32::from_le_bytes(data.get(15..19)?.try_into().ok()?);
+    match (data.get(11)?, value) {
+        (2, 0) => Some("standard RDP security also accepted (NLA not required)"),
+        (3, 1) => Some("TLS security also accepted (NLA not required)"),
+        (3, 5) => Some("NLA required"),
+        _ => None,
+    }
+}
+
+async fn rdp_nla_check(
+    ip: IpAddr,
+    port: u16,
+    limit: Duration,
+    gate: &Gate,
+) -> Option<&'static str> {
+    parse_rdp_standard_reply(&negotiate_once(ip, port, limit, gate, &rdp_standard_request()).await)
+}
+
 // ---- detection ---------------------------------------------------------------------------
+
+/// What may be sent to a port before the device has identified itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SendPolicy {
+    /// Banner wait, probes, HTTP and TLS fallbacks.
+    Normal,
+    /// Raw printer ports (JetDirect 9100-9107, LPD 515): whatever arrives is printed, so
+    /// only wait for a banner and never send.
+    ListenOnly,
+    /// 2222/tcp: EtherNet/IP I/O (and legacy Allen-Bradley CSP) but also a common SSH port.
+    /// Only wait for a banner; continue (SSH algorithm exchange) only after an SSH greeting.
+    SshOrSilent,
+}
+
+fn send_policy(port: u16) -> SendPolicy {
+    match port {
+        515 | 9100..=9107 => SendPolicy::ListenOnly,
+        2222 => SendPolicy::SshOrSilent,
+        _ => SendPolicy::Normal,
+    }
+}
+
+/// Banner wait without sending anything (except the SSH identification once the server has
+/// greeted as SSH under `SshOrSilent`).
+async fn detect_passive(
+    ip: IpAddr,
+    port: u16,
+    limit: Duration,
+    db: &ProbeDb,
+    gate: &Gate,
+    policy: SendPolicy,
+) -> Option<Outcome> {
+    let mut s = connect(ip, port, limit, gate).await?;
+    let null = db.null_probe();
+    let wait = null.map_or(Duration::from_millis(2500), |p| p.wait);
+    let banner = read_some(&mut s, wait, 4096).await;
+    let mut out = Outcome::default();
+    if banner.is_empty() {
+        return Some(out);
+    }
+    match null.and_then(|p| ProbeDb::identify(p, &banner)) {
+        Some(svc) => {
+            if svc.name == "ssh" && policy == SendPolicy::SshOrSilent {
+                out.fields.extend(ssh_fields(&mut s, &banner, limit).await);
+            }
+            out.service = Some(svc);
+        }
+        None => out.banner = Some(sanitize(&banner)),
+    }
+    Some(out)
+}
 
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -631,7 +836,28 @@ async fn tls_service(
     rounds: usize,
 ) -> Option<Outcome> {
     let tcp = connect(ip, port, limit, gate).await?;
-    let (mut stream, _) = tls::wrap(tcp, ip, limit).await.ok()?;
+    let (mut stream, handshake) = match tls::wrap(tcp, ip, limit).await {
+        Ok(ok) => ok,
+        // rustls speaks only TLS 1.2/1.3. On a well-known TLS port a legacy-only server
+        // (SSLv3 to TLS 1.1) is still TLS: let the raw enumeration decide.
+        Err(e) if TLS_PORTS.contains(&port) => {
+            let fields = tls::inspect_after(ip, port, limit, rounds, gate, Err(e))
+                .await
+                .ok()?;
+            let mut out = Outcome {
+                service: Some(Service {
+                    name: "ssl/unknown".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            for (k, v) in fields {
+                out.fields.insert(format!("tls.{k}"), v);
+            }
+            return Some(out);
+        }
+        Err(_) => return None,
+    };
     let mut out = Outcome::default();
     let banner = read_some(&mut stream, Duration::from_millis(350), 4096).await;
     let null = db.null_probe();
@@ -645,7 +871,7 @@ async fn tls_service(
         });
     } else if let Some(h) = parse_http(&banner) {
         http_outcome(h, true, &mut out);
-    } else if let Some(h) = http_get(&mut stream, ip, limit).await {
+    } else if let Some(h) = http_get(&mut stream, ip, port, limit).await {
         http_outcome(h, true, &mut out);
     } else {
         out.service = Some(Service {
@@ -656,8 +882,9 @@ async fn tls_service(
             out.banner = Some(sanitize(&banner));
         }
     }
+    // Close the session first, then reuse its handshake facts instead of handshaking again.
     drop(stream);
-    if let Ok(fields) = tls::inspect(ip, port, limit, rounds, gate).await {
+    if let Ok(fields) = tls::inspect_after(ip, port, limit, rounds, gate, Ok(handshake)).await {
         for (k, v) in fields {
             out.fields.insert(format!("tls.{k}"), v);
         }
@@ -675,6 +902,21 @@ pub async fn detect(
     gate: &Gate,
     rounds: usize,
 ) -> Option<Outcome> {
+    detect_with(ip, port, limit, db, gate, rounds, send_policy(port)).await
+}
+
+async fn detect_with(
+    ip: IpAddr,
+    port: u16,
+    limit: Duration,
+    db: &ProbeDb,
+    gate: &Gate,
+    rounds: usize,
+    policy: SendPolicy,
+) -> Option<Outcome> {
+    if policy != SendPolicy::Normal {
+        return detect_passive(ip, port, limit, db, gate, policy).await;
+    }
     if TLS_PORTS.contains(&port) {
         if let Some(out) = tls_service(ip, port, limit, db, gate, rounds).await {
             return Some(out);
@@ -696,7 +938,7 @@ pub async fn detect(
     );
     if client_first && candidates.is_empty() && port != 445 {
         if let Some(mut s) = connect(ip, port, limit, gate).await {
-            if let Some(h) = http_get(&mut s, ip, limit).await {
+            if let Some(h) = http_get(&mut s, ip, port, limit).await {
                 http_outcome(h, false, &mut out);
                 return Some(out);
             }
@@ -736,24 +978,26 @@ pub async fn detect(
             continue;
         }
         let reply = read_some(&mut stream, probe.wait, 4096).await;
-        if let Some(svc) = ProbeDb::identify(probe, &reply) {
+        if let Some(mut svc) = ProbeDb::identify(probe, &reply) {
+            drop(stream);
+            if probe.name == "rdp" && svc.info.starts_with("NLA") {
+                if let Some(extra) = rdp_nla_check(ip, port, limit, gate).await {
+                    svc.info = format!("{}; {extra}", svc.info);
+                }
+            }
             out.service = Some(svc);
             return Some(out);
         }
     }
     if port == 445 {
-        if let Some(mut s) = connect(ip, port, limit, gate).await {
-            if s.write_all(&smb2_negotiate_request()).await.is_ok() {
-                let reply = read_some(&mut s, limit, 4096).await;
-                if let Some(svc) = parse_smb(&reply) {
-                    out.service = Some(svc);
-                    return Some(out);
-                }
-            }
+        if let Some(smb) = smb_negotiate(ip, port, limit, gate).await {
+            out.service = smb.service;
+            out.fields.extend(smb.fields);
+            return Some(out);
         }
     }
     if let Some(mut s) = connect(ip, port, limit, gate).await {
-        if let Some(h) = http_get(&mut s, ip, limit).await {
+        if let Some(h) = http_get(&mut s, ip, port, limit).await {
             http_outcome(h, false, &mut out);
             return Some(out);
         }
@@ -927,7 +1171,31 @@ mod tests {
                 &[0x30, 0x0c, 2, 1, 1, 0x61, 7, 0x0a, 1, 0, 4, 0, 4, 0]
             )
             .unwrap(),
-            "ldap (anonymous bind answered)"
+            "ldap (anonymous bind accepted)"
+        );
+        // resultCode 48 (inappropriateAuthentication): answered, but not accepted.
+        assert_eq!(
+            rule_match(
+                &db,
+                "ldap",
+                &[0x30, 0x0c, 2, 1, 1, 0x61, 7, 0x0a, 1, 48, 4, 0, 4, 0]
+            )
+            .unwrap(),
+            "ldap (anonymous bind refused)"
+        );
+        // Active Directory style long-form BER lengths (0x84 + 4 bytes).
+        let ad = [
+            0x30, 0x84, 0, 0, 0, 0x10, 2, 1, 1, 0x61, 0x84, 0, 0, 0, 7, 0x0a, 1, 0, 4, 0, 4, 0,
+        ];
+        assert_eq!(
+            rule_match(&db, "ldap", &ad).unwrap(),
+            "ldap (anonymous bind accepted)"
+        );
+        let mut ad_refused = ad;
+        ad_refused[17] = 49;
+        assert_eq!(
+            rule_match(&db, "ldap", &ad_refused).unwrap(),
+            "ldap (anonymous bind refused)"
         );
         let mut dns = vec![0x00, 0x2e, 0x05, 0x39, 0x84, 0x00, 0, 1, 0, 1, 0, 0, 0, 0];
         dns.extend(b"\x07version\x04bind\x00\x00\x10\x00\x03\xc0\x0c\x00\x10\x00\x03\x00\x00\x00\x00\x00\x0a\x099.16.1-Ubuntu");
@@ -973,6 +1241,24 @@ mod tests {
         )
         .unwrap();
         assert!(ProbeDb::with_user_file(&path).unwrap_err().contains("odd"));
+        // A multi-byte character at an even byte offset used to panic in the slicing parser.
+        std::fs::write(
+            &path,
+            "{\"probes\":[{\"name\":\"x\",\"send_hex\":\"a\u{e9}1\",\"rules\":[]}]}",
+        )
+        .unwrap();
+        assert!(ProbeDb::with_user_file(&path)
+            .unwrap_err()
+            .contains("non-hex"));
+        std::fs::write(
+            &path,
+            r#"{"probes":[{"name":"x","send_hex":"zz","rules":[]}]}"#,
+        )
+        .unwrap();
+        assert!(ProbeDb::with_user_file(&path)
+            .unwrap_err()
+            .contains("non-hex"));
+        assert_eq!(unhex("0A ff\n10").unwrap(), [0x0a, 0xff, 0x10]);
         std::fs::write(&path, "not json").unwrap();
         assert!(ProbeDb::with_user_file(&path).is_err());
         let _ = std::fs::remove_file(&path);
@@ -997,6 +1283,21 @@ mod tests {
             out.service.unwrap().summary(),
             "http nginx 1.18.0 (401 Unauthorized)"
         );
+    }
+
+    #[test]
+    fn http_host_header_brackets_ipv6() {
+        let host = |ip: &str, port| {
+            let req = http_request(ip.parse().unwrap(), port);
+            req.lines()
+                .find(|l| l.starts_with("Host: "))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(host("10.1.2.3", 80), "Host: 10.1.2.3");
+        assert_eq!(host("10.1.2.3", 8080), "Host: 10.1.2.3:8080");
+        assert_eq!(host("fe80::1", 443), "Host: [fe80::1]");
+        assert_eq!(host("::1", 8443), "Host: [::1]:8443");
     }
 
     fn kexinit_packet(lists: [&str; 10]) -> Vec<u8> {
@@ -1140,8 +1441,12 @@ mod tests {
             "signing enabled, not required"
         );
         let mut v1 = vec![0u8; 40];
-        v1[4..8].copy_from_slice(&[0xFF, b'S', b'M', b'B']);
+        v1[4..9].copy_from_slice(&[0xFF, b'S', b'M', b'B', 0x72]);
+        v1[36] = 17;
         assert!(parse_smb(&v1).unwrap().info.contains("SMBv1"));
+        // An SMB1 reply that selected no dialect is not SMBv1 support.
+        v1[37..39].copy_from_slice(&[0xFF, 0xFF]);
+        assert_eq!(parse_smb(&v1), None);
         assert_eq!(parse_smb(&resp[..20]), None);
         assert_eq!(parse_smb(b"HTTP/1.1 200 OK\r\n\r\n"), None);
     }
@@ -1254,7 +1559,314 @@ mod tests {
     fn ot_ports_are_never_probed_generically() {
         for p in [102, 502, 44818, 4840, 47808] {
             assert!(is_ot_port(p));
+            assert!(is_ot_port_candidate(p));
         }
         assert!(!is_ot_port(80));
+        // 2222 is detected listen-only (SSH or nothing), but still counts as possibly OT.
+        assert!(!is_ot_port(2222) && is_ot_port_candidate(2222));
+    }
+
+    #[test]
+    fn printer_and_ambiguous_ports_get_a_restricted_send_policy() {
+        for p in [515, 9100, 9101, 9107] {
+            assert_eq!(send_policy(p), SendPolicy::ListenOnly, "{p}");
+        }
+        assert_eq!(send_policy(2222), SendPolicy::SshOrSilent);
+        for p in [22, 80, 631, 9108, 9099] {
+            assert_eq!(send_policy(p), SendPolicy::Normal, "{p}");
+        }
+    }
+
+    /// A server that optionally greets, then records every byte the client sends until EOF.
+    async fn recording_server(
+        greeting: &'static [u8],
+    ) -> (u16, tokio::sync::mpsc::Receiver<Vec<u8>>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let port = serve(move |mut s| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = s.write_all(greeting).await;
+                let mut got = vec![];
+                let _ = timeout(Duration::from_secs(8), s.read_to_end(&mut got)).await;
+                let _ = tx.send(got).await;
+            })
+        })
+        .await;
+        (port, rx)
+    }
+
+    async fn run_with(port: u16, policy: SendPolicy) -> Outcome {
+        detect_with(
+            "127.0.0.1".parse().unwrap(),
+            port,
+            Duration::from_secs(1),
+            &ProbeDb::builtin(),
+            &Gate::unlimited(),
+            4,
+            policy,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn listen_only_ports_receive_nothing() {
+        // A silent printer port: no HTTP request, no TLS hello, no probe payload.
+        let (port, mut rx) = recording_server(b"").await;
+        let out = run_with(port, SendPolicy::ListenOnly).await;
+        assert!(out.service.is_none());
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            b"",
+            "a printer port was sent data"
+        );
+        assert!(rx.try_recv().is_err(), "only one connection is made");
+        // Even an SSH greeting on a printer port is not answered.
+        let (port, mut rx) = recording_server(b"SSH-2.0-OpenSSH_9.6\r\n").await;
+        let out = run_with(port, SendPolicy::ListenOnly).await;
+        assert_eq!(out.service.unwrap().name, "ssh");
+        assert_eq!(rx.recv().await.unwrap(), b"");
+        // 2222 without an SSH greeting: silent as well.
+        let (port, mut rx) = recording_server(b"").await;
+        assert!(run_with(port, SendPolicy::SshOrSilent)
+            .await
+            .service
+            .is_none());
+        assert_eq!(rx.recv().await.unwrap(), b"");
+    }
+
+    #[tokio::test]
+    async fn ssh_on_2222_is_fingerprinted() {
+        let (port, mut rx) = recording_server(b"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1\r\n").await;
+        let out = run_with(port, SendPolicy::SshOrSilent).await;
+        assert_eq!(out.service.as_ref().unwrap().product, "OpenSSH");
+        assert!(rx
+            .recv()
+            .await
+            .unwrap()
+            .starts_with(b"SSH-2.0-NetworkScope"));
+    }
+
+    #[test]
+    fn smb1_negotiate_request_and_replies() {
+        let req = smb1_negotiate_request();
+        assert_eq!(usize::from(req[3]), req.len() - 4);
+        assert_eq!(&req[4..9], &[0xFF, b'S', b'M', b'B', 0x72]);
+        assert!(req.ends_with(b"\x02NT LM 0.12\x00"));
+        assert_eq!(req[36], 0, "word count");
+        assert_eq!(usize::from(u16::from_le_bytes([req[37], req[38]])), 12);
+        let reply = |status: u8, word_count: u8, index: u16| {
+            let mut r = vec![0u8, 0, 0, 0];
+            r.extend([0xFF, b'S', b'M', b'B', 0x72, status, 0, 0, 0]);
+            r.extend([0u8; 23]);
+            r.push(word_count);
+            r.extend(index.to_le_bytes());
+            r.extend([0u8; 40]);
+            r
+        };
+        assert!(smb1_accepted(&reply(0, 17, 0)));
+        assert!(!smb1_accepted(&reply(0, 1, 0xFFFF)), "no dialect chosen");
+        assert!(!smb1_accepted(&reply(0x22, 0, 0)), "error status");
+        assert!(!smb1_accepted(&[]));
+        assert!(parse_smb(&reply(0, 17, 0)).unwrap().info.contains("SMBv1"));
+        assert_eq!(parse_smb(&reply(0, 1, 0xFFFF)), None);
+    }
+
+    fn smb2_reply(mode: u16) -> Vec<u8> {
+        let mut resp = vec![0u8; 4 + 64 + 8];
+        resp[4..8].copy_from_slice(&[0xFE, b'S', b'M', b'B']);
+        resp[70..72].copy_from_slice(&mode.to_le_bytes());
+        resp[72..74].copy_from_slice(&0x0311u16.to_le_bytes());
+        resp
+    }
+
+    /// A Windows-like server: SMB2 for SMB2 requests and, when `smb1` is set, an SMB1
+    /// negotiate response selecting "NT LM 0.12"; otherwise it closes on SMB1.
+    async fn smb_server(smb1: bool) -> u16 {
+        serve(move |mut s| {
+            Box::pin(async move {
+                let mut buf = [0u8; 512];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                if n > 8 && buf[4] == 0xFE {
+                    let _ = s.write_all(&smb2_reply(1)).await;
+                } else if n > 8 && buf[4] == 0xFF && smb1 {
+                    let mut r = vec![0u8, 0, 0, 80, 0xFF, b'S', b'M', b'B', 0x72];
+                    r.extend([0u8; 27]);
+                    r.push(17);
+                    r.extend([0u8; 60]);
+                    let _ = s.write_all(&r).await;
+                }
+            })
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn smb1_is_detected_with_a_separate_negotiate() {
+        let ip = "127.0.0.1".parse().unwrap();
+        let limit = Duration::from_secs(1);
+        let gate = Gate::unlimited();
+        let both = smb_negotiate(ip, smb_server(true).await, limit, &gate)
+            .await
+            .unwrap();
+        assert_eq!(
+            both.service.unwrap().summary(),
+            "microsoft-ds SMB 3.1.1 (signing enabled, not required)"
+        );
+        assert_eq!(both.fields["smb.smb1"], "accepted");
+        let modern = smb_negotiate(ip, smb_server(false).await, limit, &gate)
+            .await
+            .unwrap();
+        assert_eq!(modern.fields["smb.smb1"], "refused");
+        let ids = identity_entries(445, &modern);
+        assert_eq!(ids["smb.445.smb1"], "refused");
+    }
+
+    /// tls_service must handshake once and never hold two connections open at a time
+    /// (embedded TLS stacks often allow a single session).
+    #[tokio::test]
+    async fn tls_service_handshakes_once_and_serially() {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::sync::Arc;
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["dev.local".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(cert.der().to_vec())],
+            PrivateKeyDer::try_from(key.serialize_der()).unwrap(),
+        )
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (full, open, peak) = (
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let counters = (full.clone(), open.clone(), peak.clone());
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let (acceptor, (full, open, peak)) = (acceptor.clone(), counters.clone());
+                tokio::spawn(async move {
+                    // Give the server side time to notice a previous client close, so only
+                    // connections the client really keeps open overlap.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let now = open.fetch_add(1, SeqCst) + 1;
+                    peak.fetch_max(now, SeqCst);
+                    if let Ok(mut s) = acceptor.accept(tcp).await {
+                        full.fetch_add(1, SeqCst);
+                        // Stay open until the client closes the session.
+                        let mut buf = [0u8; 256];
+                        while let Ok(Ok(n)) =
+                            timeout(Duration::from_secs(5), s.read(&mut buf)).await
+                        {
+                            if n == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    open.fetch_sub(1, SeqCst);
+                });
+            }
+        });
+        let out = tls_service(
+            "127.0.0.1".parse().unwrap(),
+            port,
+            Duration::from_secs(2),
+            &ProbeDb::builtin(),
+            &Gate::unlimited(),
+            4,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.fields["tls.san"], "dev.local", "{:?}", out.fields);
+        assert!(out.fields.contains_key("tls.versions"));
+        assert_eq!(full.load(SeqCst), 1, "exactly one full TLS handshake");
+        assert_eq!(peak.load(SeqCst), 1, "connections overlapped");
+    }
+
+    /// End to end: HYBRID selected for the normal probe, then the PROTOCOL_RDP-only offer
+    /// decides whether NLA is required. Exactly two connections.
+    #[tokio::test]
+    async fn rdp_nla_follow_up_runs_after_hybrid() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::sync::Arc;
+        for (kind, value, want) in [
+            (3u8, 5u8, "ms-wbt-server RDP (NLA (CredSSP); NLA required)"),
+            (
+                2,
+                0,
+                "ms-wbt-server RDP (NLA (CredSSP); standard RDP security also accepted (NLA not required))",
+            ),
+        ] {
+            let conns = Arc::new(AtomicUsize::new(0));
+            let counter = conns.clone();
+            let port = serve(move |mut s| {
+                counter.fetch_add(1, SeqCst);
+                Box::pin(async move {
+                    let mut buf = [0u8; 64];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n < 19 {
+                        return;
+                    }
+                    let (k, v) = if buf[15] == 0 { (kind, value) } else { (2, 2) };
+                    let reply = [
+                        3, 0, 0, 0x13, 0x0e, 0xd0, 0, 0, 0x12, 0x34, 0, k, 0, 8, 0, v, 0, 0, 0,
+                    ];
+                    let _ = s.write_all(&reply).await;
+                })
+            })
+            .await;
+            let mut db = ProbeDb::builtin();
+            db.probes
+                .iter_mut()
+                .find(|p| p.name == "rdp")
+                .unwrap()
+                .ports = vec![port];
+            let out = detect(
+                "127.0.0.1".parse().unwrap(),
+                port,
+                Duration::from_secs(2),
+                &db,
+                &Gate::unlimited(),
+                4,
+            )
+            .await
+            .unwrap();
+            assert_eq!(out.service.unwrap().summary(), want);
+            assert_eq!(conns.load(SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn rdp_standard_security_follow_up() {
+        let req = rdp_standard_request();
+        assert_eq!(usize::from(req[3]), req.len());
+        assert_eq!(req[11], 1, "negotiation request");
+        assert_eq!(&req[15..], &[0, 0, 0, 0], "PROTOCOL_RDP only");
+        let reply = |kind: u8, value: u8| {
+            vec![
+                3, 0, 0, 0x13, 0x0e, 0xd0, 0, 0, 0x12, 0x34, 0, kind, 0, 8, 0, value, 0, 0, 0,
+            ]
+        };
+        assert!(parse_rdp_standard_reply(&reply(2, 0))
+            .unwrap()
+            .contains("standard RDP security"));
+        assert!(parse_rdp_standard_reply(&reply(3, 1))
+            .unwrap()
+            .contains("TLS security"));
+        assert_eq!(parse_rdp_standard_reply(&reply(3, 5)), Some("NLA required"));
+        assert_eq!(parse_rdp_standard_reply(&reply(3, 2)), None);
+        assert_eq!(parse_rdp_standard_reply(b"HTTP/1.1"), None);
     }
 }

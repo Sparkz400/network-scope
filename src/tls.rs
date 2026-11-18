@@ -95,9 +95,15 @@ pub async fn wrap(
         fields.insert("cipher".into(), format!("{:?}", c.suite()));
     }
     if let Some(cert) = conn.peer_certificates().and_then(|c| c.first()) {
-        fields.extend(describe_cert(cert.as_ref())?);
+        fields.extend(cert_fields(cert.as_ref()));
     }
     Ok((stream, fields))
+}
+
+/// Certificate fields, or `cert_error` when x509-parser cannot read it: an unparseable
+/// certificate must not discard the handshake facts (and make the port look like plaintext).
+fn cert_fields(der: &[u8]) -> Fields {
+    describe_cert(der).unwrap_or_else(|e| Fields::from([("cert_error".to_string(), e)]))
 }
 
 pub fn date(ts: i64) -> String {
@@ -131,6 +137,31 @@ fn signature_name(oid: &str) -> String {
     .to_string()
 }
 
+/// Issuer equals subject, and when both key identifiers are present the authority key
+/// identifier names the certificate's own key. (Checking the signature itself would need
+/// x509-parser's `verify` feature, which is not enabled.) A CA-issued certificate that
+/// happens to carry its issuer's name is thereby not reported as self-signed.
+fn is_self_signed(cert: &X509Certificate<'_>) -> bool {
+    if cert.subject() != cert.issuer() {
+        return false;
+    }
+    let mut ski = None;
+    let mut aki = None;
+    for ext in cert.extensions() {
+        match ext.parsed_extension() {
+            ParsedExtension::SubjectKeyIdentifier(k) => ski = Some(k.0),
+            ParsedExtension::AuthorityKeyIdentifier(a) => {
+                aki = a.key_identifier.as_ref().map(|k| k.0)
+            }
+            _ => {}
+        }
+    }
+    match (aki, ski) {
+        (Some(a), Some(s)) => a == s,
+        _ => true,
+    }
+}
+
 pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
     let (_, cert) =
         X509Certificate::from_der(der).map_err(|e| format!("Certificate not parseable: {e}"))?;
@@ -146,10 +177,7 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
         f.insert("cn".into(), cn.to_string());
     }
     f.insert("issuer".into(), cert.issuer().to_string());
-    f.insert(
-        "self_signed".into(),
-        (cert.subject() == cert.issuer()).to_string(),
-    );
+    f.insert("self_signed".into(), is_self_signed(&cert).to_string());
     if let Ok(Some(san)) = cert.subject_alternative_name() {
         let names: Vec<String> = san
             .value
@@ -181,6 +209,7 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     f.insert("expired".into(), (now > to).to_string());
+    f.insert("not_yet_valid".into(), (now < from).to_string());
     f.insert(
         "days_left".into(),
         ((to - now).div_euclid(86_400)).to_string(),
@@ -486,10 +515,35 @@ pub struct Support {
     /// For each protocol version the server accepts: the suites it chose, in selection order.
     pub accepted: Vec<(u16, Vec<u16>)>,
     pub cert: Option<Vec<u8>>,
+    /// Versions whose suite list is incomplete because the round budget ran out.
+    pub truncated: Vec<u16>,
 }
 
-/// Which versions and suites does the server accept? One hello per round; each round removes
-/// the suite the server picked. `rounds` bounds the connections made per version.
+/// Weakness classes that each map to one finding (tls-broken-cipher, tls-3des, tls-no-pfs).
+/// Servers choose by their own preference, so strong suites always win a mixed offer; each
+/// class therefore gets a dedicated hello offering only its suites.
+const WEAK_CLASSES: [&[&str]; 3] = [
+    &[
+        "RC4",
+        "single DES",
+        "export-grade",
+        "anonymous, unauthenticated",
+        "no encryption",
+    ],
+    &["3DES (Sweet32)"],
+    &["no forward secrecy"],
+];
+
+fn in_class(id: u16, class: &[&str]) -> bool {
+    suite(id)
+        .and_then(|s| s.1)
+        .is_some_and(|w| class.contains(&w))
+}
+
+/// Which versions and suites does the server accept? `rounds` bounds the hellos per version
+/// (at most 4 below TLS 1.2). Per version: one hello offering everything (an unsupported
+/// version stops there), then one hello per weakness class not yet seen, then the remaining
+/// budget enumerates further suites, each round removing the suite the server picked.
 pub async fn enumerate(
     ip: IpAddr,
     port: u16,
@@ -501,31 +555,80 @@ pub async fn enumerate(
     for (version, _) in VERSIONS.iter().rev() {
         let mut offered: Vec<u16> = SUITES.iter().map(|s| s.0).collect();
         let mut chosen = vec![];
-        let limit_rounds = if *version == 0x0303 {
+        let mut budget = if *version == 0x0303 {
             rounds
         } else {
             rounds.min(4)
         };
-        for _ in 0..limit_rounds {
-            gate.wait().await;
-            match hello(ip, port, *version, &offered, limit).await {
-                Ok(Reply::Accepted {
-                    version: v,
-                    cipher,
-                    cert,
-                }) if v == *version && offered.contains(&cipher) => {
+        let ask = |suites: Vec<u16>| {
+            let version = *version;
+            async move {
+                gate.wait().await;
+                match hello(ip, port, version, &suites, limit).await {
+                    Ok(Reply::Accepted {
+                        version: v,
+                        cipher,
+                        cert,
+                    }) if v == version && suites.contains(&cipher) => Some((cipher, cert)),
+                    _ => None,
+                }
+            }
+        };
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        let Some((first, cert)) = ask(offered.clone()).await else {
+            continue;
+        };
+        chosen.push(first);
+        offered.retain(|c| *c != first);
+        if support.cert.is_none() {
+            support.cert = cert;
+        }
+        for class in WEAK_CLASSES {
+            if budget == 0 {
+                break;
+            }
+            if chosen.iter().any(|c| in_class(*c, class)) {
+                continue;
+            }
+            let subset: Vec<u16> = offered
+                .iter()
+                .copied()
+                .filter(|c| in_class(*c, class))
+                .collect();
+            if subset.is_empty() {
+                continue;
+            }
+            budget -= 1;
+            if let Some((cipher, cert)) = ask(subset).await {
+                chosen.push(cipher);
+                offered.retain(|c| *c != cipher);
+                if support.cert.is_none() {
+                    support.cert = cert;
+                }
+            }
+        }
+        let mut exhausted = offered.is_empty();
+        while budget > 0 && !exhausted {
+            budget -= 1;
+            match ask(offered.clone()).await {
+                Some((cipher, cert)) => {
                     chosen.push(cipher);
                     offered.retain(|c| *c != cipher);
+                    exhausted = offered.is_empty();
                     if support.cert.is_none() {
                         support.cert = cert;
                     }
                 }
-                _ => break,
+                None => exhausted = true,
             }
         }
-        if !chosen.is_empty() {
-            support.accepted.push((*version, chosen));
+        if !exhausted {
+            support.truncated.push(*version);
         }
+        support.accepted.push((*version, chosen));
     }
     support
 }
@@ -574,10 +677,17 @@ pub fn summarize(support: &Support, negotiated: Option<&str>) -> Fields {
     if !weak.is_empty() {
         f.insert("weak".into(), weak.join("; "));
     }
+    if !support.truncated.is_empty() {
+        f.insert("suites_truncated".into(), "true".into());
+        let names: Vec<&str> = support.truncated.iter().map(|v| version_name(*v)).collect();
+        f.insert("suites_truncated_versions".into(), names.join(", "));
+    }
     f
 }
 
 /// Full inspection of one TLS port: certificate, negotiated parameters and enumeration.
+/// Service detection uses `wrap` + `inspect_after` so it handshakes only once.
+#[cfg(test)]
 pub async fn inspect(
     ip: IpAddr,
     port: u16,
@@ -590,10 +700,25 @@ pub async fn inspect(
         .await
         .map_err(|_| "connect timed out".to_string())?
         .map_err(|e| e.to_string())?;
-    let modern = wrap(tcp, ip, limit).await;
+    // Close the rustls session before enumerating: embedded devices often allow only one or
+    // two concurrent TLS connections and would refuse the raw hellos while it is open.
+    let modern = wrap(tcp, ip, limit).await.map(|(_, fields)| fields);
+    inspect_after(ip, port, limit, rounds, gate, modern).await
+}
+
+/// Inspection when the caller already did the rustls handshake (`wrap`) and closed that
+/// session: only the raw enumeration runs, so the port sees no duplicate handshake.
+pub async fn inspect_after(
+    ip: IpAddr,
+    port: u16,
+    limit: Duration,
+    rounds: usize,
+    gate: &Gate,
+    handshake: Result<Fields, String>,
+) -> Result<Fields, String> {
     let support = enumerate(ip, port, limit, rounds, gate).await;
-    let mut fields = match modern {
-        Ok((_, fields)) => fields,
+    let mut fields = match handshake {
+        Ok(fields) => fields,
         Err(e) if support.accepted.is_empty() => return Err(e),
         Err(_) => Fields::new(),
     };
@@ -711,8 +836,10 @@ mod tests {
         let support = Support {
             accepted: vec![(0x0303, vec![0xC02F, 0x002F]), (0x0301, vec![0x0005])],
             cert: None,
+            truncated: vec![],
         };
         let f = summarize(&support, Some("TLS1.3"));
+        assert!(!f.contains_key("suites_truncated"));
         assert_eq!(f["versions"], "TLS1.3, TLS1.2, TLS1.0 (deprecated)");
         assert!(f["weak"].contains("TLS1.0 enabled (deprecated)"));
         assert!(f["weak"].contains("RC4"));
@@ -774,6 +901,124 @@ mod tests {
         assert_eq!(fields["self_signed"], "true");
         assert!(fields["san"].contains("ns-test.local"), "{fields:?}");
         assert_eq!(fields["key"], "EC 256");
+    }
+
+    #[test]
+    fn certificate_validity_and_self_signed_checks() {
+        // Not yet valid: not_before in the future.
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["future.local".to_string()]).unwrap();
+        params.not_before = rcgen::date_time_ymd(2999, 1, 1);
+        params.not_after = rcgen::date_time_ymd(3000, 1, 1);
+        let f = describe_cert(params.self_signed(&key).unwrap().der()).unwrap();
+        assert_eq!(f["not_yet_valid"], "true");
+        assert_eq!(f["expired"], "false");
+        let (der, _) = test_identity();
+        let f = describe_cert(&der).unwrap();
+        assert_eq!(f["not_yet_valid"], "false");
+        assert_eq!(f["self_signed"], "true");
+
+        // Issued by a CA that carries the same name: issuer == subject, but the authority
+        // key identifier names the CA key, not the certificate's own.
+        let name = |p: &mut rcgen::CertificateParams| {
+            p.distinguished_name
+                .push(rcgen::DnType::CommonName, "same-name");
+        };
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+        name(&mut ca_params);
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let ca_f = describe_cert(ca.der()).unwrap();
+        assert_eq!(ca_f["self_signed"], "true");
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let mut leaf_params = rcgen::CertificateParams::new(vec!["leaf.local".into()]).unwrap();
+        name(&mut leaf_params);
+        leaf_params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        leaf_params.use_authority_key_identifier_extension = true;
+        let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
+        let leaf_f = describe_cert(leaf.der()).unwrap();
+        assert_eq!(leaf_f["subject"], leaf_f["issuer"]);
+        assert_eq!(leaf_f["self_signed"], "false");
+    }
+
+    #[test]
+    fn unparseable_certificate_keeps_handshake_facts() {
+        let f = cert_fields(&[0x30, 0x03, 1, 2, 3]);
+        assert!(f["cert_error"].contains("not parseable"), "{f:?}");
+        assert!(!f.contains_key("subject"));
+        let (der, _) = test_identity();
+        assert!(cert_fields(&der).contains_key("subject"));
+    }
+
+    /// A raw TLS 1.2-only server that, like real servers, chooses by its own preference:
+    /// strong suites first, weak ones last. Records how many hellos it saw.
+    async fn preference_server(
+        prefs: &'static [u16],
+    ) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hellos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = hellos.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else {
+                    break;
+                };
+                let count = count.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n < 46 {
+                        return;
+                    }
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let version = u16::from_be_bytes([buf[9], buf[10]]);
+                    let sid = usize::from(buf[43]);
+                    let at = 44 + sid;
+                    let len = usize::from(u16::from_be_bytes([buf[at], buf[at + 1]]));
+                    let offered: Vec<u16> = buf[at + 2..at + 2 + len]
+                        .chunks(2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect();
+                    let pick = prefs.iter().find(|p| offered.contains(p));
+                    let reply = match pick {
+                        Some(&c) if version == 0x0303 => server_flight(0x0303, c, None, false),
+                        _ => vec![21, 3, 3, 0, 2, 2, 40],
+                    };
+                    let _ = s.write_all(&reply).await;
+                });
+            }
+        });
+        (port, hellos)
+    }
+
+    #[tokio::test]
+    async fn weak_classes_are_found_within_the_safe_mode_budget() {
+        // Strong first: a plain enumeration with 4 rounds only ever saw these.
+        static PREFS: &[u16] = &[
+            0xC02F, 0xC030, 0xCCA8, 0xC027, 0xC013, 0xC014, 0x009C, 0x002F, 0x000A, 0x0005,
+        ];
+        let (port, hellos) = preference_server(PREFS).await;
+        let ip = "127.0.0.1".parse().unwrap();
+        let support = enumerate(ip, port, Duration::from_secs(3), 4, &Gate::unlimited()).await;
+        let tls12 = &support.accepted.iter().find(|a| a.0 == 0x0303).unwrap().1;
+        assert_eq!(tls12, &[0xC02F, 0x0005, 0x000A, 0x009C], "{support:?}");
+        assert_eq!(support.truncated, [0x0303]);
+        // 4 for TLS 1.2 plus one refused hello for each older version.
+        assert_eq!(hellos.load(std::sync::atomic::Ordering::SeqCst), 4 + 3);
+        let f = summarize(&support, None);
+        assert!(f["weak"].contains("RC4") && f["weak"].contains("3DES"));
+        assert!(f["weak"].contains("no forward secrecy"));
+        assert_eq!(f["suites_truncated"], "true");
+        assert_eq!(f["suites_truncated_versions"], "TLS1.2");
+
+        // With enough budget the list completes and is not marked truncated.
+        let (port, _) = preference_server(PREFS).await;
+        let support = enumerate(ip, port, Duration::from_secs(3), 20, &Gate::unlimited()).await;
+        assert_eq!(support.accepted[0].1.len(), PREFS.len());
+        assert!(support.truncated.is_empty());
+        assert!(!summarize(&support, None).contains_key("suites_truncated"));
     }
 
     fn test_identity() -> (Vec<u8>, Vec<u8>) {
