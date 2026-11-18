@@ -6,6 +6,11 @@ edition = "2021"
 default-run = "network-scope"
 license = "MIT"
 description = "Network scanner and analysis tool: fast TCP/SYN/UDP scanning, service and TLS inspection, monitoring, reports and passive OT discovery"
+repository = "https://github.com/Sparkz400/network-scope"
+homepage = "https://sparkz400.github.io/network-scope/"
+readme = "README.md"
+keywords = ["network-scanner", "inventory", "ot-security", "modbus", "pcap"]
+categories = ["command-line-utilities", "network-programming", "gui"]
 
 # Console-subsystem twin of the GUI binary for scripts (shells wait, exit codes work).
 # Its tests are the main binary's tests, so they are not run twice.
