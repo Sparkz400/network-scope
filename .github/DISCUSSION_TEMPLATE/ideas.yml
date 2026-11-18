@@ -1,0 +1,43 @@
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Check the [roadmap](https://github.com/Sparkz400/network-scope/blob/main/ROADMAP.md) first: it may already be planned. Ideas that get traction become issues.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation, not the solution yet. Who runs into it, and how often?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How could Network Scope help? Mention GUI, CLI or both.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Discovery and scanning
+        - Service / TLS / OS detection
+        - Findings and CVE hints
+        - OT / industrial
+        - Inventory, diffs and reports
+        - Monitoring and alerts
+        - Desktop GUI
+        - CLI and terminal view
+        - Packaging and docs
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: traffic
+    attributes:
+      label: Would it send new traffic?
+      description: If the idea adds probes, say which protocols and ports. New probes must be opt-in and respect Safe Mode.

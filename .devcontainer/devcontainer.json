@@ -1,0 +1,21 @@
+{
+  // One-click development environment (GitHub Codespaces or VS Code Dev Containers):
+  // Rust toolchain from rust-toolchain.toml, GUI build dependencies, libpcap for capture
+  // features, and Python for the lab simulators.
+  "name": "network-scope",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libpcap0.8 && rustup toolchain install && cargo build --locked",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml", "ms-python.python"],
+      "settings": { "rust-analyzer.check.command": "clippy" }
+    },
+    "codespaces": {
+      "openFiles": ["README.md", "CONTRIBUTING.md"]
+    }
+  },
+  "hostRequirements": { "cpus": 4, "memory": "8gb" }
+}

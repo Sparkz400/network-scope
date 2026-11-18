@@ -31,6 +31,13 @@ Licenses as declared by each crate's metadata for the versions in `Cargo.lock` (
 | rhai | Scripting | MIT OR Apache-2.0 |
 | rcgen (tests only) | Test certificates | MIT OR Apache-2.0 |
 
+## Notable transitive components
+
+- **Fonts embedded in the desktop app** by egui (`epaint_default_fonts`): Ubuntu Light (Ubuntu Font Licence 1.0), Hack (MIT; derived from Bitstream Vera, Bitstream Vera License), Noto Emoji (SIL Open Font License 1.1) and emoji-icon-font (MIT). The font files are compiled into the executable unmodified.
+- **smartstring** (pulled in by Rhai) is licensed MPL-2.0. It is used unmodified; its source is available on [crates.io](https://crates.io/crates/smartstring).
+
+`deny.toml` lists every license allowed in the dependency tree; `cargo deny check licenses` verifies it.
+
 ## Operating system components and optional drivers
 
 - Windows ICMP, ARP and routing functions are provided by the operating system.

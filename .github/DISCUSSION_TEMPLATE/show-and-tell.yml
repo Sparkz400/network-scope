@@ -1,0 +1,29 @@
+title: "[Setup] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Show how you use Network Scope: lab setups, monitoring pipelines, scripts, report workflows, OT inventories.
+        **Please remove anything sensitive:** real IP plans, hostnames, MAC addresses, customer or site names, credentials.
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: Network type (office, plant, lab, home), size, and how Network Scope fits in.
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How you run it
+      description: GUI or CLI, scan options, monitor intervals, scripts or exports you use.
+      render: shell
+  - type: textarea
+    id: lessons
+    attributes:
+      label: What worked well, what didn't
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "0.5.0"

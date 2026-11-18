@@ -1,0 +1,6 @@
+# Pinned toolchain for contributors and CI. Bump deliberately (and fix new clippy lints in the
+# same change); rustup installs it automatically on the first cargo command.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

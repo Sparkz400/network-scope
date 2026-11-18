@@ -10,7 +10,9 @@ For larger changes, open an issue or discussion first so we can agree on the app
 
 ## Building and testing
 
-Requires a current stable Rust toolchain. On Linux install the GUI build dependencies listed in [docs/src/installation.md](docs/src/installation.md#build-from-source).
+The Rust version is pinned in `rust-toolchain.toml`; rustup installs it on the first `cargo` command. On Linux install the GUI build dependencies listed in [docs/src/installation.md](docs/src/installation.md#build-from-source). `.editorconfig` sets line endings and indentation for editors that support it.
+
+The quickest start is the dev container (`.devcontainer/`): open the repository in GitHub Codespaces or with VS Code's Dev Containers extension and everything above is installed for you, including Python for the lab simulators. The desktop GUI needs a display, so in a container work on the CLI, the engine and the tests.
 
 ```sh
 cargo build --locked
@@ -25,6 +27,16 @@ End-to-end check against the lab simulators (Python 3, standard library only):
 cargo build --release --locked
 python lab/verify.py target/release/network-scope        # .exe on Windows
 ```
+
+Dependency checks (RustSec advisories, licenses, sources), the same ones the `security` workflow runs:
+
+```sh
+cargo install --locked cargo-deny cargo-audit
+cargo deny check
+cargo audit
+```
+
+A new dependency must use a license from the `allow` list in `deny.toml`; if it needs another one, say so in the pull request.
 
 CI runs all of the above on Windows, Linux and macOS. A pull request must pass CI.
 

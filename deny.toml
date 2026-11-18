@@ -1,0 +1,56 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run locally with `cargo deny check`. CI runs it on every push, pull request and weekly.
+
+[graph]
+# Check the dependency graph of every platform we ship.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+version = 2
+# RustSec advisories (vulnerable, unmaintained, unsound) fail the check. If an advisory does not
+# affect Network Scope, add it here with a reason instead of disabling the check.
+yanked = "deny"
+# Vulnerabilities fail anywhere in the tree. "Unmaintained" fails only for our direct
+# dependencies: transitive ones (today ttf-parser via egui, zbus via rfd, paste, smartstring via
+# rhai) can only be fixed upstream; `cargo audit` and the weekly run still report them.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses compatible with distributing an MIT-licensed binary.
+# MPL-2.0: smartstring (via rhai), used unmodified; source is on crates.io.
+# OFL-1.1 / Ubuntu-font-1.0: the default fonts embedded by egui (epaint_default_fonts).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions are common in GUI dependency trees; report them without failing.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
