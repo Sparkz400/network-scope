@@ -3,8 +3,10 @@ name: ci
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,7 +20,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Linux GUI build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
@@ -27,10 +29,10 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --release --all-targets -- -D warnings
-      - run: cargo test --release
-      - run: cargo build --release
-      - uses: actions/setup-python@v5
+      - run: cargo clippy --release --all-targets --locked -- -D warnings
+      - run: cargo test --release --locked
+      - run: cargo build --release --locked
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Lab end-to-end check (simulated weak and OT services on loopback)
@@ -39,7 +41,7 @@ jobs:
           exe=target/release/network-scope
           [ "$RUNNER_OS" = "Windows" ] && exe=target/release/network-scope.exe
           python lab/verify.py "$exe"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: network-scope-${{ runner.os }}
           path: |
@@ -54,10 +56,10 @@ jobs:
     needs: check
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - name: Build installer
         shell: pwsh
         run: |
@@ -65,12 +67,8 @@ jobs:
           choco install innosetup -y --no-progress
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" installer\network-scope.iss
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer
           path: dist/*.exe
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.exe
+          if-no-files-found: error

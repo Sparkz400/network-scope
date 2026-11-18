@@ -1,0 +1,10 @@
+[book]
+title = "Network Scope"
+authors = ["Network Scope contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/Sparkz400/network-scope"
+edit-url-template = "https://github.com/Sparkz400/network-scope/edit/main/docs/{path}"
+site-url = "/network-scope/"

@@ -1,0 +1,101 @@
+name: Bug report
+description: Something does not work as documented.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Security issues do **not** belong here: use [private vulnerability reporting](https://github.com/Sparkz400/network-scope/security/advisories/new).
+
+        > [!WARNING]
+        > **Redact before posting.** Replace real IP addresses, MAC addresses, host names, user names and certificate subjects in commands, logs, exports and screenshots (for example `10.0.0.x`, `AA:BB:CC:00:00:01`, `host-1`). Never attach an inventory database or a capture of a production network.
+  - type: input
+    id: version
+    attributes:
+      label: Network Scope version
+      description: The release you downloaded, or the commit if you built from source.
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Windows Server
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-details
+    attributes:
+      label: OS version / distribution
+      placeholder: "Windows 11 24H2, Ubuntu 24.04, macOS 15 ..."
+  - type: dropdown
+    id: frontend
+    attributes:
+      label: Front end
+      multiple: true
+      options:
+        - GUI (network-scope.exe)
+        - CLI (network-scope-cli)
+        - TUI (scan --tui)
+    validations:
+      required: true
+  - type: dropdown
+    id: safe-mode
+    attributes:
+      label: Safe Mode
+      options:
+        - "On (default)"
+        - "Off (--fast)"
+        - Not applicable
+    validations:
+      required: true
+  - type: input
+    id: npcap
+    attributes:
+      label: Npcap / libpcap and privileges
+      description: Npcap or libpcap version if installed, and whether you ran as administrator/root.
+      placeholder: "Npcap 1.80, not admin / no Npcap"
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or steps
+      description: The exact command line (redacted), or the GUI steps and settings.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include error messages and host notes.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: Redacted stderr output, host notes or export excerpts. This will be formatted as code.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed or replaced real IP addresses, MAC addresses and host names.
+          required: true
+        - label: I searched existing issues and the FAQ.
+          required: true

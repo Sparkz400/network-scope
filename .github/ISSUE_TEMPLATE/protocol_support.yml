@@ -1,0 +1,78 @@
+name: Device or protocol support
+description: A device is not identified correctly, or support for an (industrial) protocol is missing.
+title: "[Protocol]: "
+labels: ["protocol"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports from real devices are very valuable: the OT decoders have only been tested with synthetic frames.
+
+        > [!WARNING]
+        > **Sanitized data only.** Attach a capture only if it comes from a lab or test setup, or after removing real addresses, names, serial numbers and process values. Never attach captures from production networks you are not allowed to share. Keep captures small (a few identification exchanges).
+  - type: input
+    id: vendor
+    attributes:
+      label: Vendor
+      placeholder: "e.g. Siemens, Rockwell, Schneider, Beckhoff"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device model and firmware
+      placeholder: "e.g. CPU 1515-2 PN, FW 2.9"
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Protocol
+      options:
+        - Modbus/TCP
+        - S7comm / S7comm-plus
+        - EtherNet/IP / CIP
+        - BACnet/IP
+        - OPC UA
+        - PROFINET DCP
+        - DNP3
+        - IEC 60870-5-104
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      multiple: true
+      options:
+        - Active identification (--ot)
+        - Passive OT discovery (ot-listen / pcap)
+        - Passive discovery (listen)
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What Network Scope reports
+      description: Redacted identity fields, host notes or errors.
+      render: text
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: The identity the device should report (vendor, product, firmware), or the protocol messages that should be recognised.
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sanitized sample
+      description: Attach a small, sanitized pcap/pcapng (zip it), or paste the hex of the relevant request and reply.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: Any attached data is sanitized and I am allowed to share it.
+          required: true

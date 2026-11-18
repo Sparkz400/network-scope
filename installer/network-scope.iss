@@ -37,7 +37,9 @@ Name: "addtopath"; Description: "Add the command-line tool (network-scope-cli) t
 Source: "{#ExePath}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#CliExePath}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\CREDITS.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\data\README.md"; DestDir: "{app}"; DestName: "DATA-SOURCES.md"; Flags: ignoreversion
 Source: "..\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs
 Source: "..\lab\*"; DestDir: "{app}\lab"; Flags: ignoreversion recursesubdirs
 
