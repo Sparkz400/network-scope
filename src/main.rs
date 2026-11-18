@@ -1,32 +1,35 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod capture;
-mod core;
-mod devices;
-mod fingerprint;
-mod gui;
-mod monitor;
-mod nmap;
-mod notify;
-mod osfp;
-mod ot;
-mod otpassive;
-mod oui;
-mod passive;
-mod pcapfile;
-mod platform;
-mod probes;
-mod report;
-mod risk;
-mod scan;
-mod script;
-mod service;
-mod store;
-mod syn;
-mod tls;
-mod topology;
-mod trace;
-mod udp;
-mod ui;
+// Modules are `pub(crate)`: src/bin/network-scope-cli.rs compiles this file as a
+// module and reaches them as `crate::<module>` through a glob import.
+pub(crate) mod arp;
+pub(crate) mod capture;
+pub(crate) mod core;
+pub(crate) mod devices;
+pub(crate) mod fingerprint;
+pub(crate) mod gui;
+pub(crate) mod monitor;
+pub(crate) mod nmap;
+pub(crate) mod notify;
+pub(crate) mod osfp;
+pub(crate) mod ot;
+pub(crate) mod otpassive;
+pub(crate) mod oui;
+pub(crate) mod passive;
+pub(crate) mod pcapfile;
+pub(crate) mod platform;
+pub(crate) mod probes;
+pub(crate) mod report;
+pub(crate) mod risk;
+pub(crate) mod scan;
+pub(crate) mod script;
+pub(crate) mod service;
+pub(crate) mod store;
+pub(crate) mod syn;
+pub(crate) mod tls;
+pub(crate) mod topology;
+pub(crate) mod trace;
+pub(crate) mod udp;
+pub(crate) mod ui;
 use std::path::PathBuf;
 
 /// A standard handle the process cannot use: never set (a GUI-subsystem process
@@ -105,7 +108,7 @@ fn attach_parent_console() {
     }
 }
 
-fn main() -> eframe::Result<()> {
+pub(crate) fn main() -> eframe::Result<()> {
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
     if cli_args
         .first()
@@ -143,5 +146,21 @@ mod tests {
         assert!(!handle_unusable(0x44, 1), "redirected to a file: keep");
         assert!(!handle_unusable(0x48, 3), "redirected to a pipe: keep");
         assert!(!handle_unusable(0x4c, 2), "console: keep");
+    }
+
+    #[test]
+    fn modules_are_visible_to_the_console_binary() {
+        // The console binary includes this file as a module; a private `mod x;` here
+        // would be unreachable as `crate::x` there.
+        let source = include_str!("main.rs");
+        for line in source.lines().map(str::trim) {
+            if line.starts_with("mod ") || line.starts_with("pub mod ") {
+                assert!(
+                    line.starts_with("mod tests"),
+                    "declare as pub(crate): {line}"
+                );
+            }
+        }
+        assert!(include_str!("bin/network-scope-cli.rs").contains("#[path = \"../main.rs\"]"));
     }
 }

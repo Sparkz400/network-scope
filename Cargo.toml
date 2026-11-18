@@ -5,6 +5,13 @@ edition = "2021"
 license = "MIT"
 description = "Network scanner and analysis tool: fast TCP/SYN/UDP scanning, service and TLS inspection, monitoring, reports and passive OT discovery"
 
+# Console-subsystem twin of the GUI binary for scripts (shells wait, exit codes work).
+# Its tests are the main binary's tests, so they are not run twice.
+[[bin]]
+name = "network-scope-cli"
+path = "src/bin/network-scope-cli.rs"
+test = false
+
 [dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 egui_extras = "0.31.1"
