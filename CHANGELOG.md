@@ -89,6 +89,11 @@ First public release. The [documentation](https://sparkz400.github.io/network-sc
 - Exports carry the real scan time (stored time for saved/reopened scans, current time for live GUI results) instead of "time not recorded".
 - GUI: the OT pcap import now flushes partially reassembled messages; a cancelled import is partial, not an error.
 
+### Security
+
+- **Bundled SQLite 3.54.1** (rusqlite 0.41): fixes RUSTSEC-2026-0459 / CVE-2026-119375, where a crafted database and `-wal` file pair could make queries return uninitialised memory. Only inventory files from an untrusted source were exposed.
+- Dependency checks in CI: `cargo deny` (advisories, licenses, sources) and `cargo audit` on every change and weekly; release files carry signed build provenance (`gh attestation verify`).
+
 ### Not done
 
 Deliberately, or for lack of a test setup:
