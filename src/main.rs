@@ -2,6 +2,7 @@
 mod capture;
 mod core;
 mod devices;
+mod fingerprint;
 mod gui;
 mod monitor;
 mod nmap;

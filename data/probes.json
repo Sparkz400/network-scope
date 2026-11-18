@@ -1,5 +1,5 @@
 {
-  "_comment": "Service probe database. A probe without ports/send is the null probe: it only listens for a banner. Rules are regular expressions over the raw reply bytes (case-sensitive unless (?i); '.' also matches newlines and any byte). $1..$9 expand to capture groups. The first matching rule wins. A probe with the same name in the user file (%LOCALAPPDATA%/NetworkScope/probes.json or --probes FILE) replaces the built-in one; other names are added. Fields: name, ports, send (text), send_hex, wait_ms, rules[{re, service, product, version, info}].",
+  "_comment": "Service probe database. A probe without ports/send is the null probe: it only listens for a banner. Rules are regular expressions over the raw reply bytes (case-sensitive unless (?i); '.' also matches newlines and any byte). $1..$9 expand to capture groups. The first matching rule wins. A probe with the same name in the user file (%LOCALAPPDATA%/NetworkScope/probes.json or --probes FILE) replaces the built-in one; other names are added. Fields: name, proto (tcp|udp, default tcp), ports, send (text), send_hex, wait_ms, rules[{re, service, product, version, info}]. A \"proto\": \"udp\" probe sends one datagram to its ports (it needs ports and a payload) when the UDP scan reaches a port without a built-in handler; industrial and printer ports are rejected.",
   "probes": [
     {
       "name": "banner",
@@ -126,6 +126,44 @@
       "rules": [
         { "re": "(?i)^RTSP/1\\.0 \\d+[^\\r\\n]*\\r\\n(?:[^\\r\\n]+\\r\\n)*?Server: ([^\\r\\n]+)", "service": "rtsp", "product": "$1" },
         { "re": "^RTSP/1\\.0 ", "service": "rtsp" }
+      ]
+    },
+    {
+      "name": "udp-mssql-browser",
+      "proto": "udp",
+      "ports": [1434],
+      "send_hex": "03",
+      "rules": [
+        { "re": "^\\x05..ServerName;([^;]+);InstanceName;([^;]+);IsClustered;[^;]*;Version;([\\d.]+)", "service": "ms-sql-m", "product": "Microsoft SQL Server", "version": "$3", "info": "server $1, instance $2" },
+        { "re": "^\\x05..ServerName;", "service": "ms-sql-m", "product": "Microsoft SQL Server" }
+      ]
+    },
+    {
+      "name": "udp-rpcbind",
+      "proto": "udp",
+      "ports": [111],
+      "send_hex": "4e530001 00000000 00000002 000186a0 00000002 00000000 00000000 00000000 00000000 00000000",
+      "rules": [
+        { "re": "^NS\\x00\\x01\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x00", "service": "rpcbind", "info": "ONC RPC portmapper" }
+      ]
+    },
+    {
+      "name": "udp-memcached",
+      "proto": "udp",
+      "ports": [11211],
+      "send_hex": "0001000000010000 76657273696f6e0d0a",
+      "rules": [
+        { "re": "^.{8}VERSION ([\\w.]+)", "service": "memcached", "product": "memcached", "version": "$1", "info": "UDP enabled" }
+      ]
+    },
+    {
+      "name": "udp-sip",
+      "proto": "udp",
+      "ports": [5060],
+      "send": "OPTIONS sip:nm SIP/2.0\r\nVia: SIP/2.0/UDP nm;branch=z9hG4bK-ns-1;rport\r\nMax-Forwards: 70\r\nTo: <sip:nm@nm>\r\nFrom: <sip:nm@nm>;tag=ns1\r\nCall-ID: 50000-networkscope\r\nCSeq: 42 OPTIONS\r\nAccept: application/sdp\r\nContent-Length: 0\r\n\r\n",
+      "rules": [
+        { "re": "(?i)^SIP/2\\.0 \\d+[^\\r\\n]*\\r\\n(?:[^\\r\\n]+\\r\\n)*?(?:Server|User-Agent): ([^\\r\\n]+)", "service": "sip", "product": "$1" },
+        { "re": "^SIP/2\\.0 \\d+", "service": "sip" }
       ]
     }
   ]
