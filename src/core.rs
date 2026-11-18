@@ -175,6 +175,8 @@ struct Ctx {
     dhcp: Semaphore,
     syn: Option<Arc<SynEngine>>,
     syn_error: Option<String>,
+    arp: Option<Arc<crate::arp::ArpEngine>>,
+    arp_error: Option<String>,
     probes: Option<ProbeDb>,
     udp_ports: Vec<u16>,
     scripts: Option<crate::script::Scripts>,
@@ -238,6 +240,15 @@ pub async fn execute(
     } else {
         (None, None)
     };
+    // Opt-in, and never in Safe Mode (the per-host OS lookup is used there).
+    let (arp, arp_error) = if s.arp_sweep && !s.safe {
+        match crate::arp::ArpEngine::start(&s, gate.clone()) {
+            Ok(engine) => (Some(engine), None),
+            Err(e) => (None, Some(e)),
+        }
+    } else {
+        (None, None)
+    };
     let ctx = Arc::new(Ctx {
         gate,
         blocking: Arc::new(Semaphore::new(256)),
@@ -245,6 +256,8 @@ pub async fn execute(
         dhcp: Semaphore::new(1),
         syn,
         syn_error,
+        arp,
+        arp_error,
         probes,
         udp_ports,
         scripts,
@@ -335,6 +348,98 @@ async fn probe_port(
     }
 }
 
+/// Outcome of the ARP sweep for one host.
+#[derive(Debug, Default)]
+struct Swept {
+    mac: Option<String>,
+    /// The sweep gave a definite answer (reply or silence); no per-host lookup needed.
+    answered: bool,
+    note: Option<String>,
+}
+
+/// ARP sweep for on-link IPv4 targets (never this machine's own address). Routed or
+/// IPv6 targets, and any engine failure, leave the per-host OS lookup to the caller.
+async fn sweep_arp(ip: IpAddr, s: &Settings, ctx: &Ctx) -> Swept {
+    if let Some(e) = &ctx.arp_error {
+        return Swept {
+            note: Some(format!("ARP sweep unavailable; per-host lookup: {e}")),
+            ..Swept::default()
+        };
+    }
+    let (Some(engine), IpAddr::V4(v4)) = (&ctx.arp, ip) else {
+        return Swept::default();
+    };
+    let source = engine.source();
+    if v4 == source {
+        return Swept::default();
+    }
+    let interface = s.interface.clone();
+    let route = run_blocking(&ctx.blocking, move || {
+        crate::platform::next_hop(v4, source, &interface)
+    })
+    .await;
+    if route != Some(Ok(crate::platform::NextHop::OnLink)) {
+        return Swept::default();
+    }
+    match engine.resolve(v4).await {
+        Ok(mac) => Swept {
+            mac,
+            answered: true,
+            note: None,
+        },
+        Err(e) => Swept {
+            note: Some(format!("ARP sweep unavailable; per-host lookup: {e}")),
+            ..Swept::default()
+        },
+    }
+}
+
+/// Traceroute with the configured method. TCP and UDP fall back to ICMP (with a note)
+/// when they cannot run: Safe Mode, IPv6, no eligible port, or a local failure.
+async fn traceroute(
+    ip: IpAddr,
+    open: &[u16],
+    s: &Arc<Settings>,
+    ctx: &Ctx,
+) -> (Vec<crate::trace::Hop>, Vec<String>) {
+    use crate::trace::TraceMethod;
+    let timeout = s.ping_timeout.clamp(200, 3000);
+    let plan = crate::trace::plan(ip, open, s);
+    let mut notes: Vec<String> = plan.note.into_iter().collect();
+    let attempt = match (plan.method, ip, plan.port) {
+        (TraceMethod::Tcp, IpAddr::V4(v4), Some(port)) => {
+            let (settings, gate) = (s.clone(), ctx.gate.clone());
+            let done = run_blocking(&ctx.blocking, move || {
+                crate::syn::tcp_trace(&settings, v4, port, settings.trace_hops, timeout, &gate)
+            })
+            .await
+            .unwrap_or_else(|| Err("traceroute task ended".into()));
+            Some(
+                done.map(crate::trace::assemble)
+                    .map_err(|e| format!("TCP traceroute: {e}")),
+            )
+        }
+        (TraceMethod::Udp, IpAddr::V4(v4), _) => Some(
+            crate::trace::trace_udp(v4, s.trace_hops, timeout, &ctx.blocking, &ctx.gate)
+                .await
+                .map_err(|e| format!("UDP traceroute: {e}")),
+        ),
+        _ => None,
+    };
+    match attempt {
+        Some(Ok(hops)) => return (hops, notes),
+        Some(Err(e)) => notes.push(format!("{e}; ICMP traceroute used")),
+        None => {}
+    }
+    match crate::trace::trace(ip, s.trace_hops, timeout, &ctx.blocking, &ctx.gate).await {
+        Ok(hops) => (hops, notes),
+        Err(e) => {
+            notes.push(format!("Traceroute: {e}"));
+            (vec![], notes)
+        }
+    }
+}
+
 fn note(h: &mut Host, text: String) {
     if h.errors.len() < 8 && !h.errors.contains(&text) {
         h.errors.push(text);
@@ -360,14 +465,23 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     };
     let mut fingerprint = None;
     // ARP is independent of ping: an ICMP-silent LAN device can still be found.
-    if s.arp || s.mac || s.os_detect {
-        ctx.gate.wait().await;
-        if let Some(Some(n)) =
-            run_blocking(&ctx.blocking, move || crate::platform::neighbor(ip)).await
-        {
-            h.mac = n.mac;
-            // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
-            h.responding = n.fresh;
+    if s.arp || s.mac || s.os_detect || s.arp_sweep {
+        let swept = sweep_arp(ip, &s, &ctx).await;
+        if let Some(text) = swept.note {
+            note(&mut h, text);
+        }
+        if let Some(mac) = swept.mac {
+            h.mac = mac;
+            h.responding = true;
+        } else if !swept.answered {
+            ctx.gate.wait().await;
+            if let Some(Some(n)) =
+                run_blocking(&ctx.blocking, move || crate::platform::neighbor(ip)).await
+            {
+                h.mac = n.mac;
+                // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
+                h.responding = n.fresh;
+            }
         }
     }
     let mut rtts = vec![];
@@ -550,11 +664,11 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         crate::ot::identify(&mut h, &s, &ctx.gate).await;
     }
     if s.trace && h.responding {
-        let timeout = s.ping_timeout.clamp(200, 3000);
-        match crate::trace::trace(ip, s.trace_hops, timeout, &ctx.blocking, &ctx.gate).await {
-            Ok(hops) => h.trace = hops,
-            Err(e) => note(&mut h, format!("Traceroute: {e}")),
+        let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
+        for text in notes {
+            note(&mut h, text);
         }
+        h.trace = hops;
     }
     if h.responding && s.dns {
         let lookup = run_blocking(&ctx.blocking, move || {

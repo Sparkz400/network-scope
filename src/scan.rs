@@ -61,6 +61,17 @@ pub struct Settings {
     pub probe_file: String,
     /// Rhai script file or directory run against every scanned host.
     pub scripts: String,
+    /// Active ARP sweep through the capture interface (needs Npcap/libpcap and the
+    /// interface, source IPv4 and source MAC). Off in Safe Mode; falls back to the
+    /// per-host OS lookup without a capture driver.
+    pub arp_sweep: bool,
+    /// SYN engine: reply windows from a smoothed RTT and an AIMD congestion window.
+    pub syn_adaptive: bool,
+    /// Traceroute method: icmp (default), tcp (SYN, needs the capture interface) or udp.
+    pub trace_method: crate::trace::TraceMethod,
+    /// Destination port for TCP traceroute; 0 picks the host's first open port that is
+    /// neither an OT nor a printer port.
+    pub trace_port: u16,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -99,6 +110,10 @@ impl Default for Settings {
             trace_hops: 20,
             probe_file: String::new(),
             scripts: String::new(),
+            arp_sweep: false,
+            syn_adaptive: false,
+            trace_method: crate::trace::TraceMethod::Icmp,
+            trace_port: 0,
         }
     }
 }
@@ -677,6 +692,21 @@ mod tests {
         );
         // Without the option nothing is trimmed.
         assert_eq!(parse_hosts("10.0.0.0/30", false).unwrap().len(), 4);
+    }
+    #[test]
+    fn new_engine_options_are_off_in_old_snapshots() {
+        let old: Settings = serde_json::from_str(r#"{"ports":"22","safe":false}"#).unwrap();
+        assert!(!old.arp_sweep && !old.syn_adaptive);
+        assert_eq!(old.trace_method, crate::trace::TraceMethod::Icmp);
+        assert_eq!(old.trace_port, 0);
+        let tcp: Settings = serde_json::from_str(r#"{"trace_method":"tcp"}"#).unwrap();
+        assert_eq!(tcp.trace_method, crate::trace::TraceMethod::Tcp);
+        let text = serde_json::to_string(&Settings {
+            trace_method: crate::trace::TraceMethod::Udp,
+            ..Settings::default()
+        })
+        .unwrap();
+        assert!(text.contains(r#""trace_method":"udp""#), "{text}");
     }
     #[test]
     fn csv_quotes() {
