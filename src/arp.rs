@@ -97,7 +97,9 @@ pub struct Timing {
 impl Timing {
     pub fn from_settings(s: &Settings) -> Self {
         Self {
-            wait: Duration::from_millis(u64::from(s.ping_timeout.clamp(100, 1000))),
+            // LAN neighbours answer ARP within milliseconds; a short window keeps a
+            // silent address from holding a host worker for long.
+            wait: Duration::from_millis(u64::from(s.ping_timeout.clamp(100, 300))),
             tries: (s.retries + 1).clamp(1, 3),
         }
     }

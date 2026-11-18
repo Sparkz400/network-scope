@@ -205,34 +205,35 @@ impl Window {
 
 /// Upper bound for the congestion window: the scan's global in-flight bound.
 const MAX_WINDOW: usize = 4096;
-/// Per-target RTT estimates kept at most; beyond this the map restarts (global estimate remains).
+/// Per-target RTT estimates kept at most; beyond this the map restarts.
 const MAX_ESTIMATES: usize = 65_536;
 
+/// Only a target's own estimate replaces the caller's reply window: a fast LAN
+/// neighbour must not shorten the window of a slow routed target (its SYN-ACK would
+/// arrive after the probe expired). Targets without samples keep the caller's window.
 struct Adaptive {
     window: Window,
-    global: RttEstimator,
     per_target: HashMap<Ipv4Addr, RttEstimator>,
 }
 impl Adaptive {
     fn new() -> Self {
         Self {
             window: Window::new(MAX_WINDOW),
-            global: RttEstimator::default(),
             per_target: HashMap::new(),
         }
     }
     fn rto(&self, ip: Ipv4Addr, floor: Duration, cap: Duration) -> Option<Duration> {
-        self.per_target
-            .get(&ip)
-            .and_then(|e| e.rto(floor, cap))
-            .or_else(|| self.global.rto(floor, cap))
+        self.per_target.get(&ip).and_then(|e| e.rto(floor, cap))
     }
+    /// `rtt` is a measured sample, or (after a retransmit) the time since the first
+    /// send: an upper bound that keeps the backed-off window for a target that slowed
+    /// down (Karn's rule forbids treating it as a precise sample, but it may only
+    /// lengthen the estimate's reply windows, never shorten them wrongly).
     fn sample(&mut self, ip: Ipv4Addr, rtt: Duration) {
         if self.per_target.len() >= MAX_ESTIMATES && !self.per_target.contains_key(&ip) {
             self.per_target.clear();
         }
         self.per_target.entry(ip).or_default().sample(rtt);
-        self.global.sample(rtt);
     }
 }
 
@@ -649,12 +650,18 @@ fn io_loop<W: Wire>(
                         }
                         if let Some(a) = adaptive.as_mut() {
                             let now = Instant::now();
-                            match (p.sends, p.first_sent) {
-                                (1, Some(sent)) => {
-                                    a.sample(key.0, now - sent);
+                            let since_first = p.first_sent.map(|t| now - t);
+                            match (p.sends, since_first) {
+                                (1, Some(rtt)) => {
+                                    a.sample(key.0, rtt);
                                     a.window.on_answer();
                                 }
-                                _ => {
+                                (_, upper_bound) => {
+                                    // Answered only after a retransmit: loss, and an
+                                    // upper-bound sample that keeps the window long.
+                                    if let Some(bound) = upper_bound {
+                                        a.sample(key.0, bound);
+                                    }
                                     let hold = a.rto(key.0, timing.floor, p.cap).unwrap_or(p.cap);
                                     a.window.on_loss(now, hold);
                                 }
@@ -718,6 +725,12 @@ fn io_loop<W: Wire>(
             for key in expired {
                 if let Some(p) = pending.remove(&key) {
                     in_flight -= 1;
+                    // No answer is not a loss signal (filtered ports look like this);
+                    // the probe has left the network, so the window may grow, and a
+                    // silent range is not held at the initial window.
+                    if let Some(a) = adaptive.as_mut() {
+                        a.window.on_answer();
+                    }
                     let _ = p.reply.send(Ok((PortState::Unanswered, None)));
                 }
                 cookies.remove(&key);
@@ -1373,6 +1386,125 @@ mod tests {
             assert_eq!(a.blocking_recv().unwrap().unwrap().0, PortState::Unanswered);
         }
         assert_eq!(sent.lock().unwrap().len(), 25);
+    }
+
+    /// Answers every SYN with a SYN-ACK after a per-target delay.
+    struct DelayWire {
+        delays: Arc<Mutex<HashMap<Ipv4Addr, Duration>>>,
+        sent: Arc<Mutex<Vec<(Ipv4Addr, u16)>>>,
+        scheduled: Vec<(Instant, Vec<u8>)>,
+    }
+    impl Wire for DelayWire {
+        fn send(&mut self, frame: &[u8]) -> Result<(), String> {
+            let eth = EthernetPacket::new(frame).unwrap();
+            let ip = Ipv4Packet::new(eth.payload()).unwrap();
+            let tcp = TcpPacket::new(ip.payload()).unwrap();
+            if tcp.get_flags() != TcpFlags::SYN {
+                return Ok(());
+            }
+            let dest = ip.get_destination();
+            self.sent
+                .lock()
+                .unwrap()
+                .push((dest, tcp.get_destination()));
+            let delay = self
+                .delays
+                .lock()
+                .unwrap()
+                .get(&dest)
+                .copied()
+                .unwrap_or_default();
+            self.scheduled.push((
+                Instant::now() + delay,
+                build(
+                    (dest, [3; 6]),
+                    (ip.get_source(), [2; 6]),
+                    (tcp.get_destination(), tcp.get_source()),
+                    TcpFlags::SYN | TcpFlags::ACK,
+                    5,
+                    tcp.get_sequence().wrapping_add(1),
+                ),
+            ));
+            Ok(())
+        }
+        fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
+            let now = Instant::now();
+            let due = self.scheduled.iter().position(|(t, _)| *t <= now);
+            Ok(due.map(|i| self.scheduled.remove(i).1))
+        }
+    }
+
+    #[test]
+    fn adaptive_windows_are_per_target_and_back_off() {
+        let fast = TARGET;
+        let slow = Ipv4Addr::new(192, 0, 2, 7);
+        let delays: Arc<Mutex<HashMap<Ipv4Addr, Duration>>> = Arc::default();
+        delays
+            .lock()
+            .unwrap()
+            .insert(slow, Duration::from_millis(150));
+        let sent: Arc<Mutex<Vec<(Ipv4Addr, u16)>>> = Arc::default();
+        let wire = DelayWire {
+            delays: delays.clone(),
+            sent: sent.clone(),
+            scheduled: vec![],
+        };
+        let (tx, rx) = mpsc::channel();
+        let timing = Timing {
+            adaptive: true,
+            floor: Duration::from_millis(20),
+        };
+        std::thread::spawn(move || {
+            io_loop(wire, rx, (ME, [2; 6]), Arc::new(Gate::unlimited()), timing)
+        });
+        let ask = |ip: Ipv4Addr, port: u16, timeout_ms: u64, retries: u32| {
+            let (reply, answer) = oneshot::channel();
+            tx.send(Request {
+                ip,
+                port,
+                mac: [3; 6],
+                timeout: Duration::from_millis(timeout_ms),
+                cap: Duration::from_millis(timeout_ms),
+                retries,
+                reply,
+            })
+            .unwrap();
+            answer.blocking_recv().unwrap().unwrap().0
+        };
+        let syns_to = |ip: Ipv4Addr, port: u16| {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .filter(|s| **s == (ip, port))
+                .count()
+        };
+        // The fast target's estimate (about the 20 ms floor) must not shorten the
+        // slow target's window: its SYN-ACK at 150 ms is still accepted.
+        assert_eq!(ask(fast, 502, 400, 1), PortState::Open);
+        assert_eq!(ask(slow, 80, 400, 1), PortState::Open);
+        assert_eq!(syns_to(slow, 80), 1, "no premature retransmit");
+        assert_eq!(ask(slow, 81, 400, 1), PortState::Open);
+        assert_eq!(syns_to(slow, 81), 1, "own estimate covers its RTT");
+        // The fast target slows down: the answer after retransmits still counts.
+        delays
+            .lock()
+            .unwrap()
+            .insert(fast, Duration::from_millis(200));
+        assert_eq!(ask(fast, 503, 600, 3), PortState::Open);
+        assert!(syns_to(fast, 503) > 1);
+    }
+
+    #[test]
+    fn retransmitted_answers_lengthen_the_estimate() {
+        let (floor, cap) = (Duration::from_millis(20), Duration::from_secs(2));
+        let ip = Ipv4Addr::new(10, 0, 0, 3);
+        let mut a = Adaptive::new();
+        assert_eq!(a.rto(ip, floor, cap), None, "no estimate: caller's window");
+        a.sample(ip, Duration::from_millis(1));
+        assert_eq!(a.rto(ip, floor, cap), Some(floor));
+        a.sample(ip, Duration::from_millis(200));
+        assert!(a.rto(ip, floor, cap).unwrap() >= Duration::from_millis(200));
+        assert_eq!(a.rto(Ipv4Addr::new(10, 0, 0, 4), floor, cap), None);
     }
 
     #[tokio::test]

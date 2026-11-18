@@ -52,7 +52,8 @@ In `scan_settings`:
 **Engine / ARP sweep (`--arp-sweep`, opt-in, not in Safe Mode).**
 - Opens a second capture handle with the kernel filter `arp` and broadcasts ARP who-has requests for on-link IPv4 targets. The scanner's own address is never included.
 - Requests go out in batches, with at most 256 unanswered at any time. Each request takes one token from the `--rate` gate.
-- An unanswered request is repeated up to `--retries` times (at most 3 requests per target). Each request waits for the ping timeout, clamped to 100-1000 ms.
+- An unanswered request is repeated up to `--retries` times (at most 3 requests per target). Each request waits for the ping timeout, clamped to 100-300 ms.
+- **Throughput.** Each host task submits its own address, so the number of ARP requests in progress is bounded by `--workers` as well as by the 256 window. A silent address holds its worker for wait × requests (default 300 ms × 2).
 - A reply gives the MAC and marks the host as responding. Unlike a cached neighbor entry, it proves the host is up right now.
 - A target that stays silent gets no further per-host lookup.
 - The per-host OS lookup (SendARP / neighbor table) is used instead in these cases:
@@ -61,10 +62,15 @@ In `scan_settings`:
   - Safe Mode.
 
 **Engine / Adaptive SYN timing (`--adaptive-syn`, opt-in, SYN is never used in Safe Mode).**
-- **Reply windows.** Each reply window comes from a smoothed RTT per target (falling back to all targets) as in RFC 6298: `SRTT + max(1 ms, 4·RTTVAR)`. It is clamped between `minimum_timeout` and the port timeout. RTT is sampled only from probes that were sent once (Karn's rule). Retransmits still double the wait, up to the port timeout.
-- **Congestion window.** New probes are limited by an AIMD congestion window over the SYNs in flight. It starts at 10 and never exceeds 4,096. It grows by one per answer below the threshold, and by about one per window above it.
+- **Reply windows.**
+  - A target's reply window comes from its own smoothed RTT, as in RFC 6298: `SRTT + max(1 ms, 4·RTTVAR)`. It is clamped between `minimum_timeout` and the port timeout.
+  - A target without its own samples keeps the usual window (from its ping RTT or the port timeout). A fast neighbour never shortens a slow target's window.
+  - Precise samples come only from probes that were sent once (Karn's rule).
+  - When an answer arrives only after a retransmit, the time since the first SYN is recorded as an upper bound. A target that slowed down therefore gets longer windows again.
+  - Retransmits still double the wait, up to the port timeout.
+- **Congestion window.** New probes are limited by an AIMD congestion window over the SYNs in flight. It starts at 10 and never exceeds 4,096. It grows by one per completed probe below the threshold, and by about one per window above it.
 - **Loss signal.** The loss signal is an answer to a probe that had to be retransmitted. A loss halves the window, at most once per reply window.
-- **Silent ports.** Ports that never answer are not counted as loss. Firewalled networks drop probes silently, and treating that as congestion would stall the scan.
+- **Silent ports.** A probe that ends with no answer at all counts as completed, not as loss. Firewalled networks drop probes silently, so the window still grows there, and a silent range is not held at 10 probes in flight.
 - **Rate limit.** Every SYN still takes a `--rate` token, so the configured rate is never exceeded.
 
 **Traceroute methods (`--trace-method icmp|tcp|udp`, default icmp).**
@@ -77,7 +83,9 @@ In `scan_settings`:
   - Routers answer with ICMP Time Exceeded. The target answers with SYN-ACK, which is reset at once, or RST.
   - Routed targets go via the gateway MAC.
 - **UDP**: datagrams with increasing TTL to ports 33435-33498 (33434 + TTL). Answers are read from a raw ICMP socket, which needs administrator rights on Windows and root on Linux/macOS.
-- **Waves and rate limit.** TCP and UDP send TTLs in ascending waves of three and stop after the wave in which the target answered. At most three probes therefore reach the target itself. Every probe takes a `--rate` token.
+- **Waves and rate limit.** TCP and UDP send TTLs in ascending waves of three and stop after the wave in which the target answered. Every probe takes a `--rate` token.
+  - If the target answers, at most three probes reach it.
+  - If the target stays silent (a firewall drops the SYNs or the UDP datagrams), every TTL beyond the path length, up to `--max-hops`, also reaches it. TCP traceroute picks an *open* port by default, which the target normally answers. An explicit `--trace-port` that is filtered gets one SYN per remaining TTL.
 - **Fallbacks.** In Safe Mode, for IPv6 targets, without an eligible port, or after a local failure (no driver, no raw socket), the trace falls back to ICMP. The host gets a note explaining why.
 
 **CLI on Windows: `network-scope-cli.exe`.**
@@ -101,16 +109,16 @@ In `scan_settings`:
 ## Implementation notes
 - `platform::next_hop(dest, source, interface) -> Result<NextHop, String>` with pure helpers `route_decision`, `parse_proc_route_table`, `best_route` and `parse_route_get`. `NextHop::l2_address(dest)` is the address whose MAC the frames carry.
 - `syn::SynEngine` caches target → next-hop address and next-hop address → MAC. Route and neighbor lookups are injectable (`with_parts`), which the unit tests use.
-- `syn::Timing`, `RttEstimator` and `Window` are pure and unit-tested. `io_loop` tracks the probes in flight and applies the window only to new probes; retransmits are always allowed.
+- `syn::Timing`, `RttEstimator` and `Window` are pure and unit-tested. `io_loop` tracks the probes in flight and applies the window only to new probes; retransmits are always allowed. RTT estimates are per target only, with no global fallback.
 - `arp.rs` (new): `request`, `parse_reply`, `ArpEngine` (I/O thread, the same `Wire` trait as the SYN engine), and a window of 256. Abandoned requests (Stop) are dropped before they are sent.
 - `syn::tcp_trace` opens its own capture handle per traced host with the filter `(icmp or tcp) and dst host <source>`. Local ports are 40001-49023, below the SYN engine's 49152-65535. The sequence number is a cookie, so parallel traces and SYN scans do not confuse replies.
 - `trace::plan` (pure) picks the method and port, and `trace::in_waves` runs the waves. `trace::trace` keeps its signature (ui.rs calls it).
 - `platform::udp_hop` / `parse_udp_hop_reply` handle UDP. `parse_hop6_reply` / `hop6_unix` and `win::hop6` handle ICMPv6.
 
 ## Tested
-- **Unit tests:** ARP frame build and parse; the ARP engine against a fake wire (replies, duplicates, retries, rate gate, 256-window bound, Stop); route-table parsing, best route, `route -n get` parsing, route decision; RFC 6298 estimator; AIMD window; adaptive reply window and initial-window bound against the SYN fake wire; one gateway MAC lookup for many routed targets, with errors leading to fallback; TCP traceroute against a fake routed path (waves, stop at target, RST of SYN-ACKs, rate gate, reply matching); UDP and ICMPv6 hop-reply parsing; UDP trace ports and TCP trace port exclusions (OT and printer); trace plan fallbacks; wave runner; serde defaults of the new settings; the module-visibility guard.
+- **Unit tests:** ARP frame build and parse; the ARP engine against a fake wire (replies, duplicates, retries, rate gate, 256-window bound, Stop); route-table parsing, best route, `route -n get` parsing, route decision; RFC 6298 estimator; AIMD window; adaptive reply window and initial-window bound against the SYN fake wire; per-target windows against a delayed-reply fake wire (a fast target does not shorten a slow one's window; an answer after a retransmit is accepted and lengthens the estimate); one gateway MAC lookup for many routed targets, with errors leading to fallback; TCP traceroute against a fake routed path (waves, stop at target, RST of SYN-ACKs, rate gate, reply matching); UDP and ICMPv6 hop-reply parsing; UDP trace ports and TCP trace port exclusions (OT and printer); trace plan fallbacks; wave runner; serde defaults of the new settings; the module-visibility guard.
 - **Live on Windows (this machine, not administrator):**
-  - `GetBestRoute` + `GetIpAddrTable`: the gateway for 8.8.8.8 matches `Find-NetRoute`, the same answer comes back with the source address given, and loopback is on-link.
+  - `GetBestRoute` + `GetIpAddrTable`: the gateway for 8.8.8.8 matches `Find-NetRoute`, the same answer comes back with the source address given, a loopback source address is refused (interface mismatch), and loopback is on-link.
   - ICMPv6 hop-limit trace to `::1` (`Icmp6SendEcho2` with options).
   - UDP traceroute without privileges returns the clear "raw ICMP socket" error.
 - **PE subsystem check:** both binaries were built with the GUI attribute forced on. `network-scope.exe` had subsystem 2 (GUI) and `network-scope-cli.exe` had subsystem 3 (console), and the CLI build produced no `unused_attributes` warning.
@@ -118,7 +126,7 @@ In `scan_settings`:
 ## Untested (cannot run here)
 - Everything that needs Npcap: the ARP sweep and TCP traceroute on a real capture handle, and SYN to a routed target via the gateway MAC. Npcap is not installed here; only the fake-wire loops ran.
 - UDP traceroute with administrator/root rights (raw ICMP socket receive on Windows, including the bind-to-source-address requirement).
-- ICMPv6 hop-limit expiry from a real router on Windows. The code handles both "reply with router address" and "failed call" shapes of `Icmp6SendEcho2`, but only the loopback case ran.
+- ICMPv6 hop-limit expiry from a real router on Windows. As for IPv4, a hop is taken only from a returned reply structure (count > 0); only the loopback case ran.
 - Unix glue, which is not even compiled on this machine:
   - `next_hop` via `/proc/net/route` or `route -n get` (the parsers are unit-tested);
   - `hop6_unix` (raw ICMPv6 with `set_unicast_hops_v6`);
