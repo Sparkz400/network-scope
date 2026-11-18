@@ -27,10 +27,23 @@ struct Bucket {
 /// fast scans pay nothing for it.
 pub struct Gate {
     bucket: Option<Mutex<Bucket>>,
+    /// Safe Mode: optional extra probes (NTLM session setup, TLS 1.3 enumeration) are skipped.
+    safe: bool,
 }
 impl Gate {
     pub fn unlimited() -> Self {
-        Self { bucket: None }
+        Self {
+            bucket: None,
+            safe: false,
+        }
+    }
+    /// Marks this gate as the Safe Mode traffic profile.
+    pub fn with_safe(mut self, safe: bool) -> Self {
+        self.safe = safe;
+        self
+    }
+    pub fn is_safe(&self) -> bool {
+        self.safe
     }
     /// Minimum spacing between probes in milliseconds; 0 disables the limiter.
     pub fn new(spacing_ms: u64) -> Self {
@@ -48,6 +61,7 @@ impl Gate {
                 rate: rate.max(0.001),
                 burst: burst.max(1.0),
             })),
+            safe: false,
         }
     }
     pub async fn wait(&self) {
@@ -192,7 +206,7 @@ pub async fn execute(
 ) {
     let s = Arc::new(s);
     let gate = Arc::new(if s.safe {
-        Gate::new(s.delay.max(100))
+        Gate::new(s.delay.max(100)).with_safe(true)
     } else if s.max_rate > 0 {
         let rate = f64::from(s.max_rate);
         Gate::per_second(rate, (rate / 10.0).max(1.0))
