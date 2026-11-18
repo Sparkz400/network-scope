@@ -172,10 +172,18 @@ pub fn parse_ports(input: &str) -> Result<Vec<u16>, String> {
 
 /// A lazily expanded target list: ranges are never materialised, so very large
 /// scans stream through the scheduler instead of being loaded up front.
+///
+/// Edge skipping: a CIDR block (prefix 30 or shorter) drops exactly its own network
+/// and broadcast address, so `10.0.1.0` inside `10.0.0.0/23` is scanned; /31 and /32
+/// are never trimmed. Dash ranges (`a-b`) keep the legacy rule of skipping every
+/// `x.x.x.0` and `x.x.x.255`. Single addresses are never skipped.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Targets {
     singles: Vec<IpAddr>,
+    /// Merged union of all ranges (CIDR blocks already trimmed).
     ranges: Vec<(u32, u32)>,
+    /// Merged union of the CIDR blocks: addresses here are exempt from the .0/.255 rule.
+    exact: Vec<(u32, u32)>,
     skip_edges: bool,
 }
 fn is_edge(v: u32) -> bool {
@@ -185,10 +193,27 @@ fn count_mod(lo: u32, hi: u32, r: i64) -> u64 {
     let (lo, hi) = (lo as i64, hi as i64);
     ((hi - r).div_euclid(256) - (lo - 1 - r).div_euclid(256)) as u64
 }
+fn contains(ranges: &[(u32, u32)], v: u32) -> bool {
+    let i = ranges.partition_point(|r| r.1 < v);
+    ranges.get(i).is_some_and(|r| r.0 <= v)
+}
+fn merge(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = vec![];
+    for (a, b) in ranges {
+        match merged.last_mut() {
+            Some(last) if u64::from(a) <= u64::from(last.1) + 1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    merged
+}
 impl Targets {
+    fn skipped(&self, v: u32) -> bool {
+        self.skip_edges && is_edge(v) && !contains(&self.exact, v)
+    }
     fn covered(&self, v: u32) -> bool {
-        let i = self.ranges.partition_point(|r| r.1 < v);
-        self.ranges.get(i).is_some_and(|r| r.0 <= v) && !(self.skip_edges && is_edge(v))
+        contains(&self.ranges, v) && !self.skipped(v)
     }
     pub fn count(&self) -> u64 {
         let mut n = self.singles.len() as u64;
@@ -196,6 +221,12 @@ impl Targets {
             n += u64::from(b) - u64::from(a) + 1;
             if self.skip_edges {
                 n -= count_mod(a, b, 0) + count_mod(a, b, 255);
+            }
+        }
+        if self.skip_edges {
+            // `exact` is a subset of `ranges`; its .0/.255 addresses are scanned after all.
+            for &(a, b) in &self.exact {
+                n += count_mod(a, b, 0) + count_mod(a, b, 255);
             }
         }
         let overlap = self
@@ -219,6 +250,14 @@ impl Targets {
             ranges: self.ranges.clone(),
             index: 0,
             next: self.ranges.first().map(|r| u64::from(r.0)).unwrap_or(0),
+            targets: self.clone_without_singles(),
+        }
+    }
+    fn clone_without_singles(&self) -> Targets {
+        Targets {
+            singles: vec![],
+            ranges: vec![],
+            exact: self.exact.clone(),
             skip_edges: self.skip_edges,
         }
     }
@@ -229,7 +268,8 @@ pub struct TargetIter {
     ranges: Vec<(u32, u32)>,
     index: usize,
     next: u64,
-    skip_edges: bool,
+    /// Edge-skipping rules only (`exact`, `skip_edges`).
+    targets: Targets,
 }
 impl Iterator for TargetIter {
     type Item = IpAddr;
@@ -247,7 +287,7 @@ impl Iterator for TargetIter {
             }
             let v = self.next as u32;
             self.next += 1;
-            if (self.skip_edges && is_edge(v)) || self.single_v4.contains(&v) {
+            if self.targets.skipped(v) || self.single_v4.contains(&v) {
                 continue;
             }
             return Some(IpAddr::V4(Ipv4Addr::from(v)));
@@ -260,6 +300,7 @@ pub fn parse_targets(input: &str, skip_edges: bool, limit: u64) -> Result<Target
     let too_many = || format!("Limit each scan to {limit} addresses or fewer.");
     let mut singles = BTreeSet::new();
     let mut ranges: Vec<(u32, u32)> = vec![];
+    let mut exact: Vec<(u32, u32)> = vec![];
     for token in input
         .split(|c: char| c.is_whitespace() || c == ',')
         .filter(|s| !s.is_empty())
@@ -268,6 +309,7 @@ pub fn parse_targets(input: &str, skip_edges: bool, limit: u64) -> Result<Target
             singles.insert(ip);
             continue;
         }
+        let mut cidr = false;
         let (start, end) = if let Some((ip, prefix)) = token.split_once('/') {
             let ip = ip
                 .parse::<Ipv4Addr>()
@@ -283,7 +325,13 @@ pub fn parse_targets(input: &str, skip_edges: bool, limit: u64) -> Result<Target
                 u32::MAX << (32 - prefix)
             };
             let start = u32::from(ip) & mask;
-            (start, start | !mask)
+            cidr = true;
+            if skip_edges && prefix <= 30 {
+                // Only the block's own network and broadcast addresses.
+                (start + 1, (start | !mask) - 1)
+            } else {
+                (start, start | !mask)
+            }
         } else if let Some((a, b)) = token.split_once('-') {
             let a = a
                 .parse::<Ipv4Addr>()
@@ -312,18 +360,14 @@ pub fn parse_targets(input: &str, skip_edges: bool, limit: u64) -> Result<Target
             return Err(too_many());
         }
         ranges.push((start, end));
-    }
-    ranges.sort_unstable();
-    let mut merged: Vec<(u32, u32)> = vec![];
-    for (a, b) in ranges {
-        match merged.last_mut() {
-            Some(last) if u64::from(a) <= u64::from(last.1) + 1 => last.1 = last.1.max(b),
-            _ => merged.push((a, b)),
+        if cidr {
+            exact.push((start, end));
         }
     }
     let targets = Targets {
         singles: singles.into_iter().collect(),
-        ranges: merged,
+        ranges: merge(ranges),
+        exact: merge(exact),
         skip_edges,
     };
     match targets.count() {
@@ -441,8 +485,18 @@ pub fn start_stream(
     run
 }
 
+/// Quotes one CSV cell. Scanned strings (banners, hostnames, SNMP text) are untrusted,
+/// so a cell that a spreadsheet would read as a formula (leading `=`, `+`, `-`, `@`,
+/// tab or carriage return) gets a leading `'` (OWASP CSV injection guidance). Plain
+/// numbers such as `-1` or `+5` are left alone: spreadsheets read them as numbers.
 pub fn csv_cell(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    let numeric = value.parse::<f64>().is_ok_and(f64::is_finite)
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'e' | b'E'));
+    let risky = value.starts_with(['=', '+', '-', '@', '\t', '\r']) && !numeric;
+    let prefix = if risky { "'" } else { "" };
+    format!("\"{prefix}{}\"", value.replace('"', "\"\""))
 }
 
 #[cfg(test)]
@@ -450,7 +504,8 @@ mod tests {
     use super::*;
     #[test]
     fn address_inputs_and_limits() {
-        assert_eq!(parse_hosts("192.168.1.0/30", true).unwrap().len(), 3);
+        // A /30 has two usable hosts: network (.0) and broadcast (.3) are skipped.
+        assert_eq!(parse_hosts("192.168.1.0/30", true).unwrap().len(), 2);
         assert_eq!(
             parse_hosts("192.168.1.1-3,192.168.1.2 ::1", true)
                 .unwrap()
@@ -494,7 +549,8 @@ mod tests {
     #[test]
     fn large_ranges_stream_without_expansion() {
         let t = parse_targets("10.0.0.0/8", true, MAX_STREAM).unwrap();
-        assert_eq!(t.count(), (1 << 24) - 2 * 65_536);
+        // Only 10.0.0.0 and 10.255.255.255 are network/broadcast in a /8.
+        assert_eq!(t.count(), (1 << 24) - 2);
         let first: Vec<_> = t.iter().take(3).collect();
         assert_eq!(
             first,
@@ -510,6 +566,10 @@ mod tests {
             ("10.0.0.0/30 10.0.0.1 10.0.0.0 ::1 ::1", true),
             ("10.0.0.0/30 10.0.0.1 10.0.0.0 ::1 ::1", false),
             ("192.168.1.250-255 192.168.1.255", true),
+            ("10.0.0.0/23 10.0.0.250-10.0.2.5", true),
+            ("10.0.0.0/24 10.0.0.0-10.0.1.10 10.0.1.255/31", true),
+            ("10.0.0.0/22 10.0.1.0/24 10.0.3.255/32", true),
+            ("10.0.0.0/22 10.0.1.0/24 10.0.3.255/32", false),
         ] {
             let t = parse_targets(input, edges, 1 << 20).unwrap();
             let all: Vec<_> = t.iter().collect();
@@ -578,8 +638,71 @@ mod tests {
         assert!(h.responding);
     }
     #[test]
+    fn edges_are_the_true_network_and_broadcast_addresses() {
+        let hosts = |input: &str| -> Vec<String> {
+            parse_hosts(input, true)
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        // Inside a /23, .255 and .0 at the /24 boundary are ordinary hosts.
+        let h = hosts("10.0.0.0/23");
+        assert_eq!(h.len(), 510);
+        assert!(h.contains(&"10.0.0.255".to_string()));
+        assert!(h.contains(&"10.0.1.0".to_string()));
+        assert!(!h.contains(&"10.0.0.0".to_string()));
+        assert!(!h.contains(&"10.0.1.255".to_string()));
+        // A /25 that starts mid-octet loses its own edges, not .0/.255.
+        let h = hosts("10.0.0.128/25");
+        assert_eq!(h.first().unwrap(), "10.0.0.129");
+        assert_eq!(h.last().unwrap(), "10.0.0.254");
+        assert_eq!(hosts("10.0.0.64/26").len(), 62);
+        // /31 and /32 are never trimmed, even on .0/.255.
+        assert_eq!(hosts("10.0.0.255/32"), ["10.0.0.255"]);
+        assert_eq!(hosts("10.0.0.0/32"), ["10.0.0.0"]);
+        assert_eq!(hosts("10.0.0.254/31"), ["10.0.0.254", "10.0.0.255"]);
+        // Dash ranges keep the documented legacy rule (skip every .0 and .255).
+        assert_eq!(
+            hosts("10.0.0.250-10.0.1.2"),
+            [
+                "10.0.0.250",
+                "10.0.0.251",
+                "10.0.0.252",
+                "10.0.0.253",
+                "10.0.0.254",
+                "10.0.1.1",
+                "10.0.1.2"
+            ]
+        );
+        // Without the option nothing is trimmed.
+        assert_eq!(parse_hosts("10.0.0.0/30", false).unwrap().len(), 4);
+    }
+    #[test]
     fn csv_quotes() {
         assert_eq!(csv_cell("a,\"b\""), "\"a,\"\"b\"\"\"");
+    }
+    #[test]
+    fn csv_cells_cannot_start_formulas() {
+        for (input, expected) in [
+            ("=HYPERLINK(\"x\")", "\"'=HYPERLINK(\"\"x\"\")\""),
+            ("+cmd", "\"'+cmd\""),
+            ("-2+3+cmd|' /C calc'!A0", "\"'-2+3+cmd|' /C calc'!A0\""),
+            ("@SUM(A1)", "\"'@SUM(A1)\""),
+            ("\tx", "\"'\tx\""),
+            ("\rx", "\"'\rx\""),
+            ("-inf", "\"'-inf\""),
+            ("nan", "\"nan\""),
+            ("plc-1", "\"plc-1\""),
+            // Our own numeric cells keep their value.
+            ("-1", "\"-1\""),
+            ("+5", "\"+5\""),
+            ("-12.5e3", "\"-12.5e3\""),
+            ("502", "\"502\""),
+            ("", "\"\""),
+        ] {
+            assert_eq!(csv_cell(input), expected, "{input:?}");
+        }
     }
     #[test]
     fn real_loopback_tcp_scan() {
