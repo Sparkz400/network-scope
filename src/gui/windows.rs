@@ -28,11 +28,16 @@ impl Scanner {
     }
     /// The active scan alone, as the inventory stores it.
     pub(super) fn scan_snapshot(&self) -> store::Snapshot {
-        let mut s = self.snapshot();
-        s.targets = self.scan_scope.clone();
-        s.complete = self.scan_complete && self.run.is_none();
-        s.observations = vec![];
-        s
+        let mut notes = self.saved.notes.clone();
+        super::prune_notes(&mut notes);
+        store::Snapshot {
+            targets: self.scan_scope.clone(),
+            complete: self.scan_complete && self.run.is_none(),
+            settings: self.scan_settings.clone(),
+            hosts: self.results.clone(),
+            observations: vec![],
+            notes,
+        }
     }
     /// The passive capture alone, as the inventory stores it.
     pub(super) fn capture_snapshot(&self) -> store::Snapshot {

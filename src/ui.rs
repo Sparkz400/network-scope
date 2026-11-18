@@ -750,19 +750,30 @@ fn restore_terminal() {
         crossterm::cursor::Show
     );
 }
-/// A panic on the TUI thread would print inside the alternate screen and be lost: restore the
-/// terminal first, then run the previous (default) hook. Installed once; inert outside the TUI.
+/// Panic messages from other threads while the live view is on; printed once it is closed.
+static TUI_PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// A panic printed inside the alternate screen would be lost. On the TUI thread the terminal is
+/// restored first; panics of worker threads (the TUI keeps running) are also kept and printed
+/// after the terminal is restored. Then the previous (default) hook runs. Installed once; inert
+/// outside the TUI.
 fn install_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let on_tui = TUI_THREAD
-                .lock()
-                .map(|t| *t == Some(std::thread::current().id()))
-                .unwrap_or(false);
-            if on_tui {
-                restore_terminal();
+            let tui = TUI_THREAD.lock().map(|t| *t).unwrap_or(None);
+            if let Some(id) = tui {
+                if id == std::thread::current().id() {
+                    restore_terminal();
+                } else if let Ok(mut panics) = TUI_PANICS.lock() {
+                    if panics.len() < 16 {
+                        let thread = std::thread::current();
+                        panics.push(format!(
+                            "thread '{}' {info}",
+                            thread.name().unwrap_or("<unnamed>")
+                        ));
+                    }
+                }
             }
             previous(info);
         }));
@@ -780,24 +791,51 @@ fn tui(run: &scan::Running) -> Collected {
         widgets::{Block, Borders, Row, Table},
         Terminal,
     };
-    struct Restore;
+    /// Undoes only what was set up, then prints panics of other threads seen meanwhile.
+    struct Restore {
+        raw: bool,
+        screen: bool,
+    }
     impl Drop for Restore {
         fn drop(&mut self) {
             if let Ok(mut t) = TUI_THREAD.lock() {
                 *t = None;
             }
-            restore_terminal();
+            if self.raw {
+                let _ = crossterm::terminal::disable_raw_mode();
+            }
+            if self.screen {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::terminal::LeaveAlternateScreen,
+                    crossterm::cursor::Show
+                );
+            }
+            if let Ok(mut panics) = TUI_PANICS.lock() {
+                for p in panics.drain(..) {
+                    eprintln!("{p}");
+                }
+            }
         }
     }
     install_panic_hook();
     if let Ok(mut t) = TUI_THREAD.lock() {
         *t = Some(std::thread::current().id());
     }
-    let restore = Restore;
-    let mut terminal = match enable_raw_mode()
-        .and_then(|()| execute!(std::io::stdout(), EnterAlternateScreen))
-        .and_then(|()| Terminal::new(CrosstermBackend::new(std::io::stdout())))
-    {
+    let mut restore = Restore {
+        raw: false,
+        screen: false,
+    };
+    let setup = enable_raw_mode()
+        .and_then(|()| {
+            restore.raw = true;
+            execute!(std::io::stdout(), EnterAlternateScreen)
+        })
+        .and_then(|()| {
+            restore.screen = true;
+            Terminal::new(CrosstermBackend::new(std::io::stdout()))
+        });
+    let mut terminal = match setup {
         Ok(t) => t,
         Err(e) => {
             // No usable terminal: keep the scan and collect it without the live view.
