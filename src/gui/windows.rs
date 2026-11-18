@@ -149,6 +149,8 @@ impl Scanner {
         egui::Window::new("Findings (weak configuration, risky services, CVE hints)")
             .open(&mut open)
             .default_size([900.0, 420.0])
+            // Wide tables must not push the window past the screen edge.
+            .max_width((ctx.screen_rect().width() - 24.0).max(320.0))
             .show(ctx, |ui| {
                 ui.label(format!(
                     "{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host.",
@@ -241,6 +243,8 @@ impl Scanner {
         egui::Window::new("Devices (active + passive merged)")
             .open(&mut open)
             .default_size([980.0, 420.0])
+            // Wide tables must not push the window past the screen edge.
+            .max_width((ctx.screen_rect().width() - 24.0).max(320.0))
             .show(ctx, |ui| {
                 ui.label(format!(
                     "{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host.",
