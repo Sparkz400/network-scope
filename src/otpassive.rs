@@ -112,6 +112,8 @@ struct Pdu {
     key: FlowKey,
     dst_group: bool,
     data: Vec<u8>,
+    /// Capture time of the last segment that contributed.
+    ts: i64,
 }
 
 /// Per-flow buffers for OT messages split across TCP segments. In order only: a gap, an
@@ -232,6 +234,7 @@ impl Reassembly {
             key,
             dst_group: flow.dst_group,
             data: flow.buf,
+            ts: flow.last,
         });
     }
     /// Partial messages idle for longer than `FLOW_IDLE_SECS`, checked every 10 s of capture time.
@@ -286,10 +289,6 @@ impl Reassembly {
                 if truncated {
                     self.give_up(key, flow, &mut out);
                     payload.to_vec()
-                } else if seq == flow.next_seq {
-                    joined = true;
-                    flow.buf.extend_from_slice(payload);
-                    flow.buf
                 } else if seq_le(end, flow.next_seq) {
                     // a retransmission of bytes already buffered
                     self.bytes += flow.buf.len();
@@ -297,11 +296,19 @@ impl Reassembly {
                     self.flows.insert(key, flow);
                     return out;
                 } else if seq_le(seq, flow.next_seq) {
-                    // overlaps the buffered end: take only the new bytes
-                    joined = true;
-                    let skip = flow.next_seq.wrapping_sub(seq) as usize;
-                    flow.buf.extend_from_slice(&payload[skip..]);
-                    flow.buf
+                    // in order, or overlapping the buffered end: append only the new bytes
+                    let new = &payload[flow.next_seq.wrapping_sub(seq) as usize..];
+                    let mut buf = flow.buf.clone();
+                    buf.extend_from_slice(new);
+                    if matches!(message_len(port, &buf), Framing::NotFramed) {
+                        // The buffered start was no message (e.g. a 1-byte keep-alive probe):
+                        // decode it and the new bytes separately.
+                        self.give_up(key, flow, &mut out);
+                        new.to_vec()
+                    } else {
+                        joined = true;
+                        buf
+                    }
                 } else {
                     // gap: the missing bytes will not come back in a capture
                     self.give_up(key, flow, &mut out);
@@ -315,6 +322,7 @@ impl Reassembly {
             key,
             dst_group,
             data: data.to_vec(),
+            ts,
         };
         let mut rest = &data[..];
         let mut first = true;
@@ -714,16 +722,16 @@ impl Tracker {
         (self.reassembly.reassembled, self.reassembly.abandoned)
     }
     /// End of the capture: partial messages still buffered are decoded as far as they go.
-    pub fn flush(&mut self, ts: i64) {
+    pub fn flush(&mut self) {
         for pdu in self.reassembly.flush() {
-            self.decode_pdu(pdu, ts);
+            self.decode_pdu(pdu);
         }
     }
-    fn decode_pdu(&mut self, pdu: Pdu, ts: i64) {
+    fn decode_pdu(&mut self, pdu: Pdu) {
         let (src, sport, dst, dport) = pdu.key;
         self.dst_group = pdu.dst_group;
         if !pdu.data.is_empty() {
-            self.tcp_message(src, dst, sport, dport, &pdu.data, ts);
+            self.tcp_message(src, dst, sport, dport, &pdu.data, pdu.ts);
         }
     }
 
@@ -803,7 +811,7 @@ impl Tracker {
                         ts,
                     );
                     for pdu in pdus {
-                        self.decode_pdu(pdu, ts);
+                        self.decode_pdu(pdu);
                     }
                 }
                 None => self.tcp_message(src, dst, p.sport, p.dport, pl, ts),
@@ -1336,14 +1344,12 @@ fn feed_reader<R: std::io::Read>(
         elapsed: start.elapsed().as_secs_f64(),
         done,
     };
-    let mut last_ts = 0;
     let result = loop {
         let frame = match reader.next_frame() {
             Ok(Some(f)) => f,
             Ok(None) => break Ok(()),
             Err(e) => break Err(e),
         };
-        last_ts = frame.0;
         tracker.feed(&frame.1, frame.0);
         // the clock is read every 256 frames only
         if reader.frames().is_multiple_of(256) {
@@ -1357,7 +1363,7 @@ fn feed_reader<R: std::io::Read>(
             }
         }
     };
-    tracker.flush(last_ts);
+    tracker.flush();
     on_progress(&progress(&reader, true));
     result
 }
@@ -1384,11 +1390,7 @@ pub fn listen_live(
             None => std::thread::sleep(Duration::from_millis(5)),
         }
     }
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    tracker.flush(ts);
+    tracker.flush();
     Ok(())
 }
 
@@ -1980,7 +1982,7 @@ mod tests {
         let mut t = Tracker::new();
         t.feed(&seg(HMI, PLC, 502, 1, 0x18, &m[..9]), 1);
         assert!(control(&t, "Modbus/TCP server (observed)").is_none());
-        t.flush(1);
+        t.flush();
         assert!(control(&t, "Modbus/TCP server (observed)").is_some());
         assert!(t.reassembly.flows.is_empty() && t.reassembly.bytes == 0);
         // idle partial messages are given up once capture time moves on
@@ -1992,6 +1994,27 @@ mod tests {
         );
         assert!(control(&t, "Modbus/TCP server (observed)").is_some());
         assert_eq!(t.reassembly.flows.len(), 1, "only the new partial message");
+    }
+
+    #[test]
+    fn a_stray_byte_does_not_swallow_the_next_message() {
+        // TCP keep-alive probe: one old byte at S-1, then a complete write at S
+        let m = modbus_write();
+        let mut t = Tracker::new();
+        t.feed(&seg(HMI, PLC, 502, 999, 0x18, &[0x42]), 1);
+        t.feed(&seg(HMI, PLC, 502, 1000, 0x18, &m), 2);
+        assert_eq!(
+            control(&t, "Modbus/TCP server (observed)").as_deref(),
+            Some("Write Multiple Registers x1")
+        );
+        assert!(t.reassembly.flows.is_empty());
+        // given-up fragments keep the time they were captured, not the time of the flush
+        let mut t = Tracker::new();
+        t.feed(&seg(HMI, PLC, 502, 1, 0x18, &m[..9]), 50);
+        t.feed(&seg(PLC, HMI, 502, 1, 0x18, &[0, 1]), 90);
+        t.flush();
+        let s = &obs(&t, "Modbus/TCP server (observed)")[0];
+        assert_eq!(s.fields["last_seen"], "50");
     }
 
     #[test]

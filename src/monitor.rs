@@ -77,13 +77,6 @@ impl Default for Notify {
 /// of the message (counters, offered addresses and similar details are left out).
 pub fn alert_key(a: &Alert) -> String {
     let detail = match a.kind.as_str() {
-        // the finding title; the evidence after " - " may change between scans
-        "new-finding" => a
-            .message
-            .split(" - ")
-            .next()
-            .unwrap_or_default()
-            .to_string(),
         // "N DHCP servers answer: ip (how); ip (how)": the set of servers
         "rogue-dhcp" if a.subject == "dhcp" => {
             let mut servers: Vec<&str> = a
@@ -96,11 +89,9 @@ pub fn alert_key(a: &Alert) -> String {
             servers.sort_unstable();
             servers.join(",")
         }
-        "new-device"
-        | "device-missing"
-        | "capture-incomplete"
-        | "dhcp-discover-failed"
-        | "rogue-dhcp" => String::new(),
+        "capture-incomplete" | "dhcp-discover-failed" | "rogue-dhcp" => String::new(),
+        // new-device/device-missing (the subject is only the first IP; the message names the
+        // device), new-finding (title and evidence, as fine as `risk::Finding::key`),
         // port-opened/closed ("ip: TCP port N ..."), address-changed and anything else
         _ => a.message.clone(),
     };
@@ -1173,17 +1164,9 @@ mod tests {
                 "2 DHCP servers answer: 10.0.0.1 (x); 10.0.0.7 (y)"
             )
         );
-        assert_eq!(
-            k(
-                "new-finding",
-                "10.0.0.5:443",
-                "TLS certificate expired - 3 days ago"
-            ),
-            k(
-                "new-finding",
-                "10.0.0.5:443",
-                "TLS certificate expired - 4 days ago"
-            )
+        assert_ne!(
+            k("new-finding", "10.0.0.5:502", "Control traffic - Write"),
+            k("new-finding", "10.0.0.5:502", "Control traffic - Stop")
         );
         assert_eq!(
             k(
@@ -1213,6 +1196,20 @@ mod tests {
             k("new-device", "10.0.0.5", ""),
             k("device-missing", "10.0.0.5", "")
         );
+        // two devices on one IP in consecutive cycles both alert
+        let mut d = Dedup::new(None);
+        let first = a(
+            "new-device",
+            "10.0.0.5",
+            "New device 10.0.0.5 AA:BB:CC:00:00:01",
+        );
+        let second = a(
+            "new-device",
+            "10.0.0.5",
+            "New device 10.0.0.5 AA:BB:CC:00:00:02",
+        );
+        assert_eq!(d.filter(vec![first], 1, true).0.len(), 1);
+        assert_eq!(d.filter(vec![second], 2, true).0.len(), 1);
     }
 
     #[test]
