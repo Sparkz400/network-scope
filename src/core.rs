@@ -172,12 +172,13 @@ where
     state
 }
 
-/// OT identification (including the BACnet Who-Is that waits up to four port
-/// timeouts) only runs for hosts that answered something. A host with an open or
-/// closed TCP port is responding, so ICMP-silent devices with OT TCP ports still
-/// qualify.
+/// OT identification runs for hosts that answered something (a host with an open or
+/// closed TCP port is responding, so ICMP-silent devices with OT TCP ports qualify) and,
+/// when non-responders are scanned, for silent hosts too. A silent host has no open TCP
+/// port, so the only probe it gets is the single BACnet Who-Is (rate-gated, wait capped at
+/// 2 s): that finds devices that answer nothing but BACnet/IP.
 fn wants_ot(h: &Host, s: &Settings) -> bool {
-    s.ot && h.responding
+    s.ot && (h.responding || s.scan_nonresponders)
 }
 
 struct Ctx {
@@ -952,17 +953,26 @@ mod tests {
     }
 
     #[test]
-    fn ot_identification_only_for_responding_hosts() {
+    fn ot_identification_for_responding_or_explicitly_scanned_silent_hosts() {
         let s = Settings {
             ot: true,
-            scan_nonresponders: true,
+            scan_nonresponders: false,
             ..Settings::default()
         };
         let mut h = host("10.0.0.1");
         assert!(
             !wants_ot(&h, &s),
-            "silent host: no Who-Is and no 4x timeout wait"
+            "silent host without --scan-nonresponders: no Who-Is"
         );
+        // BACnet-only devices answer nothing else, so a silent host gets the Who-Is when
+        // non-responders are scanned.
+        assert!(wants_ot(
+            &h,
+            &Settings {
+                scan_nonresponders: true,
+                ..s.clone()
+            }
+        ));
         // An open (or closed) TCP port marks an ICMP-silent device as responding.
         h.open.push(502);
         h.responding = true;

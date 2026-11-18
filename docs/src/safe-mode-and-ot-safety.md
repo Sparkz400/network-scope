@@ -22,7 +22,7 @@ In the desktop the disabled controls are greyed out. Safe Mode is a conservative
 These hold with Safe Mode on or off:
 
 - All OT protocol operations are **read-only identification**: no writes, no program or block access, no control commands, no authentication. See [OT / industrial](ot-industrial.md) for exactly what is sent.
-- OT identification runs only on standard ports of hosts that already responded to something.
+- OT identification runs only on standard ports. TCP probes go only to hosts with that port open; a silent host gets at most one BACnet Who-Is, and only when nonresponders are scanned.
 - Generic service probes never touch industrial ports (102, 502, 4840, 44818, 47808 and similar).
 - Printer ports 9100-9107 and 515 only get a passive banner wait; nothing is ever sent.
 - 2222/tcp is listen-only unless it greets with SSH.

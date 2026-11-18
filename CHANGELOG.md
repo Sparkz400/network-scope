@@ -57,7 +57,7 @@ First public release. The [documentation](https://sparkz400.github.io/network-sc
 - SYN capture is non-promiscuous with the BPF filter `tcp and dst host <source-ip>`; SYN probes share the global 4,096 in-flight bound. After Stop, probes whose caller went away are dropped before a token is taken.
 - The global socket permit is taken before a probe task is spawned (large `--workers` × `--parallel` no longer park millions of tasks). Blocking slots are held until the native call really ends.
 - Stop keeps hosts that had already finished.
-- `ot::identify` (including the BACnet Who-Is) runs only for hosts that responded to something. A device answering only BACnet/IP is no longer found.
+- OT identification runs for hosts that responded to something and, when nonresponders are scanned, for silent hosts, which then get only the single BACnet Who-Is (wait capped at 2 s). Devices that answer only BACnet/IP are still found.
 - "Skip .0 and .255": CIDR blocks skip only their own network and broadcast address; /31 and /32 are never trimmed; dash ranges keep the old rule.
 - CSV exports neutralise formula-leading cells (`=`, `+`, `-`, `@`, TAB, CR) with `'`.
 - libpcap library names on macOS/Linux; MAC lookup skipped for routed IPv4 targets on Linux; a cached Linux neighbor entry counts as alive only if REACHABLE or new after the poke; the miss path is one poke and one 250 ms wait.
