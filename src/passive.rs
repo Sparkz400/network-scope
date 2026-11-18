@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc,
     },
     time::{Duration, Instant},
@@ -39,9 +39,11 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
     if frame.len() < 14 {
         return None;
     }
+    // The source MAC string is only built for frames that produce an observation (see the end);
+    // an empty `mac` means "not overridden by the protocol" (ARP and DHCP carry their own).
     let mut o = Observation {
         protocol: String::new(),
-        mac: mac(&frame[6..12]),
+        mac: String::new(),
         ip: None,
         fields: BTreeMap::new(),
     };
@@ -197,6 +199,13 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
                     return None;
                 }
                 o.protocol = "DHCP".into();
+                // `ip` and `mac` describe the client (yiaddr/ciaddr, chaddr). The sender of an
+                // OFFER/ACK is the server: its identity is kept separately (option 54 and the IP
+                // source), never confused with the client address.
+                let ip_source = o.ip.filter(|v| !v.is_unspecified());
+                if let Some(source) = ip_source {
+                    o.fields.insert("ip_source".into(), source.to_string());
+                }
                 o.mac = mac(&payload[28..34]);
                 o.ip = v4(&payload[16..20])
                     .filter(|v| !v.is_unspecified())
@@ -228,7 +237,29 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
                         50 if v.len() == 4 => {
                             o.fields.insert("requested_ip".into(), v4(v)?.to_string());
                         }
+                        54 if v.len() == 4 => {
+                            o.fields.insert("server_id".into(), v4(v)?.to_string());
+                        }
                         _ => {}
+                    }
+                }
+                // OFFER (2), ACK (5) and NAK (6) are sent by a server. A per-server key survives
+                // merging with other messages for the same client (ui::merge extends fields).
+                if payload[0] == 2
+                    && matches!(
+                        o.fields.get("message_type").map(String::as_str),
+                        Some("2" | "5" | "6")
+                    )
+                {
+                    let server = o
+                        .fields
+                        .get("server_id")
+                        .and_then(|s| s.parse::<IpAddr>().ok())
+                        .filter(|v| !v.is_unspecified())
+                        .or(ip_source);
+                    if let Some(server) = server {
+                        let kind = o.fields["message_type"].clone();
+                        o.fields.insert(format!("dhcp_server.{server}"), kind);
                     }
                 }
             } else {
@@ -238,6 +269,9 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
         _ => return None,
     }
     o.ip = o.ip.filter(|v| !v.is_unspecified());
+    if o.mac.is_empty() {
+        o.mac = mac(&frame[6..12]);
+    }
     Some(o)
 }
 fn name(b: &[u8], pos: &mut usize) -> Option<String> {
@@ -340,10 +374,61 @@ impl Drop for Listening {
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
+/// Consecutive capture read errors tolerated before the capture is given up.
+const MAX_CONSECUTIVE_ERRORS: u32 = 20;
+/// Reads frames until `stop`, the deadline, too many consecutive read errors or a closed
+/// receiver. A full queue drops the observation and counts it instead of ending the capture.
+fn pump(
+    next: &mut dyn FnMut() -> Result<Option<Vec<u8>>, String>,
+    tx: &mpsc::SyncSender<Result<Observation, String>>,
+    stop: &AtomicBool,
+    end: Instant,
+    dcp_only: bool,
+    dropped: &AtomicU64,
+    pause: &dyn Fn(Duration),
+) -> Result<(), String> {
+    let mut errors = 0u32;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < end {
+        match next() {
+            Ok(Some(frame)) => {
+                errors = 0;
+                if let Some(o) = decode(&frame) {
+                    if dcp_only && o.protocol != "Profinet DCP" {
+                        continue;
+                    }
+                    match tx.try_send(Ok(o)) {
+                        Ok(()) => {}
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(mpsc::TrySendError::Disconnected(_)) => break,
+                    }
+                }
+            }
+            Ok(None) => {
+                errors = 0;
+                pause(Duration::from_millis(10));
+            }
+            Err(e) => {
+                errors += 1;
+                if errors >= MAX_CONSECUTIVE_ERRORS {
+                    return Err(format!(
+                        "Capture stopped after {errors} consecutive read errors: {e}"
+                    ));
+                }
+                // Back off 10, 20, 40 ... ms (at most 1 s) and try again.
+                pause(Duration::from_millis(10u64 << errors.min(7)).min(Duration::from_secs(1)));
+            }
+        }
+    }
+    Ok(())
+}
 pub fn start(interface: String, seconds: u64, dcp_source: Option<[u8; 6]>) -> Listening {
     let (tx, receiver) = mpsc::sync_channel(4096);
     let cancel = Arc::new(AtomicBool::new(false));
     let stop = cancel.clone();
+    // Observations dropped because the consumer did not keep up (results are then partial).
+    let lost = AtomicU64::new(0);
     std::thread::spawn(move || {
         let work = || -> Result<(), String> {
             let mut cap = crate::capture::Capture::open(&interface)?;
@@ -358,37 +443,165 @@ pub fn start(interface: String, seconds: u64, dcp_source: Option<[u8; 6]>) -> Li
                 cap.send(&frame)?;
             }
             let end = Instant::now() + Duration::from_secs(seconds.clamp(1, 86400));
-            while !stop.load(Ordering::Relaxed) && Instant::now() < end {
-                if let Some(frame) = cap.next()? {
-                    if let Some(o) = decode(&frame) {
-                        if dcp_source.is_some() && o.protocol != "Profinet DCP" {
-                            continue;
-                        }
-                        match tx.try_send(Ok(o)) {
-                            Ok(()) => {}
-                            Err(mpsc::TrySendError::Full(_)) => {
-                                return Err(
-                                    "Capture queue full; some observations were dropped".into()
-                                )
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                } else {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-            Ok(())
+            pump(
+                &mut || cap.next(),
+                &tx,
+                &stop,
+                end,
+                dcp_source.is_some(),
+                &lost,
+                &std::thread::sleep,
+            )
         };
-        if let Err(e) = work() {
+        let result = work();
+        let n = lost.load(Ordering::Relaxed);
+        if n > 0 {
+            // Reported as a (non-fatal) error item: consumers mark the capture as partial.
+            let _ = tx.send(Err(format!(
+                "Capture queue full: {n} observations were dropped; results are partial"
+            )));
+        }
+        if let Err(e) = result {
             let _ = tx.send(Err(e));
         }
     });
     Listening { receiver, cancel }
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    /// A real DHCP reply frame: Ethernet + IPv4 + UDP 67->68 + BOOTP with options 53 and 54.
+    /// `ip_src` is the IP header source (the server, or a relay agent).
+    pub(crate) fn dhcp_reply_frame(
+        message_type: u8,
+        ip_src: [u8; 4],
+        server_id: Option<[u8; 4]>,
+        yiaddr: [u8; 4],
+        client_mac: [u8; 6],
+    ) -> Vec<u8> {
+        let mut bootp = vec![0u8; 240];
+        bootp[0] = 2; // BOOTREPLY
+        bootp[1] = 1; // Ethernet
+        bootp[2] = 6;
+        bootp[4..8].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+        bootp[16..20].copy_from_slice(&yiaddr);
+        bootp[28..34].copy_from_slice(&client_mac);
+        bootp[236..240].copy_from_slice(&[99, 130, 83, 99]);
+        bootp.extend([53, 1, message_type]);
+        if let Some(id) = server_id {
+            bootp.extend([54, 4]);
+            bootp.extend(id);
+        }
+        bootp.extend([1, 4, 255, 255, 255, 0, 51, 4, 0, 0, 0x0e, 0x10, 255]);
+        let udp_len = (8 + bootp.len()) as u16;
+        let mut udp = vec![0, 67, 0, 68];
+        udp.extend(udp_len.to_be_bytes());
+        udp.extend([0, 0]);
+        udp.extend(bootp);
+        let mut ip = vec![0x45, 0, 0, 0, 0, 1, 0, 0, 64, 17, 0, 0];
+        ip[2..4].copy_from_slice(&((20 + udp.len()) as u16).to_be_bytes());
+        ip.extend(ip_src);
+        ip.extend([255, 255, 255, 255]);
+        let mut f = vec![0xff; 6];
+        f.extend([0x02, 0, 0, 0, 0, ip_src[3]]);
+        f.extend([8, 0]);
+        f.extend(ip);
+        f.extend(udp);
+        f
+    }
+    #[test]
+    fn dhcp_reply_keeps_client_and_server_apart() {
+        let client = [0xaa, 0xbb, 0xcc, 0, 0, 0x42];
+        let o = decode(&dhcp_reply_frame(
+            2,
+            [10, 0, 0, 1],
+            Some([10, 0, 0, 1]),
+            [10, 0, 0, 150],
+            client,
+        ))
+        .unwrap();
+        assert_eq!(o.protocol, "DHCP");
+        assert_eq!(
+            o.ip.unwrap().to_string(),
+            "10.0.0.150",
+            "the client address"
+        );
+        assert_eq!(o.mac, "AA:BB:CC:00:00:42", "the client hardware address");
+        assert_eq!(o.fields["message_type"], "2");
+        assert_eq!(o.fields["server_id"], "10.0.0.1");
+        assert_eq!(o.fields["ip_source"], "10.0.0.1");
+        assert_eq!(o.fields["dhcp_server.10.0.0.1"], "2");
+        // Relayed ACK: the IP source is the relay; option 54 names the server.
+        let o = decode(&dhcp_reply_frame(
+            5,
+            [10, 0, 0, 254],
+            Some([10, 9, 9, 9]),
+            [10, 0, 0, 150],
+            client,
+        ))
+        .unwrap();
+        assert!(o.fields.contains_key("dhcp_server.10.9.9.9"));
+        assert!(!o.fields.contains_key("dhcp_server.10.0.0.254"));
+        // Without option 54 the IP source is the fallback.
+        let o = decode(&dhcp_reply_frame(
+            5,
+            [10, 0, 0, 7],
+            None,
+            [10, 0, 0, 150],
+            client,
+        ))
+        .unwrap();
+        assert!(o.fields.contains_key("dhcp_server.10.0.0.7"));
+    }
+    #[test]
+    fn source_mac_is_used_only_when_the_protocol_has_none() {
+        let mut b = vec![0u8; 14];
+        b[6..12].copy_from_slice(&[0x00, 0x1b, 0x1b, 1, 2, 3]);
+        b[12..14].copy_from_slice(&[0x88, 0xcc]);
+        b.extend_from_slice(&[10, 3, b'P', b'L', b'C', 0, 0]);
+        assert_eq!(decode(&b).unwrap().mac, "00:1B:1B:01:02:03");
+        // Unknown ethertype: nothing decoded.
+        b[12..14].copy_from_slice(&[0x12, 0x34]);
+        assert!(decode(&b).is_none());
+    }
+    #[test]
+    fn capture_errors_and_full_queue_do_not_end_the_capture() {
+        let mut arp = vec![0u8; 42];
+        arp[12..14].copy_from_slice(&[8, 6]);
+        arp[14..22].copy_from_slice(&[0, 1, 8, 0, 6, 4, 0, 2]);
+        arp[28..32].copy_from_slice(&[192, 168, 1, 20]);
+        // Transient errors between frames, then more frames than the queue holds.
+        let mut script: Vec<Result<Option<Vec<u8>>, String>> = vec![
+            Ok(Some(arp.clone())),
+            Err("driver hiccup".into()),
+            Err("driver hiccup".into()),
+            Ok(None),
+            Ok(Some(arp.clone())),
+        ];
+        for _ in 0..5 {
+            script.push(Ok(Some(arp.clone())));
+        }
+        script.reverse();
+        let (tx, rx) = mpsc::sync_channel(4);
+        let stop = AtomicBool::new(false);
+        let dropped = AtomicU64::new(0);
+        let mut next = || match script.pop() {
+            Some(item) => item,
+            None => {
+                stop.store(true, Ordering::Relaxed);
+                Ok(None)
+            }
+        };
+        let end = Instant::now() + Duration::from_secs(60);
+        pump(&mut next, &tx, &stop, end, false, &dropped, &|_| {}).unwrap();
+        assert_eq!(rx.try_iter().count(), 4, "the queue was filled");
+        assert_eq!(dropped.load(Ordering::Relaxed), 3, "overflow is counted");
+        // A persistent error does end the capture, with an explanation.
+        let stop = AtomicBool::new(false);
+        let mut failing = || Err::<Option<Vec<u8>>, String>("gone".into());
+        let e = pump(&mut failing, &tx, &stop, end, false, &dropped, &|_| {}).unwrap_err();
+        assert!(e.contains("consecutive") && e.contains("gone"), "{e}");
+    }
     #[test]
     fn malformed_packets_do_not_panic() {
         for n in 0..300 {

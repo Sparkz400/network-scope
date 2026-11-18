@@ -63,27 +63,32 @@ pub fn dhcp_servers(s: &Snapshot) -> BTreeMap<IpAddr, String> {
         }
     }
     for o in &s.observations {
+        if o.protocol == "DHCP" {
+            // A passive DHCP observation's `ip` is the client. Servers are recorded per server
+            // ("dhcp_server.<ip>", from option 54 or else the IP source of an OFFER/ACK/NAK).
+            for (key, kind) in &o.fields {
+                let Some(server) = key
+                    .strip_prefix("dhcp_server.")
+                    .and_then(|v| v.parse::<IpAddr>().ok())
+                else {
+                    continue;
+                };
+                if matches!(kind.as_str(), "2" | "5") {
+                    found
+                        .entry(server)
+                        .or_insert_with(|| "seen sending DHCP OFFER/ACK".into());
+                }
+            }
+            continue;
+        }
         let Some(ip) = o.ip else { continue };
-        match o.protocol.as_str() {
-            "DHCP"
-                if matches!(
-                    o.fields.get("message_type").map(String::as_str),
-                    Some("2" | "5")
-                ) =>
-            {
-                found
-                    .entry(ip)
-                    .or_insert_with(|| "seen sending DHCP OFFER/ACK".into());
-            }
-            "DHCP offer" => {
-                found.entry(ip).or_insert_with(|| {
-                    format!(
-                        "answered DHCPDISCOVER offering {}",
-                        o.fields.get("offered_ip").map_or("?", String::as_str)
-                    )
-                });
-            }
-            _ => {}
+        if o.protocol == "DHCP offer" {
+            found.entry(ip).or_insert_with(|| {
+                format!(
+                    "answered DHCPDISCOVER offering {}",
+                    o.fields.get("offered_ip").map_or("?", String::as_str)
+                )
+            });
         }
     }
     found
@@ -162,6 +167,20 @@ pub fn evaluate(
         };
         let comparable: BTreeSet<u16> =
             scanned(prev).intersection(&scanned(cur)).copied().collect();
+        // UDP: only when both scans probed UDP, and only ports both of them probed.
+        let udp_scanned = |s: &Snapshot| -> BTreeSet<u16> {
+            if !s.settings.udp {
+                return BTreeSet::new();
+            }
+            scan::parse_ports(&s.settings.udp_ports)
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
+        };
+        let udp_comparable: BTreeSet<u16> = udp_scanned(prev)
+            .intersection(&udp_scanned(cur))
+            .copied()
+            .collect();
         for h in cur.hosts.iter().filter(|h| h.responding) {
             let Some(before) = old
                 .get(&h.ip)
@@ -203,7 +222,11 @@ pub fn evaluate(
                     ),
                 ));
             }
-            for p in h.udp_open.iter().filter(|p| !before.udp_open.contains(p)) {
+            for p in h
+                .udp_open
+                .iter()
+                .filter(|p| udp_comparable.contains(p) && !before.udp_open.contains(p))
+            {
                 out.push(alert(
                     now,
                     Severity::Medium,
@@ -244,18 +267,20 @@ pub fn evaluate(
                         && !d.ips.is_empty()
                         && !n.ips.is_empty() =>
                 {
+                    // Medium: a known MAC on a new address can be spoofing or a misconfiguration.
                     out.push(alert(
                         now,
-                        Severity::Info,
+                        Severity::Medium,
                         "address-changed",
                         d.mac.clone(),
                         format!("{} moved from {:?} to {:?}", d.mac, d.ips, n.ips),
                     ));
                 }
                 None if policy.report_missing => {
+                    // Low, so the explicitly requested report passes the default threshold.
                     out.push(alert(
                         now,
-                        Severity::Info,
+                        Severity::Low,
                         "device-missing",
                         d.ips.first().map_or(d.id.clone(), ToString::to_string),
                         format!(
@@ -337,6 +362,32 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Merges captured observations, turning capture errors and the observation cap into warnings
+/// (the extra observations are dropped) instead of failing the monitoring cycle.
+fn collect_observations(
+    observations: &mut Vec<crate::passive::Observation>,
+    items: impl IntoIterator<Item = Result<crate::passive::Observation, String>>,
+) -> Vec<String> {
+    let mut warnings = vec![];
+    let mut capped = 0u64;
+    for item in items {
+        match item {
+            Ok(o) => {
+                if crate::ui::merge(observations, o).is_err() {
+                    capped += 1;
+                }
+            }
+            Err(e) => warnings.push(e),
+        }
+    }
+    if capped > 0 {
+        warnings.push(format!(
+            "observation limit reached; {capped} further observations were not kept"
+        ));
+    }
+    warnings
+}
+
 pub fn run(
     targets_text: &str,
     settings: scan::Settings,
@@ -350,10 +401,19 @@ pub fn run(
     loop {
         cycle += 1;
         let mut observations = vec![];
+        let mut notices = vec![];
         if !cfg.interface.is_empty() {
             let listening = crate::passive::start(cfg.interface.clone(), cfg.listen_seconds, None);
-            for item in &listening.receiver {
-                crate::ui::merge(&mut observations, item?)?;
+            // A capture problem never ends monitoring: the cycle continues with what was seen.
+            for warning in collect_observations(&mut observations, &listening.receiver) {
+                eprintln!("Cycle {cycle}: warning: {warning}");
+                notices.push(alert(
+                    now(),
+                    Severity::Low,
+                    "capture-incomplete",
+                    cfg.interface.as_str(),
+                    format!("Passive capture incomplete: {warning}"),
+                ));
             }
         }
         let total = targets.count() as usize;
@@ -380,7 +440,6 @@ pub fn run(
         if run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             complete = false;
         }
-        let mut notices = vec![];
         if cfg.dhcp_discover {
             match crate::udp::dhcp_discover(Duration::from_secs(4)) {
                 Ok(offers) => {
@@ -682,11 +741,16 @@ mod tests {
 
     #[test]
     fn rogue_dhcp_detection() {
-        let obs = |ip: &str, kind: &str| Observation {
+        // As passive::decode records it: `ip` is the client, the server has its own key.
+        let obs = |server: &str, kind: &str| Observation {
             protocol: "DHCP".into(),
             mac: "AA:BB:CC:00:00:77".into(),
-            ip: Some(ip.parse().unwrap()),
-            fields: [("message_type".to_string(), kind.to_string())].into(),
+            ip: Some("10.0.0.200".parse().unwrap()),
+            fields: [
+                ("message_type".to_string(), kind.to_string()),
+                (format!("dhcp_server.{server}"), kind.to_string()),
+            ]
+            .into(),
         };
         let discover = Observation {
             protocol: "DHCP offer".into(),
@@ -734,5 +798,171 @@ mod tests {
         );
         let single = snap(vec![], vec![obs("10.0.0.1", "2")]);
         assert!(evaluate(None, &single, &k, &learn, 1).is_empty());
+    }
+
+    /// Real OFFER/ACK frames through passive::decode and ui::merge, as a live capture does.
+    #[test]
+    fn rogue_dhcp_from_decoded_frames() {
+        use crate::passive::tests::dhcp_reply_frame;
+        let client = [0xaa, 0xbb, 0xcc, 0, 0, 0x42];
+        let other = [0xaa, 0xbb, 0xcc, 0, 0, 0x43];
+        let capture = |frames: &[Vec<u8>]| {
+            let mut observations = vec![];
+            for f in frames {
+                crate::ui::merge(&mut observations, crate::passive::decode(f).unwrap()).unwrap();
+            }
+            observations
+        };
+        // One legitimate server handing out leases to two clients: no rogue server.
+        let legit = capture(&[
+            dhcp_reply_frame(
+                2,
+                [10, 0, 0, 1],
+                Some([10, 0, 0, 1]),
+                [10, 0, 0, 150],
+                client,
+            ),
+            dhcp_reply_frame(
+                5,
+                [10, 0, 0, 1],
+                Some([10, 0, 0, 1]),
+                [10, 0, 0, 150],
+                client,
+            ),
+            dhcp_reply_frame(
+                5,
+                [10, 0, 0, 1],
+                Some([10, 0, 0, 1]),
+                [10, 0, 0, 151],
+                other,
+            ),
+        ]);
+        let cur = snap(vec![], legit);
+        assert_eq!(
+            dhcp_servers(&cur)
+                .keys()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["10.0.0.1"],
+            "clients are not servers"
+        );
+        let k = known(&["AA:BB:CC:00:00:01"]);
+        let learn = Policy {
+            learn: true,
+            ..Policy::default()
+        };
+        assert!(evaluate(None, &cur, &k, &learn, 1).is_empty());
+        let allow = Policy {
+            dhcp_allow: ["10.0.0.1".parse().unwrap()].into(),
+            learn: true,
+            ..Policy::default()
+        };
+        assert!(evaluate(None, &cur, &k, &allow, 1).is_empty());
+        // A second server answers the same client: both survive the merge and are reported.
+        let rogue = capture(&[
+            dhcp_reply_frame(
+                2,
+                [10, 0, 0, 1],
+                Some([10, 0, 0, 1]),
+                [10, 0, 0, 150],
+                client,
+            ),
+            dhcp_reply_frame(
+                2,
+                [10, 0, 0, 66],
+                Some([10, 0, 0, 66]),
+                [10, 0, 0, 150],
+                client,
+            ),
+        ]);
+        let cur = snap(vec![], rogue);
+        let a = evaluate(None, &cur, &k, &allow, 1);
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert_eq!(
+            (a[0].kind.as_str(), a[0].severity, a[0].subject.as_str()),
+            ("rogue-dhcp", Severity::Critical, "10.0.0.66")
+        );
+        // A relayed ACK is attributed to option 54, not to the relay.
+        let relayed = capture(&[dhcp_reply_frame(
+            5,
+            [10, 0, 0, 254],
+            Some([10, 0, 0, 1]),
+            [10, 0, 0, 150],
+            client,
+        )]);
+        assert!(evaluate(None, &snap(vec![], relayed), &k, &allow, 1).is_empty());
+    }
+
+    #[test]
+    fn requested_missing_and_moved_alerts_pass_the_default_threshold() {
+        let before = snap(
+            vec![
+                host("10.0.0.5", "AA:BB:CC:00:00:01", &[], &[]),
+                host("10.0.0.6", "AA:BB:CC:00:00:02", &[], &[]),
+            ],
+            vec![],
+        );
+        let after = snap(
+            vec![host("10.0.0.50", "AA:BB:CC:00:00:01", &[], &[])],
+            vec![],
+        );
+        let policy = Policy {
+            report_missing: true,
+            ..Policy::default()
+        };
+        let k = known(&["AA:BB:CC:00:00:01", "AA:BB:CC:00:00:02"]);
+        let a = evaluate(Some(&before), &after, &k, &policy, 1);
+        let moved = a.iter().find(|a| a.kind == "address-changed").unwrap();
+        assert_eq!(moved.severity, Severity::Medium);
+        let missing = a.iter().find(|a| a.kind == "device-missing").unwrap();
+        assert_eq!(missing.severity, Severity::Low);
+        // Without --report-missing there is still no missing-device alert.
+        let a = evaluate(Some(&before), &after, &k, &Policy::default(), 1);
+        assert!(!kinds(&a).contains(&"device-missing"));
+    }
+
+    #[test]
+    fn udp_changes_need_udp_probed_in_both_scans() {
+        let mut before = snap(
+            vec![host("10.0.0.5", "AA:BB:CC:00:00:01", &[], &[])],
+            vec![],
+        );
+        let mut after = before.clone();
+        after.hosts[0].udp_open = vec![161, 5353];
+        let k = known(&["AA:BB:CC:00:00:01"]);
+        let udp_opened = |a: &[Alert]| {
+            a.iter()
+                .filter(|a| a.kind == "port-opened" && a.message.contains("UDP"))
+                .map(|a| a.message.clone())
+                .collect::<Vec<_>>()
+        };
+        // The previous scan did not probe UDP at all: nothing is "newly" answering.
+        after.settings.udp = true;
+        after.settings.udp_ports = "161,5353".into();
+        let a = evaluate(Some(&before), &after, &k, &Policy::default(), 1);
+        assert!(udp_opened(&a).is_empty(), "{a:?}");
+        // Both probed UDP, but only 161 was probed before.
+        before.settings.udp = true;
+        before.settings.udp_ports = "161".into();
+        let a = evaluate(Some(&before), &after, &k, &Policy::default(), 1);
+        assert_eq!(udp_opened(&a), ["10.0.0.5: UDP port 161 newly answering"]);
+    }
+
+    #[test]
+    fn capture_errors_and_the_observation_cap_do_not_fail_a_cycle() {
+        let o = |i: u32| Observation {
+            protocol: "ARP".into(),
+            mac: format!("{i:012X}"),
+            ip: None,
+            fields: Default::default(),
+        };
+        let mut items: Vec<Result<Observation, String>> = vec![Ok(o(0)), Err("driver".into())];
+        items.extend((1..10_005).map(|i| Ok(o(i))));
+        let mut observations = vec![];
+        let warnings = collect_observations(&mut observations, items);
+        assert_eq!(observations.len(), 10_000, "truncated at the cap");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings[0], "driver");
+        assert!(warnings[1].contains("5 further"), "{warnings:?}");
     }
 }
