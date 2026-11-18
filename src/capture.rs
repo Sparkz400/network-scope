@@ -1,6 +1,6 @@
 //! Runtime-loaded capture driver: the portable binary has no Npcap link dependency.
 use libloading::Library;
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 type Handle = *mut c_void;
 #[repr(C)]
 struct Header {
@@ -17,25 +17,90 @@ struct Device {
     addresses: *mut c_void,
     flags: u32,
 }
+/// `struct bpf_program` from pcap/bpf.h.
+#[repr(C)]
+struct BpfProgram {
+    len: c_uint,
+    insns: *mut c_void,
+}
+/// `PCAP_NETMASK_UNKNOWN`: the filter does not use broadcast tests, so no netmask is needed.
+const NETMASK_UNKNOWN: u32 = 0xffff_ffff;
+type ErrorBuffer = [c_char; 256];
+type OpenFn = unsafe extern "C" fn(*const c_char, c_int, c_int, c_int, *mut c_char) -> Handle;
+type NextFn = unsafe extern "C" fn(Handle, *mut *const Header, *mut *const u8) -> c_int;
+type SendFn = unsafe extern "C" fn(Handle, *const u8, c_int) -> c_int;
+type CloseFn = unsafe extern "C" fn(Handle);
+type DatalinkFn = unsafe extern "C" fn(Handle) -> c_int;
+type NonblockFn = unsafe extern "C" fn(Handle, c_int, *mut c_char) -> c_int;
+type CompileFn = unsafe extern "C" fn(Handle, *mut BpfProgram, *const c_char, c_int, u32) -> c_int;
+type SetFilterFn = unsafe extern "C" fn(Handle, *mut BpfProgram) -> c_int;
+type FreeCodeFn = unsafe extern "C" fn(*mut BpfProgram);
+type GetErrFn = unsafe extern "C" fn(Handle) -> *const c_char;
+
+/// Entry points resolved once when the handle is opened; the hot paths
+/// (`next`, `send`) no longer look symbols up per call.
+struct Api {
+    next: NextFn,
+    send: SendFn,
+    close: CloseFn,
+}
 pub struct Capture {
-    lib: Library,
+    api: Api,
     handle: Handle,
+    // Keeps the function pointers in `api` valid; dropped after `Drop::drop` closed the handle.
+    _lib: Library,
+}
+/// Library names tried in order. macOS ships `libpcap.A.dylib` (with a `libpcap.dylib`
+/// symlink); Linux distributions ship `libpcap.so.1`, some only `libpcap.so.0.8`.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn library_candidates(macos: bool) -> &'static [&'static str] {
+    if macos {
+        &[
+            "libpcap.A.dylib",
+            "libpcap.dylib",
+            "/usr/lib/libpcap.A.dylib",
+            "/usr/lib/libpcap.dylib",
+        ]
+    } else {
+        &["libpcap.so.1", "libpcap.so", "libpcap.so.0.8"]
+    }
 }
 fn library() -> Result<Library, String> {
     #[cfg(windows)]
-    let path = std::path::PathBuf::from(
-        std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
-    )
-    .join("System32/Npcap/wpcap.dll");
+    {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+        )
+        .join("System32/Npcap/wpcap.dll");
+        let loaded = unsafe {
+            libloading::os::windows::Library::load_with_flags(path, 0x100 | 0x1000)
+                .map(Library::from)
+        };
+        loaded.map_err(|e| format!("Capture driver unavailable (install Npcap on Windows): {e}"))
+    }
     #[cfg(not(windows))]
-    let path = std::path::PathBuf::from("libpcap.so.1");
-    #[cfg(windows)]
-    let loaded = unsafe {
-        libloading::os::windows::Library::load_with_flags(path, 0x100 | 0x1000).map(Library::from)
-    };
-    #[cfg(not(windows))]
-    let loaded = unsafe { Library::new(path) };
-    loaded.map_err(|e| format!("Capture driver unavailable (install Npcap on Windows): {e}"))
+    {
+        let mut errors = vec![];
+        for name in library_candidates(cfg!(target_os = "macos")) {
+            match unsafe { Library::new(name) } {
+                Ok(lib) => return Ok(lib),
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        Err(format!(
+            "Capture driver unavailable (install libpcap): {}",
+            errors.join("; ")
+        ))
+    }
+}
+fn error_text(error: &ErrorBuffer) -> String {
+    // libpcap writes a NUL-terminated message; fall back to the whole buffer if it did not.
+    let bytes: Vec<u8> = error
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| *c as u8)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 pub fn interfaces() -> Result<Vec<(String, String)>, String> {
     unsafe {
@@ -49,11 +114,9 @@ pub fn interfaces() -> Result<Vec<(String, String)>, String> {
             .get::<unsafe extern "C" fn(*mut Device)>(b"pcap_freealldevs\0")
             .map_err(|e| e.to_string())?;
         let mut first = std::ptr::null_mut();
-        let mut error = [0i8; 256];
+        let mut error: ErrorBuffer = [0; 256];
         if find(&mut first, error.as_mut_ptr()) != 0 {
-            return Err(CStr::from_ptr(error.as_ptr())
-                .to_string_lossy()
-                .into_owned());
+            return Err(error_text(&error));
         }
         let mut current = first;
         let mut result = vec![];
@@ -75,55 +138,100 @@ pub fn interfaces() -> Result<Vec<(String, String)>, String> {
         Ok(result)
     }
 }
+/// Kernel filter for the SYN engine: only TCP addressed to our source IPv4 reaches
+/// user space. The engine resolves MACs through the OS, so it needs no ARP frames.
+pub fn syn_filter(source: std::net::Ipv4Addr) -> String {
+    format!("tcp and dst host {source}")
+}
 impl Capture {
+    /// Promiscuous capture without a kernel filter (passive discovery and DCP).
     pub fn open(name: &str) -> Result<Self, String> {
+        Self::open_with(name, true, None)
+    }
+    /// Opens an Ethernet capture. `filter` is compiled into a kernel BPF program so
+    /// unrelated traffic never reaches user space.
+    pub fn open_with(name: &str, promiscuous: bool, filter: Option<&str>) -> Result<Self, String> {
         if name.is_empty() {
             return Err("Select a capture interface first.".into());
         }
+        let filter = filter
+            .map(CString::new)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let name = CString::new(name).map_err(|e| e.to_string())?;
         unsafe {
             let lib = library()?;
-            let name = CString::new(name).map_err(|e| e.to_string())?;
-            let open = lib.get::<unsafe extern "C" fn(*const c_char, c_int, c_int, c_int, *mut c_char) -> Handle>(b"pcap_open_live\0").map_err(|e| e.to_string())?;
-            let mut error = [0i8; 256];
-            let handle = open(name.as_ptr(), 65536, 1, 50, error.as_mut_ptr());
-            if handle.is_null() {
-                return Err(CStr::from_ptr(error.as_ptr())
-                    .to_string_lossy()
-                    .into_owned());
+            macro_rules! sym {
+                ($ty:ty, $name:literal) => {
+                    *lib.get::<$ty>($name)
+                        .map_err(|e| format!("{}: {e}", String::from_utf8_lossy($name)))?
+                };
             }
-            let cap = Self { lib, handle };
-            let datalink = cap
-                .lib
-                .get::<unsafe extern "C" fn(Handle) -> c_int>(b"pcap_datalink\0")
-                .map_err(|e| e.to_string())?;
+            let open: OpenFn = sym!(OpenFn, b"pcap_open_live\0");
+            let api = Api {
+                next: sym!(NextFn, b"pcap_next_ex\0"),
+                send: sym!(SendFn, b"pcap_sendpacket\0"),
+                close: sym!(CloseFn, b"pcap_close\0"),
+            };
+            let datalink: DatalinkFn = sym!(DatalinkFn, b"pcap_datalink\0");
+            let nonblock: NonblockFn = sym!(NonblockFn, b"pcap_setnonblock\0");
+            let compile: CompileFn = sym!(CompileFn, b"pcap_compile\0");
+            let set_filter: SetFilterFn = sym!(SetFilterFn, b"pcap_setfilter\0");
+            let free_code: FreeCodeFn = sym!(FreeCodeFn, b"pcap_freecode\0");
+            let get_err: GetErrFn = sym!(GetErrFn, b"pcap_geterr\0");
+            let mut error: ErrorBuffer = [0; 256];
+            let handle = open(
+                name.as_ptr(),
+                65536,
+                c_int::from(promiscuous),
+                50,
+                error.as_mut_ptr(),
+            );
+            if handle.is_null() {
+                return Err(error_text(&error));
+            }
+            // From here on, Drop closes the handle on every error path.
+            let cap = Self {
+                api,
+                handle,
+                _lib: lib,
+            };
+            let pcap_error = || {
+                let text = get_err(handle);
+                if text.is_null() {
+                    "capture driver error".to_string()
+                } else {
+                    CStr::from_ptr(text).to_string_lossy().into_owned()
+                }
+            };
             if datalink(handle) != 1 {
                 return Err("Select an Ethernet interface (unsupported link type).".into());
             }
-            let nonblock = cap
-                .lib
-                .get::<unsafe extern "C" fn(Handle, c_int, *mut c_char) -> c_int>(
-                    b"pcap_setnonblock\0",
-                )
-                .map_err(|e| e.to_string())?;
+            if let Some(filter) = filter {
+                let mut program = BpfProgram {
+                    len: 0,
+                    insns: std::ptr::null_mut(),
+                };
+                if compile(handle, &mut program, filter.as_ptr(), 1, NETMASK_UNKNOWN) != 0 {
+                    return Err(format!("Capture filter: {}", pcap_error()));
+                }
+                let applied = set_filter(handle, &mut program);
+                free_code(&mut program);
+                if applied != 0 {
+                    return Err(format!("Capture filter: {}", pcap_error()));
+                }
+            }
             if nonblock(handle, 1, error.as_mut_ptr()) != 0 {
-                return Err(CStr::from_ptr(error.as_ptr())
-                    .to_string_lossy()
-                    .into_owned());
+                return Err(error_text(&error));
             }
             Ok(cap)
         }
     }
     pub fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
         unsafe {
-            let next = self
-                .lib
-                .get::<unsafe extern "C" fn(Handle, *mut *const Header, *mut *const u8) -> c_int>(
-                    b"pcap_next_ex\0",
-                )
-                .map_err(|e| e.to_string())?;
             let mut header = std::ptr::null();
             let mut bytes = std::ptr::null();
-            match next(self.handle, &mut header, &mut bytes) {
+            match (self.api.next)(self.handle, &mut header, &mut bytes) {
                 1 if !header.is_null() && !bytes.is_null() => {
                     let len = (*header).caplen as usize;
                     if len > 65536 {
@@ -138,13 +246,7 @@ impl Capture {
     }
     pub fn send(&mut self, packet: &[u8]) -> Result<(), String> {
         unsafe {
-            let send = self
-                .lib
-                .get::<unsafe extern "C" fn(Handle, *const u8, c_int) -> c_int>(
-                    b"pcap_sendpacket\0",
-                )
-                .map_err(|e| e.to_string())?;
-            if send(self.handle, packet.as_ptr(), packet.len() as c_int) == 0 {
+            if (self.api.send)(self.handle, packet.as_ptr(), packet.len() as c_int) == 0 {
                 Ok(())
             } else {
                 Err("Packet send failed".into())
@@ -155,12 +257,7 @@ impl Capture {
 impl Drop for Capture {
     fn drop(&mut self) {
         unsafe {
-            if let Ok(close) = self
-                .lib
-                .get::<unsafe extern "C" fn(Handle)>(b"pcap_close\0")
-            {
-                close(self.handle);
-            }
+            (self.api.close)(self.handle);
         }
     }
 }
@@ -183,4 +280,43 @@ pub fn mac(text: &str) -> Result<[u8; 6], String> {
         .map_err(|_| "Invalid MAC address".to_string())?
         .try_into()
         .map_err(|_| "MAC must contain six bytes".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_candidates_cover_macos_and_linux() {
+        let mac = library_candidates(true);
+        assert_eq!(mac[0], "libpcap.A.dylib");
+        assert!(mac.contains(&"libpcap.dylib"));
+        let linux = library_candidates(false);
+        assert_eq!(linux[0], "libpcap.so.1");
+        assert!(linux.iter().all(|n| !n.ends_with(".dylib")));
+    }
+
+    #[test]
+    fn error_buffer_uses_platform_c_char() {
+        // `[0i8; 256]` did not compile where c_char is u8 (aarch64 Linux).
+        let mut error: ErrorBuffer = [0; 256];
+        for (i, b) in b"no such device".iter().enumerate() {
+            error[i] = *b as c_char;
+        }
+        assert_eq!(error_text(&error), "no such device");
+        let full: ErrorBuffer = [b'x' as c_char; 256];
+        assert_eq!(
+            error_text(&full).len(),
+            256,
+            "unterminated buffer stays in bounds"
+        );
+    }
+
+    #[test]
+    fn syn_filter_selects_tcp_to_source() {
+        assert_eq!(
+            syn_filter("10.0.0.9".parse().unwrap()),
+            "tcp and dst host 10.0.0.9"
+        );
+    }
 }
