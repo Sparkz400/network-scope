@@ -37,7 +37,7 @@ socket2 = { version = "0.5", features = ["all"] }
 regex = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-x509-parser = "0.17"
+x509-parser = "0.18"
 roxmltree = "0.20"
 rhai = { version = "1", default-features = false, features = ["std", "sync", "no_module"] }
 
