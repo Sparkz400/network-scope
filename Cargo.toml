@@ -33,7 +33,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 libloading = "0.8"
 pnet_packet = "0.35"
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 regex = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
