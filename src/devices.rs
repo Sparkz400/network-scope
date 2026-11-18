@@ -480,6 +480,9 @@ fn norm_mac(mac: &str) -> String {
 pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
     let mut accs: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_ip: HashMap<IpAddr, String> = HashMap::new();
+    // device key -> IP -> other MACs claiming the same IP (IP reassignment, address conflicts,
+    // proxy ARP, VRRP/HSRP virtual MACs). Both devices are kept; the conflict is noted on each.
+    let mut conflicts: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
     let rekey = |accs: &mut BTreeMap<String, Acc>,
                  by_ip: &mut HashMap<IpAddr, String>,
                  from: &str,
@@ -506,6 +509,28 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
             }
         }
     };
+    // Only an IP-keyed record is folded into the MAC that shows up for its address; a record that
+    // already has a MAC stays a separate device even if another MAC claims the same IP.
+    let mut claim = |accs: &mut BTreeMap<String, Acc>,
+                     by_ip: &mut HashMap<IpAddr, String>,
+                     ip: IpAddr,
+                     key: &str| {
+        let Some(existing) = by_ip.get(&ip).cloned() else {
+            return;
+        };
+        if existing.starts_with("ip:") {
+            rekey(accs, by_ip, &existing, key);
+        } else if existing != key {
+            for (a, b) in [(existing.as_str(), key), (key, existing.as_str())] {
+                conflicts
+                    .entry(a.to_string())
+                    .or_default()
+                    .entry(ip.to_string())
+                    .or_default()
+                    .insert(b.to_string());
+            }
+        }
+    };
     for h in hosts.iter().filter(|h| h.responding) {
         let mac = norm_mac(&h.mac);
         let key = if mac.is_empty() {
@@ -514,9 +539,7 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
             mac.clone()
         };
         if !mac.is_empty() {
-            if let Some(existing) = by_ip.get(&h.ip).cloned() {
-                rekey(&mut accs, &mut by_ip, &existing, &key);
-            }
+            claim(&mut accs, &mut by_ip, h.ip, &key);
         }
         let a = accs.entry(key.clone()).or_default();
         a.mac = mac;
@@ -529,15 +552,14 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
         a.identity.extend(h.identity.clone());
         a.sources.insert("active scan".into());
         a.ttl = a.ttl.or(h.ttl);
-        by_ip.insert(h.ip, key);
+        // The first device seen at an address keeps it for IP-only records that follow.
+        by_ip.entry(h.ip).or_insert(key);
     }
     for o in observations {
         let mac = norm_mac(&o.mac);
         let key = if !mac.is_empty() {
             if let Some(ip) = o.ip {
-                if let Some(existing) = by_ip.get(&ip).cloned() {
-                    rekey(&mut accs, &mut by_ip, &existing, &mac);
-                }
+                claim(&mut accs, &mut by_ip, ip, &mac);
             }
             mac.clone()
         } else if let Some(k) = o.ip.and_then(|ip| by_ip.get(&ip).cloned()) {
@@ -553,7 +575,7 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
         }
         if let Some(ip) = o.ip {
             a.ips.insert(ip);
-            by_ip.insert(ip, key.clone());
+            by_ip.entry(ip).or_insert_with(|| key.clone());
         }
         for field in ["hostname", "name"] {
             if let Some(n) = o.fields.get(field).filter(|n| !n.is_empty()) {
@@ -570,6 +592,7 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
     }
     accs.into_iter()
         .map(|(key, a)| {
+            let conflict = conflicts.remove(&key);
             let vendor = if a.mac.is_empty() || oui::locally_administered(&a.mac) {
                 String::new()
             } else {
@@ -613,7 +636,20 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
                 open_udp: udp,
                 services,
                 sources: a.sources.into_iter().collect(),
-                observations: a.observations,
+                observations: {
+                    let mut observations = a.observations;
+                    if let Some(c) = conflict {
+                        observations.insert(
+                            "IP conflict".into(),
+                            c.into_iter()
+                                .map(|(ip, macs)| {
+                                    (ip, macs.into_iter().collect::<Vec<_>>().join(", "))
+                                })
+                                .collect(),
+                        );
+                    }
+                    observations
+                },
             }
         })
         .collect()
@@ -781,6 +817,52 @@ mod tests {
         let mut dead = host("10.0.0.8", "", &[], &[]);
         dead.responding = false;
         assert!(merge(&[dead], &[obs("X", "", None, &[])]).is_empty());
+    }
+
+    #[test]
+    fn a_second_mac_on_the_same_ip_does_not_swallow_the_device() {
+        // Scanned host 10.0.0.1 is M1; a VRRP/proxy-ARP/conflicting MAC M2 also claims the IP.
+        let hosts = vec![host("10.0.0.1", "AA:BB:CC:00:00:01", &[22, 443], &[])];
+        let devices = merge(
+            &hosts,
+            &[
+                obs("ARP", "00:00:5E:00:01:01", Some("10.0.0.1"), &[]),
+                // An IP-only record still joins the device that was first seen at the address.
+                obs("SSDP/UPnP", "", Some("10.0.0.1"), &[("name", "router")]),
+            ],
+        );
+        assert_eq!(devices.len(), 2, "both MACs stay separate devices");
+        let m1 = devices
+            .iter()
+            .find(|d| d.mac == "AA:BB:CC:00:00:01")
+            .unwrap();
+        assert_eq!(m1.open_tcp, vec![22, 443]);
+        assert!(m1.hostnames.contains(&"router".to_string()));
+        assert_eq!(m1.sources, ["active scan", "passive SSDP/UPnP"]);
+        let m2 = devices
+            .iter()
+            .find(|d| d.mac == "00:00:5E:00:01:01")
+            .unwrap();
+        assert!(m2.open_tcp.is_empty());
+        assert_eq!(m2.ips, m1.ips);
+        // The address conflict is noted on both devices.
+        assert_eq!(
+            m1.observations["IP conflict"]["10.0.0.1"],
+            "00:00:5E:00:01:01"
+        );
+        assert_eq!(
+            m2.observations["IP conflict"]["10.0.0.1"],
+            "AA:BB:CC:00:00:01"
+        );
+        // Two active hosts reporting different MACs are not merged either.
+        let devices = merge(
+            &[
+                host("10.0.0.1", "AA:BB:CC:00:00:01", &[22], &[]),
+                host("10.0.0.1", "AA:BB:CC:00:00:02", &[80], &[]),
+            ],
+            &[],
+        );
+        assert_eq!(devices.len(), 2);
     }
 
     #[test]
