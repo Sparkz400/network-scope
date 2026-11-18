@@ -5,6 +5,7 @@ mod devices;
 mod gui;
 mod monitor;
 mod nmap;
+mod notify;
 mod osfp;
 mod ot;
 mod otpassive;
