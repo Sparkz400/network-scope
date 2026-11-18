@@ -37,7 +37,8 @@
 - GUI: exports (CSV/JSON/HTML and OT assets) are written in the background; the status line
   shows "Saved FILE" or the error.
 - TUI (`scan --tui`): Up/Down/PgUp/PgDn/Home/End select a row, **Enter** shows the host's open
-  ports with identified services, identity fields and findings (Enter or Backspace returns),
+  ports with identified services, findings and identity fields (Up/Down/PgUp/PgDn scroll it;
+  Enter or Backspace returns),
   **S** cycles the sort order (newest, address, open ports). Space pauses, Q/Esc stop as before.
 - CLI: `network-scope completions powershell|bash` prints a completion script:
   `network-scope completions powershell | Out-String | Invoke-Expression` (add to `$PROFILE`),
@@ -46,10 +47,15 @@
   ("Saved scan #N", "Listening passively ...", "Imported ..."); errors still print and the exit
   status is unchanged. (monitor's own lines: see request above.)
 - Screenshots (developer aid): `NETWORK_SCOPE_SCREENSHOT_STATE=findings|devices|ot|script`
-  with `--screenshot FILE` renders a larger window with sample data in that view. Screenshot
+  with `--screenshot FILE` renders a larger window with sample data in that view (append
+  `-small`, e.g. `ot-small`, to keep the default 800x450 size). Screenshot
   runs never write the inventory or preferences.
 
 ## Observations, not changed
+- Opening a saved `ot-passive:` capture from the inventory shows its observations in the
+  Passive list but does not refill the OT asset table (that table shows the last OT run).
+- Live **Listen (OT)** was not run against a real interface here; the pcap/pcapng path, the
+  ingest loop and the asset table are covered by tests and screenshots.
 - On exit a running OT capture is cancelled and not saved (passive/active runs are saved as
   partial in `on_exit`); the OT thread owns its tracker, so saving it would mean waiting for it.
 - Script dry-runs run on the shared inventory worker; a script is bounded by the 250 ms wall

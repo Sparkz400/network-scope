@@ -1043,7 +1043,8 @@ pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
             // Screenshot states show the larger windows; the plain screenshot keeps the default.
             .with_inner_size(
                 if screenshot.is_some()
-                    && std::env::var_os("NETWORK_SCOPE_SCREENSHOT_STATE").is_some()
+                    && std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
+                        .is_ok_and(|s| !s.ends_with("-small"))
                 {
                     [1100.0, 720.0]
                 } else {

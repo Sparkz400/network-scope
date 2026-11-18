@@ -961,6 +961,8 @@ struct TuiView {
     sort: TuiSort,
     selected: Option<std::net::IpAddr>,
     detail: bool,
+    /// First line shown in the detail view.
+    scroll: u16,
     /// Indexes into the host list in display order.
     order: Vec<usize>,
     key: Option<(usize, TuiSort)>,
@@ -1021,6 +1023,7 @@ impl TuiView {
                 return TuiAction::None;
             }
             KeyCode::Enter => {
+                self.scroll = 0;
                 if self.detail {
                     self.detail = false;
                 } else if current.is_some() {
@@ -1033,6 +1036,16 @@ impl TuiView {
             }
             KeyCode::Backspace | KeyCode::Left => {
                 self.detail = false;
+                return TuiAction::None;
+            }
+            KeyCode::Down | KeyCode::PageDown if self.detail => {
+                let step = if code == KeyCode::Down { 1 } else { 10 };
+                self.scroll = self.scroll.saturating_add(step).min(500);
+                return TuiAction::None;
+            }
+            KeyCode::Up | KeyCode::PageUp if self.detail => {
+                let step = if code == KeyCode::Up { 1 } else { 10 };
+                self.scroll = self.scroll.saturating_sub(step);
                 return TuiAction::None;
             }
             _ if self.detail || len == 0 => return TuiAction::None,
@@ -1089,6 +1102,18 @@ fn detail_lines(h: &scan::Host) -> Vec<String> {
             ));
         }
     }
+    let findings = risk::analyze_host(h);
+    lines.push(String::new());
+    lines.push(format!("Findings ({})", findings.len()));
+    for f in &findings {
+        lines.push(format!(
+            "  [{}] {}{}: {}",
+            f.severity.name(),
+            f.title,
+            f.port.map_or(String::new(), |p| format!(" (port {p})")),
+            f.evidence
+        ));
+    }
     let identity: Vec<String> = h
         .identity
         .iter()
@@ -1102,22 +1127,81 @@ fn detail_lines(h: &scan::Host) -> Vec<String> {
         lines.push("Identity".into());
         lines.extend(identity);
     }
-    let findings = risk::analyze_host(h);
-    lines.push(String::new());
-    lines.push(format!("Findings ({})", findings.len()));
-    for f in &findings {
-        lines.push(format!(
-            "  [{}] {}{}: {}",
-            f.severity.name(),
-            f.title,
-            f.port.map_or(String::new(), |p| format!(" (port {p})")),
-            f.evidence
-        ));
-    }
     for e in &h.errors {
         lines.push(format!("Error: {e}"));
     }
     lines
+}
+/// One frame of the live view: the host list, or the detail view of the selected host.
+fn draw_tui(f: &mut ratatui::Frame, view: &TuiView, hosts: &[scan::Host], progress: &str) {
+    use ratatui::{
+        layout::Constraint,
+        style::{Modifier, Style},
+        text::Line,
+        widgets::{Block, Borders, Paragraph, Row, Table, Wrap},
+    };
+    let area = f.area();
+    if let Some(host) = view.detail_host(hosts) {
+        let lines: Vec<Line> = detail_lines(host).into_iter().map(Line::from).collect();
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((view.scroll, 0))
+                .block(Block::default().borders(Borders::ALL).title(format!(
+                    " {} · {progress} · ↑↓ scroll · Enter/Backspace back · Space pause / Q stop ",
+                    host.ip
+                ))),
+            area,
+        );
+        return;
+    }
+    let height = area.height.saturating_sub(3) as usize;
+    let (start, end) = view.window(hosts, height);
+    let rows = view.order[start..end].iter().map(|&i| {
+        let h: &scan::Host = &hosts[i];
+        let row = Row::new(vec![
+            h.ip.to_string(),
+            if h.responding {
+                "Responding"
+            } else {
+                "No reply"
+            }
+            .into(),
+            h.open
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            h.identity
+                .keys()
+                .filter(|k| k.ends_with("name") || k.ends_with("firmware"))
+                .map(|k| format!("{k}: {}", h.identity[k]))
+                .collect::<Vec<_>>()
+                .join("; "),
+        ]);
+        if view.selected == Some(h.ip) {
+            row.style(Style::default().add_modifier(Modifier::REVERSED))
+        } else {
+            row
+        }
+    });
+    f.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(18),
+                Constraint::Length(13),
+                Constraint::Length(22),
+                Constraint::Min(10),
+            ],
+        )
+        .header(Row::new(["IP", "Status", "Ports", "Identity"]))
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            " Network Scope · {progress} · sort: {} (S) · ↑↓ Enter details · Space pause / Q stop ",
+            view.sort.name()
+        ))),
+        area,
+    );
 }
 fn tui(run: &scan::Running) -> Collected {
     use crossterm::{
@@ -1125,14 +1209,7 @@ fn tui(run: &scan::Running) -> Collected {
         execute,
         terminal::{enable_raw_mode, EnterAlternateScreen},
     };
-    use ratatui::{
-        backend::CrosstermBackend,
-        layout::Constraint,
-        style::{Modifier, Style},
-        text::Line,
-        widgets::{Block, Borders, Paragraph, Row, Table, Wrap},
-        Terminal,
-    };
+    use ratatui::{backend::CrosstermBackend, Terminal};
     /// Undoes only what was set up, then prints panics of other threads seen meanwhile.
     struct Restore {
         raw: bool,
@@ -1217,74 +1294,12 @@ fn tui(run: &scan::Running) -> Collected {
         }
         view.refresh(&hosts);
         let paused = run.pause.load(Ordering::Relaxed);
-        let drawn = terminal.draw(|f| {
-            let area = f.area();
-            let progress = format!(
-                "{seen}/{} · {}",
-                run.total,
-                if paused { "paused" } else { "scanning" }
-            );
-            if let Some(host) = view.detail_host(&hosts) {
-                let lines: Vec<Line> = detail_lines(host).into_iter().map(Line::from).collect();
-                f.render_widget(
-                    Paragraph::new(lines)
-                        .wrap(Wrap { trim: false })
-                        .block(Block::default().borders(Borders::ALL).title(format!(
-                            " {} · {progress} · Enter/Backspace back · Space pause / Q stop ",
-                            host.ip
-                        ))),
-                    area,
-                );
-                return;
-            }
-            let height = area.height.saturating_sub(3) as usize;
-            let (start, end) = view.window(&hosts, height);
-            let rows = view.order[start..end].iter().map(|&i| {
-                let h: &scan::Host = &hosts[i];
-                let row = Row::new(vec![
-                    h.ip.to_string(),
-                    if h.responding {
-                        "Responding"
-                    } else {
-                        "No reply"
-                    }
-                    .into(),
-                    h.open
-                        .iter()
-                        .map(u16::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    h.identity
-                        .keys()
-                        .filter(|k| k.ends_with("name") || k.ends_with("firmware"))
-                        .map(|k| format!("{k}: {}", h.identity[k]))
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                ]);
-                if view.selected == Some(h.ip) {
-                    row.style(Style::default().add_modifier(Modifier::REVERSED))
-                } else {
-                    row
-                }
-            });
-            f.render_widget(
-                Table::new(
-                    rows,
-                    [
-                        Constraint::Length(18),
-                        Constraint::Length(13),
-                        Constraint::Length(22),
-                        Constraint::Min(10),
-                    ],
-                )
-                .header(Row::new(["IP", "Status", "Ports", "Identity"]))
-                .block(Block::default().borders(Borders::ALL).title(format!(
-                    " Network Scope · {progress} · sort: {} (S) · ↑↓ Enter details · Space pause / Q stop ",
-                    view.sort.name()
-                ))),
-                area,
-            );
-        });
+        let progress = format!(
+            "{seen}/{} · {}",
+            run.total,
+            if paused { "paused" } else { "scanning" }
+        );
+        let drawn = terminal.draw(|f| draw_tui(f, &view, &hosts, &progress));
         let input = drawn.and_then(|_| {
             if event::poll(Duration::from_millis(60))? {
                 if let Event::Key(k) = event::read()? {
@@ -1578,6 +1593,47 @@ mod tests {
         v.key(KeyCode::Home, &many);
         assert_eq!(v.window(&many, 10), (0, 10));
         assert_eq!(TuiView::default().window(&[], 10), (0, 0));
+    }
+
+    #[test]
+    fn tui_renders_list_and_detail_views_at_any_size() {
+        use crossterm::event::KeyCode;
+        use ratatui::{backend::TestBackend, Terminal};
+        let hosts: Vec<scan::Host> = (1..=30)
+            .map(|i| tui_host(&format!("10.0.0.{i}"), vec![23]))
+            .collect();
+        let text = |t: &Terminal<TestBackend>| {
+            let b = t.backend().buffer();
+            b.content().iter().map(|c| c.symbol()).collect::<String>()
+        };
+        for (w, h) in [(100, 24), (12, 3), (1, 1)] {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let mut v = TuiView::default();
+            v.refresh(&hosts);
+            v.key(KeyCode::End, &hosts);
+            t.draw(|f| draw_tui(f, &v, &hosts, "30/30 · scanning"))
+                .unwrap();
+            if w == 100 {
+                let screen = text(&t);
+                assert!(screen.contains("10.0.0.1 "), "{screen}");
+                assert!(screen.contains("sort: newest"), "{screen}");
+            }
+            v.key(KeyCode::Enter, &hosts);
+            v.key(KeyCode::PageDown, &hosts);
+            t.draw(|f| draw_tui(f, &v, &hosts, "30/30 · scanning"))
+                .unwrap();
+            if w == 100 {
+                assert_eq!(v.scroll, 10);
+                v.key(KeyCode::Up, &hosts);
+                v.key(KeyCode::PageUp, &hosts);
+                assert_eq!(v.scroll, 0);
+                t.draw(|f| draw_tui(f, &v, &hosts, "30/30 · scanning"))
+                    .unwrap();
+                let screen = text(&t);
+                assert!(screen.contains("23/tcp  telnet"), "{screen}");
+                assert!(screen.contains("Findings ("), "{screen}");
+            }
+        }
     }
 
     #[test]

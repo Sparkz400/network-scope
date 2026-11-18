@@ -78,6 +78,11 @@ impl View {
     }
 }
 
+/// Labels that do not take clicks, so a click on cell text reaches the clickable table row.
+pub(super) fn plain_labels(ui: &mut egui::Ui) {
+    ui.style_mut().interaction.selectable_labels = false;
+}
+
 /// Header cell: a clickable label with the sort direction; returns true when clicked.
 pub(super) fn header(ui: &mut egui::Ui, view: &View, column: usize, name: &str) -> bool {
     let text = if view.sort == column {
@@ -258,6 +263,68 @@ mod tests {
         assert!(finding_rows(&list, &v).is_empty(), "filtered by severity");
         v.min = None;
         assert_eq!(finding_rows(&list, &v), [0]);
+    }
+
+    /// Lays out a clickable three-row table; returns the clicked row and row 1's label rect.
+    fn table_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        plain: bool,
+    ) -> (Option<usize>, egui::Rect) {
+        use egui_extras::{Column, TableBuilder};
+        let (mut clicked, mut rect) = (None, egui::Rect::NOTHING);
+        let input = egui::RawInput {
+            events,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if plain {
+                    plain_labels(ui);
+                }
+                TableBuilder::new(ui)
+                    .sense(egui::Sense::click())
+                    .column(Column::initial(300.0))
+                    .body(|body| {
+                        body.rows(22.0, 3, |mut row| {
+                            let i = row.index();
+                            row.col(|ui| {
+                                let r = ui.label(format!("row {i} text"));
+                                if i == 1 {
+                                    rect = r.rect;
+                                }
+                            });
+                            if row.response().clicked() {
+                                clicked = Some(i);
+                            }
+                        });
+                    });
+            });
+        });
+        (clicked, rect)
+    }
+    fn click_label(plain: bool) -> Option<usize> {
+        let ctx = egui::Context::default();
+        let (_, rect) = table_frame(&ctx, vec![], plain);
+        let pos = rect.center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut clicked = table_frame(&ctx, vec![egui::Event::PointerMoved(pos)], plain).0;
+        clicked = clicked.or(table_frame(&ctx, vec![button(true)], plain).0);
+        clicked.or(table_frame(&ctx, vec![button(false)], plain).0)
+    }
+
+    #[test]
+    fn a_click_on_cell_text_selects_the_row() {
+        assert_eq!(click_label(true), Some(1));
     }
 
     #[test]
