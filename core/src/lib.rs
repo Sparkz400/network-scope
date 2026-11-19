@@ -86,6 +86,7 @@
 //! protocol engines (`arp`, `udp`, `tls`, `fingerprint`, `osfp`, `rtt`, `platform`, `oui`) are
 //! internal.
 //! Network Scope engine.
+pub mod alertscript;
 pub(crate) mod arp;
 pub mod capture;
 pub mod core;

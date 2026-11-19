@@ -11,8 +11,8 @@ pub(crate) mod ui;
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::pcapfile;
 pub(crate) use network_scope_core::{
-    capture, core, devices, feeds, monitor, nmap, notify, observations, otpassive, passive, report,
-    risk, scan, schema, script, service, store, syn, topology, trace,
+    alertscript, capture, core, devices, feeds, monitor, nmap, notify, observations, otpassive,
+    passive, report, risk, scan, schema, script, service, store, syn, topology, trace,
 };
 
 /// The fuzz entry points (`network_scope::fuzz::*`, called by the targets in `fuzz/`).

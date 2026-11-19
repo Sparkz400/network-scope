@@ -169,6 +169,8 @@ All scan options, plus:
 | `--alert-timeout S` | 5 | Per-operation alert delivery timeout (1-60) |
 | `--no-dedup` | off | Alert every cycle |
 | `--renotify-hours H` | 24 | Re-alert a persisting condition after H hours (0 = only after it resolved) |
+| `--on-alert SCRIPT` | | Run a Rhai script for every alert that fires (a `.rhai` file or `library:NAME`); see [Scripts that run on an alert](scripting.md#scripts-that-run-on-an-alert) |
+| `--on-alert-dir DIR` | `alert-scripts` next to the database | The only directory the on-alert script can write to |
 
 See [Monitoring and alerts](monitoring-alerts.md).
 

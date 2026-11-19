@@ -23,8 +23,10 @@ network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--lear
         [--interface ID --listen-seconds 30] [--alerts FILE]   Repeat scans and alert on changes
         [--webhook http(s)://URL,...] [--syslog [udp://|tcp://]HOST[:PORT],...]
         [--alert-timeout 5] [--no-dedup] [--renotify-hours 24]
+        [--on-alert SCRIPT.rhai|library:NAME [--on-alert-dir DIR]]   Run a script for every alert
 network-scope alerts [--db FILE]               Alerts raised by monitor runs
 network-scope scripts PATH                     Check Rhai scripts (use --script PATH with scan)
+network-scope scripts list|show NAME           The built-in script library (--script library:NAME)
 network-scope ot-listen --interface ID --seconds N | --pcap FILE [--progress] [--no-reassembly]
                                                Passive OT asset discovery
 network-scope ot-assets ID [--format json|csv]  OT asset inventory from a passive capture
