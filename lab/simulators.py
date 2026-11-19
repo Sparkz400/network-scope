@@ -184,8 +184,15 @@ class Fragile:
             self.server.server_close()
 
 
+# How long a handler waits for the client to speak before it gives up. A real server that waits for
+# the client (Redis, Modbus) keeps an idle connection open much longer than this: scanners that
+# wait for a banner first (nmap's NULL probe waits several seconds) would otherwise see the
+# connection close without data and report "tcpwrapped". lab/nmap_compare.py raises it.
+IDLE_TIMEOUT = 2
+
+
 def read_some(conn, n=4096):
-    conn.settimeout(2)
+    conn.settimeout(IDLE_TIMEOUT)
     try:
         return conn.recv(n)
     except OSError:

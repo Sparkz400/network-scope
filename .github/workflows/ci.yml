@@ -69,6 +69,31 @@ jobs:
           name: benchmark-${{ runner.os }}
           path: benchmark-results/
           if-no-files-found: ignore
+      # nmap comparison (roadmap A3): scans the same loopback lab with nmap -sT -sV and Network Scope,
+      # imports nmap's XML through Network Scope's importer and diffs open/closed, service, product and
+      # version. Every difference must be explained in lab/nmap_differences.json, otherwise the step
+      # fails. Installing nmap is optional: when apt fails, the comparison is skipped (with a warning).
+      # The explanations were written from nmap 7.98 on Windows; Ubuntu's nmap is older, so the first
+      # Linux run may list differences that still have to be investigated.
+      - name: Install nmap (Linux, optional)
+        id: nmap
+        if: runner.os == 'Linux'
+        run: |
+          if sudo apt-get update && sudo apt-get install -y --no-install-recommends nmap; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::nmap could not be installed with apt; the nmap comparison is skipped"
+          fi
+      - name: nmap comparison (Linux; fails on an unexplained difference)
+        if: runner.os == 'Linux' && steps.nmap.outputs.available == 'true'
+        run: python -I lab/nmap_compare.py --cli "$PWD/target/release/network-scope-cli" --explain lab/nmap_differences.json --out-dir nmap-compare-results
+      - name: Upload the nmap comparison
+        if: always() && runner.os == 'Linux' && steps.nmap.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nmap-compare-${{ runner.os }}
+          path: nmap-compare-results/
+          if-no-files-found: ignore
       # The same lab under bad conditions (lab/simulators.py --scenario, lab/verify.py --scenario):
       # a slow WAN (150-300 ms per reply), lost connections and UDP replies, and fragile OT devices
       # that crash on a write or a connection burst. Linux only; each scenario is its own step so

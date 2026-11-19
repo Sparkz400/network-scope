@@ -10,7 +10,7 @@ cargo fmt --check
 
 The tests exercise real loopback networking and protocol fixtures, SQLite round trips, scan changes, parser bounds, report escaping, and the SYN, ARP and TCP-traceroute I/O loops against a fake wire. A source-level test fails the build if the passive capture modules contain socket or send code.
 
-CI ([`.github/workflows/ci.yml`](https://github.com/Sparkz400/network-scope/blob/main/.github/workflows/ci.yml)) runs format, clippy with `-D warnings`, the tests and the lab check below on Windows, Linux and macOS, uploads both binaries as build artifacts, measures coverage (below) and builds the Windows installer. On Linux it also runs the [accuracy benchmark](#accuracy-benchmark) and fails when an accuracy metric drops below the baseline. Tagged releases are built by `release.yml`.
+CI ([`.github/workflows/ci.yml`](https://github.com/Sparkz400/network-scope/blob/main/.github/workflows/ci.yml)) runs format, clippy with `-D warnings`, the tests and the lab check below on Windows, Linux and macOS, uploads both binaries as build artifacts, measures coverage (below) and builds the Windows installer. On Linux it also runs the [accuracy benchmark](#accuracy-benchmark) and fails when an accuracy metric drops below the baseline; if nmap can be installed with apt it also runs the [nmap comparison](#comparison-with-nmap) and fails on an unexplained difference. Tagged releases are built by `release.yml`.
 
 ## Real industrial traffic
 
@@ -112,6 +112,38 @@ What the numbers do not say:
 - Only OS and device types that the simulators' banners name are in the ground truth (Debian, IIS, a Redis server, a PLC). TTL-only OS guessing is not measured, and the simulators on `127.0.10.1` to `127.0.10.3` carry no OS evidence, so the tool correctly names none.
 - Only loopback addresses are used, so ARP, SYN scanning and routing are not covered.
 
+### Comparison with nmap
+
+[`lab/nmap_compare.py`](https://github.com/Sparkz400/network-scope/blob/main/lab/nmap_compare.py) (Python standard library only) scans the same lab as the benchmark with both tools and diffs the result. It starts the simulators, runs `nmap -sT -Pn -n -T4 -sV -p <lab ports> -oX` against every lab address and Network Scope (`--fast --deep --ot --tcp-only`, the benchmark's options) against the same addresses and ports, then imports nmap's XML through Network Scope's own importer (`import`, then `export --format json`, so the importer and its product-name mapping are part of what is tested) and compares per host and port: open or closed, service name, product and version. It also compares the totals of closed and unanswered ports, which the importer does not keep. Only loopback addresses are contacted.
+
+```sh
+cargo build --release --locked
+python -I lab/nmap_compare.py --cli /absolute/path/to/target/release/network-scope-cli --explain lab/nmap_differences.json
+```
+
+Every difference has to be explained in [`lab/nmap_differences.json`](https://github.com/Sparkz400/network-scope/blob/main/lab/nmap_differences.json): host, port, field, both values and a reason. An entry matches exactly (no wildcards), so a difference that changes, for example another version string, is not explained by the old entry. The exit code is 0 when every difference is explained, 1 when at least one is not, and 2 when the lab, nmap or the CLI could not be run. An entry that matches nothing is printed as a warning. `--timing --repeat 3` also times Network Scope with ports only and with `--services`, and `nmap -sT -T4` without version detection, and scores every configuration against the ground truth; `--out-dir` keeps nmap's XML and the JSON of both scans.
+
+One setting differs from `verify.py` and `benchmark.py`: the comparison runs the simulators with `--idle 12`, so a client-first service (Redis, Modbus) waits 12 s for the client instead of 2 s. nmap waits several seconds for a banner before it sends its probes; against the 2 s lab it found the connection closed without data and reported Redis and Modbus as `tcpwrapped`. That was the lab, not Network Scope, and a real Redis does not drop an idle connection after 2 s.
+
+CI installs nmap with apt on Linux, after the benchmark, and runs the comparison; when `apt` fails the step is skipped with a warning, and when it runs, an unexplained difference fails the job.
+
+Run on 2026-11-19 (Windows 11, nmap 7.98, release build of the 0.5.1 sources), the comparison listed 8 differences with the lab at its usual 2 s (`--idle 2`): port 502 and Redis on port 6379 as `tcpwrapped` in nmap (four rows) plus the four rows below that do not depend on the idle time. With `--idle 12` nmap names Redis (`redis`, Redis, 5.0.7, the same as Network Scope) and Modbus, which leaves six differences, every one explained:
+
+| Host and port | Field | Network Scope | nmap | Explanation |
+| --- | --- | --- | --- | --- |
+| 127.0.10.2:502 | service | none | `modbus` | By design: no generic probe is sent to industrial ports; the Modbus identity (vendor, product, firmware) is under `Modbus.*` |
+| 127.0.10.2:502 | product | none | `Modbus TCP` | Same; nmap's product is the protocol name, Network Scope's `Modbus.product` is `PLC-1000` |
+| 127.0.10.2:44818 | service | none | `ethernet-ip-2` | Same; the identity is under `EtherNet/IP.*`; `ethernet-ip-2` is nmap's own name for the match |
+| 127.0.10.4:22 | version | `8.4p1` | `8.4p1 Debian 5+deb11u1` | Naming: nmap puts the distribution's package revision into the version, Network Scope keeps the upstream version and shows the revision in the info part |
+| all hosts | closed ports | 0 | 88 | Windows, see below |
+| all hosts | unanswered ports | 88 | 0 | Windows, see below |
+
+All 11 open ports, their service names (apart from the three above), products and versions agree: FTP vsFTPd 2.3.4, SSH OpenSSH 7.4 and 8.4p1, Telnet, Apache 2.4.49 and 2.4.56, Microsoft IIS 10.0 and Redis 5.0.7. The importer's open ports also matched nmap's XML read directly.
+
+The last two rows are a real finding about Network Scope on Windows, not a lab artefact. A refused TCP connect to a closed loopback port takes about 2.0 s on this machine (a plain Python socket: 2.01 s; 0.0003 s when the socket option `SIO_TCP_INITIAL_RTO` turns off SYN retransmission). That is longer than the 1500 ms port timeout of this run and than the default of 2000 ms, so Network Scope records the closed ports as unanswered instead of closed, and with `--tcp-only` a host with no open port is not reported as responding. nmap reported the same ports as closed (`conn-refused`) and finished the plain port scan of the lab in 0.14 s, against 3.2 s for Network Scope; this document does not claim to know how nmap avoids the wait. This was measured on loopback only, and the engine has not been changed for it: switching off SYN retransmission is not safe for lossy real networks, and the benchmark's 100% host precision on Windows currently depends on it (on Linux a refusal is immediate, so the three absent addresses would be reported as responding with `--tcp-only`). Both rows are expected to be absent on Linux; that, and the explanations of the other four rows against the older nmap of Ubuntu's apt repository, has not been run (the comparison has only run on Windows with nmap 7.98).
+
+The numbers behind the wall times and the accuracy of both tools are in the [comparison](comparison.md#measured-on-the-lab).
+
 ### Scenarios: slow WAN, packet loss, fragile OT devices
 
 The same simulators can misbehave on purpose, and `verify.py --scenario` checks that the scanner copes. CI runs each scenario as its own step on Linux after the normal check (`all` runs them all; without `--scenario` only the normal check runs).
@@ -161,7 +193,7 @@ Be aware of these gaps before relying on a feature:
 - UDP traceroute with administrator/root rights; ICMPv6 hop-limit expiry from a real router on Windows.
 - Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine (CI is the first compile) and not exercised on a real network.
 - The GUI binary's console attach when started from a shell (use `network-scope-cli` for scripting).
-- The Inno Setup installer script (never compiled with `iscc` yet) and the CI, release and documentation workflows (not run yet). That includes the accuracy benchmark steps in `ci.yml` and `release.yml`; the benchmark itself has only been run on Windows, so the Linux baseline is not recorded yet.
+- The Inno Setup installer script (never compiled with `iscc` yet) and the CI, release and documentation workflows (not run yet). That includes the accuracy benchmark steps in `ci.yml` and `release.yml`; the benchmark itself has only been run on Windows, so the Linux baseline is not recorded yet. The nmap comparison has also only been run on Windows with nmap 7.98; its explanations are calibrated on that run and may not cover the older nmap of Ubuntu's apt repository.
 - The ClusterFuzzLite build (`.clusterfuzzlite/`) and workflow (`cflite.yml`): not run yet. The fuzz targets themselves were built and run locally on Windows (cargo-fuzz, AddressSanitizer), every target for at least 3 minutes, without a crash.
 - Webhook/syslog delivery against real receivers; SMB against Samba; TLS 1.3 enumeration against OpenSSL/Schannel; JA4S against the reference implementation; CPE names against the NVD dictionary.
 - OT decoders and reassembly against real industrial traffic (synthetic frames only); industrial-device interoperability in general.
