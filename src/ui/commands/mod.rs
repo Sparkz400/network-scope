@@ -7,6 +7,7 @@ mod diff;
 mod export;
 mod feeds;
 mod findings;
+mod fingerprints;
 mod inventory;
 mod listen;
 mod monitor;
@@ -45,6 +46,7 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("topology", devices::topology),
     ("trace", trace::run),
     ("probes", probes::run),
+    ("fingerprints", fingerprints::run),
     ("completions", completions::run),
 ];
 

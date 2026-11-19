@@ -115,6 +115,13 @@ jobs:
           test "$status" -eq 2
           "$bin" scan 127.0.0.1 --ports 1 --timeout 500 --db "$RUNNER_TEMP/cli-only.sqlite" --quiet
           ! ldd "$bin" | grep -Ei 'libX11|libxcb|libwayland|libxkbcommon|libGL'
+      # Roadmap K65: the safety linter (OT and printer ports, write-like payloads, payload and
+      # regex size, nested quantifiers) must pass on the probe database that ships.
+      - name: Probe safety lint (data/probes.json)
+        run: |
+          bin=target/release/network-scope-cli
+          "$bin" probes lint data/probes.json
+          "$bin" probes validate data/probes.json
 
   # Every finding rule id in core/src/risk.rs needs a page under docs/src/findings (linked from the
   # GUI and reports). Plain Python, no build; runs on pull requests, which docs.yml does not.

@@ -12,36 +12,36 @@ use std::{
 static BUILTIN: &str = include_str!("../../../data/probes.json");
 
 #[derive(Deserialize)]
-struct RawRule {
-    re: String,
-    service: String,
+pub(super) struct RawRule {
+    pub(super) re: String,
+    pub(super) service: String,
     #[serde(default)]
-    product: String,
+    pub(super) product: String,
     #[serde(default)]
-    version: String,
+    pub(super) version: String,
     #[serde(default)]
-    info: String,
+    pub(super) info: String,
 }
 #[derive(Deserialize)]
-struct RawProbe {
-    name: String,
+pub(super) struct RawProbe {
+    pub(super) name: String,
     /// "tcp" (default) or "udp".
     #[serde(default)]
-    proto: String,
+    pub(super) proto: String,
     #[serde(default)]
-    ports: Vec<u16>,
+    pub(super) ports: Vec<u16>,
     #[serde(default)]
-    send: String,
+    pub(super) send: String,
     #[serde(default)]
-    send_hex: String,
+    pub(super) send_hex: String,
     #[serde(default)]
-    wait_ms: u64,
+    pub(super) wait_ms: u64,
     #[serde(default)]
-    rules: Vec<RawRule>,
+    pub(super) rules: Vec<RawRule>,
 }
 #[derive(Deserialize)]
-struct RawDb {
-    probes: Vec<RawProbe>,
+pub(super) struct RawDb {
+    pub(super) probes: Vec<RawProbe>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,7 +69,7 @@ pub struct ProbeDb {
     pub udp: Vec<Probe>,
 }
 
-fn unhex(text: &str) -> Result<Vec<u8>, String> {
+pub(super) fn unhex(text: &str) -> Result<Vec<u8>, String> {
     // Validate per character: slicing the string by byte offsets panics on multi-byte input.
     let nibbles: Vec<u8> = text
         .chars()
@@ -174,6 +174,10 @@ impl ProbeDb {
             payload,
             rules,
         })
+    }
+    /// The text of the built-in `data/probes.json` (what `probes lint` checks when no file is given).
+    pub fn builtin_json() -> &'static str {
+        BUILTIN
     }
     pub fn builtin() -> Self {
         let (probes, udp) =

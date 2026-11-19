@@ -264,6 +264,7 @@ pub fn probes_json(data: &[u8]) {
     };
     // The same merge as `ProbeDb::with_user_file`, on a cached copy of the built-in probes
     // (compiling their regexes for every input would make fuzzing far too slow).
+    let _ = std::hint::black_box(service::lint_probes(text));
     if let Ok(db) = builtin_probes().clone().merge_user(text, "probes.json") {
         for probe in db.probes.iter().chain(&db.udp) {
             std::hint::black_box(service::ProbeDb::identify(probe, data));
