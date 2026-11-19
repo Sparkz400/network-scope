@@ -1,0 +1,3 @@
+[libfuzzer]
+# Capture files with several frames and oversized blocks.
+max_len = 65536

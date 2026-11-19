@@ -492,7 +492,7 @@ async fn hello(
     Ok(parse_flight(&data))
 }
 
-fn has_done(data: &[u8]) -> bool {
+pub(crate) fn has_done(data: &[u8]) -> bool {
     let mut handshake = vec![];
     let mut i = 0;
     while let Some(head) = data.get(i..i + 5) {
