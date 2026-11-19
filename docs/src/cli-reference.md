@@ -129,7 +129,7 @@ All scan options, plus:
 | `--dhcp-allow IP,IP` | | Legitimate DHCP servers |
 | `--dhcp-discover` | off | Broadcast one DHCPDISCOVER per cycle and collect offers |
 | `--interface ID` / `--listen-seconds N` | 30 | Passive DHCP listening per cycle |
-| `--webhook http://URL,...` | | POST alerts as JSON (http only) |
+| `--webhook http(s)://URL,...` | | POST alerts as JSON; HTTPS is verified against the OS certificate store |
 | `--syslog [udp://\|tcp://]HOST[:PORT],...` | | RFC 5424 syslog |
 | `--alert-timeout S` | 5 | Per-operation alert delivery timeout (1-60) |
 | `--no-dedup` | off | Alert every cycle |
