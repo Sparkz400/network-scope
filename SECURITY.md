@@ -35,6 +35,39 @@ This is a volunteer-maintained project. As a guideline:
 
 You will be credited in the advisory and the changelog unless you prefer otherwise.
 
+## Verifying releases
+
+Release files and the container image are built by GitHub Actions from the tagged commit
+(`.github/workflows/release.yml`) and carry signed provenance. The binaries are not code-signed.
+
+- **Checksums**: `SHA256SUMS` lists the SHA-256 of every release file.
+- **GitHub artifact attestation** (Sigstore-signed SLSA build provenance) for each release file,
+  also attached as `network-scope-<version>.sigstore.json` for offline use:
+
+  ```sh
+  gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope
+  gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope \
+    --bundle network-scope-0.5.1.sigstore.json
+  ```
+
+- **SLSA level 3 provenance** from the isolated
+  [slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator), attached as
+  `network-scope-<version>.intoto.jsonl`. Verify with
+  [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
+
+  ```sh
+  slsa-verifier verify-artifact network-scope-0.5.1-linux-x86_64.tar.gz \
+    --provenance-path network-scope-0.5.1.intoto.jsonl \
+    --source-uri github.com/Sparkz400/network-scope --source-tag v0.5.1
+  ```
+
+- **Container image** `ghcr.io/sparkz400/network-scope`: build provenance attestation stored in
+  the registry next to the image (plus BuildKit provenance and SBOM attestations):
+
+  ```sh
+  gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
+  ```
+
 ## Scope
 
 In scope, for example:

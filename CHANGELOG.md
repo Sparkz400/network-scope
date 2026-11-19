@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Fuzzing**: cargo-fuzz targets for the parsers of untrusted input (pcap/pcapng, passive frames, OT tracker with TCP reassembly, TLS, SMB, NTLM, SSH, HTTP, RDP, banners, Modbus, EtherNet/IP, BACnet, S7, OPC UA, UDP replies, ARP, SYN-ACK and TCP options, ICMP/ICMPv6 ping and traceroute replies, nmap XML, `probes.json`, `cves.json`) with seed corpora, run on pull requests and weekly by ClusterFuzzLite. The code now builds as a library (`src/lib.rs`) that both binaries call; their behaviour is unchanged.
+- **Container image** of the CLI on GitHub Container Registry, `ghcr.io/sparkz400/network-scope:<version>` and `:latest` (linux/amd64; Debian slim, unprivileged user, libpcap included), with a build provenance attestation in the registry (`gh attestation verify oci://ghcr.io/sparkz400/network-scope:<version> --owner Sparkz400`). Pull requests that change the Dockerfile or Cargo files build and smoke-test the image in CI. Not yet built outside CI; raw-socket and capture features in the container are untested.
+- **SLSA level 3 provenance** for the release files from slsa-github-generator, attached as `network-scope-<version>.intoto.jsonl` (verify with `slsa-verifier`, see SECURITY.md).
 
 ## [0.5.0] - 2026-11-19
 
