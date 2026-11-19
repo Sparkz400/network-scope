@@ -36,7 +36,7 @@ PLATFORMS = {"win32": "windows", "linux": "linux", "darwin": "macos"}
 # (key, title, one line description); all are ratios in 0..1 and all are gated by --check.
 METRICS = [
     ("host_recall", "Host recall", "real hosts found / real hosts"),
-    ("host_precision", "Host precision", "real hosts / hosts reported (absent addresses count against it)"),
+    ("host_precision", "Host precision", "real hosts / hosts reported with an open port or identity (absent addresses count against it)"),
     ("port_recall", "Port recall", "open ports found / open ports (TCP and UDP)"),
     ("tcp_port_recall", "TCP port recall", "open TCP ports found / open TCP ports"),
     ("udp_port_recall", "UDP port recall", "open UDP ports reported in udp_open / open UDP ports"),
@@ -191,7 +191,15 @@ def compare(truth, scan):
     real = {h["address"]: h for h in truth["hosts"]}
     misses = []
 
-    found = {ip for ip, h in hosts.items() if h.get("responding")}
+    # On loopback the OS answers for every 127.x address (ICMP echo and a RST on every port),
+    # so an address without services cannot look absent. A host counts as found when it
+    # responds and shows something real: an open port or an identity. Phantom open ports on
+    # the absent addresses still count against port precision.
+    found = {
+        ip
+        for ip, h in hosts.items()
+        if h.get("responding") and (h.get("open") or h.get("udp_open") or h.get("identity"))
+    }
     for ip in sorted(set(real) - found):
         misses.append(f"host {ip} not found")
     for ip in sorted(found - set(real)):
