@@ -676,14 +676,14 @@ pub fn start(interface: String, seconds: u64, dcp_source: Option<[u8; 6]>) -> Li
         let work = || -> Result<(), String> {
             let mut cap = crate::capture::Capture::open(&interface)?;
             if let Some(source) = dcp_source {
-                // Identify All only. No Set, Reset, Signal or address assignment.
-                let mut frame = vec![0u8; 60];
-                frame[..6].copy_from_slice(&[1, 14, 207, 0, 0, 0]);
-                frame[6..12].copy_from_slice(&source);
-                frame[12..30].copy_from_slice(&[
-                    0x88, 0x92, 0xfe, 0xfe, 5, 0, 0x4e, 0x53, 0, 1, 0, 0x80, 0, 4, 0xff, 0xff, 0, 0,
-                ]);
-                cap.send(&frame)?;
+                // Identify All only. No Set, Reset, Signal or address assignment: the frame
+                // type has no such value (see `ot::readonly`).
+                crate::ot::readonly::DcpFrameTx::new(&mut cap).send(
+                    &crate::ot::readonly::DcpRequest::new(
+                        source,
+                        crate::ot::readonly::DcpService::IdentifyAll,
+                    ),
+                )?;
             }
             let end = Instant::now() + Duration::from_secs(seconds.clamp(1, 86400));
             pump(

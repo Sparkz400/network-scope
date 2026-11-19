@@ -6,7 +6,7 @@
 //! trait that only the request types of this module implement; none takes `&[u8]`. The request
 //! types have private fields, so the only way to obtain one is a constructor that takes the
 //! allow-list enums ([`ModbusFunction`], [`S7Szl`], [`EnipCommand`], [`BacnetService`],
-//! [`OpcUaMessage`]). A write or control service therefore has no value to pass: sending one
+//! [`OpcUaMessage`], [`DcpService`]). A write or control service therefore has no value to pass: sending one
 //! needs a new variant in one of those enums, which is a reviewed code change that the tests
 //! below (exhaustive over every function code byte) then fail until the allow-list is
 //! deliberately updated.
@@ -20,6 +20,7 @@
 //! | EtherNet/IP | encapsulation command 0x0063 (List Identity) |
 //! | BACnet/IP | unicast Who-Is (BVLC 0x0A, unconfirmed request, service 8) |
 //! | OPC UA | HEL, OpenSecureChannel (446), GetEndpoints (428), FindServers (422), CloseSecureChannel (452), SecurityPolicy None |
+//! | Profinet DCP | Identify All (frame ID 0xFEFE, service ID 5, request, option/suboption 0xFF/0xFF), layer 2 multicast, sent only through [`DcpFrameTx`] |
 //!
 //! A Modbus write cannot be constructed; this does not compile:
 //!
@@ -58,6 +59,30 @@
 //! use network_scope_core::ot_readonly::{ReadOnlyRequest, S7Request, S7Szl};
 //! let request = S7Request::read_szl(2, S7Szl::ModuleIdentification);
 //! assert_eq!(request.encode()[7..9], [0x32, 7]);
+//! ```
+//!
+//! The DCP Identify request is the only layer-2 frame; Set (which changes a device's name or
+//! address), Get and Hello have no value:
+//!
+//! ```compile_fail
+//! use network_scope_core::ot_readonly::{DcpRequest, DcpService};
+//! let _ = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::Set);
+//! let _ = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::Hello);
+//! ```
+//!
+//! ```
+//! use network_scope_core::ot_readonly::{DcpRequest, DcpService, ReadOnlyRequest};
+//! let request = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::IdentifyAll);
+//! assert_eq!(request.encode()[14..17], [0xfe, 0xfe, 5]);
+//! ```
+//!
+//! and the frame sender takes no raw bytes either:
+//!
+//! ```compile_fail
+//! use network_scope_core::{capture::Capture, ot_readonly::DcpFrameTx};
+//! fn raw(capture: &mut Capture) {
+//!     let _ = DcpFrameTx::new(capture).send(&[0u8; 60]);
+//! }
 //! ```
 //!
 //! The socket wrappers accept no raw bytes:
@@ -789,9 +814,239 @@ impl ReadOnlyRequest for OpcUaRequest {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Profinet DCP (Ethernet layer 2)
+
+/// The DCP services that may be sent: Identify (service ID 0x05, request) for "all devices"
+/// (option 0xFF, suboption 0xFF), the read-only discovery query. Get, Set (which changes a
+/// device's name or IP address), Hello and every other service ID, frame ID, option and
+/// suboption are not allowed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DcpService {
+    /// Identify All (frame ID 0xFEFE, service ID 5, request, option/suboption 0xFF/0xFF).
+    IdentifyAll,
+}
+
+impl DcpService {
+    pub const ALLOWED: [Self; 1] = [Self::IdentifyAll];
+    /// The multicast destination of an Identify request (01:0E:CF:00:00:00).
+    pub const MULTICAST: [u8; 6] = [1, 14, 207, 0, 0, 0];
+    /// Ethertype of Profinet (0x8892).
+    pub const ETHERTYPE: u16 = 0x8892;
+    const fn frame_id(self) -> u16 {
+        match self {
+            Self::IdentifyAll => 0xfefe,
+        }
+    }
+    const fn service_id(self) -> u8 {
+        match self {
+            Self::IdentifyAll => 5,
+        }
+    }
+    /// The allow-listed service for the Ethernet frame ID, DCP service ID, service type
+    /// (0 = request) and the option and suboption of the single block it carries. Everything
+    /// else (Get 3, Set 4, Hello 6, any response, any other block) is `None`.
+    pub const fn from_wire(
+        frame_id: u16,
+        service_id: u8,
+        service_type: u8,
+        option: u8,
+        suboption: u8,
+    ) -> Option<Self> {
+        match (frame_id, service_id, service_type, option, suboption) {
+            (0xfefe, 5, 0, 0xff, 0xff) => Some(Self::IdentifyAll),
+            _ => None,
+        }
+    }
+    /// The service of an encoded DCP frame (the 60-byte Ethernet frame of [`DcpRequest`]); the
+    /// source MAC, transaction ID and response delay are free, everything else must match.
+    pub fn of_frame(frame: &[u8]) -> Option<Self> {
+        if frame.len() != 60
+            || frame[..6] != Self::MULTICAST
+            || u16::from_be_bytes([frame[12], frame[13]]) != Self::ETHERTYPE
+            || frame[24..26] != [0, 4]
+            || frame[28..30] != [0, 0]
+            || frame[30..].iter().any(|b| *b != 0)
+        {
+            return None;
+        }
+        Self::from_wire(
+            u16::from_be_bytes([frame[14], frame[15]]),
+            frame[16],
+            frame[17],
+            frame[26],
+            frame[27],
+        )
+    }
+}
+
+/// One DCP request frame of an allow-listed service, from `source` (the interface MAC).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DcpRequest {
+    source: [u8; 6],
+    service: DcpService,
+}
+
+impl DcpRequest {
+    pub const fn new(source: [u8; 6], service: DcpService) -> Self {
+        Self { source, service }
+    }
+    pub const fn service(&self) -> DcpService {
+        self.service
+    }
+}
+
+impl sealed::Sealed for DcpRequest {}
+impl ReadOnlyRequest for DcpRequest {
+    fn encode(&self) -> Vec<u8> {
+        // Ethernet II (multicast destination, source, ethertype 0x8892), padded to 60 bytes;
+        // DCP header: frame ID, service ID, service type 0 (request), transaction ID "NS\0\x01",
+        // response delay 0x0080, data length 4; one block: option, suboption, length 0.
+        let mut frame = vec![0u8; 60];
+        frame[..6].copy_from_slice(&DcpService::MULTICAST);
+        frame[6..12].copy_from_slice(&self.source);
+        frame[12..14].copy_from_slice(&DcpService::ETHERTYPE.to_be_bytes());
+        frame[14..16].copy_from_slice(&self.service.frame_id().to_be_bytes());
+        frame[16] = self.service.service_id();
+        frame[18..24].copy_from_slice(&[0x4e, 0x53, 0, 1, 0, 0x80]);
+        frame[24..28].copy_from_slice(&[0, 4, 0xff, 0xff]);
+        frame
+    }
+}
+
+/// A capture handle that can send only [`DcpRequest`] frames. The capture it borrows can
+/// still receive through its owner; the only way to put a layer-2 OT frame on the wire is
+/// [`DcpFrameTx::send`], which takes nothing but an allow-listed request.
+pub struct DcpFrameTx<'a>(&'a mut crate::capture::Capture);
+
+impl<'a> DcpFrameTx<'a> {
+    pub fn new(capture: &'a mut crate::capture::Capture) -> Self {
+        Self(capture)
+    }
+    /// Sends one request as a single frame.
+    pub fn send(&mut self, request: &DcpRequest) -> Result<(), String> {
+        self.0.send(&request.encode())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dcp_constructor_accepts_exactly_the_allow_list() {
+        let mut accepted = vec![];
+        // Every (service ID, service type) pair with the Identify All frame ID and block.
+        for service_id in 0..=255u8 {
+            for service_type in 0..=255u8 {
+                if let Some(s) = DcpService::from_wire(0xfefe, service_id, service_type, 0xff, 0xff)
+                {
+                    accepted.push((service_id, service_type, s));
+                }
+            }
+        }
+        assert_eq!(accepted, vec![(5, 0, DcpService::IdentifyAll)]);
+        // Every frame ID.
+        let frames: Vec<u16> = (0..=u16::MAX)
+            .filter(|f| DcpService::from_wire(*f, 5, 0, 0xff, 0xff).is_some())
+            .collect();
+        assert_eq!(
+            frames,
+            [0xfefe],
+            "0xFEFD (Get/Set) and 0xFEFC (Hello) are out"
+        );
+        // Every option/suboption pair.
+        let blocks: Vec<(u8, u8)> = (0..=255u8)
+            .flat_map(|o| (0..=255u8).map(move |s| (o, s)))
+            .filter(|(o, s)| DcpService::from_wire(0xfefe, 5, 0, *o, *s).is_some())
+            .collect();
+        assert_eq!(blocks, [(0xff, 0xff)]);
+        assert_eq!(accepted.len(), DcpService::ALLOWED.len());
+        // Get (3), Set (4) and Hello (6) with their usual frame IDs.
+        for (frame, service) in [(0xfefd, 3), (0xfefd, 4), (0xfefc, 6)] {
+            assert_eq!(DcpService::from_wire(frame, service, 0, 0xff, 0xff), None);
+        }
+    }
+
+    #[test]
+    fn dcp_encoded_request_equals_the_previous_literal() {
+        // The frame the scanner sent before the type existed, byte for byte.
+        let source = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let mut legacy = vec![0u8; 60];
+        legacy[..6].copy_from_slice(&[1, 14, 207, 0, 0, 0]);
+        legacy[6..12].copy_from_slice(&source);
+        legacy[12..30].copy_from_slice(&[
+            0x88, 0x92, 0xfe, 0xfe, 5, 0, 0x4e, 0x53, 0, 1, 0, 0x80, 0, 4, 0xff, 0xff, 0, 0,
+        ]);
+        let request = DcpRequest::new(source, DcpService::IdentifyAll);
+        assert_eq!(request.encode(), legacy);
+        assert_eq!(request.service(), DcpService::IdentifyAll);
+    }
+
+    #[test]
+    fn dcp_every_encoded_request_decodes_to_the_allow_list() {
+        for byte in 0..=255u8 {
+            let source = [byte, 1, 2, 3, 4, byte ^ 0x55];
+            for s in DcpService::ALLOWED {
+                let bytes = DcpRequest::new(source, s).encode();
+                assert_eq!(bytes.len(), 60);
+                assert_eq!(bytes[6..12], source);
+                assert_eq!(DcpService::of_frame(&bytes), Some(s));
+            }
+        }
+    }
+
+    #[test]
+    fn dcp_changing_any_discriminator_byte_is_rejected() {
+        let frame = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::IdentifyAll).encode();
+        // Free bytes: source MAC (6..12), transaction ID (18..22), response delay (22..24).
+        let free = |i: usize| (6..12).contains(&i) || (18..24).contains(&i);
+        for index in 0..frame.len() {
+            for value in 0..=255u8 {
+                if value == frame[index] {
+                    continue;
+                }
+                let mut changed = frame.clone();
+                changed[index] = value;
+                let decoded = DcpService::of_frame(&changed);
+                if free(index) {
+                    assert_eq!(decoded, Some(DcpService::IdentifyAll), "byte {index}");
+                } else {
+                    assert_eq!(decoded, None, "byte {index} -> {value:#x}");
+                }
+            }
+        }
+        // A truncated or extended frame is not a request either.
+        assert_eq!(DcpService::of_frame(&frame[..59]), None);
+        let mut longer = frame.clone();
+        longer.push(0);
+        assert_eq!(DcpService::of_frame(&longer), None);
+        assert_eq!(DcpService::of_frame(&[]), None);
+    }
+
+    /// The structural half for DCP: the capture send in `passive::start` goes through
+    /// [`DcpFrameTx`], not a raw `Capture::send` with hand-built bytes.
+    #[test]
+    fn dcp_send_in_passive_start_uses_the_typed_sender() {
+        let source = include_str!("../passive.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let sender = code.split("pub struct Listening").nth(1).unwrap();
+        assert!(
+            sender.contains("DcpFrameTx::new"),
+            "start must send through DcpFrameTx"
+        );
+        for forbidden in [
+            "cap.send(",
+            ".send(&frame",
+            "vec![0u8; 60]",
+            "pcap_sendpacket",
+        ] {
+            assert!(
+                !sender.contains(forbidden),
+                "passive.rs must not build or send raw frames ({forbidden})"
+            );
+        }
+    }
 
     #[test]
     fn modbus_constructor_accepts_exactly_the_allow_list() {
