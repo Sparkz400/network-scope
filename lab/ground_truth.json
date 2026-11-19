@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "description": "Ground truth for lab/benchmark.py. Every host is a loopback address (127.0.0.0/8, the only addresses the benchmark may touch). A host lists exactly the services it serves; 'handler' names the function in lab/simulators.py that serves the port. Everything not listed is closed or absent. 'expect' holds what a scanner should name: service, product, version, device type, OS. Expectations come from what each simulator serves, not from what the tool reports; where the tool disagrees, that is a miss in the benchmark.",
+  "description": "Ground truth for lab/benchmark.py. Every host is a loopback address (127.0.0.0/8, the only addresses the benchmark may touch). A host lists exactly the services it serves; 'handler' names the function in lab/simulators.py that serves the port. Everything not listed is closed or absent. 'expect' holds what a scanner should name: service, product, version, device type, OS. Expectations come from what each simulator serves, not from what the tool reports; where the tool disagrees, that is a miss in the benchmark. A host with a 'findings' list states exactly which risk-rule ids its lab condition warrants (an empty list: none; the host has the key, so every finding on it counts); each other finding raised on that host is a false alarm and counts in the false_alarms metric. A host without the key states nothing about findings.",
   "scan": {
     "closed_tcp_ports": [25, 2222, 8081, 9999],
     "note": "Port 80 is never used: Windows hosts often run IIS there. The scan covers the open TCP ports below plus closed_tcp_ports on every host."
@@ -15,7 +15,8 @@
         {"port": 23, "handler": "telnet", "expect": {"service": "telnet"}},
         {"port": 8080, "handler": "http", "expect": {"service": "http", "product": "Apache", "version": "2.4.49"}}
       ],
-      "udp": []
+      "udp": [],
+      "findings": ["ftp-cleartext", "telnet-open", "ssh-weak-algorithms", "ssh-legacy-algorithms", "http-basic-cleartext", "cve-cve-2011-2523", "cve-cve-2021-41773", "cve-cve-2023-38408", "cve-cve-2018-15473"]
     },
     {
       "address": "127.0.10.2",
@@ -27,6 +28,7 @@
       "udp": [
         {"port": 47808, "handler": "bacnet", "expect": {"service": "bacnet", "identity": {"BACnet.device_id": "1000"}}}
       ],
+      "findings": ["ot-reachable"],
       "expect": {"device_type": "Industrial controller / OT device"}
     },
     {
@@ -35,7 +37,8 @@
       "tcp": [
         {"port": 8080, "handler": "http", "expect": {"service": "http", "product": "Apache", "version": "2.4.49"}}
       ],
-      "udp": []
+      "udp": [],
+      "findings": ["http-basic-cleartext", "cve-cve-2021-41773"]
     },
     {
       "address": "127.0.10.4",
@@ -45,6 +48,7 @@
         {"port": 8080, "handler": "http_debian", "expect": {"service": "http", "product": "Apache", "version": "2.4.56"}}
       ],
       "udp": [],
+      "findings": ["ssh-weak-algorithms", "ssh-legacy-algorithms", "cve-cve-2023-38408"],
       "expect": {"os": "Linux", "device_type": "Linux/Unix host"}
     },
     {
@@ -54,6 +58,7 @@
         {"port": 6379, "handler": "redis", "expect": {"service": "redis", "product": "Redis", "version": "5.0.7"}}
       ],
       "udp": [],
+      "findings": ["redis-noauth"],
       "expect": {"device_type": "Database server"}
     },
     {
@@ -63,6 +68,7 @@
         {"port": 8080, "handler": "http_iis", "expect": {"service": "http", "product": "Microsoft-IIS", "version": "10.0"}}
       ],
       "udp": [],
+      "findings": [],
       "expect": {"os": "Windows", "device_type": "Windows computer"}
     }
   ],

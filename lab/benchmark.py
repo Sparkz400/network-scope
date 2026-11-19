@@ -5,7 +5,13 @@ Starts the lab simulators on loopback addresses, scans them with the CLI and com
 result with lab/ground_truth.json (every host, port and expected identity is known):
 
   host recall / precision, port precision / recall (TCP and UDP), service accuracy, product
-  accuracy, device-type accuracy, OS accuracy, plus the wall time of the scan.
+  accuracy, device-type accuracy, OS accuracy, finding recall, plus the wall time of the scan.
+
+The risk rules run over the same scan (`findings 1`). A host whose ground truth has a
+"findings" list states exactly which rule ids its lab condition warrants (a trailing * matches
+a family such as "cve-*"); every other finding raised on it is a false alarm. A host without
+the key states nothing and is skipped. `false_alarms` is a count, lower is better, and --check
+fails when it rises above the baseline (a missing baseline value means 0).
 
   python -I lab/benchmark.py --cli /abs/path/to/network-scope-cli --check
 
@@ -45,6 +51,7 @@ METRICS = [
     ("product_accuracy", "Product accuracy", "product (and version) named correctly / products known"),
     ("device_type_accuracy", "Device type accuracy", "device types correct / hosts with a known type"),
     ("os_accuracy", "OS accuracy", "OS family correct / hosts with a known OS"),
+    ("finding_recall", "Finding recall", "expected findings raised / expected findings"),
 ]
 
 
@@ -178,7 +185,18 @@ def run_scan(cli, addresses, ports, timeout_ms, limit_s):
     if proc.returncode != 0 or not os.path.exists(out):
         raise LabError(f"scan failed (exit {proc.returncode}): {proc.stderr.strip()[-500:]}")
     with open(out, encoding="utf-8") as f:
-        return json.load(f), elapsed, options
+        scan = json.load(f)
+    findings_out = os.path.join(work, "findings.json")
+    try:
+        proc = subprocess.run([cli, "findings", "1", "--db", db, "--sort", "severity", "--output", findings_out,
+                               "--quiet"], capture_output=True, text=True, timeout=limit_s)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise LabError(f"could not run the CLI (findings): {e}") from None
+    if proc.returncode != 0 or not os.path.exists(findings_out):
+        raise LabError(f"findings failed (exit {proc.returncode}): {proc.stderr.strip()[-500:]}")
+    with open(findings_out, encoding="utf-8") as f:
+        scan["findings"] = json.load(f)
+    return scan, elapsed, options
 
 
 def ratio(num, den):
@@ -248,6 +266,34 @@ def compare(truth, scan):
             if not ok:
                 misses.append(f"{tag} {a} expected {want!r}, got {got or 'nothing'!r}")
 
+    allowed_hit = allowed_n = 0
+    reported_n = 0
+    false_alarms = {}  # rule id -> list of "ip[:port]" the ground truth does not warrant
+    by_host = {}
+    for f in scan.get("findings", []):
+        by_host.setdefault(f["ip"], []).append(f)
+    for a, host in real.items():
+        if "findings" not in host:
+            continue  # nothing stated about this host
+        allowed = host["findings"]
+        raised = by_host.get(a, [])
+
+        def warranted(rule_id, patterns=allowed):
+            return any(rule_id == p or (p.endswith("*") and rule_id.startswith(p[:-1])) for p in patterns)
+
+        for f in raised:
+            reported_n += 1
+            if not warranted(f["id"]):
+                where = a if f.get("port") is None else f"{a}:{f['port']}"
+                false_alarms.setdefault(f["id"], []).append(where)
+                misses.append(f"false alarm: {f['id']} on {where} but the ground truth says the condition is absent")
+        for pattern in allowed:
+            allowed_n += 1
+            if any(f["id"] == pattern or (pattern.endswith("*") and f["id"].startswith(pattern[:-1]))
+                   for f in raised):
+                allowed_hit += 1
+            else:
+                misses.append(f"expected finding {pattern} on {a} was not raised")
     real_found = len(found & set(real))
     metrics = {
         "host_recall": ratio(real_found, len(real)),
@@ -260,7 +306,11 @@ def compare(truth, scan):
         "product_accuracy": ratio(prod_ok, prod_n),
         "device_type_accuracy": ratio(dev_ok, dev_n),
         "os_accuracy": ratio(os_ok, os_n),
+        "finding_recall": ratio(allowed_hit, allowed_n),
     }
+    count = sum(len(v) for v in false_alarms.values())
+    metrics["false_alarms"] = {"value": count, "num": count, "den": reported_n,
+                               "by_rule": {k: sorted(v) for k, v in sorted(false_alarms.items())}}
     return metrics, misses
 
 
@@ -281,6 +331,10 @@ def check(metrics, platform, baseline_path):
         got = metrics[key]["value"]
         if want is not None and (got is None or got < want - EPSILON):
             regressions.append(f"{key}: {'n/a' if got is None else f'{got:.4f}'} is below the baseline {want:.4f}")
+    # False alarms are a count where lower is better: it must never rise above the baseline.
+    allowed = base.get("false_alarms", 0)
+    if metrics["false_alarms"]["value"] > allowed:
+        regressions.append(f"false_alarms: {metrics['false_alarms']['value']} is above the baseline {allowed}")
     return base, regressions, ""
 
 
@@ -300,6 +354,11 @@ def markdown(result, baseline, regressions, note):
             mark = "REGRESSION" if bad else "ok"
         lines.append(f"| {title} | {fmt(m['value'])} | {m['num']}/{m['den']} | "
                      f"{fmt(want) if baseline else '-'} | {mark} |")
+    fa = result["metrics"]["false_alarms"]
+    allowed = baseline.get("false_alarms", 0)
+    mark = "" if not baseline else ("REGRESSION" if fa["value"] > allowed else "ok")
+    lines.append(f"| False alarms (lower is better) | {fa['value']} | {fa['num']}/{fa['den']} findings | "
+                 f"{allowed if baseline else '-'} | {mark} |")
     t = result["timing"]
     lines += ["", f"Scan wall time {t['scan_seconds']:.1f} s for {result['lab']['addresses']} addresses "
               f"x {result['lab']['ports_per_host']} ports (reported, not gated). "
@@ -323,6 +382,7 @@ def update_baseline(path, platform, metrics):
     data["schema"] = 1
     data.setdefault("platforms", {})[platform] = {k: metrics[k]["value"] for k, _, _ in METRICS
                                                   if metrics[k]["value"] is not None}
+    data["platforms"][platform]["false_alarms"] = metrics["false_alarms"]["value"]
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2, sort_keys=True)
         f.write("\n")
