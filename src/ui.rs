@@ -79,7 +79,7 @@ Npcap is optional for TCP connect; capture/DCP/SYN require its driver and access
 TUI: Space pause/resume, Q/Esc stop and save a partial scan, Up/Down select,
 Enter host details (Enter/Backspace back), S change sort. No scan starts by itself.
 "#;
-const FLAGS: [&str; 22] = [
+const FLAGS: [&str; 23] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
