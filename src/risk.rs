@@ -345,11 +345,15 @@ fn cve_slot() -> &'static RwLock<Option<Arc<CveDb>>> {
 /// them the rules every later analysis uses. Called for `--cves FILE`; on error the previously
 /// active rules stay in place.
 pub fn load_cves(explicit: Option<&Path>) -> Result<(), String> {
-    let db = CveDb::load(explicit)?;
+    set_cves(CveDb::load(explicit)?);
+    Ok(())
+}
+
+/// Makes `db` the rules every later analysis uses.
+pub fn set_cves(db: CveDb) {
     if let Ok(mut slot) = cve_slot().write() {
         *slot = Some(Arc::new(db));
     }
-    Ok(())
 }
 
 /// Start-up load of the default rules (user file `NetworkScope/cves.json` under LOCALAPPDATA or
