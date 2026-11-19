@@ -2,7 +2,7 @@ use crate::{
     passive::Observation,
     scan::{Host, Settings},
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -1005,12 +1005,16 @@ mod tests {
         b.hosts[0].identity.retain(|k, _| !k.starts_with("svc.502"));
         b.hosts[0].identity.remove("Modbus.firmware");
         let changes = diff(&a, &b).unwrap();
-        assert!(changes
-            .iter()
-            .any(|c| c.contains("port 502 no longer observed open")));
-        assert!(changes
-            .iter()
-            .any(|c| c.contains("Modbus.firmware no longer reported")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("port 502 no longer observed open"))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("Modbus.firmware no longer reported"))
+        );
         assert!(
             !changes.iter().any(|c| c.contains("svc.502")),
             "{changes:?}"
@@ -1335,25 +1339,35 @@ mod tests {
     fn export_at_stamps_the_scan_time_in_every_timed_format() {
         let s = snapshot();
         let ts = 1_700_000_000;
-        assert!(export_at(&s, "html", ts)
-            .unwrap()
-            .contains("2023-11-14 22:13 UTC"));
-        assert!(export_at(&s, "nmap", ts)
-            .unwrap()
-            .contains("start=\"1700000000\""));
-        assert!(export_at(&s, "md", ts)
-            .unwrap()
-            .contains("2023-11-14 22:13 UTC"));
+        assert!(
+            export_at(&s, "html", ts)
+                .unwrap()
+                .contains("2023-11-14 22:13 UTC")
+        );
+        assert!(
+            export_at(&s, "nmap", ts)
+                .unwrap()
+                .contains("start=\"1700000000\"")
+        );
+        assert!(
+            export_at(&s, "md", ts)
+                .unwrap()
+                .contains("2023-11-14 22:13 UTC")
+        );
         let line = export_at(&s, "jsonl", ts).unwrap();
         let v: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
         assert_eq!(v["timestamp"], ts);
         // Without a known time the exports say so instead of inventing 1970.
-        assert!(export_at(&s, "html", 0)
-            .unwrap()
-            .contains("time not recorded"));
-        assert!(export_at(&s, "markdown", 0)
-            .unwrap()
-            .contains("time not recorded"));
+        assert!(
+            export_at(&s, "html", 0)
+                .unwrap()
+                .contains("time not recorded")
+        );
+        assert!(
+            export_at(&s, "markdown", 0)
+                .unwrap()
+                .contains("time not recorded")
+        );
         assert!(export_at(&s, "pdf", 0).unwrap_err().contains("md or jsonl"));
     }
 

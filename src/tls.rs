@@ -4,9 +4,9 @@
 //! weak ones that rustls refuses to speak. Certificates are inventory data, never trusted.
 use crate::core::Gate;
 use rustls::{
+    ClientConfig, DigitallySignedStruct, SignatureScheme,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     pki_types::{CertificateDer, ServerName, UnixTime},
-    ClientConfig, DigitallySignedStruct, SignatureScheme,
 };
 use std::{
     collections::BTreeMap,
@@ -19,7 +19,7 @@ use tokio::{
     net::TcpStream,
     time::timeout,
 };
-use tokio_rustls::{client::TlsStream, TlsConnector};
+use tokio_rustls::{TlsConnector, client::TlsStream};
 use x509_parser::{prelude::*, public_key::PublicKey};
 
 pub type Fields = BTreeMap<String, String>;
@@ -597,7 +597,7 @@ pub fn first_server_hello(data: &[u8]) -> First {
                 return match payload.get(1) {
                     Some(d) => First::Alert(*d),
                     None => First::Incomplete,
-                }
+                };
             }
             22 => handshake.extend_from_slice(payload),
             _ if handshake.is_empty() => return First::Other,
@@ -951,12 +951,11 @@ pub async fn inspect_after(
         Err(e) if support.accepted.is_empty() => return Err(e),
         Err(_) => Fields::new(),
     };
-    if !fields.contains_key("subject") {
-        if let Some(cert) = &support.cert {
-            if let Ok(extra) = describe_cert(cert) {
-                fields.extend(extra);
-            }
-        }
+    if !fields.contains_key("subject")
+        && let Some(cert) = &support.cert
+        && let Ok(extra) = describe_cert(cert)
+    {
+        fields.extend(extra);
     }
     let negotiated = fields.get("negotiated").cloned();
     fields.extend(summarize(&support, negotiated.as_deref()));
@@ -1079,7 +1078,7 @@ mod tests {
     /// certificate parsing and the raw enumerator against a live TLS implementation.
     #[tokio::test]
     async fn live_tls_server_is_inspected() {
-        use rustls::{pki_types::PrivateKeyDer, ServerConfig};
+        use rustls::{ServerConfig, pki_types::PrivateKeyDer};
         use tokio_rustls::TlsAcceptor;
         let key = test_identity();
         let provider = Arc::new(rustls::crypto::ring::default_provider());

@@ -3,9 +3,9 @@ use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr},
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
-        Arc,
     },
     thread,
     time::{Duration, Instant},
@@ -761,9 +761,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn native_loopback_ping() {
-        assert!(crate::platform::echo("127.0.0.1".parse().unwrap(), 1000)
-            .rtt
-            .is_some());
+        assert!(
+            crate::platform::echo("127.0.0.1".parse().unwrap(), 1000)
+                .rtt
+                .is_some()
+        );
     }
 
     #[cfg(windows)]

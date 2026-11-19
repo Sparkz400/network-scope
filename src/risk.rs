@@ -211,10 +211,10 @@ impl CveDb {
                     )));
                 }
             }
-            if let (Some(lo), Some(hi)) = (&r.min, &r.max) {
-                if compare(&parse_version(lo), &parse_version(hi)).is_ge() {
-                    return Err(err(format!("min {lo} is not below max {hi}")));
-                }
+            if let (Some(lo), Some(hi)) = (&r.min, &r.max)
+                && compare(&parse_version(lo), &parse_version(hi)).is_ge()
+            {
+                return Err(err(format!("min {lo} is not below max {hi}")));
             }
             let severity = Severity::parse(&r.severity)
                 .ok_or_else(|| err(format!("unknown severity {:?}", r.severity)))?;
@@ -417,8 +417,7 @@ fn today() -> String {
     crate::tls::date(now)
 }
 
-const BACKPORT_NOTE: &str =
-    "Version-based hint only: distributions backport fixes without changing the version. Confirm with the vendor advisory or an authenticated check.";
+const BACKPORT_NOTE: &str = "Version-based hint only: distributions backport fixes without changing the version. Confirm with the vendor advisory or an authenticated check.";
 
 fn heartbleed(server: &str) -> Option<String> {
     let at = server.find("OpenSSL/1.0.1")?;
@@ -512,21 +511,21 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                     &[],
                     "Renew the certificate.",
                 );
-            } else if let Ok(days) = get(format!("tls.{p}.days_left")).parse::<i64>() {
-                if days <= 30 {
-                    o.add(
-                        Severity::Medium,
-                        "tls-cert-expiring",
-                        "TLS certificate expires within 30 days",
-                        port,
-                        format!(
-                            "{days} days left (not after {})",
-                            get(format!("tls.{p}.not_after"))
-                        ),
-                        &[],
-                        "Renew the certificate before it expires.",
-                    );
-                }
+            } else if let Ok(days) = get(format!("tls.{p}.days_left")).parse::<i64>()
+                && days <= 30
+            {
+                o.add(
+                    Severity::Medium,
+                    "tls-cert-expiring",
+                    "TLS certificate expires within 30 days",
+                    port,
+                    format!(
+                        "{days} days left (not after {})",
+                        get(format!("tls.{p}.not_after"))
+                    ),
+                    &[],
+                    "Renew the certificate before it expires.",
+                );
             }
             // The validity period has two ends: a certificate dated in the future (device
             // clock reset, wrong issuance date) fails verification just like an expired one.
@@ -567,18 +566,17 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
             if let Some(bits) = get(format!("tls.{p}.key"))
                 .strip_prefix("RSA ")
                 .and_then(|b| b.parse::<u32>().ok())
+                && bits < 2048
             {
-                if bits < 2048 {
-                    o.add(
-                        Severity::High,
-                        "tls-weak-key",
-                        "Certificate uses a short RSA key",
-                        port,
-                        format!("RSA {bits}"),
-                        &[],
-                        "Use RSA 2048 or larger, or an EC key.",
-                    );
-                }
+                o.add(
+                    Severity::High,
+                    "tls-weak-key",
+                    "Certificate uses a short RSA key",
+                    port,
+                    format!("RSA {bits}"),
+                    &[],
+                    "Use RSA 2048 or larger, or an EC key.",
+                );
             }
             let weak = get(format!("tls.{p}.weak"));
             if !weak.is_empty() {
@@ -794,18 +792,18 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                 }
             }
         }
-        if let Some(v) = get(format!("http.{p}.powered_by")).strip_prefix("PHP/") {
-            if let Some(eol) = php_eol(v, &today()) {
-                o.add(
-                    Severity::Low,
-                    "php-eol",
-                    "PHP release is no longer supported",
-                    port,
-                    format!("PHP {v} (end of life {eol})"),
-                    &[],
-                    "Upgrade to a supported PHP release.",
-                );
-            }
+        if let Some(v) = get(format!("http.{p}.powered_by")).strip_prefix("PHP/")
+            && let Some(eol) = php_eol(v, &today())
+        {
+            o.add(
+                Severity::Low,
+                "php-eol",
+                "PHP release is no longer supported",
+                port,
+                format!("PHP {v} (end of life {eol})"),
+                &[],
+                "Upgrade to a supported PHP release.",
+            );
         }
         // 2222/tcp is EtherNet/IP I/O (and legacy Allen-Bradley CSP) but also a very common
         // alternative SSH port; service detection only listens there, so an SSH greeting
@@ -1009,10 +1007,12 @@ mod tests {
         );
         assert!(analyze_host(&fixed).is_empty());
         let apache = host(&[80], &[("http.80.server", "Apache/2.4.49 (Unix)")]);
-        assert!(analyze_host(&apache)
-            .iter()
-            .any(|f| f.severity == Severity::Critical
-                && f.cve.contains(&"CVE-2021-41773".to_string())));
+        assert!(
+            analyze_host(&apache)
+                .iter()
+                .any(|f| f.severity == Severity::Critical
+                    && f.cve.contains(&"CVE-2021-41773".to_string()))
+        );
         let vsftpd = host(
             &[21],
             &[
@@ -1049,7 +1049,10 @@ mod tests {
                 ("tls.443.signature", "sha1WithRSA (weak)"),
                 ("tls.443.key", "RSA 1024"),
                 ("tls.443.versions", "TLS1.2, TLS1.0 (deprecated)"),
-                ("tls.443.weak", "TLS1.0 enabled (deprecated); TLS1.0: RSA_RC4_128_SHA - RC4; TLS1.2: RSA_AES_128_CBC_SHA - no forward secrecy"),
+                (
+                    "tls.443.weak",
+                    "TLS1.0 enabled (deprecated); TLS1.0: RSA_RC4_128_SHA - RC4; TLS1.2: RSA_AES_128_CBC_SHA - no forward secrecy",
+                ),
             ],
         );
         let got = ids(&h);
@@ -1233,7 +1236,9 @@ mod tests {
             Some(Severity::Medium)
         );
         assert_eq!(
-            sev("ms-wbt-server RDP (NLA (CredSSP); standard RDP security also accepted (NLA not required))"),
+            sev(
+                "ms-wbt-server RDP (NLA (CredSSP); standard RDP security also accepted (NLA not required))"
+            ),
             Some(Severity::High)
         );
     }
@@ -1299,26 +1304,34 @@ mod tests {
             )
         };
         assert!(parse(&rule(r#","min":"1.2","max":"1.3p1""#)).is_ok());
-        assert!(parse(&rule(r#","max":"1.x""#))
-            .unwrap_err()
-            .contains("bad version"));
-        assert!(parse(&rule(r#","min":"""#))
-            .unwrap_err()
-            .contains("bad version"));
-        assert!(parse(&rule(r#","min":"2.0","max":"1.0""#))
-            .unwrap_err()
-            .contains("not below"));
+        assert!(
+            parse(&rule(r#","max":"1.x""#))
+                .unwrap_err()
+                .contains("bad version")
+        );
+        assert!(
+            parse(&rule(r#","min":"""#))
+                .unwrap_err()
+                .contains("bad version")
+        );
+        assert!(
+            parse(&rule(r#","min":"2.0","max":"1.0""#))
+                .unwrap_err()
+                .contains("not below")
+        );
         assert!(parse(&rule(r#","min":"1.0","max":"1.0""#)).is_err());
         assert!(parse(
             r#"{"rules":[{"id":"x","product":"foo","severity":"severe","cve":["CVE-2020-1234"],"title":"t"}]}"#
         )
         .unwrap_err()
         .contains("severity"));
-        assert!(parse(
-            r#"{"rules":[{"id":"x","product":"foo","severity":"low","cve":[],"title":"t"}]}"#
-        )
-        .unwrap_err()
-        .contains("empty"));
+        assert!(
+            parse(
+                r#"{"rules":[{"id":"x","product":"foo","severity":"low","cve":[],"title":"t"}]}"#
+            )
+            .unwrap_err()
+            .contains("empty")
+        );
         assert!(parse(
             r#"{"rules":[{"id":"x","product":"foo","severity":"low","cve":["CVE-20-1"],"title":"t"}]}"#
         )
@@ -1367,17 +1380,21 @@ mod tests {
             &[22],
             &[("svc.22.product", "OpenSSH"), ("svc.22.version", "7.6")],
         );
-        assert!(!analyze_host_with(&ssh, &db)
-            .iter()
-            .any(|f| f.id == "cve-cve-2018-15473"));
+        assert!(
+            !analyze_host_with(&ssh, &db)
+                .iter()
+                .any(|f| f.id == "cve-cve-2018-15473")
+        );
         assert_eq!(
             db.cpe("labd", "1.4").unwrap(),
             "cpe:2.3:a:lab:labd:1.4:*:*:*:*:*:*:*"
         );
         std::fs::write(&path, r#"{"rules":[{"id":"y","product":"p","max":"abc","severity":"low","cve":["CVE-2020-0001"],"title":"t"}]}"#).unwrap();
-        assert!(CveDb::load(Some(&path))
-            .unwrap_err()
-            .contains("bad version"));
+        assert!(
+            CveDb::load(Some(&path))
+                .unwrap_err()
+                .contains("bad version")
+        );
         let _ = std::fs::remove_file(&path);
         assert!(CveDb::load(Some(&path)).is_err());
     }
@@ -1425,11 +1442,13 @@ mod tests {
             ]),
             ["smb-no-encryption"]
         );
-        assert!(smb(&[
-            ("smb.445.dialect", "3.1.1"),
-            ("smb.445.encryption", "AES-128-GCM")
-        ])
-        .is_empty());
+        assert!(
+            smb(&[
+                ("smb.445.dialect", "3.1.1"),
+                ("smb.445.encryption", "AES-128-GCM")
+            ])
+            .is_empty()
+        );
         let ghost = [
             ("smb.445.dialect", "3.1.1"),
             ("smb.445.encryption", "AES-128-GCM"),

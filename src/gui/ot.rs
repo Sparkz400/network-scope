@@ -8,8 +8,9 @@ use egui_extras::{Column, TableBuilder};
 use std::{
     path::PathBuf,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -118,9 +119,11 @@ impl OtState {
                 ..Default::default()
             },
             otpassive::Asset {
-                ips: vec!["10.0.0.20"
-                    .parse()
-                    .unwrap_or(std::net::IpAddr::from([0; 4]))],
+                ips: vec![
+                    "10.0.0.20"
+                        .parse()
+                        .unwrap_or(std::net::IpAddr::from([0; 4])),
+                ],
                 vendor: "Rockwell Automation".into(),
                 product: "1756-EN2T".into(),
                 firmware: "11.2".into(),
@@ -412,14 +415,12 @@ impl Scanner {
             if ui
                 .add_enabled(!running, egui::Button::new("Open pcap…"))
                 .clicked()
-            {
-                if let Some(path) = rfd::FileDialog::new()
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("Packet capture", &["pcap", "pcapng", "cap"])
                     .add_filter("All files", &["*"])
                     .pick_file()
-                {
-                    self.ot.begin(Source::Pcap(path), ui.ctx().clone());
-                }
+            {
+                self.ot.begin(Source::Pcap(path), ui.ctx().clone());
             }
             let can_listen = !running
                 && self.listening.is_none()

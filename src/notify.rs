@@ -272,11 +272,7 @@ fn header_field(text: &str, max: usize) -> String {
         .filter(|c| c.is_ascii_graphic())
         .take(max)
         .collect();
-    if v.is_empty() {
-        "-".into()
-    } else {
-        v
-    }
+    if v.is_empty() { "-".into() } else { v }
 }
 
 fn local_hostname() -> String {
@@ -434,9 +430,11 @@ mod tests {
                 path: "/".into()
             })
         );
-        assert!(Sink::webhook("https://x/")
-            .unwrap_err()
-            .contains("not supported"));
+        assert!(
+            Sink::webhook("https://x/")
+                .unwrap_err()
+                .contains("not supported")
+        );
         for bad in [
             "ftp://x/",
             "http://",
@@ -616,11 +614,13 @@ mod tests {
         );
         drop(listener);
         // nothing to send: nothing is attempted
-        assert!(deliver(
-            &[Sink::webhook("http://192.0.2.1/").unwrap()],
-            &[],
-            DEFAULT_TIMEOUT
-        )
-        .is_empty());
+        assert!(
+            deliver(
+                &[Sink::webhook("http://192.0.2.1/").unwrap()],
+                &[],
+                DEFAULT_TIMEOUT
+            )
+            .is_empty()
+        );
     }
 }

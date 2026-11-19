@@ -425,15 +425,15 @@ impl Scanner {
             opened_stamp: None,
         };
         // A broken user CVE file is reported, not silently replaced by the built-in rules.
-        if app.screenshot.is_none() {
-            if let Some(warning) = risk::init_cves() {
-                app.error = warning;
-            }
+        if app.screenshot.is_none()
+            && let Some(warning) = risk::init_cves()
+        {
+            app.error = warning;
         }
-        if app.screenshot.is_some() {
-            if let Ok(state) = std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE") {
-                app.seed_demo(&state);
-            }
+        if app.screenshot.is_some()
+            && let Ok(state) = std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
+        {
+            app.seed_demo(&state);
         }
         app
     }

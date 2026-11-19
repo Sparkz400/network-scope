@@ -174,14 +174,14 @@ fn expand(template: &str, caps: &regex::bytes::Captures) -> String {
     let mut out = String::new();
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '$' {
-            if let Some(d) = chars.peek().and_then(|d| d.to_digit(10)) {
-                chars.next();
-                if let Some(m) = caps.get(d as usize) {
-                    out.push_str(&sanitize(m.as_bytes()));
-                }
-                continue;
+        if c == '$'
+            && let Some(d) = chars.peek().and_then(|d| d.to_digit(10))
+        {
+            chars.next();
+            if let Some(m) = caps.get(d as usize) {
+                out.push_str(&sanitize(m.as_bytes()));
             }
+            continue;
         }
         out.push(c);
     }
@@ -419,19 +419,19 @@ pub fn parse_http(data: &[u8]) -> Option<Http> {
         }
     }
     let lower = body.to_ascii_lowercase();
-    if let Some(start) = lower.find("<title") {
-        if let Some(open) = lower[start..].find('>') {
-            let from = start + open + 1;
-            if let Some(len) = lower[from..].find("</title") {
-                h.title = body[from..from + len]
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(120)
-                    .collect();
-            }
+    if let Some(start) = lower.find("<title")
+        && let Some(open) = lower[start..].find('>')
+    {
+        let from = start + open + 1;
+        if let Some(len) = lower[from..].find("</title") {
+            h.title = body[from..from + len]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(120)
+                .collect();
         }
     }
     Some(h)
@@ -906,30 +906,30 @@ pub fn parse_smb2_negotiate(data: &[u8]) -> Option<SmbNegotiate> {
     n.capabilities = u32_at(88).unwrap_or(0);
     n.system_time = u64_at(104).unwrap_or(0);
     n.start_time = u64_at(112).unwrap_or(0);
-    if let (Some(off), Some(len)) = (u16_at(120), u16_at(122)) {
-        if let Some(blob) = smb.get(usize::from(off)..usize::from(off) + usize::from(len)) {
-            let has = |oid: &[u8]| blob.windows(oid.len()).any(|w| w == oid);
-            for (oid, name) in [
-                (
-                    &[0x2a, 0x86, 0x48, 0x82, 0xf7, 0x12, 0x01, 0x02, 0x02][..],
-                    "Kerberos (MS)",
-                ),
-                (
-                    &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02][..],
-                    "Kerberos",
-                ),
-                (
-                    &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x1e][..],
-                    "NEGOEX",
-                ),
-                (
-                    &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a][..],
-                    "NTLM",
-                ),
-            ] {
-                if has(oid) {
-                    n.mechs.push(name);
-                }
+    if let (Some(off), Some(len)) = (u16_at(120), u16_at(122))
+        && let Some(blob) = smb.get(usize::from(off)..usize::from(off) + usize::from(len))
+    {
+        let has = |oid: &[u8]| blob.windows(oid.len()).any(|w| w == oid);
+        for (oid, name) in [
+            (
+                &[0x2a, 0x86, 0x48, 0x82, 0xf7, 0x12, 0x01, 0x02, 0x02][..],
+                "Kerberos (MS)",
+            ),
+            (
+                &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02][..],
+                "Kerberos",
+            ),
+            (
+                &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x1e][..],
+                "NEGOEX",
+            ),
+            (
+                &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a][..],
+                "NTLM",
+            ),
+        ] {
+            if has(oid) {
+                n.mechs.push(name);
             }
         }
     }
@@ -1143,15 +1143,15 @@ pub fn parse_ntlm_challenge(data: &[u8]) -> Fields {
     let flags = m
         .get(20..24)
         .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-    if flags & 0x0200_0000 != 0 {
-        if let Some(v) = m.get(48..56) {
-            let build = u16::from_le_bytes([v[2], v[3]]);
-            if v[0] != 0 {
-                f.insert(
-                    "smb.os_version".into(),
-                    format!("{}.{}.{build}", v[0], v[1]),
-                );
-            }
+    if flags & 0x0200_0000 != 0
+        && let Some(v) = m.get(48..56)
+    {
+        let build = u16::from_le_bytes([v[2], v[3]]);
+        if v[0] != 0 {
+            f.insert(
+                "smb.os_version".into(),
+                format!("{}.{}.{build}", v[0], v[1]),
+            );
         }
     }
     let (Some(len), Some(off)) = (
@@ -1508,10 +1508,10 @@ async fn detect_with(
     if policy != SendPolicy::Normal {
         return detect_passive(ip, port, limit, db, gate, policy).await;
     }
-    if TLS_PORTS.contains(&port) {
-        if let Some(out) = tls_service(ip, port, limit, db, gate, rounds).await {
-            return Some(out);
-        }
+    if TLS_PORTS.contains(&port)
+        && let Some(out) = tls_service(ip, port, limit, db, gate, rounds).await
+    {
+        return Some(out);
     }
     let candidates: Vec<&Probe> = db
         .probes
@@ -1527,13 +1527,14 @@ async fn detect_with(
         hint,
         Some("http" | "msrpc" | "netbios-ssn" | "wsman" | "microsoft-ds")
     );
-    if client_first && candidates.is_empty() && port != 445 {
-        if let Some(mut s) = connect(ip, port, limit, gate).await {
-            if let Some(h) = http_get(&mut s, ip, port, limit).await {
-                http_outcome(h, false, &mut out);
-                return Some(out);
-            }
-        }
+    if client_first
+        && candidates.is_empty()
+        && port != 445
+        && let Some(mut s) = connect(ip, port, limit, gate).await
+        && let Some(h) = http_get(&mut s, ip, port, limit).await
+    {
+        http_outcome(h, false, &mut out);
+        return Some(out);
     }
     let mut first = connect(ip, port, limit, gate).await?;
     let wait = if candidates.is_empty() && !client_first {
@@ -1544,11 +1545,11 @@ async fn detect_with(
     let banner = read_some(&mut first, wait, 4096).await;
     if !banner.is_empty() {
         if let Some(svc) = null.and_then(|p| ProbeDb::identify(p, &banner)) {
-            if svc.name == "http" {
-                if let Some(h) = parse_http(&banner) {
-                    http_outcome(h, false, &mut out);
-                    return Some(out);
-                }
+            if svc.name == "http"
+                && let Some(h) = parse_http(&banner)
+            {
+                http_outcome(h, false, &mut out);
+                return Some(out);
             }
             if svc.name == "ssh" {
                 out.fields
@@ -1571,32 +1572,33 @@ async fn detect_with(
         let reply = read_some(&mut stream, probe.wait, 4096).await;
         if let Some(mut svc) = ProbeDb::identify(probe, &reply) {
             drop(stream);
-            if probe.name == "rdp" && svc.info.starts_with("NLA") {
-                if let Some(extra) = rdp_nla_check(ip, port, limit, gate).await {
-                    svc.info = format!("{}; {extra}", svc.info);
-                }
+            if probe.name == "rdp"
+                && svc.info.starts_with("NLA")
+                && let Some(extra) = rdp_nla_check(ip, port, limit, gate).await
+            {
+                svc.info = format!("{}; {extra}", svc.info);
             }
             out.service = Some(svc);
             return Some(out);
         }
     }
-    if port == 445 {
-        if let Some(smb) = smb_negotiate(ip, port, limit, gate).await {
-            out.service = smb.service;
-            out.fields.extend(smb.fields);
-            return Some(out);
-        }
+    if port == 445
+        && let Some(smb) = smb_negotiate(ip, port, limit, gate).await
+    {
+        out.service = smb.service;
+        out.fields.extend(smb.fields);
+        return Some(out);
     }
-    if let Some(mut s) = connect(ip, port, limit, gate).await {
-        if let Some(h) = http_get(&mut s, ip, port, limit).await {
-            http_outcome(h, false, &mut out);
-            return Some(out);
-        }
+    if let Some(mut s) = connect(ip, port, limit, gate).await
+        && let Some(h) = http_get(&mut s, ip, port, limit).await
+    {
+        http_outcome(h, false, &mut out);
+        return Some(out);
     }
-    if !TLS_PORTS.contains(&port) {
-        if let Some(tls_out) = tls_service(ip, port, limit, db, gate, rounds).await {
-            return Some(tls_out);
-        }
+    if !TLS_PORTS.contains(&port)
+        && let Some(tls_out) = tls_service(ip, port, limit, db, gate, rounds).await
+    {
+        return Some(tls_out);
     }
     Some(out)
 }
@@ -1826,9 +1828,11 @@ mod tests {
             r#"{"probes":[{"name":"x","rules":[{"re":"(","service":"y"}]}]}"#,
         )
         .unwrap();
-        assert!(ProbeDb::with_user_file(&path)
-            .unwrap_err()
-            .contains("bad regex"));
+        assert!(
+            ProbeDb::with_user_file(&path)
+                .unwrap_err()
+                .contains("bad regex")
+        );
         std::fs::write(
             &path,
             r#"{"probes":[{"name":"x","send_hex":"abc","rules":[]}]}"#,
@@ -1841,17 +1845,21 @@ mod tests {
             "{\"probes\":[{\"name\":\"x\",\"send_hex\":\"a\u{e9}1\",\"rules\":[]}]}",
         )
         .unwrap();
-        assert!(ProbeDb::with_user_file(&path)
-            .unwrap_err()
-            .contains("non-hex"));
+        assert!(
+            ProbeDb::with_user_file(&path)
+                .unwrap_err()
+                .contains("non-hex")
+        );
         std::fs::write(
             &path,
             r#"{"probes":[{"name":"x","send_hex":"zz","rules":[]}]}"#,
         )
         .unwrap();
-        assert!(ProbeDb::with_user_file(&path)
-            .unwrap_err()
-            .contains("non-hex"));
+        assert!(
+            ProbeDb::with_user_file(&path)
+                .unwrap_err()
+                .contains("non-hex")
+        );
         assert_eq!(unhex("0A ff\n10").unwrap(), [0x0a, 0xff, 0x10]);
         std::fs::write(&path, "not json").unwrap();
         assert!(ProbeDb::with_user_file(&path).is_err());
@@ -2235,10 +2243,12 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), b"");
         // 2222 without an SSH greeting: silent as well.
         let (port, mut rx) = recording_server(b"").await;
-        assert!(run_with(port, SendPolicy::SshOrSilent)
-            .await
-            .service
-            .is_none());
+        assert!(
+            run_with(port, SendPolicy::SshOrSilent)
+                .await
+                .service
+                .is_none()
+        );
         assert_eq!(rx.recv().await.unwrap(), b"");
     }
 
@@ -2247,11 +2257,12 @@ mod tests {
         let (port, mut rx) = recording_server(b"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1\r\n").await;
         let out = run_with(port, SendPolicy::SshOrSilent).await;
         assert_eq!(out.service.as_ref().unwrap().product, "OpenSSH");
-        assert!(rx
-            .recv()
-            .await
-            .unwrap()
-            .starts_with(b"SSH-2.0-NetworkScope"));
+        assert!(
+            rx.recv()
+                .await
+                .unwrap()
+                .starts_with(b"SSH-2.0-NetworkScope")
+        );
     }
 
     #[test]
@@ -2334,8 +2345,8 @@ mod tests {
     #[tokio::test]
     async fn tls_service_handshakes_once_and_serially() {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
         let key = rcgen::KeyPair::generate().unwrap();
         let cert = rcgen::CertificateParams::new(vec!["dev.local".to_string()])
             .unwrap()
@@ -2406,8 +2417,8 @@ mod tests {
     /// decides whether NLA is required. Exactly two connections.
     #[tokio::test]
     async fn rdp_nla_follow_up_runs_after_hybrid() {
-        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
         for (kind, value, want) in [
             (3u8, 5u8, "ms-wbt-server RDP (NLA (CredSSP); NLA required)"),
             (
@@ -2466,12 +2477,16 @@ mod tests {
                 3, 0, 0, 0x13, 0x0e, 0xd0, 0, 0, 0x12, 0x34, 0, kind, 0, 8, 0, value, 0, 0, 0,
             ]
         };
-        assert!(parse_rdp_standard_reply(&reply(2, 0))
-            .unwrap()
-            .contains("standard RDP security"));
-        assert!(parse_rdp_standard_reply(&reply(3, 1))
-            .unwrap()
-            .contains("TLS security"));
+        assert!(
+            parse_rdp_standard_reply(&reply(2, 0))
+                .unwrap()
+                .contains("standard RDP security")
+        );
+        assert!(
+            parse_rdp_standard_reply(&reply(3, 1))
+                .unwrap()
+                .contains("TLS security")
+        );
         assert_eq!(parse_rdp_standard_reply(&reply(3, 5)), Some("NLA required"));
         assert_eq!(parse_rdp_standard_reply(&reply(3, 2)), None);
         assert_eq!(parse_rdp_standard_reply(b"HTTP/1.1"), None);
@@ -2491,7 +2506,7 @@ mod tests {
             0x78, 0x56, 0x34, 0x12, 0xbc, 0x9a, 0xf0, 0xde, 1, 2, 3, 4, 5, 6, 7, 8,
         ]);
         body[24..28].copy_from_slice(&0x2Fu32.to_le_bytes()); // DFS, leasing, MTU, MC, PH
-                                                              // 2024-01-01T00:00:00Z as FILETIME.
+        // 2024-01-01T00:00:00Z as FILETIME.
         let ft = (1_704_067_200u64 + 11_644_473_600) * 10_000_000;
         body[40..48].copy_from_slice(&ft.to_le_bytes());
         let mech = [

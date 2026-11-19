@@ -3,8 +3,9 @@ use std::{
     collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
     time::{Duration, Instant},
 };

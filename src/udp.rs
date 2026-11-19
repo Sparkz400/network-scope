@@ -539,10 +539,10 @@ pub fn dhcp_discover(wait: Duration) -> Result<Vec<Offer>, String> {
         }
         match sock.recv_from(&mut buf) {
             Ok((n, _)) => {
-                if let Some(o) = parse_offer(&buf[..n], xid) {
-                    if !offers.iter().any(|x| x.server == o.server) {
-                        offers.push(o);
-                    }
+                if let Some(o) = parse_offer(&buf[..n], xid)
+                    && !offers.iter().any(|x| x.server == o.server)
+                {
+                    offers.push(o);
                 }
             }
             Err(e)
@@ -551,7 +551,7 @@ pub fn dhcp_discover(wait: Duration) -> Result<Vec<Offer>, String> {
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                break
+                break;
             }
             Err(e) => return Err(e.to_string()),
         }
@@ -655,7 +655,7 @@ async fn probe_with(
                 state: State::Error(e),
                 info: String::new(),
                 mac: None,
-            }
+            };
         }
     };
     let xid = rand32();
@@ -725,7 +725,7 @@ async fn probe_with(
                     state: State::Error(e.to_string()),
                     info: String::new(),
                     mac: None,
-                }
+                };
             }
             Err(_) => {}
         }
@@ -826,9 +826,11 @@ mod tests {
             "SSDP/UPnP server: Linux/4.9 UPnP/1.0 MiniUPnPd/2.1; type: upnp:rootdevice; location: http://192.168.1.1:5000/desc.xml"
         );
         assert_eq!(parse_ssdp(b"GET / HTTP/1.1\r\n"), None);
-        assert!(String::from_utf8(ssdp_request("10.0.0.1".parse().unwrap()))
-            .unwrap()
-            .contains("HOST: 10.0.0.1:1900"));
+        assert!(
+            String::from_utf8(ssdp_request("10.0.0.1".parse().unwrap()))
+                .unwrap()
+                .contains("HOST: 10.0.0.1:1900")
+        );
     }
 
     #[test]
@@ -1086,7 +1088,7 @@ mod tests {
 
     #[test]
     fn udp_probes_never_target_ot_ports() {
-        use crate::service::{is_ot_udp_port, ProbeDb};
+        use crate::service::{ProbeDb, is_ot_udp_port};
         let builtin = ProbeDb::builtin();
         assert!(builtin.udp.len() >= 4);
         assert!(builtin.udp.iter().all(|p| !p.payload.is_empty()));

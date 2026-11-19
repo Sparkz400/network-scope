@@ -1,7 +1,7 @@
 [package]
 name = "network-scope"
 version = "0.5.0"
-edition = "2021"
+edition = "2024"
 # `cargo run` starts the GUI binary; the console twin is `--bin network-scope-cli`.
 default-run = "network-scope"
 license = "MIT"

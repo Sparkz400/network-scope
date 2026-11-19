@@ -1,4 +1,4 @@
-use super::{tables, Job, Scanner};
+use super::{Job, Scanner, tables};
 use crate::{capture, devices, passive, risk, store, topology};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -581,10 +581,10 @@ impl Scanner {
                         });
                     },
                 );
-                if let Some(run) = &self.listening {
-                    if ui.button("Stop capture").clicked() {
-                        run.cancel.store(true, Ordering::Relaxed);
-                    }
+                if let Some(run) = &self.listening
+                    && ui.button("Stop capture").clicked()
+                {
+                    run.cancel.store(true, Ordering::Relaxed);
                 }
                 ui.separator();
                 ui.label(format!(

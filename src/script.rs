@@ -9,7 +9,7 @@
 //! }
 //! ```
 use crate::{risk::Severity, scan::Host};
-use rhai::{Array, Dynamic, Engine, Scope, AST};
+use rhai::{AST, Array, Dynamic, Engine, Scope};
 use std::{
     cell::Cell,
     collections::BTreeMap,
@@ -413,9 +413,11 @@ mod tests {
         );
         assert_eq!(h.errors, ["Script: snmp answered"]);
         let findings = crate::risk::analyze_host(&h);
-        assert!(findings
-            .iter()
-            .any(|f| f.id == "script-lab_telnet_" && f.severity == Severity::High));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.id == "script-lab_telnet_" && f.severity == Severity::High)
+        );
     }
 
     #[test]
@@ -562,9 +564,11 @@ mod tests {
         assert!(Scripts::load(dir.to_str().unwrap()).is_err());
         let empty = std::env::temp_dir().join(format!("ns-empty-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
-        assert!(Scripts::load(empty.to_str().unwrap())
-            .unwrap_err()
-            .contains("no .rhai"));
+        assert!(
+            Scripts::load(empty.to_str().unwrap())
+                .unwrap_err()
+                .contains("no .rhai")
+        );
         let _ = std::fs::remove_dir_all(&empty);
     }
 }

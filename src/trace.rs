@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     net::IpAddr,
     sync::{
-        atomic::{AtomicU16, Ordering},
         Arc,
+        atomic::{AtomicU16, Ordering},
     },
 };
 use tokio::{sync::Semaphore, task::JoinSet};
