@@ -208,6 +208,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "feeds_import"
+path = "fuzz_targets/feeds_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "arp_reply"
 path = "fuzz_targets/arp_reply.rs"
 test = false
