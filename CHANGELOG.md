@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Fuzzing**: cargo-fuzz targets for every parser of untrusted input (pcap/pcapng, passive frames, OT tracker with TCP reassembly, TLS, SMB, NTLM, SSH, HTTP, RDP, banners, Modbus, EtherNet/IP, BACnet, S7, OPC UA, UDP replies, nmap XML, `probes.json`, `cves.json`) with seed corpora, run on pull requests and weekly by ClusterFuzzLite. The code now builds as a library (`src/lib.rs`) that both binaries call; their behaviour is unchanged.
+- **Fuzzing**: cargo-fuzz targets for the parsers of untrusted input (pcap/pcapng, passive frames, OT tracker with TCP reassembly, TLS, SMB, NTLM, SSH, HTTP, RDP, banners, Modbus, EtherNet/IP, BACnet, S7, OPC UA, UDP replies, ARP, SYN-ACK and TCP options, ICMP/ICMPv6 ping and traceroute replies, nmap XML, `probes.json`, `cves.json`) with seed corpora, run on pull requests and weekly by ClusterFuzzLite. The code now builds as a library (`src/lib.rs`) that both binaries call; their behaviour is unchanged.
 
 ## [0.5.0] - 2026-11-19
 

@@ -1,0 +1,3 @@
+[libfuzzer]
+# Several frames and TCP segments per input, enough to reach the per-flow reassembly limit.
+max_len = 65536

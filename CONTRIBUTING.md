@@ -44,7 +44,7 @@ Documentation lives in `docs/src` (mdBook). Preview it with `mdbook serve docs` 
 
 ## Fuzzing
 
-Every parser of network or file input has a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) target in `fuzz/fuzz_targets` (a one-line call into `src/fuzz.rs`) and seeds in `fuzz/corpus/<target>`. cargo-fuzz needs a nightly toolchain (the pinned stable one is used for everything else):
+The parsers of network replies and imported files have [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets in `fuzz/fuzz_targets` (`cargo +nightly fuzz list` shows them) (a one-line call into `src/fuzz.rs`) and seeds in `fuzz/corpus/<target>`. cargo-fuzz needs a nightly toolchain (the pinned stable one is used for everything else):
 
 ```sh
 rustup toolchain install nightly
