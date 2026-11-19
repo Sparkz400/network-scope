@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn unparseable_certificate_keeps_handshake_facts() {
         let f = cert_fields(&[0x30, 0x03, 1, 2, 3]);
-        assert!(f["cert_error"].contains("not parseable"), "{f:?}");
+        assert!(f["cert_error"].contains("not parseable"));
         assert!(!f.contains_key("subject"));
         let (der, _) = test_identity();
         assert!(cert_fields(&der).contains_key("subject"));
