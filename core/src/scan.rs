@@ -256,6 +256,11 @@ impl Targets {
             .count() as u64;
         n - overlap
     }
+    /// The target list as it is stored: single addresses and merged IPv4 ranges (as numbers).
+    /// The scope guard judges these without expanding them.
+    pub fn spans(&self) -> (Vec<IpAddr>, Vec<(u32, u32)>) {
+        (self.singles.clone(), self.ranges.clone())
+    }
     pub fn iter(&self) -> TargetIter {
         TargetIter {
             singles: self.singles.clone().into_iter(),

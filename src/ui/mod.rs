@@ -29,6 +29,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 mod args;
 mod commands;
+mod guard;
 mod help;
 mod tui;
 
@@ -83,18 +84,27 @@ fn output(data: &str, opts: &BTreeMap<String, String>) -> Result<(), String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitCode {
     /// Everything done.
-    Success = 0,
+    Success,
     /// Bad arguments, I/O or database error; nothing (or no result) was saved.
-    Error = 1,
+    Error,
     /// A scan or capture stopped early and its partial results were saved.
-    Partial = 2,
+    Partial,
     /// `findings` / `diff` found something at or above `--min-severity`, only with
     /// `--fail-on-findings`.
-    Findings = 3,
+    Findings,
+    /// The scope guard refused to start: public or out-of-scope targets without confirmation.
+    /// Nothing was sent. It shares the number 2 with [`ExitCode::Partial`] (both mean "the run
+    /// did not do everything it was asked to"); the message on stderr tells them apart.
+    Refused,
 }
 impl ExitCode {
     pub fn code(self) -> i32 {
-        self as i32
+        match self {
+            Self::Success => 0,
+            Self::Error => 1,
+            Self::Partial | Self::Refused => 2,
+            Self::Findings => 3,
+        }
     }
 }
 /// Status of a scan or capture whose snapshot was saved: partial when it did not run to the end.
@@ -213,6 +223,8 @@ mod tests {
             .map(ExitCode::code),
             [0, 1, 2, 3]
         );
+        // A scope-guard refusal is documented as 2, like a partial result.
+        assert_eq!(ExitCode::Refused.code(), 2);
     }
 
     #[test]

@@ -2,12 +2,13 @@
 //! format; with `--tui` the live terminal view (`ui::tui`) runs while it works.
 use crate::{
     scan, store,
-    ui::{Ctx, args::scan_settings, output, progress, saved_exit, tui},
+    ui::{Ctx, args::scan_settings, guard, output, progress, saved_exit, tui},
 };
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
-    let (opts, pos, db) = (&ctx.opts, &ctx.pos, &ctx.db);
+    let (opts, pos, db) = (ctx.opts.clone(), ctx.pos.clone(), ctx.db.clone());
+    let (opts, db) = (&opts, &db);
     let targets = pos.join(" ");
     let s = scan_settings(opts)?;
     let format = opts.get("format").map(String::as_str).unwrap_or("json");
@@ -16,6 +17,10 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     }
     let hosts = scan::parse_targets(&targets, s.skip_edges, scan::MAX_STREAM)?;
     let ports = scan::parse_ports(&s.ports)?;
+    // Public or out-of-scope targets need confirmation before anything is sent (ROADMAP H54).
+    if !guard::enforce(ctx, &hosts)? {
+        return Ok(());
+    }
     let total = hosts.count() as usize;
     let run = scan::start_stream(Box::new(hosts.iter()), total, ports, s.clone());
     let (results, complete, errors) = if opts.contains_key("tui") {

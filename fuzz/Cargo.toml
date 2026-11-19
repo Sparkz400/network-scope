@@ -241,3 +241,10 @@ path = "fuzz_targets/icmp_reply.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "scope_file"
+path = "fuzz_targets/scope_file.rs"
+test = false
+doc = false
+bench = false

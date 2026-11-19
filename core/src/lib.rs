@@ -28,6 +28,9 @@
 //! Read-only industrial protocol requests are built only from the allow-listed types in
 //! [`ot::readonly`]; there is no way to construct a write or control request.
 //!
+//! A program that starts scans should call [`scope::enforce`] with the addresses first: it
+//! refuses public addresses and addresses outside a declared scope unless the user confirmed.
+//!
 //! # Example
 //!
 //! Import an nmap scan, analyze it, keep it in an inventory file and read it back:
@@ -108,6 +111,7 @@ pub mod report;
 pub mod risk;
 pub(crate) mod rtt;
 pub mod scan;
+pub mod scope;
 pub mod script;
 pub mod service;
 pub mod store;
