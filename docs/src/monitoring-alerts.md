@@ -41,11 +41,13 @@ DHCP observations keep the client in `ip`/`mac` and record servers per `dhcp_ser
 
 Opt-in; nothing is sent unless a sink is configured.
 
-- **Webhook**: `--webhook http://host[:port]/path[,…]` POSTs each alert as JSON (2xx = delivered). **HTTPS webhooks are not supported**: no CA store is bundled and unverified TLS would only look secure; use an http:// relay on localhost. `user:pass@` URLs are rejected.
+- **Webhook**: `--webhook http(s)://host[:port]/path[,…]` POSTs each alert as JSON (2xx = delivered). The default port is 80 for `http://` and 443 for `https://`; `user:pass@` URLs and other schemes are rejected.
+  - **HTTPS** verifies the server certificate against the operating system's certificate store (Windows, macOS, or the system CA bundle on Linux), so public CAs and a corporate CA your administrator installed both work. The host name in the URL must match the certificate (it is also sent as SNI). An IP-literal host works only if the certificate lists that IP address as a subject alternative name. There is no option to skip verification: an untrusted, expired or mismatching certificate fails the delivery with a warning that says why, and no alert is sent. For a receiver with a private CA, install that CA in the system store (on Linux, in the system CA bundle, or point `SSL_CERT_FILE` at it) or use `http://` on a trusted network.
+  - Plain `http://` sends the alerts unencrypted; use it only for localhost or a trusted network.
 - **Syslog**: `--syslog udp://host[:514]`, `tcp://host[:601]` (RFC 6587 octet counting) or `host[:port]` sends RFC 5424 messages, facility local0, severity critical→crit … info→informational. Control characters become spaces; messages are cut at 2048 bytes.
 - Each operation times out after `--alert-timeout` seconds (default 5, 1-60). After the first failure a destination's remaining alerts of that cycle are skipped, at most 30 s per destination per cycle. Failures are printed and never stop the monitor.
 
-Webhook and syslog delivery are tested against loopback test listeners only, **not against real receivers**.
+Webhook and syslog delivery are tested against loopback test listeners only, **not against real receivers**. For HTTPS this means: the rejection of untrusted and mismatching certificates and the delivery to a server whose CA is added as an extra root are tested; the system-store path with a publicly trusted certificate (for example a hosted chat or incident service) has not been tried.
 
 ## Upgrade notes
 
