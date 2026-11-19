@@ -162,8 +162,9 @@ jobs:
   provenance:
     needs: release
     # Referenced by release tag, not commit hash: slsa-github-generator verifies its builder
-    # identity from the tag and rejects hash refs (CodeQL actions/unpinned-tag is dismissed for
-    # this line; Scorecard exempts it). Dependabot keeps the tag current.
+    # identity from the tag and rejects hash refs. This is the one unpinned reference: CodeQL
+    # actions/unpinned-tag is dismissed for this line, and Scorecard Pinned-Dependencies counts it
+    # (9 instead of 10) in exchange for SLSA provenance. Dependabot keeps the tag current.
     permissions:
       actions: read # detection of the GitHub Actions environment
       id-token: write # provenance signing
