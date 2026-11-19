@@ -109,6 +109,7 @@ pub mod report;
 pub mod risk;
 pub(crate) mod rtt;
 pub mod scan;
+pub mod schedule;
 pub mod schema;
 pub mod script;
 pub mod service;
