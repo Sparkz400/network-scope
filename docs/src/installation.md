@@ -13,7 +13,7 @@ Download from the [latest GitHub release](https://github.com/Sparkz400/network-s
 Verify a download in PowerShell:
 
 ```powershell
-Get-FileHash .\network-scope-0.5.0-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\network-scope-0.5.1-windows-x64.zip -Algorithm SHA256
 ```
 
 and compare the hash with the line in `SHA256SUMS`.
@@ -127,10 +127,10 @@ With [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 
 ```powershell
 cargo build --release --locked
-iscc /DAppVersion=0.5.0 installer\network-scope.iss
+iscc /DAppVersion=0.5.1 installer\network-scope.iss
 ```
 
-writes `dist\NetworkScope-0.5.0-setup.exe`. Pass `/DExePath=…` and `/DCliExePath=…` for other build directories.
+writes `dist\NetworkScope-0.5.1-setup.exe`. Pass `/DExePath=…` and `/DCliExePath=…` for other build directories.
 
 ## Shell completions
 
