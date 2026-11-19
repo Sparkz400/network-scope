@@ -25,8 +25,8 @@ jobs:
     # A new advisory must not block unrelated pull requests; it still fails on main and weekly.
     continue-on-error: ${{ matrix.checks == 'advisories' && github.event_name == 'pull_request' }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
         with:
           command: check ${{ matrix.checks }}
 
@@ -38,7 +38,7 @@ jobs:
       issues: write # the weekly run opens an issue for each new advisory
       checks: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

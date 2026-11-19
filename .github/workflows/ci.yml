@@ -21,18 +21,18 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Linux GUI build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets --locked -- -D warnings
       - run: cargo test --release --locked
       - run: cargo build --release --locked
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       # The simulators listen on the real service ports (21, 22, 23, 502, ...). Linux reserves
@@ -56,7 +56,7 @@ jobs:
           else
             python lab/verify.py "$exe"
           fi
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: network-scope-${{ runner.os }}
           path: |
@@ -71,10 +71,10 @@ jobs:
     needs: check
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --release --locked
       - name: Build installer
         shell: pwsh
@@ -83,7 +83,7 @@ jobs:
           choco install innosetup -y --no-progress
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" installer\network-scope.iss
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: installer
           path: dist/*.exe
