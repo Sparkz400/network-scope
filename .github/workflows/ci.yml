@@ -116,6 +116,56 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -I docs/check_finding_pages.py
+  # Line coverage of the parsers and risk rules (cargo-llvm-cov). scripts/coverage_gate.py fails
+  # the job when one of those files drops below its threshold in scripts/coverage_targets.json
+  # (80%, or the measured floor of a file that is not there yet). The HTML report, lcov and the
+  # JSON summary are uploaded either way. Linux only: the numbers differ slightly per platform.
+  coverage:
+    name: coverage (parsers and risk rules)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_LLVM_COV_VERSION: "0.9.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Unit tests of the coverage gate
+        run: python -I -m unittest discover -s scripts -p "test_*.py"
+      - name: Linux GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo install cargo-llvm-cov --version "$CARGO_LLVM_COV_VERSION" --locked
+      - name: Run the tests with coverage
+        run: cargo llvm-cov --locked --workspace --no-report
+      - name: Reports (JSON summary, lcov, HTML)
+        run: |
+          cargo llvm-cov report --json --summary-only --output-path target/llvm-cov/summary.json
+          cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info
+          cargo llvm-cov report --html
+      - name: Coverage gate
+        shell: bash
+        run: |
+          status=0
+          python -I scripts/coverage_gate.py target/llvm-cov/summary.json > target/llvm-cov/gate.txt || status=$?
+          cat target/llvm-cov/gate.txt
+          { echo '```'; cat target/llvm-cov/gate.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            target/llvm-cov/html
+            target/llvm-cov/lcov.info
+            target/llvm-cov/summary.json
+            target/llvm-cov/gate.txt
+          if-no-files-found: warn
 
   installer:
     name: windows installer
