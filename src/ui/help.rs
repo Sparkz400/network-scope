@@ -19,6 +19,8 @@ network-scope baseline show [--format text|json]   Expected devices, owners, tag
 network-scope baseline enable                  Start alerting on unknown devices (baseline from an import)
 network-scope baseline remove DEVICE | clear   Drop one device, or the whole baseline (alerting off)
 network-scope export ID --format json|csv|html|nmap|md|jsonl [--baseline ID] [--output FILE]
+network-scope export ID --format netbox|netbox-devices|snipeit|splunk|elastic|servicenow [--output FILE]
+        [--push URL --token-env VAR] [--netbox-site S --netbox-role R --netbox-device-type T] [--index NAME]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
 network-scope import csv|isc-dhcp|dnsmasq|windows-dhcp|ad-csv|ad-ldif|netbox FILE...  [--format json]

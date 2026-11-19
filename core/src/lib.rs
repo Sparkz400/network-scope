@@ -116,6 +116,7 @@ pub mod script;
 pub mod service;
 pub mod store;
 pub mod syn;
+pub mod sync;
 pub(crate) mod tls;
 pub mod topology;
 pub mod trace;

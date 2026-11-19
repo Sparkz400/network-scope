@@ -48,6 +48,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `changes [--since last\|7d\|DATE] [--format text\|json]` | New, gone and changed devices and new and resolved risks, see [Inventory](inventory-diff-reports.md#what-changed) |
 | `baseline approve [SCAN_ID]` / `enable` / `set DEVICE [...]` / `show` / `remove DEVICE` / `clear` | Approved baseline of expected devices, see [Inventory](inventory-diff-reports.md#approved-baseline) |
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
+| `export ID --format netbox\|netbox-devices\|snipeit\|splunk\|elastic\|servicenow [--push URL --token-env VAR]` | Export to other systems, optional opt-in push, see [Export](import-export.md#export-to-other-systems) |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
 | `import csv\|isc-dhcp\|dnsmasq\|windows-dhcp\|ad-csv\|ad-ldif\|netbox FILE...` | Known devices from a list (offline file, never a scan), see [Import](import-export.md) |
