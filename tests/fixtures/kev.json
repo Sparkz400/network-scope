@@ -1,0 +1,45 @@
+{
+  "title": "Fixture in the shape of the CISA Known Exploited Vulnerabilities Catalog (test data, not real CISA content)",
+  "catalogVersion": "2026.11.12",
+  "dateReleased": "2026-11-12T15:04:05.000Z",
+  "count": 6,
+  "futureField": {"anything": [1, 2, 3]},
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2021-44228",
+      "vendorProject": "Apache",
+      "product": "Log4j2",
+      "vulnerabilityName": "Apache Log4j2 Remote Code Execution Vulnerability",
+      "dateAdded": "2021-12-10",
+      "shortDescription": "Fixture text.",
+      "requiredAction": "Apply updates per vendor instructions.",
+      "dueDate": "2021-12-24",
+      "knownRansomwareCampaignUse": "Known",
+      "notes": "",
+      "cwes": ["CWE-20", "CWE-400", "CWE-502"]
+    },
+    {
+      "cveID": "CVE-2023-48795",
+      "dateAdded": "2024-01-10",
+      "dueDate": "2024-01-31",
+      "knownRansomwareCampaignUse": "Unknown",
+      "someNewFieldFromCisa": true
+    },
+    {
+      "cveID": "cve-2020-0001",
+      "dateAdded": "2020-13-45",
+      "knownRansomwareCampaignUse": "Unknown"
+    },
+    {
+      "cveID": "CVE-2022-0001",
+      "dateAdded": "2022-03-03"
+    },
+    {
+      "cveID": 12345,
+      "dateAdded": "2022-03-03"
+    },
+    {
+      "vendorProject": "Entry without a CVE id"
+    }
+  ]
+}
