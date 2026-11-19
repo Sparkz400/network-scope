@@ -91,7 +91,7 @@ fn library() -> Result<Library, String> {
     {
         let mut errors = vec![];
         for name in library_candidates(cfg!(target_os = "macos")) {
-            match unsafe { Library::new(name) } {
+            match unsafe { Library::new(*name) } {
                 Ok(lib) => return Ok(lib),
                 Err(e) => errors.push(format!("{name}: {e}")),
             }
