@@ -131,9 +131,16 @@ pub fn run() -> eframe::Result<()> {
         {
             eprintln!("{warning}");
         }
-        if let Err(e) = ui::run(&cli_args) {
-            eprintln!("{e}");
-            std::process::exit(1);
+        let status = match ui::run(&cli_args) {
+            Ok(status) => status,
+            Err(e) => {
+                eprintln!("{e}");
+                ui::ExitCode::Error
+            }
+        };
+        // The only process exit of the CLI path (both binaries run through here).
+        if status != ui::ExitCode::Success {
+            std::process::exit(status.code());
         }
         return Ok(());
     }

@@ -4,12 +4,35 @@ On Windows use `network-scope-cli` (console subsystem: shells wait and see the e
 
 General rules:
 
-- Errors return a nonzero exit status. `scan`, `listen` and `dcp` save what was collected when an error occurs (marked partial) and then exit with status 1; errors with nothing collected fail without saving. A forced process kill cannot save in-memory work.
+- Exit status: see [Exit codes](#exit-codes). `scan`, `listen` and `dcp` save what was collected when an error occurs or the run is stopped early (marked partial) and exit with status 2; errors with nothing collected fail with status 1 without saving. A forced process kill cannot save in-memory work.
 - `--quiet` (before or after the command, any command) suppresses progress lines on stderr, including monitor's per-cycle lines; errors still print and the exit status is unchanged.
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
 - `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
 - `--format` and `--output FILE` select an export where a command produces one. Without `--output` the result is printed to stdout.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Error: bad arguments, I/O, database (also: nothing was saved because the scan or capture failed before collecting anything) |
+| 2 | Partial result: a scan or capture stopped early and its results were saved (marked partial in the inventory) |
+| 3 | `findings` / `diff` found something at or above `--min-severity`, **only** when `--fail-on-findings` is given |
+
+Without `--fail-on-findings`, `findings` and `diff` exit 0 however much they report. The flag is an error on any other command (status 1).
+
+What counts as partial (2): `scan` stopped with Q/Esc in the `--tui` view, or ended after errors (for example a terminal failure or a worker that disconnected) with at least some results; `listen` and `dcp` that hit a capture error after observing something. In each case the snapshot is saved with `complete = false` (shown as `partial`), the result is still written to stdout or `--output`, and an error line is printed on stderr. `listen --seconds N` running to the end is a normal, complete run (0). `ot-listen` and `monitor` are not covered by code 2: `monitor` reports incomplete passive captures as `capture-incomplete` alerts and keeps running, and Ctrl+C or a process kill ends the process without saving (the shell's own status for the signal).
+
+`findings ID --fail-on-findings` exits 3 when at least one finding at or above `--min-severity` (default `info`) is listed. `diff OLD NEW --fail-on-findings` exits 3 when the comparison contains at least one **new** finding at or above `--min-severity` (default `info`). Other changes (hosts or ports appearing, changed identity), resolved findings and findings the new scan did not re-check do not count; use `--format json` and its `summary` for other gates. On `diff`, `--min-severity` only sets this threshold and never filters the output. The output is written in full before the process exits with 3, so stdout still carries the structured result.
+
+```powershell
+network-scope-cli findings 3 --min-severity high --fail-on-findings --quiet > findings.json
+if ($LASTEXITCODE -eq 3) { "High findings present" }
+network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity medium
+```
+
+`network-scope` with arguments (the GUI binary) returns the same codes; on Windows its shell does not wait for it, so use `network-scope-cli` in scripts.
 
 ## Commands
 
@@ -21,11 +44,11 @@ General rules:
 | `dcp --interface ID --source-mac MAC [--seconds 60]` | Read-only Profinet DCP Identify |
 | `interfaces` | List capture interfaces |
 | `history [--db FILE]` | List saved scans as JSON |
-| `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY]` | Compare two snapshots |
+| `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
-| `findings ID [--min-severity low] [--sort exploited\|severity]` | Weak TLS/SSH, risky services, CVE hints |
+| `findings ID [--min-severity low] [--sort exploited\|severity] [--fail-on-findings]` | Weak TLS/SSH, risky services, CVE hints |
 | `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
 | `feeds status [--feeds FILE]` | Show what the feeds cache holds (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
@@ -112,10 +135,12 @@ Exports from `scan`, `listen`, `dcp` and `export` carry the stored scan time. De
 | `--format json` | Structured report for CI and monitors |
 | `--format text` | Plain lines |
 | `--ignore K,K` | Extra ignored keys: exact keys, globs (`http.*.title`) or suffixes (`.server`) |
+| `--fail-on-findings` | Exit 3 when a new finding at or above `--min-severity` appeared; see [Exit codes](#exit-codes) |
+| `--min-severity SEV` | Threshold for `--fail-on-findings` (default `info`); does not filter the output |
 
 ## findings options
 
-`--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`, `--feeds FILE`, `--sort exploited|severity` (default `exploited`: known exploited first, then severity, then EPSS, when feeds are imported; the same as `severity` without feeds).
+`--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`, `--feeds FILE`, `--fail-on-findings` (exit 3 when anything at or above the threshold is listed; see [Exit codes](#exit-codes)), `--sort exploited|severity` (default `exploited`: known exploited first, then severity, then EPSS, when feeds are imported; the same as `severity` without feeds).
 
 ## feeds options
 
