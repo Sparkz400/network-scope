@@ -487,6 +487,8 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
         roxmltree::ParsingOptions {
             allow_dtd: true,
             nodes_limit: 8_000_000,
+            // Never resolve external entities (no XXE): nmap files are untrusted input.
+            entity_resolver: None,
         },
     )
     .map_err(|e| format!("Not valid XML: {e}"))?;

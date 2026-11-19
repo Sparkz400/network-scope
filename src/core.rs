@@ -951,7 +951,12 @@ mod tests {
         );
         // The caller gave up, but the native call is still running and keeps its slot.
         assert_eq!(pool.available_permits(), 0);
-        sleep(Duration::from_millis(400)).await;
+        // It comes back once the thread ends. Loaded CI runners start blocking threads late,
+        // so wait for it (bounded) instead of assuming a fixed delay.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while pool.available_permits() == 0 && std::time::Instant::now() < deadline {
+            sleep(Duration::from_millis(20)).await;
+        }
         assert_eq!(pool.available_permits(), 1);
     }
 
