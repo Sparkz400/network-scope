@@ -16,6 +16,7 @@ network-scope report ID [--baseline ID] [--output FILE]   HTML report with chart
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
 network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]
                                                Weak TLS/SSH, risky services, CVE hints
+network-scope findings ID --top N [--format text|json]   Risk scores and the "fix these first" list
 network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
 network-scope feeds import nvd FILE...   Offline NVD CVE JSON 2.0 feed files (unzip .gz first) for CVE findings
 network-scope feeds status                     What the feeds cache holds

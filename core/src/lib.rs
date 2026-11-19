@@ -111,6 +111,7 @@ pub mod report;
 pub mod risk;
 pub(crate) mod rtt;
 pub mod scan;
+pub mod score;
 pub mod script;
 pub mod service;
 pub mod store;

@@ -145,7 +145,7 @@ Exports from `scan`, `listen`, `dcp` and `export` carry the stored scan time. De
 
 ## findings options
 
-`--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`, `--feeds FILE`, `--fail-on-findings` (exit 3 when anything at or above the threshold is listed; see [Exit codes](#exit-codes)), `--sort exploited|severity` (default `exploited`: known exploited first, then severity, then EPSS, when feeds are imported; the same as `severity` without feeds).
+`--top N` (1 to 1000) prints the network risk score, the riskiest hosts and the N things to fix first instead of the list (`--format text|json`, default text; see [Risk score and fix list](findings-and-cves.md#risk-score-and-fix-list)), `--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`, `--feeds FILE`, `--fail-on-findings` (exit 3 when anything at or above the threshold is listed; see [Exit codes](#exit-codes)), `--sort exploited|severity` (default `exploited`: known exploited first, then severity, then EPSS, when feeds are imported; the same as `severity` without feeds).
 
 ## feeds options
 

@@ -77,6 +77,33 @@ Either option may be given alone; the part not imported keeps its previous conte
 
 Sources and terms: KEV is published by the US government (CISA); EPSS is published free of charge by the EPSS Special Interest Group at FIRST. See [data/README.md](https://github.com/Sparkz400/network-scope/blob/main/data/README.md). The EPSS download address was checked on FIRST's data page (`first.org/epss/data`) on 2026-11-19.
 
+## Risk score and fix list
+
+Every host and the whole network get a score from 0 to 100, and a list of the ten things to fix first.
+
+**Points of one finding** = severity weight x known-exploited factor x EPSS factor x exposure factor x confidence.
+
+| Factor | Value |
+| --- | --- |
+| Severity weight | critical 40, high 20, medium 8, low 3, info 1 |
+| Known exploited (CISA KEV, needs imported feeds) | x 2.0; x 2.5 when KEV lists ransomware use |
+| EPSS (needs imported feeds) | x (1 + EPSS), EPSS from 0 to 1 |
+| Exposure: cleartext or unauthenticated remote access or administration (`telnet-open`, `ftp-cleartext`, `mail-cleartext`, `http-basic-cleartext`, `vnc-exposed`, `rdp-no-nla`, `smb1-enabled`, `redis-noauth`, `memcached-open`, `mqtt-anonymous`, `ldap-anonymous`, `docker-api`, `snmp-public`, `ot-reachable`, `ot-control-traffic`) | x 1.5 |
+| Confidence of the rule (0 to 100, see [Evidence and confidence](detection.md#evidence-and-confidence)) | x confidence / 100, so a version-based hint (40) counts 40 % |
+
+**Host score** = 100 x (1 - e^(-P/60)), P being the sum of the points of the host's findings. The curve saturates: one critical finding scores about 49, two about 74, a KEV-listed critical also about 74, and 100 is never exceeded. **Network score** = 0.7 x the worst host score + 0.3 x the mean of the ten highest host scores, so one very exposed host dominates but many exposed hosts rank above a single one. Bands: 0 none, 1-24 low, 25-49 medium, 50-74 high, 75-100 critical.
+
+**Fix these first.** Findings with the same id on several hosts (the same CVE, the same weak setting) form one entry. Its *risk lowered* is the sum, over the affected hosts, of how far the host score drops when the entry is fixed there, computed for each entry alone against the current state. Entries are ranked by that number, then by severity and id, so a medium issue on 40 hosts can outrank one critical on a single host. Each entry shows the hosts, the severity, "known exploited" when a CVE is in KEV and the advice of the rule.
+
+```sh
+network-scope-cli findings 1 --top 10              # text: network score, riskiest hosts, fix list
+network-scope-cli findings 1 --top 10 --format json
+```
+
+The HTML report shows the network score as a card, a "Fix these first" table and the riskiest hosts; the Markdown summary has a "Risk score and fix list" section; the JSONL export has `risk_score` per host. For programs, `network_scope_core::score::assess(&findings, 10)` returns the network score, the host scores and the fix list (`score::host_scores`, `score::network_score`, `score::top_fixes` and `score::finding_points` are public as well).
+
+The score is a ranking aid for deciding what to do first, not a measure of how likely a compromise is. It inherits the limits of the findings: version-based hints count less but are still not confirmed. Without `--min-severity` the list includes info findings (weight 1).
+
 ## NVD import (offline)
 
 The built-in rules in `data/cves.json` cover a handful of well-known products. For everything else you can import the NVD (National Vulnerability Database) CVE feed, and the scanner matches the CPE names it derives (`svc.<port>.cpe`) against it:
