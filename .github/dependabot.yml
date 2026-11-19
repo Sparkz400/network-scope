@@ -24,3 +24,10 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "ci"
+
+  - package-ecosystem: docker
+    directory: /lab
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "lab"
