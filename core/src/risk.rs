@@ -149,7 +149,7 @@ pub fn in_range(version: &str, min: Option<&str>, max_exclusive: Option<&str>) -
 
 // ---- CVE / CPE database (data/cves.json plus an optional user file) ----------------------
 
-static BUILTIN_CVES: &str = include_str!("../data/cves.json");
+static BUILTIN_CVES: &str = include_str!("../../data/cves.json");
 
 #[derive(Deserialize)]
 struct RawCveRule {

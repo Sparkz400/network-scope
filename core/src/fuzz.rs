@@ -372,7 +372,7 @@ mod tests {
     use std::path::Path;
 
     fn fuzz_dir() -> &'static Path {
-        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fuzz"))
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../fuzz"))
     }
 
     #[test]

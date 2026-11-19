@@ -8,7 +8,6 @@
 //! - `commands/`: one file per command (or small family of commands), plus the table
 //!   [`commands::COMMANDS`] that maps the command word to its handler.
 //! - `tui.rs`: the live terminal view of `scan --tui`.
-//! - `observations.rs`: merging of passive observations (shared with the GUI and the engine).
 //! - this file: [`run`] (parse, dispatch), [`Ctx`], [`ExitCode`] and the output helpers.
 //!
 //! # Adding a subcommand
@@ -31,13 +30,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 mod args;
 mod commands;
 mod help;
-pub(crate) mod observations;
 mod tui;
 
 #[cfg(test)]
 mod testutil;
-
-pub use observations::{ObservationIndex, merge, merge_indexed};
 
 /// The parsed command line a command handler works on.
 pub struct Ctx {

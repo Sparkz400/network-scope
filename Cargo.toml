@@ -1,3 +1,10 @@
+[workspace]
+members = [".", "core"]
+# Plain `cargo build/test/clippy` cover both crates; `fuzz` has its own workspace (nightly only)
+# and `.claude` holds scratch checkouts of agent worktrees.
+default-members = [".", "core"]
+exclude = ["fuzz", ".claude"]
+
 [package]
 name = "network-scope"
 version = "0.5.1"
@@ -12,8 +19,10 @@ readme = "README.md"
 keywords = ["network-scanner", "inventory", "ot-security", "modbus", "pcap"]
 categories = ["command-line-utilities", "network-programming", "gui"]
 
-# All code is in the library (src/lib.rs); both binaries call `network_scope::run`, and the
-# fuzz targets in fuzz/ call `network_scope::fuzz`. The tests are the library's.
+# The engine (scanning, parsers, risk analysis, store, ...) is the workspace member `core`
+# (`network-scope-core`). This package is the GUI, CLI and TUI on top of it: the library
+# (src/lib.rs) holds all of that code, both binaries call `network_scope::run`, and the fuzz
+# targets in fuzz/ call `network_scope::fuzz` (re-exported from the core crate).
 [lib]
 path = "src/lib.rs"
 doctest = true
@@ -31,6 +40,7 @@ path = "src/bin/network-scope-cli.rs"
 test = false
 
 [dependencies]
+network-scope-core = { path = "core" }
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 egui_extras = "0.37.0"
 # Since 0.32 the bundled symbol/emoji fonts (e.g. the "▶" on Start, the sort arrows) are opt-in.
@@ -39,24 +49,12 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.18"
-dns-lookup = "4"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
-rusqlite = { version = "0.43", features = ["bundled"] }
 ratatui = "0.30"
 crossterm = "0.29"
-libloading = "0.9"
-pnet_packet = "0.35"
-socket2 = { version = "0.6", features = ["all"] }
-regex = "1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-x509-parser = "0.18"
-roxmltree = "0.21"
-rhai = { version = "1", default-features = false, features = ["std", "sync", "no_module"] }
-rustls-platform-verifier = "0.7"
 
 [dev-dependencies]
-rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+network-scope-core = { path = "core", features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 winit = "0.30"

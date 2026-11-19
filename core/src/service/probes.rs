@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-static BUILTIN: &str = include_str!("../../data/probes.json");
+static BUILTIN: &str = include_str!("../../../data/probes.json");
 
 #[derive(Deserialize)]
 struct RawRule {

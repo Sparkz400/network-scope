@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Check that every finding rule id in src/risk.rs has a documentation page.
+"""Check that every finding rule id in core/src/risk.rs has a documentation page.
 
 Run from anywhere (the paths are derived from this file):
 
     python -I docs/check_finding_pages.py
 
-It reads the rule ids out of src/risk.rs (the literal ids of the `o.add(` calls and of
+It reads the rule ids out of core/src/risk.rs (the literal ids of the `o.add(` calls and of
 `Finding { id: "..." }` constructions, nothing is compiled) and fails when
 
 - a rule id has no page docs/src/findings/<id>.md, or a page has no matching rule id;
@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RISK = ROOT / "src" / "risk.rs"
+RISK = ROOT / "core" / "src" / "risk.rs"
 PAGES = ROOT / "docs" / "src" / "findings"
 SUMMARY = ROOT / "docs" / "src" / "SUMMARY.md"
 
@@ -105,13 +105,13 @@ def main():
     errors += e
     expected = set(ids) | generic
     if not ids or not generic:
-        errors.append("no rule ids found in src/risk.rs; the parser needs an update")
+        errors.append("no rule ids found in core/src/risk.rs; the parser needs an update")
 
     pages = {p.stem for p in PAGES.glob("*.md") if p.name != "index.md"}
     for missing in sorted(expected - pages):
         errors.append("rule id %r has no page docs/src/findings/%s.md" % (missing, missing))
     for orphan in sorted(pages - expected):
-        errors.append("page docs/src/findings/%s.md has no rule id in src/risk.rs" % orphan)
+        errors.append("page docs/src/findings/%s.md has no rule id in core/src/risk.rs" % orphan)
 
     summary = read(SUMMARY)
     index = read(PAGES / "index.md") if (PAGES / "index.md").exists() else ""

@@ -236,6 +236,8 @@ impl Capture {
             Ok(cap)
         }
     }
+    // Not an `Iterator`: `Ok(None)` is a read timeout, not the end, and errors are reported.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
         unsafe {
             let mut header = std::ptr::null();
@@ -276,6 +278,8 @@ impl PassiveCapture {
     pub fn open(name: &str) -> Result<Self, String> {
         Capture::open(name).map(Self)
     }
+    // Not an `Iterator`: `Ok(None)` is a read timeout, not the end, and errors are reported.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
         self.0.next()
     }

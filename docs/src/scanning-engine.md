@@ -120,4 +120,8 @@ On one host whose firewall silently drops most ports, both tools are limited by 
 
 ## Source layout
 
-`core` (scheduler/rate gate), `scan` (targets and model), `syn`, `arp`, `service`, `tls`, `fingerprint`, `udp`, `osfp`, `oui`, `devices`, `trace`, `topology`, `risk`, `report`, `nmap`, `monitor`, `notify`, `script`, `probes`, `capture`, `passive`, `otpassive`, `pcapfile`, `ot` (including `ot/opcua`), `platform`, `store`, `ui` (CLI/TUI) and `gui` (egui). All of them are crate-private modules of the library (`src/lib.rs`), which exports only `run` (CLI/TUI/GUI dispatch) and the fuzzing entry points (`fuzz`). `main.rs` (GUI subsystem on Windows) and `bin/network-scope-cli.rs` (console twin) just call `network_scope::run`.
+The repository is a Cargo workspace of two crates.
+
+`network-scope-core` (`core/`, library `network_scope_core`) is the engine without any GUI code: `core` (scheduler/rate gate), `scan` (targets and model), `syn`, `arp`, `service`, `tls`, `fingerprint`, `udp`, `osfp`, `oui`, `devices`, `trace`, `topology`, `risk`, `report`, `nmap`, `monitor`, `notify`, `script`, `probes`, `capture`, `passive`, `otpassive`, `pcapfile`, `observations`, `ot` (including `ot/opcua`), `platform` and `store`. Its crate documentation (`cargo doc -p network-scope-core --open`) lists the entry points for other tools: scan a target list, parse and import, analyze risk, open the store.
+
+`network-scope` (the repository root) is the application: `ui` (CLI/TUI, `src/ui/`: option parsing, one file per command under `src/ui/commands/`, the live view) and `gui` (egui). Its library (`src/lib.rs`) exports only `run` (CLI/TUI/GUI dispatch) and the fuzzing entry points (`fuzz`, re-exported from the core crate). `main.rs` (GUI subsystem on Windows) and `bin/network-scope-cli.rs` (console twin) just call `network_scope::run`.

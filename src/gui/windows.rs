@@ -437,7 +437,7 @@ impl Scanner {
                 match run.receiver.try_recv() {
                     Ok(Ok(o)) => {
                         changed = true;
-                        if let Err(e) = crate::ui::merge_indexed(
+                        if let Err(e) = crate::observations::merge_indexed(
                             &mut self.observations,
                             &mut self.observation_index,
                             o,

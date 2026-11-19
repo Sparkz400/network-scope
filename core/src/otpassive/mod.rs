@@ -100,7 +100,7 @@ pub struct Tracker {
     servers: BTreeMap<(Proto, IpAddr), Endpoint>,
     clients: BTreeMap<(Proto, IpAddr), Endpoint>,
     passive: Vec<Observation>,
-    passive_index: crate::ui::ObservationIndex,
+    passive_index: crate::observations::ObservationIndex,
     pub frames: u64,
     /// Set per frame: the frame being decoded is addressed to a group (broadcast/multicast).
     dst_group: bool,
@@ -186,7 +186,8 @@ impl Tracker {
         if let Some(o) = crate::passive::decode(frame)
             && self.passive.len() < 10_000
         {
-            let _ = crate::ui::merge_indexed(&mut self.passive, &mut self.passive_index, o);
+            let _ =
+                crate::observations::merge_indexed(&mut self.passive, &mut self.passive_index, o);
         }
         let Some(p) = parse_ip(frame) else { return };
         let (src, dst, pl) = (p.src, p.dst, p.payload);

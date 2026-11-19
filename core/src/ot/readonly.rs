@@ -24,7 +24,7 @@
 //! A Modbus write cannot be constructed; this does not compile:
 //!
 //! ```compile_fail
-//! use network_scope::ot_readonly::{ModbusFunction, ModbusRequest};
+//! use network_scope_core::ot_readonly::{ModbusFunction, ModbusRequest};
 //! // Write Single Register (0x06) / Write Multiple Registers (0x10): no such variants.
 //! let _ = ModbusRequest::new(1, ModbusFunction::WriteSingleRegister);
 //! let _ = ModbusRequest::new(1, ModbusFunction::WriteMultipleRegisters);
@@ -34,7 +34,7 @@
 //! allow-list and not a missing import:
 //!
 //! ```
-//! use network_scope::ot_readonly::{ModbusFunction, ModbusRequest, ReadOnlyRequest};
+//! use network_scope_core::ot_readonly::{ModbusFunction, ModbusRequest, ReadOnlyRequest};
 //! let request = ModbusRequest::new(1, ModbusFunction::ReadDeviceIdentification);
 //! assert_eq!(request.encode()[7], 0x2b);
 //! ```
@@ -42,20 +42,20 @@
 //! Request values cannot be built from raw fields either:
 //!
 //! ```compile_fail
-//! use network_scope::ot_readonly::ModbusRequest;
+//! use network_scope_core::ot_readonly::ModbusRequest;
 //! let _ = ModbusRequest { unit: 1, function: 0x10 };
 //! ```
 //!
 //! S7 has no write, stop, download or block-access variant:
 //!
 //! ```compile_fail
-//! use network_scope::ot_readonly::S7Request;
+//! use network_scope_core::ot_readonly::S7Request;
 //! let _ = S7Request::write_var(1);
 //! let _ = S7Request::plc_stop();
 //! ```
 //!
 //! ```
-//! use network_scope::ot_readonly::{ReadOnlyRequest, S7Request, S7Szl};
+//! use network_scope_core::ot_readonly::{ReadOnlyRequest, S7Request, S7Szl};
 //! let request = S7Request::read_szl(2, S7Szl::ModuleIdentification);
 //! assert_eq!(request.encode()[7..9], [0x32, 7]);
 //! ```
@@ -63,7 +63,7 @@
 //! The socket wrappers accept no raw bytes:
 //!
 //! ```compile_fail
-//! use network_scope::ot_readonly::OtStream;
+//! use network_scope_core::ot_readonly::OtStream;
 //! async fn raw(stream: &mut OtStream) {
 //!     let _ = stream.send(&[0x00u8, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x06]).await;
 //! }
@@ -72,7 +72,7 @@
 //! and the sealed trait cannot be implemented elsewhere:
 //!
 //! ```compile_fail
-//! use network_scope::ot_readonly::ReadOnlyRequest;
+//! use network_scope_core::ot_readonly::ReadOnlyRequest;
 //! struct Write;
 //! impl ReadOnlyRequest for Write {
 //!     fn encode(&self) -> Vec<u8> {

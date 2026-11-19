@@ -318,7 +318,7 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
                     hints::attach(&mut o.fields, hints);
                 }
                 // OFFER (2), ACK (5) and NAK (6) are sent by a server. A per-server key survives
-                // merging with other messages for the same client (ui::merge extends fields).
+                // merging with other messages for the same client (observations::merge extends fields).
                 if payload[0] == 2
                     && matches!(
                         o.fields.get("message_type").map(String::as_str),
@@ -1238,7 +1238,8 @@ pub(crate) mod tests {
                 &dns_name("P._airplay._tcp.local"),
             ),
         ] {
-            crate::ui::merge(&mut observations, decode(&mdns_frame(ip, &[r])).unwrap()).unwrap();
+            crate::observations::merge(&mut observations, decode(&mdns_frame(ip, &[r])).unwrap())
+                .unwrap();
         }
         assert_eq!(observations.len(), 1);
         let f = &observations[0].fields;
