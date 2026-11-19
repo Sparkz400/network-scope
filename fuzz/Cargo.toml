@@ -206,3 +206,31 @@ path = "fuzz_targets/cves_json.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "arp_reply"
+path = "fuzz_targets/arp_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "syn_reply"
+path = "fuzz_targets/syn_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tcp_options"
+path = "fuzz_targets/tcp_options.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "icmp_reply"
+path = "fuzz_targets/icmp_reply.rs"
+test = false
+doc = false
+bench = false

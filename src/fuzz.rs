@@ -5,8 +5,14 @@
 //! here sends traffic or touches the file system. The targets in `fuzz/fuzz_targets` are
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
-use crate::{fingerprint, nmap, ot, otpassive, passive, pcapfile, risk, service, tls, udp};
-use std::collections::BTreeMap;
+use crate::{
+    arp, fingerprint, nmap, osfp, ot, otpassive, passive, pcapfile, platform, risk, service, syn,
+    tls, udp,
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::Ipv4Addr,
+};
 
 /// A fuzz target: its name (the file `fuzz/fuzz_targets/<name>.rs`) and entry point.
 pub type Target = (&'static str, fn(&[u8]));
@@ -40,6 +46,10 @@ pub const TARGETS: &[Target] = &[
     ("nmap_import", nmap_import),
     ("probes_json", probes_json),
     ("cves_json", cves_json),
+    ("arp_reply", arp_reply),
+    ("syn_reply", syn_reply),
+    ("tcp_options", tcp_options),
+    ("icmp_reply", icmp_reply),
 ];
 
 /// A pcap or pcapng file, read to the end as the capture-file import does.
@@ -279,6 +289,65 @@ pub fn cves_json(data: &[u8]) {
                 std::hint::black_box(db.cpe(&rule.product, version));
             }
         }
+    }
+}
+
+/// An ARP reply; the frame's target address is taken as our own so it can match.
+pub fn arp_reply(data: &[u8]) {
+    let me = data.get(38..42).map_or(Ipv4Addr::UNSPECIFIED, |b| {
+        Ipv4Addr::new(b[0], b[1], b[2], b[3])
+    });
+    std::hint::black_box(arp::parse_reply(data, me));
+}
+
+/// A captured frame answering a SYN probe (SYN-ACK with TCP options, or RST). The pending
+/// probe is derived from the frame so the cookie check can pass.
+pub fn syn_reply(data: &[u8]) {
+    let field = |at: usize, n: usize| data.get(at..at + n);
+    let ihl = data.get(14).map_or(20, |b| usize::from(b & 15) * 4);
+    let (Some(src), Some(dst), Some(ports), Some(ack)) = (
+        field(26, 4),
+        field(30, 4),
+        field(14 + ihl, 4),
+        field(14 + ihl + 8, 4),
+    ) else {
+        std::hint::black_box(syn::classify(data, Ipv4Addr::UNSPECIFIED, &HashMap::new()));
+        return;
+    };
+    let ip = |b: &[u8]| Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+    let key = (
+        ip(src),
+        u16::from_be_bytes([ports[0], ports[1]]),
+        u16::from_be_bytes([ports[2], ports[3]]),
+    );
+    let cookie = u32::from_be_bytes([ack[0], ack[1], ack[2], ack[3]]).wrapping_sub(1);
+    let pending = HashMap::from([(key, cookie)]);
+    std::hint::black_box(syn::classify(data, ip(dst), &pending));
+}
+
+/// The TCP options of a SYN-ACK (OS fingerprint).
+pub fn tcp_options(data: &[u8]) {
+    std::hint::black_box(osfp::parse_options(data));
+}
+
+/// ICMP/ICMPv6 replies for ping and traceroute. Layout: the traced IPv4 destination
+/// (4 bytes), identifier or source port (2), sequence or destination port (2), then the
+/// packet as read from the socket.
+pub fn icmp_reply(data: &[u8]) {
+    let Some((head, packet)) = data.split_first_chunk::<8>() else {
+        return;
+    };
+    let dest = Ipv4Addr::new(head[0], head[1], head[2], head[3]);
+    let id = u16::from_be_bytes([head[4], head[5]]);
+    let seq = u16::from_be_bytes([head[6], head[7]]);
+    for v4 in [true, false] {
+        std::hint::black_box(platform::parse_echo_reply(packet, v4));
+    }
+    std::hint::black_box(platform::parse_hop_reply(packet, dest, id, seq));
+    std::hint::black_box(platform::parse_udp_hop_reply(packet, dest, id, seq));
+    let dest6 = dest.to_ipv6_mapped();
+    for from in [dest6, std::net::Ipv6Addr::LOCALHOST] {
+        std::hint::black_box(platform::parse_hop6_reply(packet, from, dest6, id, seq));
     }
 }
 
