@@ -10,10 +10,11 @@ network-scope dcp --interface ID --source-mac MAC  Read-only DCP Identify
 network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
+        [--fail-on-findings [--min-severity low]]
 network-scope export ID --format json|csv|html|nmap|md|jsonl [--baseline ID] [--output FILE]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
-network-scope findings ID [--min-severity low] [--sort exploited|severity]
+network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]
                                                Weak TLS/SSH, risky services, CVE hints
 network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
 network-scope feeds status                     What the feeds cache holds
@@ -61,6 +62,11 @@ Scan options:
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
   --quiet         No progress messages on stderr (errors still print); any command
+  --fail-on-findings  findings/diff only: exit 3 when a finding (diff: a new one) is at or
+                  above --min-severity (default info); otherwise the exit status is unchanged
+
+Exit status: 0 success, 1 error (arguments, I/O, database), 2 partial result (scan or
+capture stopped early, results saved), 3 findings found (only with --fail-on-findings).
 
 Safe Mode is on by default: 8 hosts max, >=100 ms between probes, no SYN, no ARP
 sweep, ICMP traceroute only. --fast lifts it.
@@ -72,8 +78,9 @@ Npcap is optional for TCP connect; capture/DCP/SYN require its driver and access
 TUI: Space pause/resume, Q/Esc stop and save a partial scan, Up/Down select,
 Enter host details (Enter/Backspace back), S change sort. No scan starts by itself.
 "#;
-const FLAGS: [&str; 21] = [
+const FLAGS: [&str; 22] = [
     "quiet",
+    "fail-on-findings",
     "arp-sweep",
     "adaptive-syn",
     "no-dedup",
@@ -524,7 +531,67 @@ fn output(data: &str, opts: &BTreeMap<String, String>) -> Result<(), String> {
         writeln!(stdout, "{data}").map_err(|e| e.to_string())
     }
 }
-pub fn run(args: &[String]) -> Result<(), String> {
+/// Process exit status of a CLI run. This is the single definition of the numbers documented in
+/// docs/src/cli-reference.md; `lib.rs` turns it into the process exit (the only `exit` call).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitCode {
+    /// Everything done.
+    Success = 0,
+    /// Bad arguments, I/O or database error; nothing (or no result) was saved.
+    Error = 1,
+    /// A scan or capture stopped early and its partial results were saved.
+    Partial = 2,
+    /// `findings` / `diff` found something at or above `--min-severity`, only with
+    /// `--fail-on-findings`.
+    Findings = 3,
+}
+impl ExitCode {
+    pub fn code(self) -> i32 {
+        self as i32
+    }
+}
+/// Status of a scan or capture whose snapshot was saved: partial when it did not run to the end.
+fn saved_exit(complete: bool) -> ExitCode {
+    if complete {
+        ExitCode::Success
+    } else {
+        ExitCode::Partial
+    }
+}
+/// Status of `findings`/`diff`: 3 only when the gate is on and `matching` findings were found.
+fn findings_exit(fail_on_findings: bool, matching: usize) -> ExitCode {
+    if fail_on_findings && matching > 0 {
+        ExitCode::Findings
+    } else {
+        ExitCode::Success
+    }
+}
+/// `--min-severity` for `findings` and for the `diff` gate (default `info`).
+fn min_severity(opts: &BTreeMap<String, String>) -> Result<risk::Severity, String> {
+    risk::Severity::parse(
+        opts.get("min-severity")
+            .map(String::as_str)
+            .unwrap_or("info"),
+    )
+    .ok_or_else(|| "Severity must be info, low, medium, high or critical".into())
+}
+/// New findings of a diff at or above `min`: what `diff --fail-on-findings` gates on. Changed
+/// hosts or ports, resolved findings and findings the new scan did not re-check do not count.
+fn new_findings_at_or_above(report: &store::DiffReport, min: risk::Severity) -> usize {
+    report
+        .new_findings
+        .iter()
+        .filter(|f| f.severity >= min)
+        .count()
+}
+/// Runs one CLI command and returns its exit status. `Err` is an error message for stderr
+/// (status 1); every other status is a result of a command that ran.
+pub fn run(args: &[String]) -> Result<ExitCode, String> {
+    let mut status = ExitCode::Success;
+    execute(args, &mut status)?;
+    Ok(status)
+}
+fn execute(args: &[String], status: &mut ExitCode) -> Result<(), String> {
     // Global options may also come before the command (`network-scope --quiet scan ...`).
     let split = args
         .iter()
@@ -537,6 +604,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let command = &args[0];
     let (pos, mut opts) = options(&args[1..])?;
+    let fail_on_findings = opts.contains_key("fail-on-findings");
+    if fail_on_findings && !matches!(command.as_str(), "findings" | "diff") {
+        return Err("--fail-on-findings applies to the findings and diff commands only".into());
+    }
     if !global.is_empty() {
         opts.insert("quiet".into(), "true".into());
     }
@@ -578,15 +649,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let ignore =
                 store::IgnoreList::parse(opts.get("ignore").map(String::as_str).unwrap_or(""));
             let format = opts.get("format").map(String::as_str).unwrap_or("lines");
-            output(
-                &store::diff_output(
-                    &store::load(&db, id(0)?)?,
-                    &store::load(&db, id(1)?)?,
-                    format,
-                    &ignore,
-                )?,
-                &opts,
-            )
+            // --min-severity only sets the threshold of --fail-on-findings; it does not filter
+            // the output, and without the flag it is not read (existing calls are unchanged).
+            let gate = if fail_on_findings {
+                Some(min_severity(&opts)?)
+            } else {
+                None
+            };
+            let report = store::diff_report(
+                &store::load(&db, id(0)?)?,
+                &store::load(&db, id(1)?)?,
+                &ignore,
+            )?;
+            output(&store::render_diff(&report, format)?, &opts)?;
+            if let Some(min) = gate {
+                *status = findings_exit(true, new_findings_at_or_above(&report, min));
+            }
+            Ok(())
         }
         "export" => {
             let snapshot = store::load(&db, id(0)?)?;
@@ -631,12 +710,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         "findings" => {
             let snapshot = store::load(&db, id(0)?)?;
-            let min = risk::Severity::parse(
-                opts.get("min-severity")
-                    .map(String::as_str)
-                    .unwrap_or("info"),
-            )
-            .ok_or("Severity must be info, low, medium, high or critical")?;
+            let min = min_severity(&opts)?;
             let mut list: Vec<_> = risk::analyze_snapshot(&snapshot)
                 .into_iter()
                 .filter(|f| f.severity >= min)
@@ -650,7 +724,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             output(
                 &serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?,
                 &opts,
-            )
+            )?;
+            *status = findings_exit(fail_on_findings, list.len());
+            Ok(())
         }
         "alerts" => output(
             &serde_json::to_string_pretty(&store::list_alerts(&db, 500)?)
@@ -932,14 +1008,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 &store::export_at(&snapshot, format, store::timestamp(&db, id)?)?,
                 &opts,
             )?;
-            if errors.is_empty() {
-                Ok(())
-            } else {
-                Err(format!(
+            // Saved but stopped early (TUI stop, or errors): partial result, status 2.
+            if !errors.is_empty() {
+                eprintln!(
                     "Scan #{id} saved as partial after errors: {}",
                     errors.join("; ")
-                ))
+                );
             }
+            *status = saved_exit(complete);
+            Ok(())
         }
         "listen" | "dcp" => {
             let interface = opts
@@ -994,10 +1071,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 )?,
                 &opts,
             )?;
-            match error {
-                None => Ok(()),
-                Some(e) => Err(format!("Capture #{id} saved as partial: {e}")),
+            if let Some(e) = &error {
+                eprintln!("Capture #{id} saved as partial: {e}");
             }
+            *status = saved_exit(error.is_none());
+            Ok(())
         }
         _ => Err(format!("Unknown command {command}. Use --help.")),
     }
@@ -2103,5 +2181,113 @@ mod tests {
                 .unwrap_err()
                 .contains("powershell")
         );
+    }
+
+    #[test]
+    fn exit_codes_are_the_documented_numbers() {
+        assert_eq!(
+            [
+                ExitCode::Success,
+                ExitCode::Error,
+                ExitCode::Partial,
+                ExitCode::Findings
+            ]
+            .map(ExitCode::code),
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn saved_scans_and_captures_map_to_success_or_partial() {
+        assert_eq!(saved_exit(true), ExitCode::Success);
+        assert_eq!(saved_exit(false), ExitCode::Partial);
+    }
+
+    #[test]
+    fn findings_exit_is_3_only_with_the_flag_and_a_match() {
+        assert_eq!(findings_exit(false, 0), ExitCode::Success);
+        // Default behaviour: findings never change the status without the flag.
+        assert_eq!(findings_exit(false, 5), ExitCode::Success);
+        assert_eq!(findings_exit(true, 0), ExitCode::Success);
+        assert_eq!(findings_exit(true, 1), ExitCode::Findings);
+    }
+
+    #[test]
+    fn fail_on_findings_is_a_flag_and_only_for_findings_and_diff() {
+        let (pos, opts) = options(&args(&[
+            "3",
+            "--fail-on-findings",
+            "--min-severity",
+            "high",
+        ]))
+        .unwrap();
+        assert_eq!(pos, ["3"], "the flag takes no value");
+        assert!(opts.contains_key("fail-on-findings"));
+        assert_eq!(min_severity(&opts).unwrap(), risk::Severity::High);
+        // Last: the flag does not swallow the next argument either.
+        let (pos, opts) = options(&args(&["--fail-on-findings", "1", "2"])).unwrap();
+        assert_eq!((pos.len(), opts.len()), (2, 1));
+        assert!(
+            !options(&args(&["1"]))
+                .unwrap()
+                .1
+                .contains_key("fail-on-findings")
+        );
+        for command in ["scan", "history", "export", "monitor", "devices"] {
+            let err = run(&args(&[command, "1", "--fail-on-findings"])).unwrap_err();
+            assert!(err.contains("--fail-on-findings"), "{command}: {err}");
+        }
+    }
+
+    #[test]
+    fn min_severity_defaults_to_info_and_rejects_unknown_names() {
+        assert_eq!(
+            min_severity(&BTreeMap::new()).unwrap(),
+            risk::Severity::Info
+        );
+        let opts = BTreeMap::from([("min-severity".to_string(), "bogus".to_string())]);
+        assert!(
+            min_severity(&opts)
+                .unwrap_err()
+                .contains("Severity must be")
+        );
+    }
+
+    #[test]
+    fn diff_gate_counts_new_findings_at_or_above_the_threshold() {
+        let snapshot = |hosts: Vec<scan::Host>| store::Snapshot {
+            targets: "10.0.0.2".into(),
+            complete: true,
+            settings: scan::Settings::default(),
+            hosts,
+            observations: vec![],
+            notes: BTreeMap::new(),
+        };
+        let quiet = snapshot(vec![tui_host("10.0.0.2", vec![])]);
+        let telnet = snapshot(vec![tui_host("10.0.0.2", vec![23])]);
+        let ignore = store::IgnoreList::new(&[]);
+        let appeared = store::diff_report(&quiet, &telnet, &ignore).unwrap();
+        let high = risk::Severity::High;
+        assert!(new_findings_at_or_above(&appeared, risk::Severity::Info) >= 1);
+        assert!(
+            new_findings_at_or_above(&appeared, high) >= 1,
+            "telnet is high"
+        );
+        assert_eq!(
+            new_findings_at_or_above(&appeared, risk::Severity::Critical),
+            0
+        );
+        // A finding that went away is not "found": only new findings count.
+        let resolved = store::diff_report(&telnet, &quiet, &ignore).unwrap();
+        assert_eq!(new_findings_at_or_above(&resolved, risk::Severity::Info), 0);
+        // Unchanged scans report nothing new.
+        let same = store::diff_report(&telnet, &telnet, &ignore).unwrap();
+        assert_eq!(new_findings_at_or_above(&same, risk::Severity::Info), 0);
+    }
+
+    #[test]
+    fn plain_commands_still_succeed_with_status_0() {
+        assert_eq!(run(&args(&["--help"])).unwrap(), ExitCode::Success);
+        assert!(run(&args(&["no-such-command"])).is_err());
     }
 }
