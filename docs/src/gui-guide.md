@@ -8,7 +8,7 @@ Enter an IP, an IPv4 range, a CIDR block, or comma/space-separated addresses, th
 
 - **Settings** enables ARP discovery, industrial identification, services/UDP/OS detection, traceroute and the opt-in transmitting features (ARP sweep, adaptive SYN, trace method and port; these are greyed out in Safe Mode).
 - **Use industrial ports** selects the relevant TCP ports for OT identification. To find ICMP-silent TCP services, also enable scanning of nonresponders.
-- **Safe Mode** is on by default; see [Safe Mode and OT safety](safe-mode-and-ot-safety.md).
+- **Safe Mode** is on by default; see [Safe Mode and OT safety](safe-mode-and-ot-safety.md). The status bar at the bottom shows the current profile: a green **Safe Mode** badge (at most 8 hosts at a time, at least 100 ms between probes; no SYN, ARP sweep or TCP/UDP traceroute) or an amber **Fast** badge whose tooltip lists the enabled opt-in features (SYN, ARP sweep, rate cap). It follows the setting immediately, and a click opens Settings.
 - **Fast** selects async TCP discovery with up to 1,024 hosts at once; Settings allows up to 4,096. These are concurrency limits, not benchmark results.
 - **Pause** lets in-flight hosts finish; **Stop** aborts asynchronous work and keeps hosts that had already finished (an already issued native request can still finish later).
 - The **Standard** preset and **Restore defaults** keep interface, source IPv4/MAC, script path and probe file.
@@ -56,4 +56,4 @@ The **Topology** window draws the merged path map from traceroute data (enable t
 
 ## Screenshot mode
 
-`network-scope --screenshot FILE.png` renders the window to a PNG without scanning or touching preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|ot|script` renders a larger window with sample data in that view (append `-small` for the default 800x450 size). This is used for the documentation images.
+`network-scope --screenshot FILE.png` renders the window to a PNG without scanning or touching preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|ot|script` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, then `-fast` for Safe Mode off, e.g. `main-small-fast`). This is used for the documentation images.

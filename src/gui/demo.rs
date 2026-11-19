@@ -37,6 +37,14 @@ type DemoHost = (
 
 impl Scanner {
     pub(super) fn seed_demo(&mut self, state: &str) {
+        // "-fast" renders the window with Safe Mode off (e.g. "main-small-fast").
+        let state = match state.strip_suffix("-fast") {
+            Some(rest) => {
+                self.saved.settings.safe = false;
+                rest
+            }
+            None => state,
+        };
         self.filter = Filter::All;
         self.targets = "10.20.0.0/24".into();
         // A small plant network: controllers, HMI, infrastructure and office hosts.
