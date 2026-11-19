@@ -16,6 +16,7 @@
 //! | TLS certificate public key hash | 40 | vendor default certificates are shared |
 //! | randomised (locally administered) MAC | 40 | never decides alone |
 //! | host name (mDNS, DHCP, NetBIOS, reverse DNS) | 30 | names get reused |
+//! | host name declared by an import (AD, NetBox, CSV) | 100 | decides alone; see below |
 //! | IP address | 15 | addresses get reassigned |
 //! | HASSH + JA4S pair | 10 | identifies the software, not the device |
 //!
@@ -24,6 +25,13 @@
 //! shared default TLS key, a common host name or an identical SSH stack never merge two devices
 //! on their own. Identifiers that cannot belong to two devices veto a match: two different
 //! globally unique MACs, two different SMB GUIDs or two different SNMP engine IDs.
+//!
+//! A host name that an operator *declared* (an Active Directory computer, a NetBox device or a CSV
+//! row, see [`crate::baseline`] and the `import` command) is the exception to "names get reused":
+//! it is the list's own name for the device, so it decides alone when the name of a scanned device
+//! matches it (the first label, e.g. `pc-01` for `PC-01.corp.local`; two full names must be equal).
+//! Names are not authenticated: a hostile device can claim a declared name, so for an allow-list
+//! on an untrusted network declare MAC addresses too.
 //!
 //! The key of a device is the id it was first seen with (its MAC, or `ip:ADDRESS`), kept for as
 //! long as the device is recognised. Databases written before this module therefore keep their
@@ -58,10 +66,12 @@ pub enum Kind {
     /// HASSH and JA4S of the same host: weak evidence that two hosts run the same software.
     ServiceFingerprint,
     Ip,
+    /// A host name an operator declared for the device (an import). Never derived from a scan.
+    DeclaredName,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Mac,
         Kind::RandomMac,
         Kind::SnmpEngineId,
@@ -72,6 +82,7 @@ impl Kind {
         Kind::Hostname,
         Kind::ServiceFingerprint,
         Kind::Ip,
+        Kind::DeclaredName,
     ];
     /// The name stored in the database and shown in reports.
     pub fn name(self) -> &'static str {
@@ -86,6 +97,7 @@ impl Kind {
             Kind::Hostname => "hostname",
             Kind::ServiceFingerprint => "service_fingerprint",
             Kind::Ip => "ip",
+            Kind::DeclaredName => "declared_name",
         }
     }
     pub fn parse(name: &str) -> Option<Self> {
@@ -94,7 +106,7 @@ impl Kind {
     /// Points a matching identifier of this kind adds.
     pub fn weight(self) -> u32 {
         match self {
-            Kind::Mac | Kind::SnmpEngineId => 100,
+            Kind::Mac | Kind::SnmpEngineId | Kind::DeclaredName => 100,
             Kind::SmbGuid | Kind::SshHostKey => 70,
             Kind::DhcpClientId => 60,
             Kind::RandomMac | Kind::TlsKey => 40,
@@ -306,6 +318,21 @@ pub struct Match {
     pub reasons: Vec<String>,
 }
 
+/// The first label of a host name (`pc-01` of `pc-01.corp.local`).
+fn first_label(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
+}
+
+/// Two host names are the same name: equal, or one of them is a bare name and the first labels
+/// are equal. Two fully qualified names must be equal.
+fn names_match(a: &str, b: &str) -> bool {
+    if a.contains('.') && b.contains('.') {
+        a == b
+    } else {
+        !first_label(a).is_empty() && first_label(a) == first_label(b)
+    }
+}
+
 /// Score of `device` against `record`, or `None` when an identifier rules the match out.
 fn score(
     device: &Device,
@@ -327,13 +354,39 @@ fn score(
     let mut points = 0;
     let mut reasons = vec![];
     for kind in Kind::ALL {
-        let Some(mine) = values.get(&kind) else {
+        // Declared names are matched against names of either kind below.
+        let Some(mine) = values.get(&kind).filter(|_| kind != Kind::DeclaredName) else {
             continue;
         };
         if mine.iter().any(|v| record.has(kind, v)) {
             points += kind.weight();
             reasons.push(kind.name());
         }
+    }
+    let of_device =
+        |k: Kind| -> Vec<&str> { values.get(&k).into_iter().flatten().copied().collect() };
+    let of_record = |k: Kind| -> Vec<&str> {
+        record
+            .identifiers
+            .get(&k)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect()
+    };
+    let (dev_declared, dev_scanned) = (of_device(Kind::DeclaredName), of_device(Kind::Hostname));
+    let (rec_declared, rec_scanned) = (of_record(Kind::DeclaredName), of_record(Kind::Hostname));
+    let declared_hit = dev_declared.iter().any(|a| {
+        rec_declared
+            .iter()
+            .chain(&rec_scanned)
+            .any(|b| names_match(a, b))
+    }) || dev_scanned
+        .iter()
+        .any(|a| rec_declared.iter().any(|b| names_match(a, b)));
+    if declared_hit {
+        points += Kind::DeclaredName.weight();
+        reasons.push(Kind::DeclaredName.name());
     }
     if exact {
         // The same id as before (its MAC or `ip:ADDRESS`) is the same device, as it always was.
@@ -367,6 +420,15 @@ pub fn resolve(registry: &Registry, devices: &[Device]) -> Vec<Match> {
             }
         }
     }
+    // Records by the first label of their host names (scanned and declared), for declared names.
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (n, r) in registry.records.iter().enumerate() {
+        for kind in [Kind::Hostname, Kind::DeclaredName] {
+            for v in r.identifiers.get(&kind).into_iter().flatten() {
+                by_name.entry(first_label(v)).or_default().push(n);
+            }
+        }
+    }
     let mut pairs: Vec<(u32, usize, usize, Vec<&'static str>)> = vec![];
     for (d, device) in devices.iter().enumerate() {
         let mut candidates: BTreeSet<usize> = by_key
@@ -377,6 +439,11 @@ pub fn resolve(registry: &Registry, devices: &[Device]) -> Vec<Match> {
         for (kind, set) in &by_value[d] {
             for v in set {
                 candidates.extend(index.get(&(*kind, *v)).into_iter().flatten().copied());
+            }
+        }
+        for kind in [Kind::Hostname, Kind::DeclaredName] {
+            for v in by_value[d].get(&kind).into_iter().flatten() {
+                candidates.extend(by_name.get(first_label(v)).into_iter().flatten().copied());
             }
         }
         for r in candidates {
@@ -749,6 +816,90 @@ mod tests {
                 .iter()
                 .any(|i| i.kind == Kind::ServiceFingerprint)
         );
+    }
+
+    fn declared(id: &str, names: &[&str]) -> Device {
+        Device {
+            id: id.into(),
+            hostnames: names.iter().map(|n| n.to_string()).collect(),
+            identifiers: names
+                .iter()
+                .map(|n| Identifier {
+                    kind: Kind::DeclaredName,
+                    value: n.to_string(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_declared_name_decides_alone_but_only_for_the_same_name() {
+        let mut registry = Registry::new();
+        let list = declared("name:pc-01", &["pc-01.corp.local", "pc-01"]);
+        registry.learn("name:pc-01", &list);
+        let scanned = |name: &str| devices_of(&[host("10.0.0.20", "06:11:22:33:44:55", name, &[])]);
+        // The first label of a scanned name matches the declared name, in any case or form.
+        for name in ["PC-01", "pc-01.corp.local", "pc-01.other.example"] {
+            let m = resolve(&registry, &scanned(name));
+            assert_eq!(
+                (m[0].new, m[0].key.as_str()),
+                (false, "name:pc-01"),
+                "{name}"
+            );
+            assert_eq!(m[0].reasons, ["declared_name"]);
+        }
+        // Another name, a name that only starts the same, or no name: not the device.
+        for name in ["pc-02", "pc-011", "xpc-01", ""] {
+            assert!(resolve(&registry, &scanned(name))[0].new, "{name}");
+        }
+        // Two fully qualified names must be equal (the list here has no bare name).
+        let mut fqdn_only = Registry::new();
+        fqdn_only.learn("name:x", &declared("name:x", &["pc-01.corp.local"]));
+        let other = devices_of(&[host(
+            "10.0.0.20",
+            "06:11:22:33:44:55",
+            "pc-01.other.example",
+            &[],
+        )]);
+        assert!(resolve(&fqdn_only, &other)[0].new);
+        let same = devices_of(&[host(
+            "10.0.0.20",
+            "06:11:22:33:44:55",
+            "pc-01.corp.local",
+            &[],
+        )]);
+        assert!(!resolve(&fqdn_only, &same)[0].new);
+        // A declared name is vetoed like any other match: this host has another SMB GUID than
+        // the one the list's device was last seen with.
+        let mut seen = devices_of(&[host(
+            "10.0.0.20",
+            "06:11:22:33:44:55",
+            "pc-01",
+            &[("smb.445.guid", "g-1")],
+        )]);
+        let mut registry = Registry::new();
+        registry.learn("06:11:22:33:44:55", &seen[0]);
+        registry.learn("name:pc-01", &list);
+        // The scanned device keeps its own (exact) key, not the list's.
+        let m = resolve(&registry, &seen);
+        assert_eq!(m[0].key, "06:11:22:33:44:55");
+        // A declared device that was matched to a scanned one with another GUID is refused.
+        seen[0].identifiers.retain(|i| i.kind != Kind::SmbGuid);
+        let imposter = devices_of(&[host(
+            "10.0.0.21",
+            "06:99:99:99:99:99",
+            "pc-01",
+            &[("smb.445.guid", "g-2")],
+        )]);
+        let mut registry = Registry::new();
+        let mut rec = declared("name:pc-01", &["pc-01"]);
+        rec.identifiers.push(Identifier {
+            kind: Kind::SmbGuid,
+            value: "g-1".into(),
+        });
+        registry.learn("name:pc-01", &rec);
+        assert!(resolve(&registry, &imposter)[0].new);
     }
 
     #[test]

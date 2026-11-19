@@ -14,6 +14,7 @@ The monitor uses the key: a device that came back with a new address and a new r
 | SSH host key fingerprint | 70 | golden images share it; used when a scan reported one |
 | DHCP client identifier (option 61, from passive capture) | 60 | usually derived from the MAC, so it rotates with it |
 | TLS certificate public-key hash (`tls.PORT.spki_sha256`) | 40 | the same key survives a certificate renewal; vendor default certificates are shared |
+| Host name declared by an [import](import-export.md#how-an-imported-device-matches-a-scanned-one) (AD, NetBox, CSV) | 100 | decides alone; names are not authenticated |
 | Randomised (locally administered) MAC | 40 | may change at any time |
 | Host name (mDNS, DHCP, NetBIOS, reverse DNS) | 30 | names get reused; names built from the IP address are ignored |
 | IP address | 15 | addresses get reassigned |

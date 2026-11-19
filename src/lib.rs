@@ -11,7 +11,7 @@ pub(crate) mod ui;
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::pcapfile;
 pub(crate) use network_scope_core::{
-    baseline, capture, changes, core, devices, feeds, monitor, nmap, notify, observations,
+    baseline, capture, changes, core, devices, feeds, import, monitor, nmap, notify, observations,
     otpassive, passive, report, risk, scan, script, service, store, syn, topology, trace,
 };
 

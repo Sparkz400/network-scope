@@ -13,6 +13,7 @@
 - [GUI guide](gui-guide.md)
 - [CLI reference](cli-reference.md)
 - [Inventory, diffs and reports](inventory-diff-reports.md)
+- [Import, export and sync](import-export.md)
 - [Monitoring and alerts](monitoring-alerts.md)
 - [Scripting](scripting.md)
 

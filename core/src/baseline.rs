@@ -379,6 +379,82 @@ pub fn set(path: &Path, device: &str, update: &Update, now: i64) -> Result<Entry
     Ok(entry)
 }
 
+/// Adds an imported device to the baseline (see [`crate::import`]): expected unless the import
+/// says otherwise. What the import describes (owner, criticality, tags) is added to the entry;
+/// nothing the operator set earlier is cleared. Does not start the baseline.
+pub(crate) fn upsert_imported(
+    c: &Connection,
+    key: &str,
+    label: &str,
+    d: &crate::import::Imported,
+    source: &str,
+    now: i64,
+) -> Result<(), String> {
+    let existing: Option<(String, String, String)> = c
+        .query_row(
+            "SELECT owner,criticality,tags FROM baseline_devices WHERE device_key=?1",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    let (old_owner, old_criticality, old_tags) = existing.unwrap_or_default();
+    let owner = if d.owner.is_empty() {
+        old_owner
+    } else {
+        d.owner.clone()
+    };
+    let criticality = d
+        .criticality
+        .map_or(old_criticality, |c| c.name().to_string());
+    let mut tags: BTreeSet<String> = split_tags(&old_tags).into_iter().collect();
+    for t in &d.tags {
+        if tags.len() < MAX_TAGS {
+            tags.insert(t.clone());
+        }
+    }
+    c.execute(
+        "INSERT INTO baseline_devices(device_key,label,owner,criticality,tags,expected,source,approved_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8) ON CONFLICT(device_key) DO UPDATE SET owner=?3, criticality=?4, tags=?5, expected=?6, label=CASE WHEN label='' THEN ?2 ELSE label END, updated_at=?8",
+        params![
+            key,
+            label,
+            owner,
+            criticality,
+            tags.into_iter().collect::<Vec<_>>().join(","),
+            i64::from(d.expected.unwrap_or(true)),
+            source,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Starts the baseline without a scan (for a list that was imported): from now on the monitor
+/// raises `unknown-device` for every device that is not expected. Needs at least one expected
+/// device, or every device would be unknown. Returns how many devices are expected.
+pub fn enable(path: &Path, now: i64) -> Result<usize, String> {
+    let c = store::open(path)?;
+    let n: i64 = c
+        .query_row(
+            "SELECT count(*) FROM baseline_devices WHERE expected=1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(
+            "No device is expected yet: import a list or approve a scan first (baseline approve)."
+                .into(),
+        );
+    }
+    c.execute(
+        "INSERT INTO baseline_meta(key,value) VALUES('approved_at',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+        [now.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(n as usize)
+}
+
 /// The name to show for a device that is only known by its key: its newest host name, else its
 /// newest address, else the key.
 fn label_for_key(c: &Connection, key: &str) -> String {
@@ -449,7 +525,7 @@ fn find_in(c: &Connection, query: &str) -> Result<String, String> {
         (vec![Kind::Mac, Kind::RandomMac], mac)
     } else {
         (
-            vec![Kind::Hostname],
+            vec![Kind::Hostname, Kind::DeclaredName],
             query.trim_end_matches('.').to_ascii_lowercase(),
         )
     };
