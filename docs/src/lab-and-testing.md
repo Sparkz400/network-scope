@@ -22,7 +22,7 @@ The goal is at least 80% line coverage of every parser and risk-rule file: `risk
 
 The targets are in [`scripts/coverage_targets.json`](https://github.com/Sparkz400/network-scope/blob/main/scripts/coverage_targets.json): a regular expression per target, matched against the source path, so the same entry covers `src/` and `core/src/`. The first matching target wins, so a file with a lower floor is listed before its group.
 
-Not every file is at 80% yet. Measured on 2026-11-19 (cargo-llvm-cov 0.9.1 on Windows, 333 unit tests), these are below it and have a threshold at their measured value, rounded down, marked `"ratchet_to": 80`:
+Not every file is at 80% yet. Measured on 2026-11-19 (cargo-llvm-cov 0.9.1 on Windows, 333 unit tests; three runs gave identical line counts for every file), these are below it and have a threshold at their measured value, rounded down, marked `"ratchet_to": 80`:
 
 | File | Measured | Threshold today |
 | --- | --- | --- |
