@@ -102,6 +102,8 @@ slsa-verifier verify-artifact network-scope-0.5.1-linux-x86_64.tar.gz \
 gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
 ```
 
+Each release also has a CycloneDX SBOM, and the Linux command-line binary can be rebuilt and compared bit for bit: see [Supply chain: SBOM and reproducible builds](supply-chain.md).
+
 ## Build from source
 
 Requires a current stable Rust toolchain ([rustup](https://rustup.rs/)).
