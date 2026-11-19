@@ -67,6 +67,10 @@ pub struct Settings {
     pub arp_sweep: bool,
     /// SYN engine: reply windows from a smoothed RTT and an AIMD congestion window.
     pub syn_adaptive: bool,
+    /// TCP connect scan: per-host connect timeout from a smoothed RTT of the host's
+    /// completed connects (SYN-ACK or RST). Only ever shortens a wait; never in the
+    /// SYN engine and never raises a rate.
+    pub tcp_adaptive: bool,
     /// Traceroute method: icmp (default), tcp (SYN, needs the capture interface) or udp.
     pub trace_method: crate::trace::TraceMethod,
     /// Destination port for TCP traceroute; 0 picks the host's first open port that is
@@ -112,6 +116,7 @@ impl Default for Settings {
             scripts: String::new(),
             arp_sweep: false,
             syn_adaptive: false,
+            tcp_adaptive: false,
             trace_method: crate::trace::TraceMethod::Icmp,
             trace_port: 0,
         }
@@ -696,7 +701,7 @@ mod tests {
     #[test]
     fn new_engine_options_are_off_in_old_snapshots() {
         let old: Settings = serde_json::from_str(r#"{"ports":"22","safe":false}"#).unwrap();
-        assert!(!old.arp_sweep && !old.syn_adaptive);
+        assert!(!old.arp_sweep && !old.syn_adaptive && !old.tcp_adaptive);
         assert_eq!(old.trace_method, crate::trace::TraceMethod::Icmp);
         assert_eq!(old.trace_port, 0);
         let tcp: Settings = serde_json::from_str(r#"{"trace_method":"tcp"}"#).unwrap();

@@ -53,6 +53,7 @@ Scan options:
   --fast          Disable conservative rate limits (read-only OT still applies)
   --syn           IPv4 SYN via Npcap (routed targets via the gateway MAC); else TCP connect
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
+  --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
@@ -68,10 +69,11 @@ Npcap is optional for TCP connect; capture/DCP/SYN require its driver and access
 TUI: Space pause/resume, Q/Esc stop and save a partial scan, Up/Down select,
 Enter host details (Enter/Backspace back), S change sort. No scan starts by itself.
 "#;
-const FLAGS: [&str; 21] = [
+const FLAGS: [&str; 22] = [
     "quiet",
     "arp-sweep",
     "adaptive-syn",
+    "adaptive-tcp",
     "no-dedup",
     "progress",
     "no-reassembly",
@@ -318,6 +320,7 @@ fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Settings, Stri
     // Opt-in transmitting features; the engine ignores them in Safe Mode (without --fast).
     s.arp_sweep = opts.contains_key("arp-sweep");
     s.syn_adaptive = opts.contains_key("adaptive-syn");
+    s.tcp_adaptive = opts.contains_key("adaptive-tcp");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
         s.trace = true;
@@ -1609,6 +1612,7 @@ mod tests {
         let (_, opts) = options(&args(&[
             "--arp-sweep",
             "--adaptive-syn",
+            "--adaptive-tcp",
             "--trace-method",
             "TCP",
             "--trace-port",
@@ -1616,7 +1620,7 @@ mod tests {
         ]))
         .unwrap();
         let s = scan_settings(&opts).unwrap();
-        assert!(s.arp_sweep && s.syn_adaptive && s.trace && s.safe);
+        assert!(s.arp_sweep && s.syn_adaptive && s.tcp_adaptive && s.trace && s.safe);
         assert_eq!(s.trace_method, crate::trace::TraceMethod::Tcp);
         assert_eq!(s.trace_port, 8443);
         assert!(trace_method("ping").is_err());

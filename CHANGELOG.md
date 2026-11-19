@@ -14,10 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Internal: `src/otpassive.rs` is split into the module directory `src/otpassive/` (reassembly, packet parsing, one file per protocol decoder, asset inventory, control findings, capture ingest). No behaviour change.
 
-### Fixed
-
-- A BACnet/IP device identified with `--ot` now lists UDP 47808 in the host's open UDP ports (and so in reports, exports and inventory), not only the default UDP probe ports.
-
 ## [0.5.1] - 2026-11-19
 
 Fuzzing, a container image and signed SLSA provenance for releases; the desktop GUI moves to egui 0.37 and several dependencies get major upgrades.
