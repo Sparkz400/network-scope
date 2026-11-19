@@ -10,11 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Safe Mode badge** in the status bar of the desktop: a green "Safe Mode" or amber "Fast" label next to the status text, updated as soon as the setting changes. The tooltip lists the limits (Safe Mode) or the enabled opt-in features (Fast); a click opens Settings. `NETWORK_SCOPE_SCREENSHOT_STATE` accepts a `-fast` suffix (for example `main-small-fast`) to render with Safe Mode off.
-
 ### Changed
 
 - Internal: `src/otpassive.rs` is split into the module directory `src/otpassive/` (reassembly, packet parsing, one file per protocol decoder, asset inventory, control findings, capture ingest). No behaviour change.
-- **OT read-only guarantee is now a type-level property** (ROADMAP H51, partly): all active OT requests (Modbus Read Device Identification, S7 setup and SZL reads, EtherNet/IP List Identity, BACnet Who-Is, OPC UA discovery) are built from allow-list enums in `ot::readonly` and sent only through socket wrappers that accept nothing but those request types, so a write or control function code cannot be sent without adding an enum variant. Tests cover every function code byte, and the bytes on the wire are unchanged. See [Safe Mode and OT safety](docs/src/safe-mode-and-ot-safety.md).
 
 ## [0.5.1] - 2026-11-19
 
