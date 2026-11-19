@@ -121,3 +121,16 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 64. **A comparison page** against Advanced IP Scanner, nmap, Lansweeper and RustScan, backed by the benchmark numbers.
 65. **A way for users to contribute fingerprints and probes** through pull requests, with safety review and without telemetry.
 66. **A documentation page for each finding,** linked from the GUI.
+
+## L. Security research
+
+Turn the inventory into something you can ask research questions of, without giving up the read-only promise. Suggested order: L67 first (the others build on it), then L68 and L69. Out of scope on purpose: exploitation, credential brute-forcing and evasion, which conflict with the north star.
+
+67. **A research data layer.** Store hosts, services, certificates, fingerprints and findings in queryable SQLite tables instead of only the per-scan `snapshot` text, and export to Parquet/DuckDB and to STIX 2.1 and OCSF. *Done when "every host that presented this certificate key in the last six months" is one SQL query.*
+68. **Offline vulnerability intelligence for OT.** Match versions against an offline copy of the NVD feed, rank by KEV and EPSS (builds on D25), and match the S7, CIP and OPC UA vendor, product and firmware fields against CISA ICS advisories in CSAF format. *Done when the hand-written rules in `data/cves.json` are a fallback, not the main source.*
+69. **Learn normal OT traffic.** From a pcap or live capture, learn who talks to each PLC, with which function codes and how often, and alert on anything new: a new engineering station, a first-ever write, a Stop outside a maintenance window. Builds on the control-traffic detection in `src/otpassive.rs`. *Done when the lab replays a capture with one injected write from a new station and exactly that is reported.*
+70. **Fingerprints you can pivot on.** Add JA4X (certificates), JA4H (HTTP), a Shodan-compatible favicon hash and certificate key hashes next to JA4S and HASSH, and group devices that likely share firmware or a key across scans and sites.
+71. **Check network segmentation.** Scan from several vantage points (sensors, or "as if from VLAN X"), compare what each can reach against the declared zones and conduits, and report every unexpected path. *Done when a segmentation report lists each path that breaks the intended IEC 62443 zone model.*
+72. **Reproducible scans.** Record the tool's own scan traffic as pcapng and stamp each result with the tool version and a hash of the rules files, so a finding can be cited and re-run exactly. Extends H53.
+73. **A workbench for unknown devices.** Queue responses that nothing identifies, group similar banners, compare responses across firmware versions, and turn the result into a pull request for `data/probes.json`. Feeds K65.
+74. **A deliberately vulnerable OT lab.** Grow `lab/` from simulators into a small test plant (OpenPLC and similar) with planted weaknesses, used as a benchmark for findings and for L69. Extends A2.
