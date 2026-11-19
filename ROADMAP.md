@@ -26,7 +26,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 ## A. Trust and accuracy (prove it works)
 
 1. **Clear the "Untested" list in the changelog.** Run SYN (on-link and routed), the ARP sweep, TCP traceroute, live OT capture and DCP on real Npcap/libpcap. *Done when that changelog section is empty.*
-2. **Ground-truth lab benchmark.** Use a lab where every host and port is known, and measure how many real hosts are found, how many reported ports are real, how many open ports are found, and how often the service and OS are named correctly. *Done when each release publishes these numbers and CI fails if they get worse.*
+2. **Ground-truth lab benchmark.** Use a lab where every host and port is known, and measure how many real hosts are found, how many reported ports are real, how many open ports are found, and how often the service and OS are named correctly. *Done when each release publishes these numbers and CI fails if they get worse.* *Status: `lab/benchmark.py` with a CI gate; the Linux baseline entry is still missing.*
 3. **Automatic nmap comparison.** Scan the same targets with both tools, import nmap's result (the XML import already exists) and diff ports and services automatically. *Done when every difference is explained or fixed.*
 4. **Real industrial traffic for tests.** Collect public ICS pcaps for Modbus, S7, EtherNet/IP, IEC 104 and OPC UA and use them as test fixtures. Today the OT decoders are only tested on synthetic frames.
 5. **Fuzz every parser** (TLS, SMB, pcap/pcapng, OT decoders, nmap XML) with `cargo-fuzz`. *Done when 24 hours of fuzzing produce no crashes.*
@@ -39,7 +39,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 10. **Published speed comparison** against nmap -T4, RustScan and Advanced IP Scanner. Measure a /24, a /16 and the 100/1000 most common ports. *Target: the fastest tool that needs no driver.*
 11. **First result in under 200 ms**, with results appearing as they arrive rather than at the end.
-12. **Adaptive timing for the normal TCP scan too,** not only SYN (per-host round-trip time, like `--adaptive-syn`).
+12. **Adaptive timing for the normal TCP scan too,** not only SYN (per-host round-trip time, like `--adaptive-syn`). *Status: done (`--adaptive-tcp`).*
 13. **Probe the likeliest ports first** for each device type, and stop early once the device is identified.
 14. **Fast repeat scans:** skip hosts that haven't changed and only check what's likely to have changed. This makes monitoring cheap.
 15. **Scale:** handle a /8 or 1M+ targets with flat memory use, by generating targets on the fly and writing to SQLite in batches.
@@ -49,19 +49,19 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 ## C. Discovery breadth (find more, send less)
 
-19. **Learn from traffic that's already there:** mDNS/Bonjour, SSDP/UPnP, LLDP/CDP, NetBIOS, WS-Discovery and DHCP fingerprints. This identifies devices without sending a single packet.
+19. **Learn from traffic that's already there:** mDNS/Bonjour, SSDP/UPnP, LLDP/CDP, NetBIOS, WS-Discovery and DHCP fingerprints. This identifies devices without sending a single packet. *Status: done for CDP, WS-Discovery, DHCP, mDNS, SSDP, NetBIOS, LLDP capabilities; not yet NetBIOS browser announcements, LLDP-MED, DHCPv6.*
 20. **SNMP read-only** (v1/v2c/v3 with user-supplied credentials): system description, interfaces, and LLDP neighbours to build a real topology.
 21. **Full IPv6 discovery:** NDP and multicast ping (ff02::1).
-22. **Optional logins for exact versions:** read-only SSH, WinRM or WMI give the exact OS and patch level, which makes CVE hints far more accurate.
+22. **Optional logins for exact versions:** read-only SSH, WinRM or WMI give the exact OS and patch level, which makes CVE hints far more accurate. *Declined (2026-11-19): the tool stays credential-free.*
 23. **More OT protocols, all read-only:** DNP3, IEC 61850 MMS, Omron FINS, Mitsubishi MELSEC, CODESYS, KNX, MQTT, Niagara Fox, plus fuller Profinet.
 24. **Device identity that survives IP changes and randomized MAC addresses.**
 
 ## D. Findings and vulnerabilities
 
-25. **Offline CVE feeds:** import NVD plus CISA KEV and EPSS, and rank findings by "being exploited right now".
+25. **Offline CVE feeds:** import NVD plus CISA KEV and EPSS, and rank findings by "being exploited right now". *Status: KEV and EPSS done (`feeds import`); NVD import open.*
 26. **A risk score per host and per network**, plus a "fix these 10 things first" list.
-27. **Fix steps and reference links for every finding.**
-28. **HTTPS webhooks** via the OS certificate store (`rustls-platform-verifier`). Removes an item from "Not done".
+27. **Fix steps and reference links for every finding.** *Status: reference links for SMB, RDP, Telnet and TLS rules; per-finding fix steps in the docs (K66).*
+28. **HTTPS webhooks** via the OS certificate store (`rustls-platform-verifier`). Removes an item from "Not done". *Status: done.*
 29. **Close the rest of "Not done":** verify the signature on self-signed certificates, and add optional JARM fingerprints when Safe Mode is off.
 30. **Compliance exports:** asset inventory mapped to IEC 62443, NIS2 and the CIS Controls.
 
@@ -86,9 +86,9 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 ## G. Automation and integration
 
-44. **A versioned JSON output format and stable exit codes,** so the tool is reliable in scripts and CI.
-45. **Headless server mode with a REST API and web UI.**
-46. **Remote sensors:** lightweight scanners at each site that report to one central inventory.
+44. **A versioned JSON output format and stable exit codes,** so the tool is reliable in scripts and CI. *Status: exit codes done; versioned JSON open.*
+45. **Headless server mode with a REST API and web UI.** *Declined (2026-11-19).*
+46. **Remote sensors:** lightweight scanners at each site that report to one central inventory. *Declined (2026-11-19).*
 47. **An MCP server,** so AI assistants can query the inventory ("which hosts gained SMBv1 this month?").
 48. **A Windows service and systemd unit for `monitor`,** and a scheduler in the GUI.
 49. **A shared library of Rhai scripts,** plus scripts that run when an alert fires.
@@ -96,7 +96,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 ## H. Safety (a guarantee that can be proven)
 
-51. **A compile-time guarantee for OT:** make it a type error to send a write or control function code, backed by property tests. This turns the read-only promise into something provable.
+51. **A compile-time guarantee for OT:** make it a type error to send a write or control function code, backed by property tests. This turns the read-only promise into something provable. *Status: done for all active OT requests; the Profinet DCP Identify send is not yet covered.*
 52. **Automatic back-off** when a device starts resetting connections or dropping packets, with per-device-type rate limits.
 53. **A dry run** that shows exactly which packet types a scan would send to each host, plus a log of every packet type actually sent.
 54. **A scope guard** that asks for confirmation before scanning public IPs or anything outside the declared scope.
@@ -120,7 +120,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 64. **A comparison page** against Advanced IP Scanner, nmap, Lansweeper and RustScan, backed by the benchmark numbers.
 65. **A way for users to contribute fingerprints and probes** through pull requests, with safety review and without telemetry.
-66. **A documentation page for each finding,** linked from the GUI.
+66. **A documentation page for each finding,** linked from the GUI. *Status: pages done and checked in CI; GUI link open.*
 
 ## L. Security research
 

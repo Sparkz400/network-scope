@@ -70,6 +70,30 @@ SYN-ACK fingerprinting needs the SYN engine, so TCP-connect scans get TTL and se
 
 Device timelines (`devices --history`) are described in [Inventory, diffs and reports](inventory-diff-reports.md#device-history).
 
+## Passive evidence (`listen`)
+
+`network-scope listen` and the desktop Passive window decode traffic that is already on the wire; nothing is transmitted. Each observation is attached to the sender's MAC (and IP when the frame has one) and merged into the device record (`devices ID`, Devices window) next to the active evidence.
+
+| Protocol | What is read | What it tells about the device |
+|---|---|---|
+| ARP | MAC and IP | address binding, IP conflicts |
+| LLDP | chassis, port, name, description, management IPv4, **system capabilities** | name; capabilities bridge, router, WLAN AP, repeater give a network device, telephone gives a VoIP phone |
+| CDP | device ID, platform, software version, port, native VLAN, duplex, capabilities, management/interface IPv4 (802.3 LLC/SNAP to `01:00:0C:CC:CC:CC`) | name; router, switch, bridge, repeater give a network device, the phone capability or an "IP Phone" platform gives a VoIP phone |
+| mDNS | records, `<host>.local` name (only when the A/AAAA address is the packet source), `service.<type>` for known service types, `model=` of `_device-info._tcp` | service types give a type hint (see below); Apple model identifiers give Apple/media |
+| NetBIOS | name-service replies, and **name registration/refresh broadcasts** (workstation `<00>` / server `<20>` name, workgroup) | host name; a weak Windows hint |
+| SSDP/UPnP | SERVER, ST, NT, USN, LOCATION of NOTIFY and search replies | IGD or `MiniUPnPd` gives a router, MediaRenderer/DIAL/Roku/Sonos a media device, printers and cameras by device type, `Microsoft-Windows` a Windows host |
+| WS-Discovery | Hello, ProbeMatches and ResolveMatches on UDP 3702: types, XAddrs, endpoint address (Probe, Resolve and Bye are ignored) | `PrintDeviceType`/`ScanDeviceType` give a printer, `NetworkVideoTransmitter` a camera, `Computer` a weak Windows hint (Samba's `wsdd` also publishes it) |
+| DHCP | client messages: option 55 request list, 60 vendor class, 12 host name; server replies as before | `os_hint` and a type hint (Windows 10/11, macOS, iOS, Android, ISC dhclient, IP phones, printers) |
+| Profinet DCP | name, vendor, IDs, IP settings | industrial controller |
+
+Device-type hints are stored in the observation as `hint.<category>` (strong) and `hint_weak.<category>` (weak) fields with the reason, and scored like active evidence: a strong hint (40 points) is enough for a device type, a weak one (20) only adds to other evidence, and a weak hint beside a strong one of the same category is ignored. When a passive hint names a specific kind of device, a plain LLDP/CDP announcement no longer counts as a network-device hint. The reason text is never used for keyword matching.
+
+mDNS service types used as hints: `_ipp`, `_ipps`, `_printer`, `_pdl-datastream` (printer); `_airplay`, `_raop`, `_googlecast`, `_sonos` (media); `_hap`, `_matter`, `_hue`, `_esphomelib` (IoT); `_companion-link`, `_apple-mobdev2` (Apple); `_airport` (network); `_axis-video` (camera); weak: `_scanner`, `_rtsp`, `_workstation`, `_smb`, `_adisk`, `_afpovertcp`, `_spotify-connect`, `_mqtt`.
+
+The fingerprint tables (DHCP request lists and vendor classes, default host names such as `DESKTOP-xxxxxxx` and `NPIxxxxxx`, service-type lists) are **heuristics written for this project** and kept small. They are checked against hand-built frames only, not against captures from real devices, and a device can announce services it does not offer. Treat the result as a hint. Observations are bounded: the number of distinct `service.*` fields per device comes from a closed list, XML is parsed with DTDs rejected and a size and node limit, and every parser ignores truncated or malformed input.
+
+Not covered: WS-Discovery device metadata (a TCP request to port 5357 would be needed), the NetBIOS browser (UDP 138) host announcements, LLDP-MED, and DHCPv6/DHCP option 82 fingerprints.
+
 ## Not implemented
 
 - **JARM** (10 byte-exact ClientHellos per port): an inexact implementation would not match public JARM databases, and it costs too many connections for Safe Mode.

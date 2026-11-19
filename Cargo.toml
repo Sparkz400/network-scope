@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "network-programming", "gui"]
 # fuzz targets in fuzz/ call `network_scope::fuzz`. The tests are the library's.
 [lib]
 path = "src/lib.rs"
-doctest = false
+doctest = true
 
 # GUI binary: Windows GUI subsystem in release builds.
 [[bin]]
@@ -53,6 +53,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 x509-parser = "0.18"
 roxmltree = "0.21"
 rhai = { version = "1", default-features = false, features = ["std", "sync", "no_module"] }
+rustls-platform-verifier = "0.7"
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }

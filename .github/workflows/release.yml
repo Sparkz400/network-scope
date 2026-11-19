@@ -79,6 +79,27 @@ jobs:
           tar -czf "dist/$stage.tar.gz" "$stage"
           ls -l dist
 
+      # Accuracy numbers of this release (roadmap A2): the benchmark scans the loopback lab of
+      # lab/ground_truth.json with the release binary. Published as release files (so they are
+      # covered by the checksums and the provenance); the gate itself is in ci.yml, not here.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: runner.os == 'Linux'
+        with:
+          python-version: "3.12"
+      - name: Accuracy benchmark (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The simulators use the real service ports; the runner's sshd holds port 22.
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+          sudo systemctl stop ssh.socket ssh.service || true
+          python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --out-dir benchmark-results
+          cp benchmark-results/benchmark.json "dist/network-scope-${VERSION}-benchmark.json"
+          cp benchmark-results/benchmark.md "dist/network-scope-${VERSION}-benchmark.md"
+          ls -l dist
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.label }}

@@ -3,13 +3,18 @@
 //! framing). Nothing is sent unless a destination is configured. Every network operation has a
 //! bounded timeout; failures come back as warnings and never stop monitoring.
 //!
-//! HTTPS webhooks are not supported: no trusted certificate store is bundled, and posting alerts
-//! over TLS without verifying the server would only look secure. Use an http:// relay on a
-//! trusted host (or localhost) instead.
+//! HTTPS webhooks verify the server certificate against the operating system's certificate store
+//! (`rustls-platform-verifier`), so the system's trusted CAs (and any corporate CA an
+//! administrator installed) apply. There is no way to switch verification off: an untrusted or
+//! mismatching certificate fails the delivery with a warning. Plain http:// stays available for
+//! localhost and trusted LAN receivers.
 use crate::{monitor::Alert, risk::Severity};
+use rustls::{ClientConfig, ClientConnection, StreamOwned, pki_types::ServerName};
+use rustls_platform_verifier::Verifier;
 use std::{
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -23,6 +28,8 @@ const MAX_SYSLOG: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Webhook {
+    /// `https://` (TLS verified against the OS certificate store) instead of `http://`.
+    tls: bool,
     host: String,
     port: u16,
     path: String,
@@ -78,19 +85,19 @@ fn host_port(text: &str, default_port: u16) -> Result<(String, u16), String> {
 }
 
 impl Sink {
-    /// `http://host[:port][/path]`.
+    /// `http://host[:port][/path]` (default port 80) or `https://host[:port][/path]` (default
+    /// port 443, certificate verified against the OS certificate store).
     pub fn webhook(url: &str) -> Result<Self, String> {
         let url = url.trim();
-        if url.to_ascii_lowercase().starts_with("https://") {
-            return Err(
-                "HTTPS webhooks are not supported (no trusted certificate store is bundled); \
-                 use an http:// URL, e.g. a relay on localhost"
-                    .into(),
-            );
-        }
-        let rest = url
-            .strip_prefix("http://")
-            .ok_or_else(|| format!("Webhook URL must start with http://: {url}"))?;
+        let (tls, rest) = match url.split_once("://") {
+            Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => (false, rest),
+            Some((scheme, rest)) if scheme.eq_ignore_ascii_case("https") => (true, rest),
+            _ => {
+                return Err(format!(
+                    "Webhook URL must start with http:// or https://: {url}"
+                ));
+            }
+        };
         let (authority, path) = match rest.find('/') {
             Some(i) => (&rest[..i], &rest[i..]),
             None => (rest, "/"),
@@ -101,8 +108,12 @@ impl Sink {
         if path.chars().any(|c| c.is_control() || c == ' ') {
             return Err(format!("Invalid webhook path: {path}"));
         }
-        let (host, port) = host_port(authority, 80)?;
+        let (host, port) = host_port(authority, if tls { 443 } else { 80 })?;
+        if tls && ServerName::try_from(host.clone()).is_err() {
+            return Err(format!("Not a valid host name for HTTPS: {host}"));
+        }
         Ok(Self::Webhook(Webhook {
+            tls,
             host,
             port,
             path: path.to_string(),
@@ -138,7 +149,13 @@ impl Sink {
     }
     fn label(&self) -> String {
         match self {
-            Self::Webhook(w) => format!("webhook http://{}:{}{}", w.host, w.port, w.path),
+            Self::Webhook(w) => format!(
+                "webhook {}://{}:{}{}",
+                if w.tls { "https" } else { "http" },
+                w.host,
+                w.port,
+                w.path
+            ),
             Self::Syslog(s) => format!(
                 "syslog {}://{}:{}",
                 if s.transport == Transport::Tcp {
@@ -181,28 +198,63 @@ fn connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String
     Err(last)
 }
 
-/// One POST; Ok when the server answered 2xx.
-fn post(w: &Webhook, body: &str, timeout: Duration) -> Result<(), String> {
-    let mut stream = connect(&w.host, w.port, timeout)?;
-    let host = if w.host.contains(':') {
-        format!("[{}]", w.host)
-    } else {
-        w.host.clone()
+/// The TLS client configuration for HTTPS webhooks: the same rustls version and ring crypto
+/// provider as the TLS scanner, with the server certificate verified by the operating system
+/// (Windows CryptoAPI, macOS Security.framework, the system CA bundle on Linux).
+fn platform_tls_config() -> Result<Arc<ClientConfig>, String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Verifier::new(provider.clone()).map_err(|e| e.to_string())?;
+    tls_config(verifier, provider)
+}
+
+fn tls_config(
+    verifier: Verifier,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+) -> Result<Arc<ClientConfig>, String> {
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
+/// A readable message for a failed TLS handshake; certificate problems say what to fix.
+fn tls_error(e: &io::Error, host: &str) -> String {
+    if matches!(
+        e.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    ) {
+        return "TLS handshake timed out".into();
+    }
+    let Some(err) = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+    else {
+        return format!("TLS handshake failed: {e}");
     };
-    let host = if w.port == 80 {
-        host
-    } else {
-        format!("{host}:{}", w.port)
-    };
-    let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: network-scope\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        w.path,
-        body.len()
-    );
+    match err {
+        rustls::Error::InvalidCertificate(_) => {
+            let hint = if host.parse::<std::net::IpAddr>().is_ok() {
+                "the certificate must be issued by a CA the system trusts and list this IP \
+                 address as a subject alternative name"
+            } else {
+                "the certificate must be issued by a CA the system trusts and be valid for this \
+                 host name"
+            };
+            format!("TLS certificate of {host} rejected ({err}); {hint}")
+        }
+        other => format!("TLS handshake failed: {other}"),
+    }
+}
+
+/// Sends `request` over `stream`; Ok when the server answered 2xx.
+fn round_trip(stream: &mut (impl Read + Write), request: &str) -> Result<(), String> {
     stream
         .write_all(request.as_bytes())
         .map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())?;
     // Only the status line is needed.
     let mut head = Vec::with_capacity(256);
     let mut buf = [0u8; 256];
@@ -230,6 +282,56 @@ fn post(w: &Webhook, body: &str, timeout: Duration) -> Result<(), String> {
     } else {
         Err(format!("HTTP {status}"))
     }
+}
+
+/// One POST; Ok when the server answered 2xx. HTTPS needs `tls` (see `platform_tls_config`).
+fn post(
+    w: &Webhook,
+    body: &str,
+    timeout: Duration,
+    tls: Option<&Arc<ClientConfig>>,
+) -> Result<(), String> {
+    let mut tcp = connect(&w.host, w.port, timeout)?;
+    let host = if w.host.contains(':') {
+        format!("[{}]", w.host)
+    } else {
+        w.host.clone()
+    };
+    let host = if w.port == if w.tls { 443 } else { 80 } {
+        host
+    } else {
+        format!("{host}:{}", w.port)
+    };
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: network-scope\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        w.path,
+        body.len()
+    );
+    if !w.tls {
+        return round_trip(&mut tcp, &request);
+    }
+    let config = tls.ok_or("TLS is not available")?;
+    // An IP literal is sent without SNI and matched against the certificate's IP addresses.
+    let name = ServerName::try_from(w.host.clone())
+        .map_err(|_| format!("{}: not a valid host name for TLS", w.host))?;
+    let mut conn = ClientConnection::new(config.clone(), name).map_err(|e| e.to_string())?;
+    // Handshake first, so a certificate error is reported as such. Every socket operation is
+    // bounded by the timeout, and the handshake as a whole by one more.
+    let deadline = Instant::now() + timeout;
+    while conn.is_handshaking() {
+        if Instant::now() > deadline {
+            return Err("TLS handshake timed out".into());
+        }
+        conn.complete_io(&mut tcp)
+            .map_err(|e| tls_error(&e, &w.host))?;
+    }
+    let mut stream = StreamOwned::new(conn, tcp);
+    let result = round_trip(&mut stream, &request);
+    // Best effort: tell the server we are done.
+    stream.conn.send_close_notify();
+    let _ = stream.flush();
+    result
 }
 
 /// syslog severity: critical 2, error 3, warning 4, notice 5, informational 6.
@@ -352,6 +454,18 @@ fn send_syslog(s: &Syslog, alerts: &[Alert], timeout: Duration) -> Result<usize,
 /// Sends `alerts` to every sink. Returns one warning per sink that failed; after the first
 /// failure (or `MAX_SINK_TIME`) a sink's remaining alerts of this call are skipped.
 pub fn deliver(sinks: &[Sink], alerts: &[Alert], timeout: Duration) -> Vec<String> {
+    deliver_with(sinks, alerts, timeout, &platform_tls_config)
+}
+
+/// `deliver` with the TLS configuration for HTTPS webhooks supplied by `tls` (built once per
+/// HTTPS sink and call). Tests inject a verifier that trusts an extra root; production always
+/// passes `platform_tls_config`.
+fn deliver_with(
+    sinks: &[Sink],
+    alerts: &[Alert],
+    timeout: Duration,
+    tls: &dyn Fn() -> Result<Arc<ClientConfig>, String>,
+) -> Vec<String> {
     let mut warnings = vec![];
     if alerts.is_empty() {
         return warnings;
@@ -362,13 +476,23 @@ pub fn deliver(sinks: &[Sink], alerts: &[Alert], timeout: Duration) -> Vec<Strin
                 let start = Instant::now();
                 let mut sent = 0;
                 let mut error = None;
+                let mut config = None;
+                if w.tls {
+                    match tls() {
+                        Ok(c) => config = Some(c),
+                        Err(e) => error = Some(format!("TLS setup failed: {e}")),
+                    }
+                }
                 for a in alerts {
+                    if error.is_some() {
+                        break;
+                    }
                     if start.elapsed() > MAX_SINK_TIME {
                         error = Some("time limit for this cycle reached".to_string());
                         break;
                     }
                     let body = serde_json::to_string(a).unwrap_or_default();
-                    match post(w, &body, timeout) {
+                    match post(w, &body, timeout, config.as_ref()) {
                         Ok(()) => sent += 1,
                         Err(e) => {
                             error = Some(e);
@@ -417,6 +541,7 @@ mod tests {
         assert_eq!(
             Sink::webhook("http://hooks.local:8080/a/b?x=1").unwrap(),
             Sink::Webhook(Webhook {
+                tls: false,
                 host: "hooks.local".into(),
                 port: 8080,
                 path: "/a/b?x=1".into()
@@ -425,18 +550,55 @@ mod tests {
         assert_eq!(
             Sink::webhook("http://[::1]").unwrap(),
             Sink::Webhook(Webhook {
+                tls: false,
                 host: "::1".into(),
                 port: 80,
                 path: "/".into()
             })
         );
-        assert!(
-            Sink::webhook("https://x/")
-                .unwrap_err()
-                .contains("not supported")
+        // https: default port 443, scheme case-insensitive, IPv6 brackets, explicit port
+        assert_eq!(
+            Sink::webhook("https://hooks.example.com/a/b?x=1").unwrap(),
+            Sink::Webhook(Webhook {
+                tls: true,
+                host: "hooks.example.com".into(),
+                port: 443,
+                path: "/a/b?x=1".into()
+            })
         );
+        assert_eq!(
+            Sink::webhook(" HTTPS://[2001:db8::1]:8443 ").unwrap(),
+            Sink::Webhook(Webhook {
+                tls: true,
+                host: "2001:db8::1".into(),
+                port: 8443,
+                path: "/".into()
+            })
+        );
+        assert_eq!(
+            Sink::webhook("https://[::1]").unwrap(),
+            Sink::Webhook(Webhook {
+                tls: true,
+                host: "::1".into(),
+                port: 443,
+                path: "/".into()
+            })
+        );
+        let Sink::Webhook(w) = Sink::webhook("http://Hooks.local:80/").unwrap() else {
+            panic!()
+        };
+        assert!(!w.tls && w.port == 80);
         for bad in [
             "ftp://x/",
+            "ws://x/",
+            "hooks.local/x",
+            "//hooks.local/x",
+            "https://",
+            "https://u:p@x/",
+            "https://x:0/",
+            "https://x y/",
+            "https:/x/",
+            "https://-bad-.example/",
             "http://",
             "http://a b/",
             "http://u:p@x/",
@@ -520,6 +682,33 @@ mod tests {
         );
     }
 
+    /// Reads one HTTP request from `c` (empty if the connection fails) and answers `status`.
+    fn serve_http(c: &mut (impl Read + Write), status: &str) -> String {
+        let mut req = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = c.read(&mut buf).unwrap_or(0);
+            req.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&req).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Content-Length: "))
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                if body.len() >= len {
+                    break;
+                }
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        let _ = c.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes());
+        let _ = c.flush();
+        String::from_utf8_lossy(&req).to_string()
+    }
+
     /// A one-shot HTTP server: returns the request it read; answers with `status`.
     fn http_server(status: &'static str) -> (u16, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -527,31 +716,78 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let (mut c, _) = listener.accept().unwrap();
             c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let mut req = Vec::new();
-            let mut buf = [0u8; 1024];
-            loop {
-                let n = c.read(&mut buf).unwrap_or(0);
-                req.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&req).to_string();
-                if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                    let len: usize = head
-                        .lines()
-                        .find_map(|l| l.strip_prefix("Content-Length: "))
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0);
-                    if body.len() >= len {
-                        break;
-                    }
-                }
-                if n == 0 {
-                    break;
-                }
-            }
-            let _ =
-                c.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes());
-            String::from_utf8_lossy(&req).to_string()
+            serve_http(&mut c, status)
         });
         (port, handle)
+    }
+
+    /// A CA and a server certificate it issued for `ip` (DER), plus the server's key.
+    fn test_pki(
+        ip: &str,
+    ) -> (
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ) {
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Network Scope test CA");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let mut leaf_params = rcgen::CertificateParams::new(vec![ip.to_string()]).unwrap();
+        leaf_params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        leaf_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+        let leaf = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(leaf_key.serialize_der());
+        (ca.der().clone(), leaf.der().clone(), key.into())
+    }
+
+    /// A one-shot HTTPS server on 127.0.0.1 presenting `cert`. Returns the request it read
+    /// (empty when the handshake failed).
+    fn https_server(
+        cert: rustls::pki_types::CertificateDer<'static>,
+        key: rustls::pki_types::PrivateKeyDer<'static>,
+        status: &'static str,
+    ) -> (u16, std::thread::JoinHandle<String>) {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let conn = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+            let mut tls = StreamOwned::new(conn, tcp);
+            serve_http(&mut tls, status)
+        });
+        (port, handle)
+    }
+
+    /// The production TLS setup, except that `root` is trusted in addition to the system's CAs.
+    fn trusting(
+        root: &rustls::pki_types::CertificateDer<'static>,
+    ) -> impl Fn() -> Result<Arc<ClientConfig>, String> {
+        let root = root.clone();
+        move || {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let verifier =
+                Verifier::new_with_extra_roots([root.clone()], provider.clone()).unwrap();
+            tls_config(verifier, provider)
+        }
     }
 
     #[test]
@@ -582,6 +818,98 @@ mod tests {
             w[0].contains("HTTP 500") && w[0].contains("3 of 3"),
             "{w:?}"
         );
+    }
+
+    // The macOS verifier (Security.framework) has strict rules for test certificates (validity
+    // period, trust settings) that have not been checked here; the rejection tests below still
+    // run everywhere.
+    #[cfg(not(target_vendor = "apple"))]
+    #[test]
+    fn https_webhook_with_a_trusted_certificate_is_delivered() {
+        let (ca, cert, key) = test_pki("127.0.0.1");
+        let (port, server) = https_server(cert, key, "204 No Content");
+        let sink = Sink::webhook(&format!("https://127.0.0.1:{port}/hook")).unwrap();
+        let a = alert("new-device", "New device 10.0.0.5");
+        let w = deliver_with(
+            &[sink],
+            std::slice::from_ref(&a),
+            Duration::from_secs(5),
+            &trusting(&ca),
+        );
+        assert!(w.is_empty(), "{w:?}");
+        let req = server.join().unwrap();
+        assert!(req.starts_with("POST /hook HTTP/1.1\r\n"), "{req}");
+        assert!(req.contains(&format!("Host: 127.0.0.1:{port}\r\n")));
+        let back: Alert = serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn https_webhook_with_an_untrusted_certificate_is_rejected() {
+        // Valid for 127.0.0.1, but issued by a CA that is not in the system's certificate
+        // store: the production verifier must refuse it and nothing may be sent.
+        let (_, cert, key) = test_pki("127.0.0.1");
+        let (port, server) = https_server(cert, key, "204 No Content");
+        let sink = Sink::webhook(&format!("https://127.0.0.1:{port}/hook")).unwrap();
+        let w = deliver(
+            &[sink],
+            &[alert("new-device", "x"), alert("new-device", "y")],
+            Duration::from_secs(5),
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("certificate") && w[0].contains("rejected") && w[0].contains("2 of 2"),
+            "{w:?}"
+        );
+        assert!(w[0].contains("subject alternative name"), "{w:?}");
+        assert_eq!(
+            server.join().unwrap(),
+            "",
+            "no request may reach the server"
+        );
+
+        // A self-signed leaf certificate (no CA) is refused as well.
+        let key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let der = rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der());
+        let (port, server) = https_server(leaf.der().clone(), der.into(), "204 No Content");
+        let sink = Sink::webhook(&format!("https://127.0.0.1:{port}/")).unwrap();
+        let w = deliver(&[sink], &[alert("new-device", "x")], Duration::from_secs(5));
+        assert!(w.len() == 1 && w[0].contains("rejected"), "{w:?}");
+        assert_eq!(server.join().unwrap(), "");
+    }
+
+    #[test]
+    fn https_webhook_rejects_a_certificate_for_another_address() {
+        // Trusted issuer, but the certificate only covers 10.0.0.1, not the IP we connect to.
+        let (ca, cert, key) = test_pki("10.0.0.1");
+        let (port, server) = https_server(cert, key, "204 No Content");
+        let sink = Sink::webhook(&format!("https://127.0.0.1:{port}/")).unwrap();
+        let w = deliver_with(
+            &[sink],
+            &[alert("new-device", "x")],
+            Duration::from_secs(5),
+            &trusting(&ca),
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("rejected") && w[0].contains("IP address"),
+            "{w:?}"
+        );
+        assert_eq!(server.join().unwrap(), "");
+    }
+
+    #[test]
+    fn https_webhook_to_a_plain_http_server_fails_cleanly() {
+        let (port, server) = http_server("204 No Content");
+        let sink = Sink::webhook(&format!("https://127.0.0.1:{port}/")).unwrap();
+        let w = deliver(&[sink], &[alert("new-device", "x")], Duration::from_secs(2));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("TLS"), "{w:?}");
+        let _ = server.join();
     }
 
     #[test]

@@ -6,7 +6,7 @@ Findings are derived from what a scan collected, so run it with `--services` (or
 network-scope-cli findings ID --min-severity low
 ```
 
-The desktop shows them in the **Findings** window (sortable, filterable by severity and text). Severities: info, low, medium, high, critical.
+The desktop shows them in the **Findings** window (sortable, filterable by severity and text). Severities: info, low, medium, high, critical. Every finding has a page in the [Finding reference](findings/index.md) that explains it in plain language, states exactly what the tool looked at and how to fix it.
 
 ## Checks
 
@@ -18,11 +18,15 @@ The desktop shows them in the **Findings** window (sortable, filterable by sever
 - Industrial ports reachable from the scanner (`ot-reachable`).
 - PHP end of life, date-aware (table `PHP_EOL` in `risk.rs`; branches not in the table are never flagged).
 
+## Reference links
+
+Some findings carry an optional `reference`: a link to official documentation on the problem and how to fix it. Currently `smb1-enabled` and `smb-signing` (Microsoft Learn), `rdp-no-nla` (Microsoft Learn), `telnet-open` (CISA) and the weak-TLS rules `tls-sslv3`, `tls-deprecated-protocol`, `tls-broken-cipher`, `tls-3des`, `tls-no-pfs`, `tls-weak-signature` and `tls-weak-key` (Mozilla Server Side TLS). The link appears in the HTML report, in a `Reference` column of the Markdown summary, as `reference` in the JSON and JSONL exports (omitted when a finding has none) and in the Findings window. Only HTTPS links are shown. Exports written before this field existed still load.
+
 ## CVE hints
 
 **CVE entries are version-based hints only.** Distributions backport fixes without changing the version string, so confirm with the vendor advisory or an authenticated check. Network Scope is not a vulnerability scanner.
 
-The rules live in [`data/cves.json`](https://github.com/Sparkz400/network-scope/blob/main/data/cves.json) (built in). A user file merges like `probes.json`: `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`), or `--cves FILE` on any command. A rule or CPE entry with the same `id` replaces the built-in one.
+The rules live in [`data/cves.json`](https://github.com/Sparkz400/network-scope/blob/main/data/cves.json) (built in). A user file merges like `probes.json`: `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`), or `--cves FILE` on any command, or the **CVE rules file** field in the GUI Settings (with a Browse button; the path is kept with the preferences and, like `--cves FILE`, replaces the default user file). A rule or CPE entry with the same `id` replaces the built-in one. In the GUI the file is loaded at start-up and when the field is changed; if it cannot be read or parsed, the error is shown under the field and the previous rules stay active.
 
 Rule fields:
 

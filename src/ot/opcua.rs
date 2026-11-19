@@ -1,37 +1,12 @@
 //! Sessionless UA Binary discovery using SecurityPolicy None; no authentication or writes.
-use super::{AsyncReadExt, AsyncWriteExt, Fields, TcpStream};
+use super::{
+    AsyncReadExt, Fields,
+    readonly::{OpcUaRequest, OtStream, UA_POLICY_NONE},
+};
 use crate::core::Gate;
 use std::net::IpAddr;
-const POLICY: &str = "http://opcfoundation.org/UA/SecurityPolicy#None";
-fn u32le(b: &mut Vec<u8>, v: u32) {
-    b.extend_from_slice(&v.to_le_bytes());
-}
-fn string(b: &mut Vec<u8>, v: &str) {
-    u32le(b, v.len() as u32);
-    b.extend_from_slice(v.as_bytes());
-}
-fn node(b: &mut Vec<u8>, id: u16) {
-    b.extend_from_slice(&[1, 0]);
-    b.extend_from_slice(&id.to_le_bytes());
-}
-fn request(id: u16, handle: u32) -> Vec<u8> {
-    let mut b = vec![];
-    node(&mut b, id);
-    b.extend_from_slice(&[0, 0]);
-    let ticks = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        / 100
-        + 116444736000000000) as u64;
-    b.extend_from_slice(&ticks.to_le_bytes());
-    u32le(&mut b, handle);
-    u32le(&mut b, 0);
-    u32le(&mut b, u32::MAX);
-    u32le(&mut b, 5000);
-    b.extend_from_slice(&[0, 0, 0]);
-    b
-}
+use tokio::io::AsyncRead;
+const POLICY: &str = UA_POLICY_NONE;
 struct Reader<'a> {
     b: &'a [u8],
     i: usize,
@@ -251,13 +226,7 @@ pub(crate) fn parse_servers(b: &[u8]) -> Result<Fields, String> {
     }
     Ok(f)
 }
-async fn send(s: &mut TcpStream, kind: &[u8; 4], body: &[u8]) -> Result<(), String> {
-    let mut b = kind.to_vec();
-    u32le(&mut b, (body.len() + 8) as u32);
-    b.extend_from_slice(body);
-    s.write_all(&b).await.map_err(|e| e.to_string())
-}
-async fn receive(s: &mut TcpStream) -> Result<([u8; 4], Vec<u8>), String> {
+async fn receive<S: AsyncRead + Unpin>(s: &mut S) -> Result<([u8; 4], Vec<u8>), String> {
     let mut h = [0; 8];
     s.read_exact(&mut h).await.map_err(|e| e.to_string())?;
     let n = u32::from_le_bytes(h[4..].try_into().unwrap()) as usize;
@@ -271,19 +240,15 @@ async fn receive(s: &mut TcpStream) -> Result<([u8; 4], Vec<u8>), String> {
     }
     Ok((h[..4].try_into().unwrap(), b))
 }
+/// Sends a MSG request (GetEndpoints or FindServers) and collects its response chunks.
 async fn service(
-    s: &mut TcpStream,
+    s: &mut OtStream,
     channel: u32,
     token: u32,
-    sequence: u32,
-    body: &[u8],
+    request: &OpcUaRequest,
 ) -> Result<Vec<u8>, String> {
-    let mut b = vec![];
-    for v in [channel, token, sequence, sequence] {
-        u32le(&mut b, v);
-    }
-    b.extend_from_slice(body);
-    send(s, b"MSGF", &b).await?;
+    let sequence = request.message().request_id();
+    s.send(request).await.map_err(|e| e.to_string())?;
     let mut result = vec![];
     for _ in 0..32 {
         let (kind, b) = receive(s).await?;
@@ -317,53 +282,47 @@ pub async fn discover(ip: IpAddr, gate: &Gate) -> Result<Fields, String> {
             ip.to_string()
         }
     );
-    let s = TcpStream::connect((ip, 4840))
+    let s = OtStream::connect((ip, 4840))
         .await
         .map_err(|e| e.to_string())?;
     discover_stream(s, &url, gate).await
 }
-async fn discover_stream(mut s: TcpStream, url: &str, gate: &Gate) -> Result<Fields, String> {
-    let mut hello = vec![];
-    for v in [0, 65536, 65536, 1_048_576, 32] {
-        u32le(&mut hello, v);
-    }
-    string(&mut hello, url);
-    send(&mut s, b"HELF", &hello).await?;
+async fn discover_stream(s: impl Into<OtStream>, url: &str, gate: &Gate) -> Result<Fields, String> {
+    let mut s = s.into();
+    s.send(&OpcUaRequest::hello(url))
+        .await
+        .map_err(|e| e.to_string())?;
     let (kind, _) = receive(&mut s).await?;
     if &kind != b"ACKF" {
         return Err("UA hello rejected".into());
     }
     gate.wait().await;
-    let mut open = vec![];
-    u32le(&mut open, 0);
-    string(&mut open, POLICY);
-    u32le(&mut open, u32::MAX);
-    u32le(&mut open, u32::MAX);
-    u32le(&mut open, 1);
-    u32le(&mut open, 1);
-    open.extend_from_slice(&request(446, 1));
-    for v in [0, 0, 1, u32::MAX, 60000] {
-        u32le(&mut open, v);
-    }
-    send(&mut s, b"OPNF", &open).await?;
+    s.send(&OpcUaRequest::open_secure_channel())
+        .await
+        .map_err(|e| e.to_string())?;
     let (kind, b) = receive(&mut s).await?;
     if &kind != b"OPNF" {
         return Err("UA discovery channel rejected".into());
     }
     let (channel, token) = parse_open(&b)?;
     gate.wait().await;
-    let mut req = request(428, 2);
-    string(&mut req, url);
-    u32le(&mut req, 0);
-    u32le(&mut req, 0);
-    let b = service(&mut s, channel, token, 2, &req).await?;
+    let b = service(
+        &mut s,
+        channel,
+        token,
+        &OpcUaRequest::get_endpoints(channel, token, url),
+    )
+    .await?;
     let mut fields = parse_endpoints(&b)?;
     gate.wait().await;
-    let mut req = request(422, 3);
-    string(&mut req, url);
-    u32le(&mut req, 0);
-    u32le(&mut req, 0);
-    match service(&mut s, channel, token, 3, &req).await {
+    match service(
+        &mut s,
+        channel,
+        token,
+        &OpcUaRequest::find_servers(channel, token, url),
+    )
+    .await
+    {
         Ok(b) => match parse_servers(&b) {
             Ok(f) => fields.extend(f),
             Err(e) => {
@@ -375,17 +334,33 @@ async fn discover_stream(mut s: TcpStream, url: &str, gate: &Gate) -> Result<Fie
         }
     }
     // CloseSecureChannel has no response.
-    let mut close = vec![];
-    for v in [channel, token, 4, 4] {
-        u32le(&mut close, v);
-    }
-    close.extend_from_slice(&request(452, 4));
-    let _ = send(&mut s, b"CLOF", &close).await;
+    let _ = s
+        .send(&OpcUaRequest::close_secure_channel(channel, token))
+        .await;
     Ok(fields)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::{io::AsyncWriteExt, net::TcpStream};
+    fn u32le(b: &mut Vec<u8>, v: u32) {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    fn string(b: &mut Vec<u8>, v: &str) {
+        u32le(b, v.len() as u32);
+        b.extend_from_slice(v.as_bytes());
+    }
+    fn node(b: &mut Vec<u8>, id: u16) {
+        b.extend_from_slice(&[1, 0]);
+        b.extend_from_slice(&id.to_le_bytes());
+    }
+    /// The test server's reply path: raw frames, which production code cannot send.
+    async fn send(s: &mut TcpStream, kind: &[u8; 4], body: &[u8]) -> Result<(), String> {
+        let mut b = kind.to_vec();
+        u32le(&mut b, (body.len() + 8) as u32);
+        b.extend_from_slice(body);
+        s.write_all(&b).await.map_err(|e| e.to_string())
+    }
     fn response(id: u16, handle: u32) -> Vec<u8> {
         let mut b = vec![];
         node(&mut b, id);

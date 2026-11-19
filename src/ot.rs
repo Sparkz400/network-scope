@@ -1,18 +1,24 @@
 //! Explicit read-only identification requests. No write, control or program services.
+//!
+//! Requests are built and sent only through [`readonly`]: its allow-listed request types are
+//! the only values the socket wrappers accept, so a write or control service is a type error
+//! (see the module documentation there).
 pub(crate) mod opcua;
+pub mod readonly;
 use crate::{
     core::Gate,
     scan::{Host, Settings},
+};
+use readonly::{
+    BacnetRequest, BacnetService, EnipCommand, EnipRequest, ModbusFunction, ModbusRequest,
+    OtStream, OtUdp, S7Request, S7Szl,
 };
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpStream, UdpSocket},
-};
+use tokio::io::AsyncReadExt;
 type Fields = BTreeMap<String, String>;
 fn clean(b: &[u8]) -> String {
     String::from_utf8_lossy(b)
@@ -88,14 +94,18 @@ fn no_listener(e: &std::io::Error) -> bool {
     )
 }
 async fn modbus(ip: IpAddr, unit: u8) -> Result<Fields, String> {
-    let socket = TcpStream::connect((ip, 502))
+    let socket = OtStream::connect((ip, 502))
         .await
         .map_err(|e| e.to_string())?;
     modbus_stream(socket, unit).await
 }
-async fn modbus_stream(mut socket: TcpStream, unit: u8) -> Result<Fields, String> {
+async fn modbus_stream(socket: impl Into<OtStream>, unit: u8) -> Result<Fields, String> {
+    let mut socket = socket.into();
     socket
-        .write_all(&[0x4e, 0x53, 0, 0, 0, 5, unit, 0x2b, 0x0e, 1, 0])
+        .send(&ModbusRequest::new(
+            unit,
+            ModbusFunction::ReadDeviceIdentification,
+        ))
         .await
         .map_err(|e| e.to_string())?;
     let mut header = [0u8; 7];
@@ -149,17 +159,15 @@ pub(crate) fn parse_modbus(b: &[u8]) -> Result<Fields, String> {
     Ok(result)
 }
 async fn enip(ip: IpAddr) -> Result<Fields, String> {
-    let socket = TcpStream::connect((ip, 44818))
+    let socket = OtStream::connect((ip, 44818))
         .await
         .map_err(|e| e.to_string())?;
     enip_stream(socket).await
 }
-async fn enip_stream(mut socket: TcpStream) -> Result<Fields, String> {
-    let mut request = [0u8; 24];
-    request[0] = 0x63;
-    request[12..20].copy_from_slice(b"NETSCOPE");
+async fn enip_stream(socket: impl Into<OtStream>) -> Result<Fields, String> {
+    let mut socket = socket.into();
     socket
-        .write_all(&request)
+        .send(&EnipRequest::new(EnipCommand::ListIdentity))
         .await
         .map_err(|e| e.to_string())?;
     let mut header = [0; 24];
@@ -167,7 +175,10 @@ async fn enip_stream(mut socket: TcpStream) -> Result<Fields, String> {
         .read_exact(&mut header)
         .await
         .map_err(|e| e.to_string())?;
-    if header[..2] != [0x63, 0] || header[8..12] != [0; 4] || header[12..20] != request[12..20] {
+    if header[..2] != [0x63, 0]
+        || header[8..12] != [0; 4]
+        || header[12..20] != EnipRequest::SENDER_CONTEXT
+    {
         return Err("Invalid List Identity header".into());
     }
     let len = u16::from_le_bytes([header[2], header[3]]) as usize;
@@ -229,10 +240,11 @@ async fn bacnet(target: SocketAddr) -> Result<Option<Fields>, String> {
     } else {
         "0.0.0.0:0"
     };
-    let socket = UdpSocket::bind(local).await.map_err(|e| e.to_string())?;
-    socket.connect(target).await.map_err(|e| e.to_string())?;
+    let socket = OtUdp::connect(local, target)
+        .await
+        .map_err(|e| e.to_string())?;
     // Unicast Who-Is. Never a subnet-wide broadcast.
-    match socket.send(&[0x81, 0x0a, 0, 8, 1, 0, 0x10, 8]).await {
+    match socket.send(&BacnetRequest::new(BacnetService::WhoIs)).await {
         Ok(_) => {}
         Err(e) if no_listener(&e) => return Ok(None),
         Err(e) => return Err(e.to_string()),
@@ -299,8 +311,8 @@ pub(crate) fn parse_bacnet(b: &[u8]) -> Result<Fields, String> {
         ("vendor_id".into(), vendor.to_string()),
     ]))
 }
-async fn tpkt(socket: &mut TcpStream, request: &[u8]) -> Result<Vec<u8>, String> {
-    socket.write_all(request).await.map_err(|e| e.to_string())?;
+async fn tpkt(socket: &mut OtStream, request: &S7Request) -> Result<Vec<u8>, String> {
+    socket.send(request).await.map_err(|e| e.to_string())?;
     let mut head = [0; 4];
     socket
         .read_exact(&mut head)
@@ -367,47 +379,38 @@ pub(crate) fn parse_szl(b: &[u8], seq: u8, id: u8, fields: &mut Fields) -> Resul
     Ok(())
 }
 async fn s7(ip: IpAddr, rack: u8, slot: u8, gate: &Gate) -> Result<Fields, String> {
-    if rack > 7 || slot > 31 {
-        return Err("S7 rack must be 0–7 and slot 0–31".into());
-    }
-    let mut socket = TcpStream::connect((ip, 102))
+    let cr =
+        S7Request::connection_request(rack, slot).ok_or("S7 rack must be 0–7 and slot 0–31")?;
+    let mut socket = OtStream::connect((ip, 102))
         .await
         .map_err(|e| e.to_string())?;
-    let mut cr = vec![
-        3, 0, 0, 22, 17, 0xe0, 0, 0, 0, 1, 0, 0xc1, 2, 1, 0, 0xc2, 2, 1, 0, 0xc0, 1, 10,
-    ];
-    cr[18] = rack * 32 + slot;
     let response = tpkt(&mut socket, &cr).await?;
     if response.get(5) != Some(&0xd0) {
         return Err("COTP connection refused".into());
     }
     gate.wait().await;
-    let response = tpkt(
-        &mut socket,
-        &[
-            3, 0, 0, 25, 2, 0xf0, 0x80, 0x32, 1, 0, 0, 0, 1, 0, 8, 0, 0, 0xf0, 0, 0, 1, 0, 1, 1,
-            0xe0,
-        ],
-    )
-    .await?;
+    let response = tpkt(&mut socket, &S7Request::setup_communication()).await?;
     if response.get(7..9) != Some(&[0x32, 3][..]) || response.get(17..19) != Some(&[0, 0][..]) {
         return Err("S7 setup rejected".into());
     }
     let mut fields = Fields::new();
-    for (seq, id) in [(2u8, 0x11u8), (3, 0x1c)] {
+    for (seq, szl) in [
+        (2u8, S7Szl::ModuleIdentification),
+        (3, S7Szl::ComponentIdentification),
+    ] {
         gate.wait().await;
-        let request = [
-            3, 0, 0, 33, 2, 0xf0, 0x80, 0x32, 7, 0, 0, 0, seq, 0, 8, 0, 8, 0, 1, 0x12, 4, 0x11,
-            0x44, 1, 0, 0xff, 9, 0, 4, 0, id, 0, 0,
-        ];
-        let b = tpkt(&mut socket, &request).await?;
-        parse_szl(&b, seq, id, &mut fields)?;
+        let b = tpkt(&mut socket, &S7Request::read_szl(seq, szl)).await?;
+        parse_szl(&b, seq, szl.id(), &mut fields)?;
     }
     Ok(fields)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::{
+        io::AsyncWriteExt,
+        net::{TcpStream, UdpSocket},
+    };
     #[tokio::test]
     async fn modbus_fragmented_tcp_response() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
