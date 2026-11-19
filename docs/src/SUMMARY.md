@@ -20,6 +20,7 @@
 
 - [Scanning engine](scanning-engine.md)
 - [Detection](detection.md)
+- [Device identity](device-identity.md)
 - [Findings and CVE hints](findings-and-cves.md)
   - [Finding reference](findings/index.md)
     - [TLS certificate has expired](findings/tls-cert-expired.md)

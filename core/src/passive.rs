@@ -279,6 +279,18 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
                         60 => {
                             o.fields.insert("vendor_class".into(), text(v));
                         }
+                        // Client identifier: a hardware type byte and an id, usually derived
+                        // from the MAC. Device identity (`identity`) uses it as one identifier.
+                        61 if v.len() >= 2 => {
+                            o.fields.insert(
+                                "client_id".into(),
+                                v.iter()
+                                    .take(MAX_CLIENT_ID)
+                                    .map(|b| format!("{b:02x}"))
+                                    .collect::<Vec<_>>()
+                                    .join(":"),
+                            );
+                        }
                         // Parameter request list: the order of the options a client asks for
                         // is characteristic of its DHCP client implementation.
                         55 => {
@@ -455,6 +467,8 @@ fn dns(b: &[u8]) -> Option<Vec<Rr>> {
 }
 /// Longest DHCP parameter request list kept.
 const MAX_PARAMETER_LIST: usize = 64;
+/// Longest DHCP client identifier (option 61) kept, in bytes.
+const MAX_CLIENT_ID: usize = 32;
 /// Host name, services, model and hints of an mDNS response.
 ///
 /// - A `<host>.local` A/AAAA record names the sender only when its address is the packet's
@@ -1134,6 +1148,18 @@ pub(crate) mod tests {
                 .keys()
                 .all(|k| !k.starts_with("hint") && k != "os_hint")
         );
+        // The client identifier (option 61) is kept as hex; a one-byte value and an oversized
+        // one are handled (the first is ignored, the second cut).
+        let o = decode(&dhcp_request_frame(&[(
+            61,
+            &[1, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+        )]))
+        .unwrap();
+        assert_eq!(o.fields["client_id"], "01:aa:bb:cc:dd:ee:ff");
+        let o = decode(&dhcp_request_frame(&[(61, &[1])])).unwrap();
+        assert!(!o.fields.contains_key("client_id"));
+        let o = decode(&dhcp_request_frame(&[(61, &[7u8; 200])])).unwrap();
+        assert_eq!(o.fields["client_id"].split(':').count(), MAX_CLIENT_ID);
         // An oversized list is cut.
         let long = vec![1u8; 250];
         let o = decode(&dhcp_request_frame(&[(55, &long)])).unwrap();

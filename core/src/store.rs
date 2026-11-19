@@ -33,11 +33,44 @@ pub fn default_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("NetworkScope/inventory.sqlite")
 }
-/// Schema version stamped into `PRAGMA user_version` once the DDL below has run. Bump it (and add
-/// only additive, idempotent statements) when the schema grows, so existing databases upgrade.
-const SCHEMA_VERSION: i64 = 2;
+/// The base schema version (the tables below). Everything after it is a numbered migration in
+/// [`MIGRATIONS`]; the version stamped into `PRAGMA user_version` is the number of the last
+/// migration that ran.
+const BASE_VERSION: i64 = 2;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS known_devices(key TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, scan_id INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL); CREATE INDEX IF NOT EXISTS alerts_by_time ON alerts(timestamp);";
-fn open(path: &Path) -> Result<Connection, String> {
+
+/// Schema changes after [`BASE_VERSION`], in order. Append new ones at the end with the next
+/// number; never edit a migration that has shipped. Each runs once, inside the transaction that
+/// opens an older database, and must be idempotent (`IF NOT EXISTS`, `INSERT OR IGNORE`).
+const MIGRATIONS: &[Migration] = &[(3, migrate_device_identifiers)];
+type Migration = (i64, fn(&Connection) -> rusqlite::Result<()>);
+/// Schema version of a database this program has fully upgraded.
+const SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
+
+/// Migration 3 (C24, stable device identity): the identifiers a device was seen with, keyed by
+/// its stable device key (`known_devices.key`). Existing keys (a MAC address or `ip:ADDRESS`)
+/// stay valid and are seeded as identifiers, so an upgraded database recognises every known
+/// device as before.
+fn migrate_device_identifiers(c: &Connection) -> rusqlite::Result<()> {
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS device_identifiers(device_key TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY(device_key,kind,value)); CREATE INDEX IF NOT EXISTS device_identifiers_by_value ON device_identifiers(kind,value);",
+    )?;
+    let legacy: Vec<(String, i64)> = c
+        .prepare("SELECT key,last_seen FROM known_devices")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (key, last_seen) in legacy {
+        if let Some(id) = crate::identity::identifier_of_legacy_key(&key) {
+            c.execute(
+                "INSERT OR IGNORE INTO device_identifiers(device_key,kind,value,last_seen) VALUES(?1,?2,?3,?4)",
+                params![key, id.kind.name(), id.value, last_seen],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -52,21 +85,45 @@ fn open(path: &Path) -> Result<Connection, String> {
     if version < SCHEMA_VERSION {
         c.execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(|e| e.to_string())?;
-        c.execute_batch(&format!(
-            "BEGIN IMMEDIATE; {SCHEMA} PRAGMA user_version={SCHEMA_VERSION}; COMMIT;"
-        ))
-        .map_err(|e| e.to_string())?;
+        migrate(&c, version).map_err(|e| e.to_string())?;
     }
     Ok(c)
 }
+
+/// Brings a database at `from` up to [`SCHEMA_VERSION`] in one transaction; a failure rolls
+/// everything back and leaves the version unchanged.
+fn migrate(c: &Connection, from: i64) -> rusqlite::Result<()> {
+    c.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        if from < BASE_VERSION {
+            c.execute_batch(SCHEMA)?;
+        }
+        for (_, step) in MIGRATIONS.iter().filter(|(v, _)| *v > from) {
+            step(c)?;
+        }
+        c.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
+    })();
+    match result {
+        Ok(()) => c.execute_batch("COMMIT"),
+        Err(e) => {
+            let _ = c.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
 pub fn save(path: &Path, snapshot: &Snapshot) -> Result<i64, String> {
-    let mut c = open(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
-    let data = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
+    save_at(path, snapshot, timestamp)
+}
+/// [`save`] with the scan time given (Unix seconds): for imports that know when the data was
+/// taken, and for tests of anything that depends on the age of a scan.
+pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, String> {
+    let mut c = open(path)?;
+    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let data = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
     tx.execute(
         "INSERT INTO scans(timestamp,targets,complete,hosts,snapshot) VALUES(?1,?2,?3,?4,?5)",
         params![
@@ -171,6 +228,101 @@ pub fn touch_devices(path: &Path, keys: &[String], now: i64) -> Result<(), Strin
     }
     tx.commit().map_err(|e| e.to_string())
 }
+/// Most identifier values kept per device and kind in the database; the oldest go first.
+const KEEP_IDENTIFIERS: i64 = crate::identity::MAX_VALUES_PER_KIND as i64;
+
+/// Every recorded device with the identifiers it was seen with (see [`crate::identity`]).
+pub fn device_registry(path: &Path) -> Result<crate::identity::Registry, String> {
+    registry_of(&open(path)?)
+}
+
+fn registry_of(c: &Connection) -> Result<crate::identity::Registry, String> {
+    let mut registry = crate::identity::Registry::new();
+    let mut keys = c
+        .prepare("SELECT key FROM known_devices")
+        .map_err(|e| e.to_string())?;
+    let rows = keys
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for key in rows {
+        // A device without identifiers is still known by its key.
+        registry.add_key(&key.map_err(|e| e.to_string())?);
+    }
+    let mut s = c
+        .prepare("SELECT device_key,kind,value FROM device_identifiers")
+        .map_err(|e| e.to_string())?;
+    let rows = s
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (key, kind, value) = row.map_err(|e| e.to_string())?;
+        if let Some(kind) = crate::identity::Kind::parse(&kind) {
+            registry.add(&key, crate::identity::Identifier { kind, value });
+        }
+    }
+    Ok(registry)
+}
+
+/// Matches devices against the inventory without recording anything: the stable key of each
+/// device, in order. A device that is not in the inventory gets its own id as a new key.
+pub fn resolve_devices(
+    path: &Path,
+    devices: &[crate::devices::Device],
+) -> Result<Vec<crate::identity::Match>, String> {
+    Ok(crate::identity::resolve(&device_registry(path)?, devices))
+}
+
+/// Records the devices of a completed scan: matches them against the inventory, then stores each
+/// one's stable key (first seen on the first sighting, last seen now) and identifiers. Returns
+/// the matches (one per device, in order). Call it after comparing the scan with what was known.
+pub fn record_devices(
+    path: &Path,
+    devices: &[crate::devices::Device],
+    now: i64,
+) -> Result<Vec<crate::identity::Match>, String> {
+    let mut c = open(path)?;
+    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let matches = crate::identity::resolve(&registry_of(&tx)?, devices);
+    record_matches(&tx, devices, &matches, now)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(matches)
+}
+
+pub(crate) fn record_matches(
+    c: &Connection,
+    devices: &[crate::devices::Device],
+    matches: &[crate::identity::Match],
+    now: i64,
+) -> Result<(), String> {
+    for (d, m) in devices.iter().zip(matches) {
+        c.execute(
+            "INSERT INTO known_devices(key,first_seen,last_seen) VALUES(?1,?2,?2) ON CONFLICT(key) DO UPDATE SET last_seen=?2",
+            params![m.key, now],
+        )
+        .map_err(|e| e.to_string())?;
+        for i in &d.identifiers {
+            c.execute(
+                "INSERT INTO device_identifiers(device_key,kind,value,last_seen) VALUES(?1,?2,?3,?4) ON CONFLICT(device_key,kind,value) DO UPDATE SET last_seen=?4",
+                params![m.key, i.kind.name(), i.value, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        // A device that rotates its MAC or changes address would otherwise collect values forever.
+        c.execute(
+            "DELETE FROM device_identifiers WHERE device_key=?1 AND rowid NOT IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY kind ORDER BY last_seen DESC, rowid DESC) AS n FROM device_identifiers WHERE device_key=?1) WHERE n<=?2)",
+            params![m.key, KEEP_IDENTIFIERS],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn save_alerts(
     path: &Path,
     scan_id: i64,
@@ -1187,6 +1339,173 @@ mod tests {
         assert_eq!(version(&open(&fresh).unwrap()), SCHEMA_VERSION);
         assert!(list(&fresh).unwrap().is_empty());
         remove_db(&fresh);
+    }
+
+    fn mac_host(ip: &str, mac: &str, name: &str, identity: &[(&str, &str)]) -> Host {
+        Host {
+            mac: mac.into(),
+            hostname: name.into(),
+            ..host(ip, &[22, 443], identity)
+        }
+    }
+
+    #[test]
+    fn a_version_2_database_upgrades_and_keeps_its_devices_known() {
+        let path = temp_db("schema-v2");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute_batch(
+                "INSERT INTO known_devices VALUES('00:00:0C:00:00:01',10,20); INSERT INTO known_devices VALUES('06:11:22:33:44:55',10,30); INSERT INTO known_devices VALUES('ip:10.0.0.9',10,40); INSERT INTO known_devices VALUES('odd key',10,50); PRAGMA user_version=2;",
+            )
+            .unwrap();
+        }
+        let c = open(&path).unwrap();
+        let version: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let mut seeded: Vec<(String, String)> = c
+            .prepare("SELECT device_key,kind FROM device_identifiers")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        seeded.sort();
+        let seeded: Vec<(&str, &str)> = seeded
+            .iter()
+            .map(|r| (r.0.as_str(), r.1.as_str()))
+            .collect();
+        assert_eq!(
+            seeded,
+            [
+                ("00:00:0C:00:00:01", "mac"),
+                ("06:11:22:33:44:55", "random_mac"),
+                ("ip:10.0.0.9", "ip")
+            ],
+            "a key that is not a MAC or an IP stays known but has no identifier"
+        );
+        // Opening again changes nothing.
+        drop(c);
+        let c = open(&path).unwrap();
+        let count = |table: &str| -> i64 {
+            c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count("device_identifiers"), 3);
+        drop(c);
+        // The same devices in the next monitoring cycle raise no new-device alert.
+        let snapshot = Snapshot {
+            hosts: vec![
+                mac_host("10.0.0.5", "00:00:0C:00:00:01", "", &[]),
+                mac_host("10.0.0.6", "06:11:22:33:44:55", "", &[]),
+                mac_host("10.0.0.9", "", "", &[]),
+            ],
+            ..snapshot()
+        };
+        let devices = crate::devices::merge(&snapshot.hosts, &snapshot.observations);
+        let matches = resolve_devices(&path, &devices).unwrap();
+        assert!(matches.iter().all(|m| !m.new), "{matches:?}");
+        let ctx = crate::monitor::Context {
+            keys: crate::identity::key_map(&devices, &matches),
+        };
+        let alerts = crate::monitor::evaluate_with(
+            None,
+            &snapshot,
+            &known_devices(&path).unwrap(),
+            &crate::monitor::Policy::default(),
+            &ctx,
+            100,
+        );
+        assert!(alerts.is_empty(), "{alerts:?}");
+        remove_db(&path);
+    }
+
+    #[test]
+    fn recording_devices_follows_a_device_across_address_and_mac_changes() {
+        let path = temp_db("record-devices");
+        let identity = [
+            ("ssh.22.hostkey_sha256", "AAAA"),
+            ("tls.443.spki_sha256", "BBBB"),
+        ];
+        let first = crate::devices::merge(
+            &[mac_host(
+                "10.0.0.5",
+                "02:00:00:00:00:01",
+                "tablet",
+                &identity,
+            )],
+            &[],
+        );
+        let m = record_devices(&path, &first, 100).unwrap();
+        assert!(m[0].new);
+        assert_eq!(m[0].key, "02:00:00:00:00:01");
+        // A week later: new address, new random MAC.
+        let later = crate::devices::merge(
+            &[mac_host(
+                "10.0.0.77",
+                "06:11:22:33:44:55",
+                "tablet",
+                &identity,
+            )],
+            &[],
+        );
+        assert!(!resolve_devices(&path, &later).unwrap()[0].new);
+        let m = record_devices(&path, &later, 200).unwrap();
+        assert_eq!((m[0].new, m[0].key.as_str()), (false, "02:00:00:00:00:01"));
+        let known = known_devices(&path).unwrap();
+        assert_eq!(known.len(), 1, "one device, not two: {known:?}");
+        assert_eq!(known["02:00:00:00:00:01"], (100, 200));
+        // A different device that only shares weak identifiers is a second one.
+        let other = crate::devices::merge(
+            &[mac_host(
+                "10.0.0.9",
+                "06:aa:aa:aa:aa:aa",
+                "tablet",
+                &[("tls.443.spki_sha256", "BBBB")],
+            )],
+            &[],
+        );
+        let m = record_devices(&path, &other, 300).unwrap();
+        assert!(m[0].new, "{m:?}");
+        assert_eq!(known_devices(&path).unwrap().len(), 2);
+        remove_db(&path);
+    }
+
+    #[test]
+    fn a_device_keeps_a_bounded_number_of_identifier_values() {
+        let path = temp_db("identifier-cap");
+        let identity = [
+            ("ssh.22.hostkey_sha256", "AAAA"),
+            ("tls.443.spki_sha256", "BBBB"),
+        ];
+        for n in 0..20u8 {
+            let d = crate::devices::merge(
+                &[mac_host(
+                    &format!("10.0.0.{}", n + 10),
+                    &format!("06:00:00:00:00:{n:02x}"),
+                    "tablet",
+                    &identity,
+                )],
+                &[],
+            );
+            let m = record_devices(&path, &d, 100 + i64::from(n)).unwrap();
+            assert_eq!(m[0].key, "06:00:00:00:00:00", "round {n}");
+        }
+        let c = open(&path).unwrap();
+        let count = |kind: &str| -> usize {
+            c.query_row(
+                "SELECT count(*) FROM device_identifiers WHERE kind=?1",
+                [kind],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap() as usize
+        };
+        assert_eq!(count("random_mac"), crate::identity::MAX_VALUES_PER_KIND);
+        assert_eq!(count("ip"), crate::identity::MAX_VALUES_PER_KIND);
+        assert_eq!(count("ssh_host_key"), 1);
+        remove_db(&path);
     }
 
     #[test]

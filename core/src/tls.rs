@@ -230,6 +230,12 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
         }
         Err(_) => {}
     }
+    // Hash of the public key: stays the same when a certificate is renewed with the same key,
+    // and is one of the identifiers a device is recognised by across scans (see `identity`).
+    f.insert(
+        "spki_sha256".into(),
+        crate::fingerprint::hex(&crate::fingerprint::sha256(cert.public_key().raw)),
+    );
     Ok(f)
 }
 
@@ -1184,6 +1190,26 @@ mod tests {
         let leaf_f = describe_cert(leaf.der()).unwrap();
         assert_eq!(leaf_f["subject"], leaf_f["issuer"]);
         assert_eq!(leaf_f["self_signed"], "false");
+    }
+
+    #[test]
+    fn the_public_key_hash_survives_renewal_and_differs_between_keys() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = |names: &str| {
+            let params = rcgen::CertificateParams::new(vec![names.to_string()]).unwrap();
+            describe_cert(params.self_signed(&key).unwrap().der()).unwrap()
+        };
+        let (a, b) = (cert("a.local"), cert("renewed.local"));
+        assert_eq!(a["spki_sha256"].len(), 64);
+        assert_ne!(a["san"], b["san"], "a different certificate");
+        assert_eq!(
+            a["spki_sha256"], b["spki_sha256"],
+            "same key, new certificate"
+        );
+        let other = rcgen::KeyPair::generate().unwrap();
+        let params = rcgen::CertificateParams::new(vec!["a.local".to_string()]).unwrap();
+        let c = describe_cert(params.self_signed(&other).unwrap().der()).unwrap();
+        assert_ne!(a["spki_sha256"], c["spki_sha256"]);
     }
 
     #[test]
