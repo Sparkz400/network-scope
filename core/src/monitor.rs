@@ -528,7 +528,7 @@ fn collect_observations(
     for item in items {
         match item {
             Ok(o) => {
-                if crate::ui::merge(observations, o).is_err() {
+                if crate::observations::merge(observations, o).is_err() {
                     capped += 1;
                 }
             }
@@ -999,7 +999,7 @@ mod tests {
         assert!(evaluate(None, &single, &k, &learn, 1).is_empty());
     }
 
-    /// Real OFFER/ACK frames through passive::decode and ui::merge, as a live capture does.
+    /// Real OFFER/ACK frames through passive::decode and observations::merge, as a live capture does.
     #[test]
     fn rogue_dhcp_from_decoded_frames() {
         use crate::passive::tests::dhcp_reply_frame;
@@ -1008,7 +1008,8 @@ mod tests {
         let capture = |frames: &[Vec<u8>]| {
             let mut observations = vec![];
             for f in frames {
-                crate::ui::merge(&mut observations, crate::passive::decode(f).unwrap()).unwrap();
+                crate::observations::merge(&mut observations, crate::passive::decode(f).unwrap())
+                    .unwrap();
             }
             observations
         };

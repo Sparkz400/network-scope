@@ -1,11 +1,9 @@
 //! `listen` and `dcp` (passive capture of an interface, saved as a scan; `dcp` also sends one
 //! read-only DCP Identify request) and `interfaces` (the capture interfaces).
 use crate::{
+    observations::{ObservationIndex, merge_indexed},
     passive, scan, store,
-    ui::{
-        Ctx, args::number, merge_indexed, observations::ObservationIndex, output, progress,
-        saved_exit,
-    },
+    ui::{Ctx, args::number, output, progress, saved_exit},
 };
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
@@ -104,7 +102,7 @@ fn drain_observations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{observations::MAX_OBSERVATIONS, testutil::obs};
+    use crate::{observations::MAX_OBSERVATIONS, ui::testutil::obs};
 
     #[test]
     fn capture_errors_keep_collected_observations() {

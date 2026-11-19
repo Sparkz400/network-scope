@@ -20,7 +20,7 @@ pub fn merge(
     }
     Ok(())
 }
-pub(crate) const MAX_OBSERVATIONS: usize = 10_000;
+pub const MAX_OBSERVATIONS: usize = 10_000;
 const LIMIT_MESSAGE: &str = "Observation limit (10,000) reached";
 type ObservationKey = (String, String, Option<std::net::IpAddr>);
 fn observation_key(o: &passive::Observation) -> ObservationKey {
@@ -84,7 +84,20 @@ pub fn merge_indexed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::testutil::obs;
+
+    fn obs(
+        mac: &str,
+        protocol: &str,
+        ip: Option<&str>,
+        field: (&str, &str),
+    ) -> passive::Observation {
+        passive::Observation {
+            protocol: protocol.into(),
+            mac: mac.into(),
+            ip: ip.map(|i| i.parse().unwrap()),
+            fields: std::collections::BTreeMap::from([(field.0.to_string(), field.1.to_string())]),
+        }
+    }
 
     #[test]
     fn indexed_merge_matches_linear_merge() {

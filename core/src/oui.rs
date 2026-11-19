@@ -1,8 +1,8 @@
 //! Embedded IEEE OUI registries (MA-L, MA-M, MA-S) and the ODVA/CIP vendor list.
 use std::{collections::HashMap, sync::OnceLock};
 
-static OUI: &str = include_str!("../data/oui.tsv");
-static CIP: &str = include_str!("../data/cip_vendors.tsv");
+static OUI: &str = include_str!("../../data/oui.tsv");
+static CIP: &str = include_str!("../../data/cip_vendors.tsv");
 
 fn oui_table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();

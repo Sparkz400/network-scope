@@ -601,8 +601,8 @@ mod tests {
     use super::*;
     use crate::risk::Severity;
 
-    const KEV: &str = include_str!("../tests/fixtures/kev.json");
-    const EPSS: &str = include_str!("../tests/fixtures/epss.csv");
+    const KEV: &str = include_str!("../../tests/fixtures/kev.json");
+    const EPSS: &str = include_str!("../../tests/fixtures/epss.csv");
 
     fn finding(sev: Severity, ip: &str, id: &str, cve: &[&str]) -> Finding {
         Finding {

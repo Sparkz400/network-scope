@@ -33,7 +33,7 @@ These hold with Safe Mode on or off:
 
 ## The read-only promise is a type, not a convention
 
-The active OT code (`src/ot.rs`, `src/ot/`) cannot send a write or control request, because such a request has no value in the type system:
+The active OT code (`core/src/ot.rs`, `core/src/ot/`) cannot send a write or control request, because such a request has no value in the type system:
 
 - Every OT request is built by `ot::readonly` from an **allow-list enum**: `ModbusFunction`, `S7Szl`, `EnipCommand`, `BacnetService`, `OpcUaMessage`. The request types (`ModbusRequest`, `S7Request`, `EnipRequest`, `BacnetRequest`, `OpcUaRequest`) have private fields, so the enums are the only way in.
 - The only functions that put OT bytes on a socket, `OtStream::send` and `OtUdp::send`, accept nothing but a `ReadOnlyRequest`. That trait is sealed (only `ot::readonly` implements it) and is not implemented for `&[u8]`. The rest of the OT code holds sockets only through these wrappers, which can read but not write; a test fails the build if `ot.rs` or `ot/opcua.rs` use a raw socket or `write_all`.

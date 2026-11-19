@@ -523,7 +523,9 @@ impl<R: Read> Reader<R> {
     }
 }
 
-#[cfg(test)]
+/// Test helper: a classic pcap file from `(timestamp, frame)` pairs. Compiled for tests and with
+/// the `test-util` feature (the GUI tests of the root crate use it).
+#[cfg(any(test, feature = "test-util"))]
 pub fn write_pcap(frames: &[(u32, Vec<u8>)]) -> Vec<u8> {
     let mut out = vec![
         0xd4, 0xc3, 0xb2, 0xa1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 0, 1, 0, 0, 0,
@@ -538,7 +540,8 @@ pub fn write_pcap(frames: &[(u32, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
-#[cfg(test)]
+/// Test helper: a pcapng file (one section, one interface); see [`write_pcap`].
+#[cfg(any(test, feature = "test-util"))]
 pub fn write_pcapng(frames: &[(u32, Vec<u8>)], big_endian: bool) -> Vec<u8> {
     let w32 = |v: u32| {
         if big_endian {

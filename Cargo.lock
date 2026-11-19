@@ -1942,17 +1942,28 @@ name = "network-scope"
 version = "0.5.1"
 dependencies = [
  "crossterm",
- "dns-lookup",
  "eframe",
  "egui",
  "egui_extras",
  "image",
+ "network-scope-core",
+ "ratatui",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tokio",
+ "winit",
+]
+
+[[package]]
+name = "network-scope-core"
+version = "0.5.1"
+dependencies = [
+ "dns-lookup",
  "libloading 0.9.1",
  "pnet_packet",
- "ratatui",
  "rcgen",
  "regex",
- "rfd",
  "rhai",
  "roxmltree",
  "rusqlite",
@@ -1963,7 +1974,6 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-rustls",
- "winit",
  "x509-parser",
 ]
 

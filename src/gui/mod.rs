@@ -312,7 +312,7 @@ struct Scanner {
     compare_b: Option<i64>,
     changes: Vec<String>,
     observations: Vec<passive::Observation>,
-    observation_index: crate::ui::ObservationIndex,
+    observation_index: crate::observations::ObservationIndex,
     capture_selected: Option<usize>,
     listening: Option<passive::Listening>,
     interfaces: Vec<(String, String)>,

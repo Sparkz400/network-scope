@@ -1,45 +1,25 @@
-//! Network Scope as a library. The two binaries (`src/main.rs` and
-//! `src/bin/network-scope-cli.rs`) call [`run`]; the fuzz targets in `fuzz/` call the
-//! entry points in [`fuzz`]. Everything else stays crate-private.
-pub(crate) mod arp;
-pub(crate) mod capture;
-pub(crate) mod core;
-pub(crate) mod devices;
-pub(crate) mod feeds;
-pub(crate) mod fingerprint;
+//! Network Scope as a library: the desktop GUI (`gui`), the CLI and TUI (`ui`) on top of the engine
+//! crate `network-scope-core` (`core/`). The two binaries (`src/main.rs` and
+//! `src/bin/network-scope-cli.rs`) call [`run`]; the fuzz targets in `fuzz/` call the entry points
+//! in [`fuzz`] (re-exported from the core crate). Everything else stays crate-private.
 pub(crate) mod gui;
-pub(crate) mod monitor;
-pub(crate) mod nmap;
-pub(crate) mod notify;
-pub(crate) mod osfp;
-pub(crate) mod ot;
-pub(crate) mod otpassive;
-pub(crate) mod oui;
-pub(crate) mod passive;
-pub(crate) mod pcapfile;
-pub(crate) mod platform;
-pub(crate) mod probes;
-pub(crate) mod report;
-pub(crate) mod risk;
-pub(crate) mod rtt;
-pub(crate) mod scan;
-pub(crate) mod script;
-pub(crate) mod service;
-pub(crate) mod store;
-pub(crate) mod syn;
-pub(crate) mod tls;
-pub(crate) mod topology;
-pub(crate) mod trace;
-pub(crate) mod udp;
 pub(crate) mod ui;
 
-#[doc(hidden)]
-pub mod fuzz;
+// The engine lives in `network-scope-core`; its modules are used here under the same paths
+// (`crate::scan::Host`, `crate::risk::analyze_host`, ...).
+pub(crate) use network_scope_core::{
+    capture, core, devices, feeds, monitor, nmap, notify, observations, otpassive, passive,
+    pcapfile, report, risk, scan, script, service, store, syn, topology, trace,
+};
 
-/// The read-only OT request types (see [`ot::readonly`]). Public only so that the
-/// `compile_fail` doctests there can show that a write or control request does not compile.
+/// The fuzz entry points (`network_scope::fuzz::*`, called by the targets in `fuzz/`).
 #[doc(hidden)]
-pub use ot::readonly as ot_readonly;
+pub use network_scope_core::fuzz;
+
+/// The read-only OT request types (see `network_scope_core::ot::readonly`); kept at this path for
+/// existing users of the library.
+#[doc(hidden)]
+pub use network_scope_core::ot_readonly;
 
 use std::path::PathBuf;
 
@@ -188,5 +168,15 @@ mod tests {
         }
         assert!(gui.contains("windows_subsystem = \"windows\""));
         assert!(!cli.contains("windows_subsystem"));
+    }
+
+    #[test]
+    fn the_core_crate_has_the_version_of_this_package() {
+        let core = include_str!("../core/Cargo.toml");
+        let line = format!("version = \"{}\"", env!("CARGO_PKG_VERSION"));
+        assert!(
+            core.lines().any(|l| l == line),
+            "core/Cargo.toml must say {line}"
+        );
     }
 }
