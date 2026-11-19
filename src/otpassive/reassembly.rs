@@ -150,14 +150,15 @@ impl Reassembly {
     }
     /// Partial messages idle for longer than `FLOW_IDLE_SECS`, checked every 10 s of capture time.
     fn expire(&mut self, ts: i64, out: &mut Vec<Pdu>) {
-        if ts - self.last_sweep < 10 {
+        // Capture timestamps come from untrusted pcap files: saturate instead of overflowing.
+        if ts.saturating_sub(self.last_sweep) < 10 {
             return;
         }
         self.last_sweep = ts;
         let old: Vec<FlowKey> = self
             .flows
             .iter()
-            .filter(|(_, f)| ts - f.last > FLOW_IDLE_SECS)
+            .filter(|(_, f)| ts.saturating_sub(f.last) > FLOW_IDLE_SECS)
             .map(|(k, _)| *k)
             .collect();
         for key in old {
@@ -309,6 +310,23 @@ mod tests {
     use super::*;
     use crate::otpassive::Tracker;
     use crate::otpassive::testutil::{HMI, PLC, cip_send_rr, control, modbus_write, obs, s7, seg};
+
+    #[test]
+    fn extreme_capture_timestamps_do_not_overflow() {
+        // Found by ClusterFuzzLite: `ts - last` overflowed on crafted pcap timestamps.
+        let m = modbus_write();
+        for (a, b) in [
+            (i64::MIN, i64::MAX),
+            (i64::MAX, i64::MIN),
+            (0, i64::MIN),
+            (i64::MIN, 0),
+        ] {
+            let mut t = Tracker::new();
+            t.feed(&seg(HMI, PLC, 502, 1000, 0x18, &m[..3]), a);
+            t.feed(&seg(HMI, PLC, 502, 2000, 0x18, &m[..3]), b);
+            t.feed(&seg(PLC, HMI, 502, 3000, 0x18, &m[..3]), a);
+        }
+    }
 
     #[test]
     fn reassembly_joins_split_modbus_s7_and_enip_messages() {
