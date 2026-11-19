@@ -12,6 +12,10 @@ The tests exercise real loopback networking and protocol fixtures, SQLite round 
 
 CI ([`.github/workflows/ci.yml`](https://github.com/Sparkz400/network-scope/blob/main/.github/workflows/ci.yml)) runs format, clippy with `-D warnings`, the tests and the lab check below on Windows, Linux and macOS, uploads both binaries as build artifacts, and builds the Windows installer. Tagged releases are built by `release.yml`.
 
+## Fuzzing
+
+The parsers of untrusted input (capture files, Ethernet frames for the passive listener and the OT tracker with TCP reassembly, TLS records and certificates, SMB, NTLM, SSH, HTTP and RDP replies, service banners, Modbus, EtherNet/IP, BACnet, S7 and OPC UA replies, the UDP probe replies, nmap XML and the user `probes.json` and `cves.json`) have [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets in `fuzz/`, one per parser, with seed inputs in `fuzz/corpus/`. The seeds also run as a unit test, so every input that once crashed a parser stays a regression test. [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/) (`.github/workflows/cflite.yml`) fuzzes pull requests for 5 minutes and all targets weekly for 30 minutes. How to run a target locally is in [CONTRIBUTING.md](https://github.com/Sparkz400/network-scope/blob/main/CONTRIBUTING.md#fuzzing).
+
 ## Lab simulators
 
 [`lab/simulators.py`](https://github.com/Sparkz400/network-scope/blob/main/lab/simulators.py) (Python standard library only) emulates deliberately weak services: an FTP banner of vsFTPd 2.3.4, Telnet, SSH offering weak algorithms, Apache 2.4.49 with Basic auth, open Redis, Modbus/TCP, EtherNet/IP and BACnet/IP identity. They are fake: they only produce what a scanner observes and never execute anything received from the network.

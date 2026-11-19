@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fuzzing**: cargo-fuzz targets for every parser of untrusted input (pcap/pcapng, passive frames, OT tracker with TCP reassembly, TLS, SMB, NTLM, SSH, HTTP, RDP, banners, Modbus, EtherNet/IP, BACnet, S7, OPC UA, UDP replies, nmap XML, `probes.json`, `cves.json`) with seed corpora, run on pull requests and weekly by ClusterFuzzLite. The code now builds as a library (`src/lib.rs`) that both binaries call; their behaviour is unchanged.
+
 ## [0.5.0] - 2026-11-19
 
 First public release. The [documentation](https://sparkz400.github.io/network-scope/) describes current behaviour; this entry lists what changed since 0.4 and what has not been verified.
