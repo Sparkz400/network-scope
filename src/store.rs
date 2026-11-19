@@ -35,8 +35,8 @@ pub fn default_path() -> PathBuf {
 }
 /// Schema version stamped into `PRAGMA user_version` once the DDL below has run. Bump it (and add
 /// only additive, idempotent statements) when the schema grows, so existing databases upgrade.
-const SCHEMA_VERSION: i64 = 1;
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS known_devices(key TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, scan_id INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL);";
+const SCHEMA_VERSION: i64 = 2;
+const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS known_devices(key TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, scan_id INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL); CREATE INDEX IF NOT EXISTS alerts_by_time ON alerts(timestamp);";
 fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -187,6 +187,16 @@ pub fn save_alerts(
     }
     tx.commit().map_err(|e| e.to_string())
 }
+fn alert_from_row(r: &rusqlite::Row) -> rusqlite::Result<crate::monitor::Alert> {
+    Ok(crate::monitor::Alert {
+        timestamp: r.get(0)?,
+        severity: crate::risk::Severity::parse(&r.get::<_, String>(1)?)
+            .unwrap_or(crate::risk::Severity::Info),
+        kind: r.get(2)?,
+        subject: r.get(3)?,
+        message: r.get(4)?,
+    })
+}
 pub fn list_alerts(path: &Path, limit: usize) -> Result<Vec<crate::monitor::Alert>, String> {
     let c = open(path)?;
     let mut s = c
@@ -195,16 +205,28 @@ pub fn list_alerts(path: &Path, limit: usize) -> Result<Vec<crate::monitor::Aler
         )
         .map_err(|e| e.to_string())?;
     let rows = s
-        .query_map([limit as i64], |r| {
-            Ok(crate::monitor::Alert {
-                timestamp: r.get(0)?,
-                severity: crate::risk::Severity::parse(&r.get::<_, String>(1)?)
-                    .unwrap_or(crate::risk::Severity::Info),
-                kind: r.get(2)?,
-                subject: r.get(3)?,
-                message: r.get(4)?,
-            })
-        })
+        .query_map([limit as i64], alert_from_row)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+/// Every alert raised at or after `since` (Unix seconds), oldest first and without a row limit.
+/// With `scope` (a monitor's targets text) only alerts of scans of those targets are returned,
+/// so several monitors sharing one database do not see each other's alerts; alerts whose scan
+/// is not in the database are then left out. This is what a restarted monitor restores its
+/// de-duplication state from.
+pub fn list_alerts_since(
+    path: &Path,
+    since: i64,
+    scope: Option<&str>,
+) -> Result<Vec<crate::monitor::Alert>, String> {
+    let c = open(path)?;
+    let mut s = c
+        .prepare(
+            "SELECT a.timestamp,a.severity,a.kind,a.subject,a.message FROM alerts a              WHERE a.timestamp >= ?1              AND (?2 IS NULL OR a.scan_id IN (SELECT id FROM scans WHERE targets = ?2))              ORDER BY a.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = s
+        .query_map(params![since, scope], alert_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
@@ -1159,6 +1181,87 @@ mod tests {
         assert_eq!(version(&open(&fresh).unwrap()), SCHEMA_VERSION);
         assert!(list(&fresh).unwrap().is_empty());
         remove_db(&fresh);
+    }
+
+    #[test]
+    fn list_alerts_since_filters_by_time_and_scope_without_a_limit() {
+        use crate::monitor::Alert;
+        let path = temp_db("alerts-since");
+        let alert = |t: i64, subject: &str| Alert {
+            timestamp: t,
+            severity: crate::risk::Severity::High,
+            kind: "new-device".into(),
+            subject: subject.into(),
+            message: format!("New device {subject}"),
+        };
+        let mut a = snapshot();
+        a.targets = "10.0.0.0/24".into();
+        let mut b = snapshot();
+        b.targets = "10.0.1.0/24".into();
+        let scan_a = save(&path, &a).unwrap();
+        let scan_b = save(&path, &b).unwrap();
+        let many: Vec<Alert> = (0..3000).map(|i| alert(10 + i, "10.0.0.1")).collect();
+        save_alerts(&path, scan_a, &many).unwrap();
+        save_alerts(&path, scan_b, &[alert(5000, "10.0.1.1")]).unwrap();
+        // no row limit, oldest first
+        let all = list_alerts_since(&path, 0, None).unwrap();
+        assert_eq!(all.len(), 3001);
+        assert_eq!(all[0].timestamp, 10);
+        assert_eq!(all[3000].subject, "10.0.1.1");
+        // time bound is inclusive
+        assert_eq!(list_alerts_since(&path, 3009, None).unwrap().len(), 2);
+        assert_eq!(list_alerts_since(&path, 5001, None).unwrap().len(), 0);
+        // scope: only alerts of scans of those targets
+        let only_b = list_alerts_since(&path, 0, Some("10.0.1.0/24")).unwrap();
+        assert_eq!(only_b, vec![alert(5000, "10.0.1.1")]);
+        assert_eq!(
+            list_alerts_since(&path, 0, Some("10.0.0.0/24"))
+                .unwrap()
+                .len(),
+            3000
+        );
+        assert!(
+            list_alerts_since(&path, 0, Some("other"))
+                .unwrap()
+                .is_empty()
+        );
+        // the newest-first view with a limit is unchanged
+        assert_eq!(list_alerts(&path, 1).unwrap()[0].timestamp, 5000);
+        remove_db(&path);
+    }
+
+    #[test]
+    fn a_database_from_before_the_alert_index_still_opens_and_upgrades() {
+        let path = temp_db("schema-v1");
+        {
+            // Schema version 1: the tables without the alerts time index.
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE scans(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE known_devices(key TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL); CREATE TABLE alerts(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, scan_id INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL); \
+                 INSERT INTO scans(timestamp,targets,complete,hosts,snapshot) VALUES(1,'t',1,0,'{}'); \
+                 INSERT INTO alerts(timestamp,scan_id,severity,kind,subject,message) VALUES(7,1,'high','new-device','a','m'); \
+                 PRAGMA user_version=1;",
+            )
+            .unwrap();
+        }
+        let old = list_alerts_since(&path, 0, Some("t")).unwrap();
+        assert_eq!(old.len(), 1, "old alerts are readable without new data");
+        assert_eq!(old[0].timestamp, 7);
+        let c = open(&path).unwrap();
+        let version: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let indexes: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='alerts_by_time'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 1);
+        drop(c);
+        remove_db(&path);
     }
 
     #[test]
