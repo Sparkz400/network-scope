@@ -6,7 +6,7 @@ Findings are derived from what a scan collected, so run it with `--services` (or
 network-scope-cli findings ID --min-severity low
 ```
 
-The desktop shows them in the **Findings** window (sortable, filterable by severity and text). Severities: info, low, medium, high, critical.
+The desktop shows them in the **Findings** window (sortable, filterable by severity and text). Severities: info, low, medium, high, critical. Every finding has a page in the [Finding reference](findings/index.md) that explains it in plain language, states exactly what the tool looked at and how to fix it.
 
 ## Checks
 
