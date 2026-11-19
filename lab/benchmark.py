@@ -103,9 +103,14 @@ def udp_bindable(address, port):
         s.close()
 
 
-def start_lab(truth, addresses, scan_ports):
-    """Starts the simulators in this process. Raises LabError when the machine is not clean."""
+def start_lab(truth, addresses, scan_ports, idle_timeout=None):
+    """Starts the simulators in this process. Raises LabError when the machine is not clean.
+
+    idle_timeout (seconds) overrides how long a simulator waits for a client that speaks first.
+    """
     sim = load_simulators()
+    if idle_timeout is not None:
+        sim.IDLE_TIMEOUT = idle_timeout
     handlers = {h.__name__: h for h in sim.TCP.values()}
     handlers.update(sim.VARIANTS)
     udp_handlers = {"bacnet": sim.bacnet}

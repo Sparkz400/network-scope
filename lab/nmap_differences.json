@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "description": "Known differences between Network Scope and nmap on the loopback lab, for lab/nmap_compare.py. Every entry matches exactly one difference by host, port, field and BOTH values (no wildcards), so a difference that changes is no longer explained by an old entry. Entries were written from a run of nmap 7.98 on Windows 11 (2026-11-19); a run on another platform or nmap version can show differences that are not listed here, which then fail the comparison until they are investigated and explained. An entry that matches nothing is reported as a warning, not an error.",
+  "differences": [
+    {
+      "host": "127.0.10.2",
+      "port": 502,
+      "field": "service",
+      "network_scope": "",
+      "nmap": "modbus",
+      "reason": "By design. Network Scope never sends generic service probes to industrial ports (service::is_ot_port, a unit test pins it); with --ot it identifies Modbus with its own read-only requests and stores the result under Modbus.* (Modbus.vendor, Modbus.product, Modbus.firmware), not under svc.502. nmap -sV sends its own probe to port 502 and names the service modbus."
+    },
+    {
+      "host": "127.0.10.2",
+      "port": 502,
+      "field": "product",
+      "network_scope": "",
+      "nmap": "Modbus TCP",
+      "reason": "Same as the service on this port: Network Scope has no svc.502.product because it does not probe industrial ports generically. Its Modbus identity (vendor LabWorks, product PLC-1000, firmware V1.2.3) is under Modbus.*, which nmap -sV does not read; nmap's product is the generic protocol name 'Modbus TCP'."
+    },
+    {
+      "host": "127.0.10.2",
+      "port": 44818,
+      "field": "service",
+      "network_scope": "",
+      "nmap": "ethernet-ip-2",
+      "reason": "By design, as for port 502: no generic probe on an industrial port. The EtherNet/IP List Identity answer (vendor Rockwell Automation/Allen-Bradley, product 1756-L81E, firmware 20.11) is stored under EtherNet/IP.*. The name 'ethernet-ip-2' is nmap's own service name for this probe's match; Network Scope's name for the protocol is 'EtherNet/IP'."
+    },
+    {
+      "host": "127.0.10.4",
+      "port": 22,
+      "field": "version",
+      "network_scope": "8.4p1",
+      "nmap": "8.4p1 Debian 5+deb11u1",
+      "reason": "Naming. The banner is SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u1. nmap puts the distribution's package revision into the version; Network Scope keeps the upstream version (8.4p1, which is what its CPE and CVE matching use) and shows 'Debian-5+deb11u1' in the info part of the summary ('ssh OpenSSH 8.4p1 (protocol 2.0 Debian-5+deb11u1)')."
+    },
+    {
+      "host": "(all)",
+      "port": "*",
+      "field": "closed",
+      "network_scope": "0",
+      "nmap": "88",
+      "reason": "Windows, not the lab. A refused TCP connect to a closed loopback port takes about 2.0 s on this Windows machine (measured with a plain Python socket: 2.01 s; 0.0003 s when SIO_TCP_INITIAL_RTO disables SYN retransmission). That is longer than this run's port timeout of 1500 ms (and the default 2000 ms), so Network Scope's first attempt times out and, because every retry also times out, the port is recorded as unanswered instead of closed. nmap reports all 88 closed ports as closed (conn-refused). Open ports are unaffected. On Linux a refusal is immediate and this row does not appear. This is an open engine issue on Windows (a candidate fix is to disable SYN retransmission for loopback targets), not a lab artefact."
+    },
+    {
+      "host": "(all)",
+      "port": "*",
+      "field": "unanswered",
+      "network_scope": "88",
+      "nmap": "0",
+      "reason": "The other side of the 'closed' row: the 88 closed ports that Network Scope on Windows records as unanswered (no answer within the timeout) because the refusal arrives after about 2.0 s. nmap -sT -Pn reports no filtered port in the lab."
+    }
+  ]
+}

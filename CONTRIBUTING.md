@@ -43,6 +43,12 @@ Accuracy benchmark against the ground truth in `lab/ground_truth.json` (needs an
 python -I lab/benchmark.py --cli /absolute/path/to/target/release/network-scope-cli --check
 ```
 
+Comparison with nmap on the same lab (needs nmap on `PATH`; exit code 1 when a difference between the two tools is not explained in `lab/nmap_differences.json`, see [Lab and testing](docs/src/lab-and-testing.md#comparison-with-nmap)):
+
+```sh
+python -I lab/nmap_compare.py --cli /absolute/path/to/target/release/network-scope-cli --explain lab/nmap_differences.json
+```
+
 Dependency checks (RustSec advisories, licenses, sources), the same ones the `security` workflow runs:
 
 ```sh
