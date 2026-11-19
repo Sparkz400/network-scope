@@ -109,4 +109,4 @@ On one host whose firewall silently drops most ports, both tools are limited by 
 
 ## Source layout
 
-`core` (scheduler/rate gate), `scan` (targets and model), `syn`, `arp`, `service`, `tls`, `fingerprint`, `udp`, `osfp`, `oui`, `devices`, `trace`, `topology`, `risk`, `report`, `nmap`, `monitor`, `notify`, `script`, `probes`, `capture`, `passive`, `otpassive`, `pcapfile`, `ot` (including `ot/opcua`), `platform`, `store`, `ui` (CLI/TUI) and `gui` (egui). `main` only dispatches and `bin/network-scope-cli.rs` is the console twin.
+`core` (scheduler/rate gate), `scan` (targets and model), `syn`, `arp`, `service`, `tls`, `fingerprint`, `udp`, `osfp`, `oui`, `devices`, `trace`, `topology`, `risk`, `report`, `nmap`, `monitor`, `notify`, `script`, `probes`, `capture`, `passive`, `otpassive`, `pcapfile`, `ot` (including `ot/opcua`), `platform`, `store`, `ui` (CLI/TUI) and `gui` (egui). All of them are crate-private modules of the library (`src/lib.rs`), which exports only `run` (CLI/TUI/GUI dispatch) and the fuzzing entry points (`fuzz`). `main.rs` (GUI subsystem on Windows) and `bin/network-scope-cli.rs` (console twin) just call `network_scope::run`.

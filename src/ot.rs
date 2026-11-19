@@ -1,5 +1,5 @@
 //! Explicit read-only identification requests. No write, control or program services.
-mod opcua;
+pub(crate) mod opcua;
 use crate::{
     core::Gate,
     scan::{Host, Settings},
@@ -117,7 +117,7 @@ async fn modbus_stream(mut socket: TcpStream, unit: u8) -> Result<Fields, String
         .map_err(|e| e.to_string())?;
     parse_modbus(&body)
 }
-fn parse_modbus(b: &[u8]) -> Result<Fields, String> {
+pub(crate) fn parse_modbus(b: &[u8]) -> Result<Fields, String> {
     if b.len() >= 2 && b[0] == 0xab {
         return Err(format!("Device identification exception {}", b[1]));
     }
@@ -318,6 +318,54 @@ async fn tpkt(socket: &mut TcpStream, request: &[u8]) -> Result<Vec<u8>, String>
         .map_err(|e| e.to_string())?;
     Ok(b)
 }
+/// One SZL read reply (`seq` and SZL `id` of the request) into `fields`.
+pub(crate) fn parse_szl(b: &[u8], seq: u8, id: u8, fields: &mut Fields) -> Result<(), String> {
+    if b.get(7..9) != Some(&[0x32, 7][..]) || b.get(11..13) != Some(&[0, seq][..]) {
+        return Err("Invalid S7 SZL reply".into());
+    }
+    let plen = be16(b, 13)? as usize;
+    let dlen = be16(b, 15)? as usize;
+    let params = b.get(17..17 + plen).ok_or("Truncated S7 parameters")?;
+    if params.len() < 12 || params[10..12] != [0, 0] || params[9] != 0 {
+        return Err("S7 SZL denied or segmented reply unsupported".into());
+    }
+    let data = b
+        .get(17 + plen..17 + plen + dlen)
+        .ok_or("Truncated S7 data")?;
+    if data.len() < 12 || data[0] != 0xff || data[1] != 9 || be16(data, 4)? != id as u16 {
+        return Err("S7 SZL unavailable".into());
+    }
+    let len = be16(data, 8)? as usize;
+    let count = be16(data, 10)? as usize;
+    if len < 2 || count * len > data.len() - 12 {
+        return Err("Invalid SZL record sizes".into());
+    }
+    for record in data[12..].chunks_exact(len).take(count) {
+        let index = be16(record, 0)?;
+        if id == 0x11 && len >= 28 {
+            if index == 1 {
+                fields.insert("order_code".into(), clean(&record[2..22]));
+            }
+            if index == 7 {
+                fields.insert(
+                    "firmware".into(),
+                    format!("{}.{}.{}", record[25], record[26], record[27]),
+                );
+            }
+        } else if id == 0x1c {
+            let key = match index {
+                1 => "name",
+                2 => "module",
+                4 => "copyright",
+                5 => "serial",
+                7 => "cpu_type",
+                _ => continue,
+            };
+            fields.insert(key.into(), clean(&record[2..]));
+        }
+    }
+    Ok(())
+}
 async fn s7(ip: IpAddr, rack: u8, slot: u8, gate: &Gate) -> Result<Fields, String> {
     if rack > 7 || slot > 31 {
         return Err("S7 rack must be 0–7 and slot 0–31".into());
@@ -353,50 +401,7 @@ async fn s7(ip: IpAddr, rack: u8, slot: u8, gate: &Gate) -> Result<Fields, Strin
             0x44, 1, 0, 0xff, 9, 0, 4, 0, id, 0, 0,
         ];
         let b = tpkt(&mut socket, &request).await?;
-        if b.get(7..9) != Some(&[0x32, 7][..]) || b.get(11..13) != Some(&[0, seq][..]) {
-            return Err("Invalid S7 SZL reply".into());
-        }
-        let plen = be16(&b, 13)? as usize;
-        let dlen = be16(&b, 15)? as usize;
-        let params = b.get(17..17 + plen).ok_or("Truncated S7 parameters")?;
-        if params.len() < 12 || params[10..12] != [0, 0] || params[9] != 0 {
-            return Err("S7 SZL denied or segmented reply unsupported".into());
-        }
-        let data = b
-            .get(17 + plen..17 + plen + dlen)
-            .ok_or("Truncated S7 data")?;
-        if data.len() < 12 || data[0] != 0xff || data[1] != 9 || be16(data, 4)? != id as u16 {
-            return Err("S7 SZL unavailable".into());
-        }
-        let len = be16(data, 8)? as usize;
-        let count = be16(data, 10)? as usize;
-        if len < 2 || count * len > data.len() - 12 {
-            return Err("Invalid SZL record sizes".into());
-        }
-        for record in data[12..].chunks_exact(len).take(count) {
-            let index = be16(record, 0)?;
-            if id == 0x11 && len >= 28 {
-                if index == 1 {
-                    fields.insert("order_code".into(), clean(&record[2..22]));
-                }
-                if index == 7 {
-                    fields.insert(
-                        "firmware".into(),
-                        format!("{}.{}.{}", record[25], record[26], record[27]),
-                    );
-                }
-            } else if id == 0x1c {
-                let key = match index {
-                    1 => "name",
-                    2 => "module",
-                    4 => "copyright",
-                    5 => "serial",
-                    7 => "cpu_type",
-                    _ => continue,
-                };
-                fields.insert(key.into(), clean(&record[2..]));
-            }
-        }
+        parse_szl(&b, seq, id, &mut fields)?;
     }
     Ok(fields)
 }
@@ -527,5 +532,54 @@ mod tests {
         assert_eq!(identify_timeout(47808, 10000), Duration::from_secs(2));
         assert_eq!(identify_timeout(47808, 300), Duration::from_millis(300));
         assert_eq!(identify_timeout(502, 2000), Duration::from_secs(8));
+    }
+    /// An S7 SZL read reply (TPKT, COTP, S7 header, parameters, data) with fixed-size records.
+    fn szl_reply(seq: u8, id: u8, len: u16, records: &[(u16, &[u8])]) -> Vec<u8> {
+        let mut data = vec![0xff, 9, 0, 0, 0, id, 0, 0];
+        data.extend(len.to_be_bytes());
+        data.extend((records.len() as u16).to_be_bytes());
+        for (index, text) in records {
+            let mut r = index.to_be_bytes().to_vec();
+            r.extend(*text);
+            r.resize(usize::from(len), 0);
+            data.extend(r);
+        }
+        let params = [0, 1, 0x12, 8, 0x12, 0x84, 1, seq, 0, 0, 0, 0];
+        let mut b = vec![3, 0, 0, 0, 2, 0xf0, 0x80, 0x32, 7, 0, 0, 0, seq];
+        b.extend((params.len() as u16).to_be_bytes());
+        b.extend((data.len() as u16).to_be_bytes());
+        b.extend(params);
+        b.extend(data);
+        let n = b.len() as u16;
+        b[2..4].copy_from_slice(&n.to_be_bytes());
+        b
+    }
+    #[test]
+    fn szl_replies_are_parsed_and_bounded() {
+        let mut f = Fields::new();
+        let reply = szl_reply(3, 0x1c, 34, &[(1, b"PLC_1"), (5, b"S C-X4U")]);
+        parse_szl(&reply, 3, 0x1c, &mut f).unwrap();
+        assert_eq!(
+            (f["name"].as_str(), f["serial"].as_str()),
+            ("PLC_1", "S C-X4U")
+        );
+        let reply = szl_reply(2, 0x11, 28, &[(1, b"6ES7 315-2EH14-0AB0 "), (7, &[0; 23])]);
+        parse_szl(&reply, 2, 0x11, &mut f).unwrap();
+        assert_eq!(f["order_code"], "6ES7 315-2EH14-0AB0");
+        assert!(f.contains_key("firmware"));
+        assert!(
+            parse_szl(&reply, 3, 0x11, &mut f).is_err(),
+            "sequence mismatch"
+        );
+        assert!(
+            parse_szl(&reply, 2, 0x1c, &mut f).is_err(),
+            "SZL id mismatch"
+        );
+        for cut in 0..reply.len() {
+            assert!(parse_szl(&reply[..cut], 2, 0x11, &mut f).is_err());
+        }
+        let mut huge = reply.clone();
+        huge[29..31].copy_from_slice(&[0xff, 0xff]); // record count
+        assert!(parse_szl(&huge, 2, 0x11, &mut f).is_err());
     }
 }

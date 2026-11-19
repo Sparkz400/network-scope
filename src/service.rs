@@ -136,7 +136,7 @@ pub struct Probe {
     pub wait: Duration,
     pub rules: Vec<Rule>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ProbeDb {
     /// TCP probes (the null probe included).
     pub probes: Vec<Probe>,
@@ -258,9 +258,13 @@ impl ProbeDb {
     }
     /// Built-in probes plus the user file (same probe name replaces, new names are added).
     pub fn with_user_file(path: &Path) -> Result<Self, String> {
-        let mut db = Self::builtin();
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let (tcp, udp) = Self::parse(&text, &path.display().to_string())?;
+        Self::builtin().merge_user(&text, &path.display().to_string())
+    }
+    /// Adds the probes of a user file named `origin` (contents `text`) to this database.
+    pub(crate) fn merge_user(self, text: &str, origin: &str) -> Result<Self, String> {
+        let mut db = self;
+        let (tcp, udp) = Self::parse(text, origin)?;
         for (probe, is_udp) in tcp
             .into_iter()
             .map(|p| (p, false))
@@ -465,7 +469,7 @@ async fn http_get<S: AsyncRead + AsyncWrite + Unpin>(
     parse_http(&data)
 }
 
-fn http_outcome(h: Http, secure: bool, out: &mut Outcome) {
+pub(crate) fn http_outcome(h: Http, secure: bool, out: &mut Outcome) {
     let mut name = String::new();
     let mut version = String::new();
     if let Some((n, v)) = h.server.split_once('/') {
@@ -597,6 +601,34 @@ pub fn assess_ssh(k: &Kexinit) -> (Vec<String>, Vec<String>) {
     (weak, legacy)
 }
 
+/// The `ssh.*` fields of a server's KEXINIT.
+pub(crate) fn kexinit_fields(k: &Kexinit) -> Fields {
+    let mut f = Fields::new();
+    f.insert("ssh.kex".into(), k.kex.join(", "));
+    f.insert("ssh.hostkeys".into(), k.hostkey.join(", "));
+    f.insert("ssh.ciphers".into(), k.ciphers.join(", "));
+    f.insert("ssh.macs".into(), k.macs.join(", "));
+    // HASSHServer: kex; encryption, MAC and compression server-to-client (lists 0, 3, 5, 7).
+    let (hassh, algorithms) =
+        crate::fingerprint::hassh_server(&k.raw[0], &k.raw[3], &k.raw[5], &k.raw[7]);
+    f.insert("ssh.hassh".into(), hassh);
+    f.insert(
+        "ssh.hassh_algorithms".into(),
+        algorithms
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(2000)
+            .collect(),
+    );
+    let (weak, legacy) = assess_ssh(k);
+    if !weak.is_empty() {
+        f.insert("ssh.weak".into(), weak.join("; "));
+    }
+    if !legacy.is_empty() {
+        f.insert("ssh.legacy".into(), legacy.join("; "));
+    }
+    f
+}
 async fn ssh_fields<S: AsyncRead + AsyncWrite + Unpin>(
     s: &mut S,
     first: &[u8],
@@ -625,31 +657,8 @@ async fn ssh_fields<S: AsyncRead + AsyncWrite + Unpin>(
         }
         data.extend(more);
     }
-    let Some(k) = parse_kexinit(&data) else {
-        return f;
-    };
-    f.insert("ssh.kex".into(), k.kex.join(", "));
-    f.insert("ssh.hostkeys".into(), k.hostkey.join(", "));
-    f.insert("ssh.ciphers".into(), k.ciphers.join(", "));
-    f.insert("ssh.macs".into(), k.macs.join(", "));
-    // HASSHServer: kex; encryption, MAC and compression server-to-client (lists 0, 3, 5, 7).
-    let (hassh, algorithms) =
-        crate::fingerprint::hassh_server(&k.raw[0], &k.raw[3], &k.raw[5], &k.raw[7]);
-    f.insert("ssh.hassh".into(), hassh);
-    f.insert(
-        "ssh.hassh_algorithms".into(),
-        algorithms
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(2000)
-            .collect(),
-    );
-    let (weak, legacy) = assess_ssh(&k);
-    if !weak.is_empty() {
-        f.insert("ssh.weak".into(), weak.join("; "));
-    }
-    if !legacy.is_empty() {
-        f.insert("ssh.legacy".into(), legacy.join("; "));
+    if let Some(k) = parse_kexinit(&data) {
+        f = kexinit_fields(&k);
     }
     f
 }

@@ -266,7 +266,11 @@ impl CveDb {
     /// Built-in rules plus a user file: same id replaces, new ids are added.
     pub fn with_user_file(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let user = Self::parse(&text, &path.display().to_string())?;
+        Self::with_user_text(&text, &path.display().to_string())
+    }
+    /// Built-in rules plus the contents of a user file named `origin`.
+    pub(crate) fn with_user_text(text: &str, origin: &str) -> Result<Self, String> {
+        let user = Self::parse(text, origin)?;
         let mut db = Self::builtin();
         for rule in user.rules {
             match db.rules.iter_mut().find(|r| r.id == rule.id) {

@@ -1,0 +1,1 @@
+{"probes":[{"name":"banner","rules":[{"re":"^HELLO (\\w+)","service":"custom","product":"$1"}]},{"name":"lab","ports":[7777],"send":"PING\n","send_hex":"0a ff","rules":[{"re":"PONG","service":"labd"}]},{"name":"udplab","proto":"udp","ports":[9999],"send_hex":"01","rules":[{"re":"x(\\d+)","service":"u","version":"$1"}]}]}
