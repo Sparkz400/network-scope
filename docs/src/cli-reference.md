@@ -56,7 +56,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
 | `ot-listen --interface ID --seconds N` or `ot-listen --pcap FILE [--progress] [--no-reassembly]` | Passive OT asset discovery |
 | `ot-assets ID [--format json\|csv]` | OT asset inventory from a passive capture |
-| `devices ID [--format json\|csv]` | One record per device (active and passive merged) |
+| `devices ID [--format json\|csv]` | One record per device (active and passive merged), with its stable device key |
 | `devices --history MAC\|IP [--format text\|json]` | Timeline of one device across saved scans |
 | `topology ID [--format ascii\|dot]` | Network path map from traceroute data |
 | `trace TARGET [--max-hops 20] [--timeout 1000] [--fast --trace-method udp\|tcp --trace-port N]` | Traceroute to one IP |

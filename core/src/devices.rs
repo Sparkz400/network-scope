@@ -498,7 +498,13 @@ pub struct Device {
     pub id: String,
     pub mac: String,
     pub vendor: String,
+    /// The MAC is locally administered (randomised or assigned by software), so it can change.
     pub randomized_mac: bool,
+    /// The stable device key (see [`crate::identity`]): empty until the device is matched
+    /// against the inventory (`store::resolve_devices`); `id` is the key of this scan alone.
+    pub key: String,
+    /// What the device can be recognised by across scans (MAC, host name, certificate key, ...).
+    pub identifiers: Vec<crate::identity::Identifier>,
     pub ips: Vec<IpAddr>,
     pub hostnames: Vec<String>,
     pub device_type: String,
@@ -744,12 +750,22 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
                 .filter(|(k, _)| k.starts_with("svc.") || k.starts_with("udp."))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            let ips: Vec<IpAddr> = a.ips.into_iter().collect();
+            let identifiers = crate::identity::identifiers(
+                &a.mac,
+                &ips,
+                &hostnames,
+                &a.identity,
+                &a.observations,
+            );
             Device {
                 id: key,
                 randomized_mac: !a.mac.is_empty() && oui::locally_administered(&a.mac),
+                key: String::new(),
+                identifiers,
                 mac: a.mac,
                 vendor,
-                ips: a.ips.into_iter().collect(),
+                ips,
                 hostnames,
                 device_type,
                 type_evidence,

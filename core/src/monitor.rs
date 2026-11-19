@@ -260,6 +260,15 @@ fn alert(
     }
 }
 
+/// What a monitoring cycle knows beyond the two snapshots: the inventory's view of device
+/// identity. Empty (the default) means every device is its own key, as before device identity.
+#[derive(Clone, Debug, Default)]
+pub struct Context {
+    /// `Device::id` -> stable device key (see [`crate::identity`]), for the devices of both
+    /// snapshots. A device missing here is keyed by its id.
+    pub keys: HashMap<String, String>,
+}
+
 pub fn evaluate(
     prev: Option<&Snapshot>,
     cur: &Snapshot,
@@ -267,13 +276,29 @@ pub fn evaluate(
     policy: &Policy,
     now: i64,
 ) -> Vec<Alert> {
+    evaluate_with(prev, cur, known, policy, &Context::default(), now)
+}
+
+/// [`evaluate`] with device identity: `known` is keyed by stable device key, and a device that
+/// came back under another address and another (randomised) MAC is neither new nor missing.
+pub fn evaluate_with(
+    prev: Option<&Snapshot>,
+    cur: &Snapshot,
+    known: &HashMap<String, (i64, i64)>,
+    policy: &Policy,
+    ctx: &Context,
+    now: i64,
+) -> Vec<Alert> {
     let mut out = vec![];
     let cur_devices = devices::merge(&cur.hosts, &cur.observations);
     let learning = policy.learn || known.is_empty();
+    let key_of = |d: &devices::Device| -> String {
+        ctx.keys.get(&d.id).cloned().unwrap_or_else(|| d.id.clone())
+    };
 
     if !learning {
         for d in &cur_devices {
-            if known.contains_key(&d.id) {
+            if known.contains_key(&key_of(d)) {
                 continue;
             }
             let ot = d.device_type.starts_with("Industrial")
@@ -411,6 +436,7 @@ pub fn evaluate(
         let prev_devices = devices::merge(&prev.hosts, &prev.observations);
         let now_by_id: HashMap<&str, &devices::Device> =
             cur_devices.iter().map(|d| (d.id.as_str(), d)).collect();
+        let now_keys: HashSet<String> = cur_devices.iter().map(key_of).collect();
         for d in &prev_devices {
             match now_by_id.get(d.id.as_str()) {
                 Some(n)
@@ -428,7 +454,8 @@ pub fn evaluate(
                         format!("{} moved from {:?} to {:?}", d.mac, d.ips, n.ips),
                     ));
                 }
-                None if policy.report_missing => {
+                // Present under another id (a rotated MAC, a new address): not missing.
+                None if policy.report_missing && !now_keys.contains(&key_of(d)) => {
                     // Low, so the explicitly requested report passes the default threshold.
                     out.push(alert(
                         now,
@@ -668,18 +695,30 @@ pub fn run(
         let prev = store::latest_complete(db, targets_text, id)?.map(|(_, _, s)| s);
         let known = store::known_devices(db)?;
         let t = now();
-        let mut alerts = evaluate(prev.as_ref(), &snapshot, &known, &cfg.policy, t);
+        // Match the devices of both scans against the inventory, so a device that changed its
+        // address or randomised MAC keeps its key. The registry is written only after the
+        // comparison (and only for complete scans), or every new device would already be known.
+        let cur_devices = devices::merge(&snapshot.hosts, &snapshot.observations);
+        let registry = store::device_registry(db)?;
+        let matches = crate::identity::resolve(&registry, &cur_devices);
+        let mut ctx = Context {
+            keys: crate::identity::key_map(&cur_devices, &matches),
+        };
+        if let Some(p) = &prev {
+            let prev_devices = devices::merge(&p.hosts, &p.observations);
+            let prev_matches = crate::identity::resolve(&registry, &prev_devices);
+            for (id, key) in crate::identity::key_map(&prev_devices, &prev_matches) {
+                ctx.keys.entry(id).or_insert(key);
+            }
+        }
+        let mut alerts = evaluate_with(prev.as_ref(), &snapshot, &known, &cfg.policy, &ctx, t);
         alerts.extend(notices);
         let mut suppressed = 0;
         if notify.dedup {
             (alerts, suppressed) = dedup.filter(alerts, t, complete);
         }
-        let keys: Vec<String> = devices::merge(&snapshot.hosts, &snapshot.observations)
-            .into_iter()
-            .map(|d| d.id)
-            .collect();
         if complete {
-            store::touch_devices(db, &keys, t)?;
+            store::record_devices(db, &cur_devices, t)?;
         }
         store::save_alerts(db, id, &alerts)?;
         if !cfg.quiet {
@@ -787,6 +826,62 @@ mod tests {
             ..Policy::default()
         };
         assert!(!kinds(&evaluate(Some(&base), &cur, &known, &learn, 1)).contains(&"new-device"));
+    }
+
+    #[test]
+    fn a_device_that_rotated_its_mac_and_address_is_neither_new_nor_missing() {
+        let identity = [
+            ("ssh.22.hostkey_sha256", "aaaa"),
+            ("tls.443.spki_sha256", "bbbb"),
+        ];
+        let before = snap(
+            vec![host("10.0.0.5", "02:00:00:00:00:01", &[22, 443], &identity)],
+            vec![],
+        );
+        let after = snap(
+            vec![host(
+                "10.0.0.77",
+                "06:11:22:33:44:55",
+                &[22, 443],
+                &identity,
+            )],
+            vec![],
+        );
+        let policy = Policy {
+            report_missing: true,
+            ..Policy::default()
+        };
+        let known = known(&["02:00:00:00:00:01"]);
+        // Without device identity: one new device and one missing device.
+        let plain = evaluate(Some(&before), &after, &known, &policy, 1);
+        assert!(kinds(&plain).contains(&"new-device"), "{plain:?}");
+        assert!(kinds(&plain).contains(&"device-missing"), "{plain:?}");
+        // With the inventory's view of identity: the same device.
+        let mut registry = crate::identity::Registry::new();
+        let old_devices = devices::merge(&before.hosts, &before.observations);
+        registry.learn(&old_devices[0].id, &old_devices[0]);
+        let new_devices = devices::merge(&after.hosts, &after.observations);
+        let matches = crate::identity::resolve(&registry, &new_devices);
+        let ctx = Context {
+            keys: crate::identity::key_map(&new_devices, &matches),
+        };
+        let a = evaluate_with(Some(&before), &after, &known, &policy, &ctx, 1);
+        assert!(
+            !kinds(&a).contains(&"new-device") && !kinds(&a).contains(&"device-missing"),
+            "{a:?}"
+        );
+        // A different device with a new MAC and nothing in common is still new.
+        let stranger = snap(
+            vec![host("10.0.0.88", "06:99:99:99:99:99", &[22, 443], &[])],
+            vec![],
+        );
+        let devices = devices::merge(&stranger.hosts, &stranger.observations);
+        let matches = crate::identity::resolve(&registry, &devices);
+        let ctx = Context {
+            keys: crate::identity::key_map(&devices, &matches),
+        };
+        let a = evaluate_with(Some(&before), &stranger, &known, &policy, &ctx, 1);
+        assert!(kinds(&a).contains(&"new-device"), "{a:?}");
     }
 
     #[test]
