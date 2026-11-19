@@ -233,6 +233,7 @@ mod tests {
             evidence: format!("{title} evidence"),
             cve: vec![],
             advice: String::new(),
+            exploit: Default::default(),
         }
     }
 

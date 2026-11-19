@@ -13,7 +13,10 @@ network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [
 network-scope export ID --format json|csv|html|nmap|md|jsonl [--baseline ID] [--output FILE]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
-network-scope findings ID [--min-severity low] Weak TLS/SSH, risky services, CVE hints
+network-scope findings ID [--min-severity low] [--sort exploited|severity]
+                                               Weak TLS/SSH, risky services, CVE hints
+network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
+network-scope feeds status                     What the feeds cache holds
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
         [--interface ID --listen-seconds 30] [--alerts FILE]   Repeat scans and alert on changes
@@ -48,6 +51,7 @@ Scan options:
   --trace-port N  TCP traceroute port (default: first open port; never OT or printer ports)
   --probes FILE   Extra service probes (TCP and UDP), merged over data/probes.json by name
   --cves FILE     Extra CVE/CPE rules, merged over data/cves.json by id; any command
+  --feeds FILE    KEV/EPSS cache (default: feeds.json next to the user cves.json); any command
   --script PATH   Rhai script (or folder of .rhai files) run against every host
   --db FILE       Defaults to LOCALAPPDATA/NetworkScope/inventory.sqlite
   --fast          Disable conservative rate limits (read-only OT still applies)
@@ -91,7 +95,11 @@ const FLAGS: [&str; 21] = [
     "dhcp-discover",
     "report-missing",
 ];
-const VALUES: [&str; 38] = [
+const VALUES: [&str; 42] = [
+    "feeds",
+    "kev",
+    "epss",
+    "sort",
     "ports",
     "ignore",
     "history",
@@ -132,7 +140,8 @@ const VALUES: [&str; 38] = [
     "slot",
 ];
 /// Every command `run` accepts (the completion scripts offer these).
-const COMMANDS: [&str; 21] = [
+const COMMANDS: [&str; 22] = [
+    "feeds",
     "scan",
     "listen",
     "dcp",
@@ -156,7 +165,9 @@ const COMMANDS: [&str; 21] = [
     "help",
 ];
 /// Options that take a file name (completed with file names).
-const FILE_VALUES: [&str; 7] = ["output", "db", "pcap", "script", "probes", "alerts", "cves"];
+const FILE_VALUES: [&str; 10] = [
+    "output", "db", "pcap", "script", "probes", "alerts", "cves", "feeds", "kev", "epss",
+];
 const FORMATS: &str = "json csv html nmap md jsonl lines text ascii dot";
 fn completions(shell: &str) -> Result<String, String> {
     let commands = COMMANDS.join(" ");
@@ -469,6 +480,41 @@ fn ot_assets_output(
         _ => Err("Choose json or csv".into()),
     }
 }
+/// `feeds import [--kev FILE] [--epss FILE]` and `feeds status`; `--feeds FILE` picks the cache.
+fn feeds_command(pos: &[String], opts: &BTreeMap<String, String>) -> Result<(), String> {
+    let cache = opts
+        .get("feeds")
+        .map(PathBuf::from)
+        .or_else(crate::feeds::default_path)
+        .ok_or("No default location for the feeds cache; use --feeds FILE")?;
+    match pos.first().map(String::as_str) {
+        Some("import") => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let report = crate::feeds::import(
+                opts.get("kev").map(std::path::Path::new),
+                opts.get("epss").map(std::path::Path::new),
+                &cache,
+                now,
+            )?;
+            output(&report.lines().join("\n"), opts)
+        }
+        Some("status") => {
+            let feeds = if cache.exists() {
+                crate::feeds::Feeds::load(&cache)?
+            } else {
+                crate::feeds::Feeds::default()
+            };
+            output(
+                &serde_json::to_string_pretty(&crate::feeds::status(&feeds, &cache))
+                    .map_err(|e| e.to_string())?,
+                opts,
+            )
+        }
+        _ => Err("Use: feeds import [--kev FILE] [--epss FILE] | feeds status".into()),
+    }
+}
 fn output(data: &str, opts: &BTreeMap<String, String>) -> Result<(), String> {
     if let Some(path) = opts.get("output") {
         std::fs::write(path, data).map_err(|e| e.to_string())
@@ -507,7 +553,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if let Some(file) = opts.get("cves") {
         risk::load_cves(Some(std::path::Path::new(file)))?;
     }
+    // `feeds` itself writes the cache, which may not exist yet.
+    if command != "feeds"
+        && let Some(file) = opts.get("feeds")
+    {
+        crate::feeds::load_active(std::path::Path::new(file))?;
+    }
     match command.as_str() {
+        "feeds" => feeds_command(&pos, &opts),
         "completions" => output(
             completions(pos.first().ok_or("Provide the shell: powershell or bash")?)?.trim_end(),
             &opts,
@@ -584,10 +637,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     .unwrap_or("info"),
             )
             .ok_or("Severity must be info, low, medium, high or critical")?;
-            let list: Vec<_> = risk::analyze_snapshot(&snapshot)
+            let mut list: Vec<_> = risk::analyze_snapshot(&snapshot)
                 .into_iter()
                 .filter(|f| f.severity >= min)
                 .collect();
+            // Imported feeds rank known exploited findings first; without them both orders match.
+            match opts.get("sort").map(String::as_str).unwrap_or("exploited") {
+                "exploited" => {}
+                "severity" => crate::feeds::sort_by_severity(&mut list),
+                _ => return Err("Sort must be exploited or severity".into()),
+            }
             output(
                 &serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?,
                 &opts,
@@ -1963,6 +2022,58 @@ mod tests {
         for c in COMMANDS {
             assert!(c == "help" || arms.contains(c), "{c} is not dispatched");
         }
+    }
+
+    #[test]
+    fn feeds_import_and_status_commands() {
+        let dir = std::env::temp_dir().join(format!("ns-feeds-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("feeds.json");
+        let out = dir.join("out.txt");
+        let (kev, epss) = (dir.join("kev.json"), dir.join("epss.csv"));
+        std::fs::write(&kev, include_str!("../tests/fixtures/kev.json")).unwrap();
+        std::fs::write(&epss, include_str!("../tests/fixtures/epss.csv")).unwrap();
+        let path = |p: &std::path::Path| p.to_str().unwrap().to_string();
+        let mut import = args(&["feeds", "import", "--kev", &path(&kev)]);
+        import.extend(args(&["--epss", &path(&epss), "--feeds", &path(&cache)]));
+        import.extend(args(&["--output", &path(&out)]));
+        run(&import).unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.contains("KEV: 4"), "{text}");
+        assert!(text.contains("EPSS: 4"), "{text}");
+        run(&args(&[
+            "feeds",
+            "status",
+            "--feeds",
+            &path(&cache),
+            "--output",
+            &path(&out),
+        ]))
+        .unwrap();
+        let status: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(status["kev"]["entries"], 4);
+        assert_eq!(status["epss"]["model_version"], "v2025.03.14");
+        // Errors: no files, unknown subcommand, a gzip file, an unknown --sort value.
+        assert!(
+            run(&args(&["feeds", "import", "--feeds", &path(&cache)]))
+                .unwrap_err()
+                .contains("--kev")
+        );
+        assert!(run(&args(&["feeds", "--feeds", &path(&cache)])).is_err());
+        std::fs::write(&epss, [0x1f, 0x8b, 8, 0]).unwrap();
+        let e = run(&args(&[
+            "feeds",
+            "import",
+            "--epss",
+            &path(&epss),
+            "--feeds",
+            &path(&cache),
+        ]))
+        .unwrap_err();
+        assert!(e.contains("gunzip"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

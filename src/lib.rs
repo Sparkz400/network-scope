@@ -5,6 +5,7 @@ pub(crate) mod arp;
 pub(crate) mod capture;
 pub(crate) mod core;
 pub(crate) mod devices;
+pub(crate) mod feeds;
 pub(crate) mod fingerprint;
 pub(crate) mod gui;
 pub(crate) mod monitor;
