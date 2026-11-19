@@ -778,7 +778,7 @@ pub fn findings_by_host(snapshot: &Snapshot, findings: &[risk::Finding]) -> Vec<
 }
 
 /// Markdown table cell / inline text: no table breaks, no raw HTML, no Markdown markup.
-fn md(s: &str) -> String {
+pub(crate) fn md(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

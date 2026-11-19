@@ -11,7 +11,7 @@ network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
         [--fail-on-findings [--min-severity low]]
-network-scope export ID --format json|csv|html|nmap|md|jsonl [--baseline ID] [--output FILE]
+network-scope export ID --format json|csv|html|nmap|md|jsonl|compliance-iec62443|compliance-nis2|compliance-cis[-csv] [--baseline ID] [--output FILE]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
 network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]

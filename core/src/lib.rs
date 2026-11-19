@@ -88,6 +88,7 @@
 //! Network Scope engine.
 pub(crate) mod arp;
 pub mod capture;
+pub mod compliance;
 pub mod core;
 pub mod devices;
 pub mod evidence;
