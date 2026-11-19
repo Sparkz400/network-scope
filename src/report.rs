@@ -195,6 +195,18 @@ fn cve_links(ids: &[String]) -> String {
         .join(", ")
 }
 
+/// The finding's reference link, only when it is a plain HTTPS URL (no whitespace, quotes,
+/// angle brackets or control characters), so it is safe to put into an attribute or a link.
+fn reference_url(f: &risk::Finding) -> Option<&str> {
+    f.reference.as_deref().filter(|u| {
+        u.starts_with("https://")
+            && u.len() > 8
+            && !u
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || "<>\"'`\\".contains(c))
+    })
+}
+
 fn top_counts(map: BTreeMap<String, usize>, limit: usize) -> Vec<(String, usize)> {
     let mut v: Vec<_> = map.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -542,12 +554,20 @@ fn findings_table(findings: &[risk::Finding], cpes: &Cpes) -> String {
         }
         let _ = write!(
             o,
-            "<td>{}</td><td>{}{}</td><td>{}</td></tr>",
+            "<td>{}</td><td>{}{}</td><td>{}",
             esc(&f.evidence),
             cve_links(&f.cve),
             crate::feeds::badges_html(f),
             esc(&f.advice)
         );
+        if let Some(url) = reference_url(f) {
+            let _ = write!(
+                o,
+                "<br><a href=\"{}\" rel=\"noreferrer\">Reference</a>",
+                esc(url)
+            );
+        }
+        o.push_str("</td></tr>");
     }
     o.push_str("</table></div>");
     o
@@ -667,11 +687,11 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
         if cpes.any {
             o.push_str(" CPE |");
         }
-        o.push_str(" Evidence | CVE |\n|---|---|---|");
+        o.push_str(" Evidence | CVE | Reference |\n|---|---|---|");
         if cpes.any {
             o.push_str("---|");
         }
-        o.push_str("---|---|\n");
+        o.push_str("---|---|---|\n");
         for f in list {
             let _ = write!(
                 o,
@@ -684,7 +704,13 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
             if cpes.any {
                 let _ = write!(o, " {} |", md(cpes.get(f.ip, f.port).unwrap_or("")));
             }
-            let _ = writeln!(o, " {} | {} |", md(&f.evidence), md(&f.cve.join(", ")));
+            let _ = writeln!(
+                o,
+                " {} | {} | {} |",
+                md(&f.evidence),
+                md(&f.cve.join(", ")),
+                reference_url(f).map_or(String::new(), |u| format!("<{u}>"))
+            );
         }
     };
     let _ = writeln!(o, "\n## Findings ({})\n", findings.len());
@@ -809,6 +835,7 @@ pub fn jsonl(snapshot: &Snapshot, timestamp: i64) -> Result<String, String> {
                     "port": f.port,
                     "evidence": f.evidence,
                     "cve": f.cve,
+                    "reference": f.reference,
                 })
             })
             .collect();
@@ -1092,5 +1119,51 @@ mod tests {
                 .any(|f| f["id"] == "telnet-open" && f["severity"] == "high")
         );
         assert!(!out.trim_end().contains('\n'), "one line per host");
+        let telnet = h["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == "telnet-open")
+            .unwrap();
+        assert!(
+            telnet["reference"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://")
+        );
+    }
+
+    #[test]
+    fn reference_links_are_exported_and_escaped() {
+        let s = snapshot();
+        let telnet_ref = risk::analyze(&s.hosts)
+            .into_iter()
+            .find(|f| f.id == "telnet-open")
+            .and_then(|f| f.reference)
+            .expect("telnet-open carries a reference");
+        assert!(html(&s, None, 0).contains(&format!(
+            "<a href=\"{telnet_ref}\" rel=\"noreferrer\">Reference</a>"
+        )));
+        let md = markdown(&s, None, 0);
+        assert!(md.contains("| Evidence | CVE | Reference |"));
+        assert!(md.contains(&format!("<{telnet_ref}>")));
+
+        // A hand-edited or hostile reference is escaped, or dropped when it is not plain HTTPS.
+        let mut f = risk::analyze(&s.hosts).remove(0);
+        let cpes = Cpes::new(&s);
+        f.reference = Some("https://example.org/a?x=1&y=2".into());
+        assert!(findings_table(std::slice::from_ref(&f), &cpes).contains("x=1&amp;y=2"));
+        for bad in [
+            "javascript:alert(1)",
+            "http://example.org/",
+            "https://x\"onmouseover=\"y",
+            "https://example.org/ <b>",
+            "https://",
+        ] {
+            f.reference = Some(bad.into());
+            let table = findings_table(std::slice::from_ref(&f), &cpes);
+            assert!(!table.contains("Reference</a>"), "{bad} must not be linked");
+            assert!(reference_url(&f).is_none(), "{bad} must not be linked");
+        }
     }
 }
