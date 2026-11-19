@@ -68,6 +68,16 @@ The binaries are not code-signed, so Windows SmartScreen will warn on first star
 
 Release archives `network-scope-<version>-linux-x86_64.tar.gz` and `network-scope-<version>-macos-arm64.tar.gz` contain both binaries. The Linux and macOS platform code is built and tested only in CI and has not been used on a real network yet.
 
+### Container
+
+Each release publishes the CLI as a container image (linux/amd64) on GitHub Container Registry:
+
+```sh
+docker run --rm ghcr.io/sparkz400/network-scope:latest scan 192.168.1.0/24 --tcp-only
+```
+
+The image runs as an unprivileged user, and TCP connect scanning needs nothing more. Raw sockets, ICMP fallbacks, ARP and capture features need `--user root --cap-add NET_RAW`, and `--network host` to see the local LAN directly instead of the container's bridge network. Safe Mode still applies inside the container. Saved scans go to `/data` (mount a volume there to keep them). Pin a version tag (`:0.5.1`) instead of `:latest` for reproducible runs; see [SECURITY.md](SECURITY.md#verifying-releases) for verifying the image and release files.
+
 <details>
 <summary>Build from source</summary>
 

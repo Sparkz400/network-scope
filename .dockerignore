@@ -1,0 +1,21 @@
+# Build context for the Dockerfile: only src/, data/ (embedded with include_str!), the Cargo
+# files and rust-toolchain.toml are needed.
+.git
+.github
+.devcontainer
+.claude
+target/
+fuzz/target/
+dist/
+docs/
+assets/
+installer/
+lab/
+scripts/
+**/*.gif
+**/*.png
+**/*.pcap
+**/*.pcapng
+*.sqlite
+Dockerfile
+.dockerignore

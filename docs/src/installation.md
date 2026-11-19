@@ -67,6 +67,41 @@ libpcap is loaded at run time from `libpcap.A.dylib`/`libpcap.dylib` (macOS) or 
 
 Release archives `network-scope-<version>-linux-x86_64.tar.gz` and `network-scope-<version>-macos-arm64.tar.gz` contain `network-scope` and `network-scope-cli`. The Linux and macOS platform glue (routes, neighbor states, raw sockets) is not compiled on the development machine; CI is its first compile, and it has not been exercised on a real network.
 
+## Container image
+
+Each release tag publishes the CLI as `ghcr.io/sparkz400/network-scope:<version>` and `:latest` (linux/amd64 only):
+
+```sh
+docker run --rm ghcr.io/sparkz400/network-scope:latest scan 192.168.1.0/24 --tcp-only
+```
+
+- The entrypoint is `network-scope-cli`; without arguments the image prints the help.
+- The image runs as an unprivileged user (`scanner`, UID 10001). TCP connect scanning, service and TLS detection and UDP probes need nothing more.
+- Raw sockets, ICMP fallbacks, ARP and capture features (SYN, ARP sweep, `listen`, `dcp`, TCP/UDP traceroute) need `--user root --cap-add NET_RAW` (capture may additionally need `--cap-add NET_ADMIN`). A capability granted with `--cap-add` reaches a process running as root in the container; the unprivileged default user does not receive it. This combination has not been tested yet.
+- Use `--network host` (Linux) to see the local LAN directly; on the default bridge network ARP, neighbor discovery and capture only see the container's own network.
+- Safe Mode is on by default inside the container as well.
+- The inventory database defaults to `/data/NetworkScope/inventory.sqlite`; mount a volume to keep it: `-v network-scope:/data`.
+- The runtime image contains libpcap (`libpcap0.8t64`) for capture features and CA certificates for HTTPS webhooks; the GUI libraries are not included and the desktop app does not run in the container.
+
+Build the image yourself with `docker build -t network-scope .` from the repository root.
+
+## Verifying downloads and the image
+
+Every release has three independent proofs of origin (details in [SECURITY.md](https://github.com/Sparkz400/network-scope/blob/main/SECURITY.md#verifying-releases)):
+
+```sh
+# GitHub artifact attestation (Sigstore-signed SLSA build provenance) for a release file
+gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope
+
+# SLSA level 3 provenance from slsa-github-generator (network-scope-<version>.intoto.jsonl)
+slsa-verifier verify-artifact network-scope-0.5.1-linux-x86_64.tar.gz \
+  --provenance-path network-scope-0.5.1.intoto.jsonl \
+  --source-uri github.com/Sparkz400/network-scope --source-tag v0.5.1
+
+# Container image
+gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
+```
+
 ## Build from source
 
 Requires a current stable Rust toolchain ([rustup](https://rustup.rs/)).
