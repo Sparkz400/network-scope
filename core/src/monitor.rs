@@ -90,6 +90,8 @@ pub fn alert_key(a: &Alert) -> String {
             servers.join(",")
         }
         "capture-incomplete" | "dhcp-discover-failed" | "rogue-dhcp" => String::new(),
+        // The subject is the stable device key; the addresses in the message change.
+        "unknown-device" => String::new(),
         // new-device/device-missing (the subject is only the first IP; the message names the
         // device), new-finding (title and evidence, as fine as `risk::Finding::key`),
         // port-opened/closed ("ip: TCP port N ..."), address-changed and anything else
@@ -160,10 +162,11 @@ impl Dedup {
 /// Alert kinds `evaluate` filters by `min_severity`, with the highest severity each can have.
 /// (`new-finding` can have any severity; notices such as `capture-incomplete` are never
 /// filtered.)
-const KIND_MAX_SEVERITY: [(&str, Severity); 6] = [
+const KIND_MAX_SEVERITY: [(&str, Severity); 7] = [
     ("port-closed", Severity::Info),
     ("device-missing", Severity::Low),
     ("address-changed", Severity::Medium),
+    ("unknown-device", Severity::Medium),
     ("new-device", Severity::High),
     ("port-opened", Severity::High),
     ("rogue-dhcp", Severity::Critical),
@@ -267,6 +270,10 @@ pub struct Context {
     /// `Device::id` -> stable device key (see [`crate::identity`]), for the devices of both
     /// snapshots. A device missing here is keyed by its id.
     pub keys: HashMap<String, String>,
+    /// The approved baseline ([`crate::baseline`]). With one, a device that is not on its
+    /// expected list raises `unknown-device`; without one (`None`, or a baseline that does not
+    /// [`exist`](crate::baseline::Baseline::exists)) nothing is checked.
+    pub baseline: Option<crate::baseline::Baseline>,
 }
 
 pub fn evaluate(
@@ -295,6 +302,41 @@ pub fn evaluate_with(
     let key_of = |d: &devices::Device| -> String {
         ctx.keys.get(&d.id).cloned().unwrap_or_else(|| d.id.clone())
     };
+    let describe = |d: &devices::Device| -> String {
+        format!(
+            "{} {} {} {}",
+            d.ips
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("/"),
+            d.mac,
+            d.vendor,
+            d.device_type
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+    };
+
+    // Not on the approved baseline. Independent of `learn` and of the first run: a baseline is
+    // what the operator declared, not what was seen. The subject is the stable device key, so
+    // the alert keeps its identity (and its de-duplication) when the device changes address.
+    if let Some(baseline) = ctx.baseline.as_ref().filter(|b| b.exists()) {
+        let keys: Vec<String> = cur_devices.iter().map(key_of).collect();
+        let expected = baseline.expects(&cur_devices, &keys);
+        for ((d, key), expected) in cur_devices.iter().zip(&keys).zip(expected) {
+            if !expected {
+                out.push(alert(
+                    now,
+                    Severity::Medium,
+                    "unknown-device",
+                    key.clone(),
+                    format!("Device not in the approved baseline: {}", describe(d)),
+                ));
+            }
+        }
+    }
 
     if !learning {
         for d in &cur_devices {
@@ -310,20 +352,7 @@ pub fn evaluate_with(
                 if ot { Severity::High } else { Severity::Medium },
                 "new-device",
                 d.ips.first().map_or(d.id.clone(), ToString::to_string),
-                format!(
-                    "New device {} {} {} {}",
-                    d.ips
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    d.mac,
-                    d.vendor,
-                    d.device_type
-                )
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" "),
+                format!("New device {}", describe(d)),
             ));
         }
     }
@@ -703,6 +732,8 @@ pub fn run(
         let matches = crate::identity::resolve(&registry, &cur_devices);
         let mut ctx = Context {
             keys: crate::identity::key_map(&cur_devices, &matches),
+            // Read every cycle, so an approval made while the monitor runs applies at once.
+            baseline: Some(crate::baseline::load(db)?),
         };
         if let Some(p) = &prev {
             let prev_devices = devices::merge(&p.hosts, &p.observations);
@@ -864,6 +895,7 @@ mod tests {
         let matches = crate::identity::resolve(&registry, &new_devices);
         let ctx = Context {
             keys: crate::identity::key_map(&new_devices, &matches),
+            ..Default::default()
         };
         let a = evaluate_with(Some(&before), &after, &known, &policy, &ctx, 1);
         assert!(
@@ -879,9 +911,96 @@ mod tests {
         let matches = crate::identity::resolve(&registry, &devices);
         let ctx = Context {
             keys: crate::identity::key_map(&devices, &matches),
+            ..Default::default()
         };
         let a = evaluate_with(Some(&before), &stranger, &known, &policy, &ctx, 1);
         assert!(kinds(&a).contains(&"new-device"), "{a:?}");
+    }
+
+    fn approved_baseline(tag: &str, approved: &Snapshot) -> crate::baseline::Baseline {
+        let path = std::env::temp_dir().join(format!(
+            "netscope-monitor-baseline-{tag}-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        store::save(&path, approved).unwrap();
+        crate::baseline::approve(&path, None, 10).unwrap();
+        let baseline = crate::baseline::load(&path).unwrap();
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(p));
+        }
+        baseline
+    }
+
+    #[test]
+    fn unknown_devices_alert_only_once_a_baseline_exists() {
+        let approved = snap(
+            vec![host("10.0.0.5", "00:00:0C:00:00:01", &[22], &[])],
+            vec![],
+        );
+        let cur = snap(
+            vec![
+                host("10.0.0.5", "00:00:0C:00:00:01", &[22], &[]),
+                host("10.0.0.9", "00:00:0C:00:00:09", &[80], &[]),
+            ],
+            vec![],
+        );
+        let devices = devices::merge(&cur.hosts, &cur.observations);
+        let known = known(&["00:00:0C:00:00:01", "00:00:0C:00:00:09"]);
+        let with = |baseline: Option<crate::baseline::Baseline>, policy: &Policy| {
+            let ctx = Context {
+                keys: devices
+                    .iter()
+                    .map(|d| (d.id.clone(), d.id.clone()))
+                    .collect(),
+                baseline,
+            };
+            evaluate_with(Some(&approved), &cur, &known, policy, &ctx, 1)
+        };
+        let baseline = approved_baseline("unknown", &approved);
+        let a = with(Some(baseline.clone()), &Policy::default());
+        let unknown: Vec<_> = a.iter().filter(|a| a.kind == "unknown-device").collect();
+        assert_eq!(unknown.len(), 1, "{a:?}");
+        assert_eq!(unknown[0].severity, Severity::Medium);
+        assert_eq!(unknown[0].subject, "00:00:0C:00:00:09", "the stable key");
+        assert!(unknown[0].message.contains("10.0.0.9"), "{:?}", unknown[0]);
+        assert!(
+            !kinds(&a).contains(&"new-device"),
+            "the device is known, just not approved"
+        );
+        // Not gated by --learn, and the same condition at another address is the same alert.
+        let learn = Policy {
+            learn: true,
+            ..Policy::default()
+        };
+        assert_eq!(
+            with(Some(baseline.clone()), &learn)
+                .iter()
+                .filter(|a| a.kind == "unknown-device")
+                .count(),
+            1
+        );
+        let mut moved = unknown[0].clone();
+        moved.message = "Device not in the approved baseline: 10.0.0.77 vendor".into();
+        assert_eq!(alert_key(&moved), alert_key(unknown[0]));
+        // No baseline, or an empty "baseline" object, checks nothing.
+        for none in [None, Some(crate::baseline::Baseline::default())] {
+            let a = with(none, &Policy::default());
+            assert!(!kinds(&a).contains(&"unknown-device"), "{a:?}");
+        }
+        // --min-severity above medium hides it, and the hint says so.
+        let high = Policy {
+            min_severity: Severity::High,
+            report_missing: true,
+            ..Policy::default()
+        };
+        assert!(!kinds(&with(Some(baseline), &high)).contains(&"unknown-device"));
+        assert!(severity_hint(&high).unwrap().contains("unknown-device"));
     }
 
     #[test]

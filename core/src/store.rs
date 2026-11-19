@@ -42,7 +42,7 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, t
 /// Schema changes after [`BASE_VERSION`], in order. Append new ones at the end with the next
 /// number; never edit a migration that has shipped. Each runs once, inside the transaction that
 /// opens an older database, and must be idempotent (`IF NOT EXISTS`, `INSERT OR IGNORE`).
-const MIGRATIONS: &[Migration] = &[(3, migrate_device_identifiers)];
+const MIGRATIONS: &[Migration] = &[(3, migrate_device_identifiers), (4, migrate_baseline)];
 type Migration = (i64, fn(&Connection) -> rusqlite::Result<()>);
 /// Schema version of a database this program has fully upgraded.
 const SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
@@ -68,6 +68,15 @@ fn migrate_device_identifiers(c: &Connection) -> rusqlite::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Migration 4 (E32, approved baseline): per-device attributes and the expected-devices list.
+/// `baseline_meta` holds the explicit marker that a baseline exists (`approved_at`), so an empty
+/// list is not mistaken for "no baseline".
+fn migrate_baseline(c: &Connection) -> rusqlite::Result<()> {
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS baseline_devices(device_key TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '', criticality TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '', expected INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '', approved_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS baseline_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    )
 }
 
 pub(crate) fn open(path: &Path) -> Result<Connection, String> {
@@ -111,12 +120,15 @@ fn migrate(c: &Connection, from: i64) -> rusqlite::Result<()> {
         }
     }
 }
-pub fn save(path: &Path, snapshot: &Snapshot) -> Result<i64, String> {
-    let timestamp = std::time::SystemTime::now()
+/// The current time as the store records it (Unix seconds).
+pub fn now() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
-    save_at(path, snapshot, timestamp)
+        .as_secs() as i64
+}
+pub fn save(path: &Path, snapshot: &Snapshot) -> Result<i64, String> {
+    save_at(path, snapshot, now())
 }
 /// [`save`] with the scan time given (Unix seconds): for imports that know when the data was
 /// taken, and for tests of anything that depends on the age of a scan.
@@ -200,6 +212,21 @@ pub fn latest_complete(
     })
     .transpose()
 }
+/// Id of the newest completed scan, if there is one.
+pub fn latest_complete_id(path: &Path) -> Result<Option<i64>, String> {
+    open(path)?
+        .query_row(
+            "SELECT id FROM scans WHERE complete=1 ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })
+        .map_err(|e| e.to_string())
+}
 /// device key -> (first seen, last seen)
 pub fn known_devices(path: &Path) -> Result<std::collections::HashMap<String, (i64, i64)>, String> {
     let c = open(path)?;
@@ -236,7 +263,7 @@ pub fn device_registry(path: &Path) -> Result<crate::identity::Registry, String>
     registry_of(&open(path)?)
 }
 
-fn registry_of(c: &Connection) -> Result<crate::identity::Registry, String> {
+pub(crate) fn registry_of(c: &Connection) -> Result<crate::identity::Registry, String> {
     let mut registry = crate::identity::Registry::new();
     let mut keys = c
         .prepare("SELECT key FROM known_devices")
@@ -1394,6 +1421,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(count("device_identifiers"), 3);
+        assert_eq!(count("baseline_devices"), 0);
         drop(c);
         // The same devices in the next monitoring cycle raise no new-device alert.
         let snapshot = Snapshot {
@@ -1409,6 +1437,7 @@ mod tests {
         assert!(matches.iter().all(|m| !m.new), "{matches:?}");
         let ctx = crate::monitor::Context {
             keys: crate::identity::key_map(&devices, &matches),
+            ..Default::default()
         };
         let alerts = crate::monitor::evaluate_with(
             None,

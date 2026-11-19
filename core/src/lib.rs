@@ -87,6 +87,7 @@
 //! internal.
 //! Network Scope engine.
 pub(crate) mod arp;
+pub mod baseline;
 pub mod capture;
 pub mod core;
 pub mod devices;
