@@ -35,6 +35,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # The simulators listen on the real service ports (21, 22, 23, 502, ...). Linux reserves
+      # ports below 1024 for root, and the runner's own sshd holds port 22.
+      - name: Free the lab ports (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+          sudo systemctl stop ssh.socket ssh.service || true
       - name: Lab end-to-end check (simulated weak and OT services on loopback)
         shell: bash
         run: |
