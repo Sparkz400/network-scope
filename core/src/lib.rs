@@ -95,6 +95,7 @@ pub mod devices;
 pub mod feeds;
 pub(crate) mod fingerprint;
 pub mod identity;
+pub mod import;
 pub mod monitor;
 pub mod nmap;
 pub mod notify;

@@ -8,7 +8,8 @@ use crate::{
     ui::{Ctx, output, progress},
 };
 
-const USAGE: &str = "Use baseline approve [SCAN_ID], set DEVICE ..., show, remove DEVICE or clear";
+const USAGE: &str =
+    "Use baseline approve [SCAN_ID], enable, set DEVICE ..., show, remove DEVICE or clear";
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let sub = ctx.pos.first().map(String::as_str).ok_or(USAGE)?;
@@ -26,6 +27,16 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
                 } else {
                     format!("{device} was not on the baseline")
                 },
+            );
+            Ok(())
+        }
+        "enable" => {
+            let n = baseline::enable(&ctx.db, store::now())?;
+            progress(
+                &ctx.opts,
+                format_args!(
+                    "Baseline started with {n} expected devices; `monitor` now alerts on unknown devices"
+                ),
             );
             Ok(())
         }

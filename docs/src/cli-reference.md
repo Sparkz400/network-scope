@@ -46,10 +46,11 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `history [--db FILE]` | List saved scans as JSON |
 | `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
 | `changes [--since last\|7d\|DATE] [--format text\|json]` | New, gone and changed devices and new and resolved risks, see [Inventory](inventory-diff-reports.md#what-changed) |
-| `baseline approve [SCAN_ID]` / `set DEVICE [...]` / `show` / `remove DEVICE` / `clear` | Approved baseline of expected devices, see [Inventory](inventory-diff-reports.md#approved-baseline) |
+| `baseline approve [SCAN_ID]` / `enable` / `set DEVICE [...]` / `show` / `remove DEVICE` / `clear` | Approved baseline of expected devices, see [Inventory](inventory-diff-reports.md#approved-baseline) |
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
+| `import csv\|isc-dhcp\|dnsmasq\|windows-dhcp\|ad-csv\|ad-ldif\|netbox FILE...` | Known devices from a list (offline file, never a scan), see [Import](import-export.md) |
 | `findings ID [--min-severity low] [--sort exploited\|severity] [--fail-on-findings]` | Weak TLS/SSH, risky services, CVE hints |
 | `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
 | `feeds status [--feeds FILE]` | Show what the feeds cache holds (JSON) |

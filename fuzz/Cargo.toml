@@ -215,6 +215,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "import_inventory"
+path = "fuzz_targets/import_inventory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "arp_reply"
 path = "fuzz_targets/arp_reply.rs"
 test = false
