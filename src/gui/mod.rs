@@ -196,7 +196,7 @@ fn run_job(job: Job) -> Done {
             let data = if csv {
                 Ok(crate::otpassive::assets_csv(&assets))
             } else {
-                serde_json::to_string_pretty(&assets).map_err(|e| e.to_string())
+                crate::schema::list("ot-assets", "assets", &assets)
             };
             let result = write_file(&file, data);
             Done::Exported(file, result)

@@ -1,6 +1,6 @@
 //! `findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]`.
 use crate::{
-    risk, store,
+    risk, schema, store,
     ui::{Ctx, args::min_severity, findings_exit, output},
 };
 
@@ -18,10 +18,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         "severity" => crate::feeds::sort_by_severity(&mut list),
         _ => return Err("Sort must be exploited or severity".into()),
     }
-    output(
-        &serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?,
-        opts,
-    )?;
+    output(&schema::list("findings", "findings", &list)?, opts)?;
     ctx.status = findings_exit(ctx.fail_on_findings(), list.len());
     Ok(())
 }

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:devices:v1",
+  "title": "Device list",
+  "description": "Output of `devices ID`: one record per device, active and passive results merged.",
+  "type": "object",
+  "required": [
+    "schema",
+    "devices"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/devices/v1"
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "mac",
+          "vendor",
+          "randomized_mac",
+          "ips",
+          "hostnames",
+          "device_type",
+          "type_evidence",
+          "os",
+          "os_confidence",
+          "open_tcp",
+          "open_udp",
+          "services",
+          "sources",
+          "observations"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "mac": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "randomized_mac": {
+            "type": "boolean"
+          },
+          "ips": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "IPv4 or IPv6 address in text form"
+            }
+          },
+          "hostnames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "device_type": {
+            "type": "string"
+          },
+          "type_evidence": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "os_confidence": {
+            "type": "string"
+          },
+          "open_tcp": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          "open_udp": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          "services": {
+            "type": "object"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "observations": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

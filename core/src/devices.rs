@@ -1113,7 +1113,7 @@ impl HistoryBuilder {
 /// `devices --history` output: `text` (default) or `json`.
 pub fn history_output(h: &DeviceHistory, format: &str) -> Result<String, String> {
     match format {
-        "json" => serde_json::to_string_pretty(h).map_err(|e| e.to_string()),
+        "json" => crate::schema::object("device-history", h),
         "text" => Ok(history_text(h)),
         _ => Err("Choose text or json".into()),
     }

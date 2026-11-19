@@ -49,7 +49,7 @@ def main():
             if got != want:
                 failures.append(f"identity {key}: expected {want!r}, got {got!r}")
         found = subprocess.run([exe, "findings", "1", "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
-        ids = {f["id"] for f in json.loads(found)}
+        ids = {f["id"] for f in json.loads(found)["findings"]}
         for want in sorted(EXPECT_FINDINGS - ids):
             failures.append(f"finding missing: {want}")
     finally:

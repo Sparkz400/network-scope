@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:scan:v1",
+  "title": "Scan snapshot",
+  "description": "Output of `scan --format json`, `export ID --format json` and the GUI JSON export: one saved scan.",
+  "$defs": {
+    "host": {
+      "type": "object",
+      "required": [
+        "ip",
+        "responding",
+        "ping",
+        "ttl",
+        "hostname",
+        "mac",
+        "open",
+        "closed",
+        "unanswered",
+        "errors",
+        "ports_checked"
+      ],
+      "properties": {
+        "ip": {
+          "type": "string",
+          "description": "IPv4 or IPv6 address in text form"
+        },
+        "responding": {
+          "type": "boolean"
+        },
+        "ping": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Round-trip time in ms"
+        },
+        "ttl": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "mac": {
+          "type": "string"
+        },
+        "open": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          }
+        },
+        "closed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unanswered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ports_checked": {
+          "type": "boolean"
+        },
+        "identity": {
+          "type": "object",
+          "description": "Identity keys such as svc.80 or tls.443.expired; values are strings"
+        },
+        "udp_open": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          }
+        },
+        "trace": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "ttl",
+              "ip",
+              "rtt"
+            ],
+            "properties": {
+              "ttl": {
+                "type": "integer"
+              },
+              "ip": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rtt": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "mac",
+        "ip",
+        "fields"
+      ],
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "mac": {
+          "type": "string"
+        },
+        "ip": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "targets",
+    "complete",
+    "settings",
+    "hosts",
+    "observations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/scan/v1"
+    },
+    "targets": {
+      "type": "string"
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "false when the scan stopped early; its results are partial"
+    },
+    "settings": {
+      "type": "object",
+      "description": "The scan settings that produced the result"
+    },
+    "hosts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/host"
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/observation"
+      }
+    },
+    "notes": {
+      "type": "object",
+      "description": "Per-address notes, keyed by IP"
+    }
+  }
+}

@@ -31,7 +31,7 @@ pub(super) const FLAGS: [&str; 23] = [
     "dhcp-discover",
     "report-missing",
 ];
-pub(super) const VALUES: [&str; 42] = [
+pub(super) const VALUES: [&str; 43] = [
     "feeds",
     "kev",
     "epss",
@@ -74,6 +74,7 @@ pub(super) const VALUES: [&str; 42] = [
     "unit",
     "rack",
     "slot",
+    "json-schema",
 ];
 pub(super) fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);
