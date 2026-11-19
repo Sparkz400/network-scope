@@ -93,6 +93,7 @@ pub mod devices;
 pub mod evidence;
 pub mod feeds;
 pub(crate) mod fingerprint;
+pub mod jarm;
 pub mod monitor;
 pub mod nmap;
 pub mod notify;

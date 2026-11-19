@@ -115,7 +115,10 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
 /// Derived keys that name vendors without being evidence about the OS: a CPE for OpenSSH
 /// says "openbsd" on every Linux host, and fingerprint hashes are opaque.
 fn derived(key: &str) -> bool {
-    key.ends_with(".cpe") || key.ends_with(".hassh") || key.ends_with(".ja4s")
+    key.ends_with(".cpe")
+        || key.ends_with(".hassh")
+        || key.ends_with(".ja4s")
+        || key.ends_with(".jarm")
 }
 
 /// Windows release for an NTLM version `major.minor.build` (builds shared by client and

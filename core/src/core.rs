@@ -683,6 +683,26 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
+    // JARM: ten extra hellos per port that service detection found to speak TLS. Opt-in, never
+    // in Safe Mode, one port at a time, every connection through the rate gate, and never on
+    // industrial or printer ports.
+    if crate::jarm::enabled(&s) {
+        let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
+        let tls_ports: Vec<u16> = h
+            .open
+            .iter()
+            .copied()
+            .filter(|p| {
+                h.identity.contains_key(&format!("tls.{p}.versions"))
+                    || h.identity.contains_key(&format!("tls.{p}.subject"))
+            })
+            .collect();
+        for port in tls_ports {
+            if let Some(jarm) = crate::jarm::fingerprint(ip, port, limit, &ctx.gate).await {
+                h.identity.insert(format!("tls.{port}.jarm"), jarm);
+            }
+        }
+    }
     if s.udp && !ctx.udp_ports.is_empty() && (h.responding || s.scan_nonresponders) {
         let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(300, 2000)));
         let tries = (s.retries + 1).min(4);

@@ -6,8 +6,8 @@
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
-    arp, fingerprint, nmap, osfp, ot, otpassive, passive, pcapfile, platform, risk, service, syn,
-    tls, udp,
+    arp, fingerprint, jarm, nmap, osfp, ot, otpassive, passive, pcapfile, platform, risk, service,
+    syn, tls, udp,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -24,6 +24,7 @@ pub const TARGETS: &[Target] = &[
     ("otpassive_feed", otpassive_feed),
     ("tls_flight", tls_flight),
     ("tls13_server_hello", tls13_server_hello),
+    ("jarm_response", jarm_response),
     ("tls_certificate", tls_certificate),
     ("fingerprint_server_hello", fingerprint_server_hello),
     ("smb_negotiate", smb_negotiate),
@@ -105,6 +106,15 @@ pub fn tls_flight(data: &[u8]) {
     {
         std::hint::black_box(tls::describe_cert(&cert).ok());
     }
+}
+
+/// A server's reply to a JARM probe: the ServerHello parser, the per-probe line and the hash
+/// built from ten copies of it.
+pub fn jarm_response(data: &[u8]) {
+    let parsed = jarm::parse_response(data);
+    let line = jarm::response_line(parsed.as_ref());
+    let lines = vec![line; 10];
+    assert!(jarm::is_jarm(&jarm::hash(&lines)));
 }
 
 /// The first handshake message of a TLS 1.3 server, and its JA4S.

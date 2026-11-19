@@ -59,6 +59,7 @@ Scan options:
   --syn           IPv4 SYN via Npcap (routed targets via the gateway MAC); else TCP connect
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
   --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
+  --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing

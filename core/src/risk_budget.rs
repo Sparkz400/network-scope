@@ -136,6 +136,31 @@ fn cases() -> Vec<Case> {
             ),
         },
         Case {
+            id: "tls-self-signed-bad-signature",
+            hit: spec(
+                &[443],
+                &[],
+                &[
+                    ("tls.443.subject", "CN=x"),
+                    ("tls.443.self_signed", "true"),
+                    ("tls.443.self_signature", "invalid"),
+                ],
+            ),
+            // A verifier limit is not a forged certificate; neither is a valid signature.
+            miss: spec(
+                &[443],
+                &[],
+                &[
+                    ("tls.443.subject", "CN=x"),
+                    ("tls.443.self_signed", "true"),
+                    (
+                        "tls.443.self_signature",
+                        "unchecked (signature algorithm not supported by the verifier)",
+                    ),
+                ],
+            ),
+        },
+        Case {
             id: "tls-weak-signature",
             hit: spec(
                 &[443],

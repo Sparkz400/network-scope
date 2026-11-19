@@ -241,3 +241,10 @@ path = "fuzz_targets/icmp_reply.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "jarm_response"
+path = "fuzz_targets/jarm_response.rs"
+test = false
+doc = false
+bench = false

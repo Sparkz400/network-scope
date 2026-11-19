@@ -16,7 +16,7 @@ Clients either show warnings or are configured to accept any certificate, and in
 
 ## How it is detected
 
-The tool compares the certificate's issuer with its subject. If they are identical and, when both key identifiers are present, the authority key identifier names the certificate's own key, the certificate counts as self-signed. The signature itself is not verified.
+The tool compares the certificate's issuer with its subject. If they are identical and, when both key identifiers are present, the authority key identifier names the certificate's own key, the certificate counts as self-signed. The signature is then verified with the certificate's own key (`tls.<port>.self_signature` is `valid`, `invalid` or `unchecked`). When it is `invalid` the certificate is not what it claims to be and [a different finding](tls-self-signed-bad-signature.md) is raised instead; `valid` and `unchecked` (an algorithm or key size the verifier cannot check) both give this finding.
 
 The tool does not check trust: a certificate issued by a private or unknown CA is not reported here.
 
