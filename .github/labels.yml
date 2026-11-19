@@ -3,85 +3,85 @@
 
 # Type
 - name: bug
-  color: d73a4a
+  color: "d73a4a"
   description: Something does not work as documented
 - name: enhancement
-  color: a2eeef
+  color: "a2eeef"
   description: New feature or improvement
 - name: protocol
-  color: 0e8a16
+  color: "0e8a16"
   description: Device or protocol support
 - name: documentation
-  color: 0075ca
+  color: "0075ca"
   description: Docs, README, examples
 - name: question
-  color: d876e3
+  color: "d876e3"
   description: Better asked in Discussions
 - name: security
-  color: b60205
+  color: "b60205"
   description: Security hardening (report vulnerabilities privately, see SECURITY.md)
 - name: performance
-  color: fbca04
+  color: "fbca04"
   description: Speed, memory or responsiveness
 - name: dependencies
-  color: 0366d6
+  color: "0366d6"
   description: Dependency updates
 
 # Contributor entry points
 - name: good first issue
-  color: 7057ff
+  color: "7057ff"
   description: Small, well-described, a good place to start
 - name: help wanted
-  color: 008672
+  color: "008672"
   description: Extra attention or outside expertise welcome
 - name: needs-hardware
-  color: c5def5
+  color: "c5def5"
   description: Needs real devices, Npcap or a non-Windows machine to test
 
 # Area
 - name: "area:gui"
-  color: 1d76db
+  color: "1d76db"
   description: egui desktop app
 - name: "area:cli"
-  color: 1d76db
+  color: "1d76db"
   description: Command line and terminal view
 - name: "area:engine"
-  color: 1d76db
+  color: "1d76db"
   description: Scheduler, TCP/SYN/UDP, ARP, ICMP, traceroute
 - name: "area:detection"
-  color: 1d76db
+  color: "1d76db"
   description: Service, TLS, SMB, SSH and OS detection
 - name: "area:findings"
-  color: 1d76db
+  color: "1d76db"
   description: Risk rules and CVE hints
 - name: "area:ot"
-  color: 1d76db
+  color: "1d76db"
   description: Industrial protocols, active and passive
 - name: "area:inventory"
-  color: 1d76db
+  color: "1d76db"
   description: SQLite inventory, diffs, reports, exports
 - name: "area:monitoring"
-  color: 1d76db
+  color: "1d76db"
   description: Monitor mode and alert delivery
 
 # Platform
 - name: "os:windows"
-  color: bfdadc
+  color: "bfdadc"
   description: Windows only
 - name: "os:linux"
-  color: bfdadc
+  color: "bfdadc"
   description: Linux only
 - name: "os:macos"
-  color: bfdadc
+  color: "bfdadc"
   description: macOS only
 
 # Process
 - name: safety-review
-  color: e99695
+  color: "e99695"
   description: Changes what is sent on the wire; needs an OT safety review
 - name: breaking-change
-  color: b60205
+  color: "b60205"
   description: Changes CLI flags, output formats or stored data incompatibly
 - name: skip-changelog
-  color: ededed
+  color: "ededed"
   description: Leave out of the generated release notes
