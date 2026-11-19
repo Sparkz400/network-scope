@@ -17,6 +17,7 @@ Every JSON document the program prints names its format in a top-level `schema` 
 | `ot-assets` | `ot-assets ID --format json`, the GUI export | `assets` |
 | `feeds-status` | `feeds status` | What the KEV/EPSS cache holds |
 | `interfaces` | `interfaces` | `interfaces`: `[id, description]` pairs |
+| `mcp-where-seen`, `mcp-findings-gained`, `mcp-scan` | The MCP tools `search_inventory`, `findings_gained` and `scan` ([MCP server](mcp.md)); the other MCP tools return the kinds above | Search matches, hosts that gained a finding, a scan summary |
 
 A list is wrapped in an object (`{"schema": "network-scope/findings/v1", "findings": [...]}`) because a bare array has no room for the identifier. Output that was a bare array before this format existed (`devices`, `findings`, `history`, `alerts`, `ot-assets`, `interfaces`, the default `diff`, `devices --history`) changed shape; scripts read the list from the named member (`jq '.findings[]'`). CSV, HTML, Markdown, nmap XML and text formats are not JSON and carry no identifier.
 
@@ -29,7 +30,7 @@ A list is wrapped in an object (`{"schema": "network-scope/findings/v1", "findin
 
 ## Using the schemas
 
-The files are plain JSON Schema and work with any validator. The repository's own tests validate real output against them (`tests/cli_json_schema.rs`, `core/src/schema.rs`) with a small checker that implements only the keywords the files use (`type`, `properties`, `required`, `items`, `enum`, `const`, `minimum`, `maximum`, `minItems`, `maxItems`, `maxLength`, `$ref` to `#/$defs/...`) and rejects any other keyword, so a schema cannot promise more than the tests verify. The schemas list the members a consumer can rely on; large free-form members (`settings`, `identity`, `observations`) are described as objects only.
+The files are plain JSON Schema and work with any validator. The repository's own tests validate real output against them (`tests/cli_json_schema.rs`, `core/src/schema.rs`) with a small checker that implements only the keywords the files use (`type`, `properties`, `required`, `items`, `enum`, `const`, `minimum`, `maximum`, `minItems`, `maxItems`, `minLength`, `maxLength`, `additionalProperties: false`, `$ref` to `#/$defs/...`) and rejects any other keyword, so a schema cannot promise more than the tests verify. The schemas list the members a consumer can rely on; large free-form members (`settings`, `identity`, `observations`) are described as objects only.
 
 ```sh
 network-scope-cli findings 3 --min-severity high | jq -r '.findings[] | "\(.severity) \(.ip) \(.id)"'

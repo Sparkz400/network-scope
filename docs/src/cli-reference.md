@@ -54,6 +54,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `feeds status [--feeds FILE]` | Show what the feeds cache holds (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
 | `service install\|uninstall\|run` | `monitor` as a Windows service, see [Service and scheduling](service-and-scheduling.md) |
+| `mcp [--db FILE] [--no-scan]` | MCP server on stdin/stdout for AI assistants, see [MCP server](mcp.md) |
 | `alerts [--db FILE]` | Alerts raised by monitor runs |
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
 | `ot-listen --interface ID --seconds N` or `ot-listen --pcap FILE [--progress] [--no-reassembly]` | Passive OT asset discovery |

@@ -28,6 +28,7 @@ network-scope alerts [--db FILE]               Alerts raised by monitor runs
 network-scope scripts PATH                     Check Rhai scripts (use --script PATH with scan)
 network-scope service install TARGETS [monitor options] [--service-name NAME] [--db FILE] [--dry-run]
 network-scope service uninstall [--service-name NAME]   Windows service for monitor (run as administrator)
+network-scope mcp [--db FILE] [--no-scan]       MCP server on stdin/stdout for AI assistants (read-only queries, Safe Mode scan)
 network-scope scripts list|show NAME           The built-in script library (--script library:NAME)
 network-scope ot-listen --interface ID --seconds N | --pcap FILE [--progress] [--no-reassembly]
                                                Passive OT asset discovery

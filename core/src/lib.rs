@@ -93,6 +93,7 @@ pub mod core;
 pub mod devices;
 pub mod feeds;
 pub(crate) mod fingerprint;
+pub mod mcp;
 pub mod monitor;
 pub mod nmap;
 pub mod notify;
