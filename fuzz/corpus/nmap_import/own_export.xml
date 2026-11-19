@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="network-scope" args="network-scope scan 10.0.0.0/24" start="1700000000" startstr="2023-11-14" version="0.5.0" xmloutputversion="1.05">
+<scaninfo type="connect" protocol="tcp" numservices="3" services="22,443,8080"/>
+<host starttime="1700000000" endtime="1700000000">
+<status state="up" reason="echo-reply" reason_ttl="64"/>
+<address addr="10.0.0.5" addrtype="ipv4"/>
+<address addr="DC:A6:32:00:00:01" addrtype="mac" vendor="Raspberry Pi Trading Ltd"/>
+<hostnames><hostname name="pi&lt;1&gt;" type="PTR"/></hostnames>
+<ports><extraports state="closed" count="97"/><port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="ssh" product="OpenSSH" version="9.6p1" extrainfo="protocol 2.0" method="probed" conf="10"/></port><port protocol="tcp" portid="443"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" product="nginx" version="1.24.0" extrainfo="200 OK" tunnel="ssl" method="probed" conf="10"/><script id="ssl-cert" output="Subject: CN=&quot;x&quot; &lt;y&gt;
+Not valid after: 2027-01-01"/></port><port protocol="tcp" portid="8080"><state state="open" reason="syn-ack" reason_ttl="0"/></port><port protocol="udp" portid="161"><state state="open" reason="udp-response" reason_ttl="0"/><script id="banner" output="SNMP sysDescr: Linux &amp; co"/></port></ports>
+<os><osmatch name="Linux" accuracy="70" line="0"/></os>
+<trace><hop ttl="1" ipaddr="10.0.0.1" rtt="2"/><hop ttl="2" ipaddr="*" rtt="0"/></trace>
+</host>
+<runstats><finished time="1700000000" timestr="2023-11-14" elapsed="0" exit="success"/><hosts up="1" down="1" total="2"/></runstats>
+</nmaprun>

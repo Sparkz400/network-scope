@@ -1,5 +1,6 @@
 //! Network Scope as a library. The two binaries (`src/main.rs` and
-//! `src/bin/network-scope-cli.rs`) call [`run`]. Everything else stays crate-private.
+//! `src/bin/network-scope-cli.rs`) call [`run`]; the fuzz targets in `fuzz/` call the
+//! entry points in [`fuzz`]. Everything else stays crate-private.
 pub(crate) mod arp;
 pub(crate) mod capture;
 pub(crate) mod core;
@@ -29,6 +30,9 @@ pub(crate) mod topology;
 pub(crate) mod trace;
 pub(crate) mod udp;
 pub(crate) mod ui;
+
+#[doc(hidden)]
+pub mod fuzz;
 
 use std::path::PathBuf;
 

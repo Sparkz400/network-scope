@@ -1,0 +1,4 @@
+# Shell scripts run in Linux containers (ClusterFuzzLite build).
+*.sh text eol=lf
+# Fuzz seeds are raw bytes: never convert line endings.
+fuzz/corpus/** -text

@@ -1,0 +1,94 @@
+{
+  "_comment": "Version-based CVE hints and CPE names. rules: product is a lower-case substring of the detected product (svc.<port>.product or the HTTP Server header name); min (inclusive) and max (exclusive) are dotted versions with an optional pN patch level (8.5p1); exclude lists product substrings the rule does not apply to; severity info/low/medium/high/critical; cve is non-empty, the finding id is cve-<first cve>. cpe: products are exact lower-case product names, template expands {version} (full version), {base} (version without the pN patch) and {update} (pN or *). A user file (%LOCALAPPDATA%/NetworkScope/cves.json or --cves FILE) with the same id replaces the built-in entry; new ids are added.",
+  "rules": [
+    {
+      "id": "openssh-regresshion",
+      "product": "openssh",
+      "exclude": ["for windows"],
+      "min": "8.5p1",
+      "max": "9.8p1",
+      "severity": "high",
+      "cve": ["CVE-2024-6387"],
+      "title": "OpenSSH regreSSHion (unauthenticated signal-handler race, glibc Linux)"
+    },
+    {
+      "id": "openssh-agent-pkcs11",
+      "product": "openssh",
+      "exclude": ["for windows"],
+      "max": "9.3p2",
+      "severity": "medium",
+      "cve": ["CVE-2023-38408"],
+      "title": "OpenSSH ssh-agent PKCS#11 code execution (needs a forwarded agent)"
+    },
+    {
+      "id": "openssh-user-enum",
+      "product": "openssh",
+      "exclude": ["for windows"],
+      "max": "7.8",
+      "severity": "low",
+      "cve": ["CVE-2018-15473"],
+      "title": "OpenSSH username enumeration"
+    },
+    {
+      "id": "apache-path-traversal",
+      "product": "apache",
+      "min": "2.4.49",
+      "max": "2.4.51",
+      "severity": "critical",
+      "cve": ["CVE-2021-41773", "CVE-2021-42013"],
+      "title": "Apache httpd 2.4.49/2.4.50 path traversal and remote code execution"
+    },
+    {
+      "id": "nginx-resolver",
+      "product": "nginx",
+      "min": "0.6.18",
+      "max": "1.20.1",
+      "severity": "medium",
+      "cve": ["CVE-2021-23017"],
+      "title": "nginx resolver off-by-one (only when a resolver is configured)"
+    },
+    {
+      "id": "vsftpd-backdoor",
+      "product": "vsftpd",
+      "min": "2.3.4",
+      "max": "2.3.5",
+      "severity": "critical",
+      "cve": ["CVE-2011-2523"],
+      "title": "vsFTPd 2.3.4 backdoor"
+    },
+    {
+      "id": "exim-rce",
+      "product": "exim",
+      "min": "4.87",
+      "max": "4.92",
+      "severity": "critical",
+      "cve": ["CVE-2019-10149"],
+      "title": "Exim 4.87-4.91 remote command execution"
+    },
+    {
+      "id": "iis6-webdav",
+      "product": "microsoft-iis",
+      "min": "6.0",
+      "max": "6.1",
+      "severity": "high",
+      "cve": ["CVE-2017-7269"],
+      "title": "IIS 6.0 WebDAV buffer overflow"
+    }
+  ],
+  "cpe": [
+    { "id": "openssh", "products": ["openssh"], "template": "cpe:2.3:a:openbsd:openssh:{base}:{update}:*:*:*:*:*:*" },
+    { "id": "apache-httpd", "products": ["apache"], "template": "cpe:2.3:a:apache:http_server:{version}:*:*:*:*:*:*:*" },
+    { "id": "nginx", "products": ["nginx"], "template": "cpe:2.3:a:f5:nginx:{version}:*:*:*:*:*:*:*" },
+    { "id": "iis", "products": ["microsoft-iis"], "template": "cpe:2.3:a:microsoft:internet_information_services:{version}:*:*:*:*:*:*:*" },
+    { "id": "lighttpd", "products": ["lighttpd"], "template": "cpe:2.3:a:lighttpd:lighttpd:{version}:*:*:*:*:*:*:*" },
+    { "id": "vsftpd", "products": ["vsftpd"], "template": "cpe:2.3:a:beasts:vsftpd:{version}:*:*:*:*:*:*:*" },
+    { "id": "proftpd", "products": ["proftpd"], "template": "cpe:2.3:a:proftpd:proftpd:{version}:*:*:*:*:*:*:*" },
+    { "id": "filezilla-server", "products": ["filezilla server"], "template": "cpe:2.3:a:filezilla-project:filezilla_server:{version}:*:*:*:*:*:*:*" },
+    { "id": "exim", "products": ["exim"], "template": "cpe:2.3:a:exim:exim:{version}:*:*:*:*:*:*:*" },
+    { "id": "sendmail", "products": ["sendmail"], "template": "cpe:2.3:a:sendmail:sendmail:{version}:*:*:*:*:*:*:*" },
+    { "id": "mysql", "products": ["mysql"], "template": "cpe:2.3:a:oracle:mysql:{version}:*:*:*:*:*:*:*" },
+    { "id": "mariadb", "products": ["mariadb"], "template": "cpe:2.3:a:mariadb:mariadb:{version}:*:*:*:*:*:*:*" },
+    { "id": "redis", "products": ["redis"], "template": "cpe:2.3:a:redis:redis:{version}:*:*:*:*:*:*:*" },
+    { "id": "memcached", "products": ["memcached"], "template": "cpe:2.3:a:memcached:memcached:{version}:*:*:*:*:*:*:*" }
+  ]
+}

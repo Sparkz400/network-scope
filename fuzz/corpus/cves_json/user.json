@@ -1,0 +1,1 @@
+{"rules":[{"id":"x","product":"foo","exclude":["bar"],"min":"1.2","max":"1.3p1","severity":"high","cve":["CVE-2020-1234"],"title":"t"}],"cpe":[{"id":"foo","products":["foo"],"template":"cpe:2.3:a:foo:foo:{version}:*:*:*:*:*:*:*"}]}
