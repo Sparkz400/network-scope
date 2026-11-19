@@ -10,11 +10,41 @@ cargo fmt --check
 
 The tests exercise real loopback networking and protocol fixtures, SQLite round trips, scan changes, parser bounds, report escaping, and the SYN, ARP and TCP-traceroute I/O loops against a fake wire. A source-level test fails the build if the passive capture modules contain socket or send code.
 
-CI ([`.github/workflows/ci.yml`](https://github.com/Sparkz400/network-scope/blob/main/.github/workflows/ci.yml)) runs format, clippy with `-D warnings`, the tests and the lab check below on Windows, Linux and macOS, uploads both binaries as build artifacts, and builds the Windows installer. On Linux it also runs the [accuracy benchmark](#accuracy-benchmark) and fails when an accuracy metric drops below the baseline. Tagged releases are built by `release.yml`.
+CI ([`.github/workflows/ci.yml`](https://github.com/Sparkz400/network-scope/blob/main/.github/workflows/ci.yml)) runs format, clippy with `-D warnings`, the tests and the lab check below on Windows, Linux and macOS, uploads both binaries as build artifacts, measures coverage (below) and builds the Windows installer. On Linux it also runs the [accuracy benchmark](#accuracy-benchmark) and fails when an accuracy metric drops below the baseline. Tagged releases are built by `release.yml`.
 
 ## Real industrial traffic
 
 The OT decoders are also tested on public captures of real equipment, not only on frames built by the tests. `tests/fixtures/ics/` holds 22 pcap/pcapng files from the [ITI/ICS-Security-Tools](https://github.com/ITI/ICS-Security-Tools) collection (CC-BY-4.0; per-file origin, commit and SHA-256 in `PROVENANCE.md` there): Modbus/TCP, S7comm (including a block download and a PLC stop), EtherNet/IP (List Identity, a CIP stop), IEC 60870-5-104, DNP3 (read, select/operate, write), BACnet, OPC UA, Profinet DCP, and some protocols without a decoder yet (Omron FINS, Niagara Fox, MELSEC, IEC 61850 MMS). `core/src/otpassive/real_traffic.rs` reads each one with the function `ot-listen --pcap` uses and asserts what is really found: the protocol, device and client addresses, identity fields (EtherNet/IP vendor, product, firmware, serial; Profinet DCP name; the S7 SZL order code and firmware and the OPC UA endpoints through the probe parsers), and which captures contain control traffic (and at which severity). Where a capture shows a limit of a decoder (OPC UA on a port other than 4840, S7CommPlus and IEC 61850 MMS on port 102, fragmented SZL replies) the test says so. The files below 64 KB also seed the fuzz targets.
+
+## Coverage targets
+
+The goal is at least 80% line coverage of every parser and risk-rule file: `risk.rs`, `pcapfile.rs`, `tls.rs`, `service`, `otpassive/`, `ot` and `ot/`, `nmap.rs`, `passive.rs`, `udp.rs`, `arp.rs`, `osfp.rs` and `fingerprint.rs`. The `coverage` CI job (Ubuntu) runs the tests with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) (version pinned in `ci.yml`, installed with `--locked`), writes the JSON summary, an lcov file and an HTML report (uploaded as the artifact `coverage-report`), and then runs [`scripts/coverage_gate.py`](https://github.com/Sparkz400/network-scope/blob/main/scripts/coverage_gate.py) (Python standard library only, `python -I`). The gate fails the job if any file matching a target is below its threshold, or if a target no longer matches any file (a renamed file needs its pattern updated).
+
+The targets are in [`scripts/coverage_targets.json`](https://github.com/Sparkz400/network-scope/blob/main/scripts/coverage_targets.json): a regular expression per target, matched against the source path, so the same entry covers `src/` and `core/src/`. The first matching target wins, so a file with a lower floor is listed before its group.
+
+Not every file is at 80% yet. Measured on 2026-11-19 (cargo-llvm-cov 0.9.1 on Windows, 333 unit tests), these are below it and have a threshold at their measured value, rounded down, marked `"ratchet_to": 80`:
+
+| File | Measured | Threshold today |
+| --- | --- | --- |
+| `ot.rs` (active OT identification) | 66.60% | 66% |
+| `passive.rs` | 65.05% | 65% |
+| `otpassive/s7.rs` | 76.19% | 76% |
+| `otpassive/dnp3.rs` | 42.86% | 42% |
+| `otpassive/iec104.rs` | 35.71% | 35% |
+
+The floors can only go up: when the gate prints "raise the threshold" for a file, raise it in the same change, and once a file reaches 80% drop its `ratchet_to`. A threshold is never set above a measured value. The files not listed were between 82% and 99% at that measurement. The numbers include the `#[cfg(test)]` modules in the same files, and Linux and Windows compile different platform code, so the first Linux run in CI may differ from the Windows numbers by a little; recalibrate from the uploaded `summary.json` if a floor is hit by that alone.
+
+Run it locally (needs the `llvm-tools-preview` rustup component):
+
+```sh
+cargo install cargo-llvm-cov --locked
+cargo llvm-cov --locked --workspace --no-report
+cargo llvm-cov report --json --summary-only --output-path target/llvm-cov/summary.json
+python -I scripts/coverage_gate.py target/llvm-cov/summary.json
+cargo llvm-cov report --html     # target/llvm-cov/html/index.html
+```
+
+The gate has its own unit tests (`python -I -m unittest discover -s scripts -p "test_*.py"`), which CI runs first.
 
 ## Fuzzing
 

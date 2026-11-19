@@ -1,0 +1,95 @@
+{
+  "_comment": "Line-coverage targets for parsers and risk rules, checked by scripts/coverage_gate.py. Patterns are regexes on the source path with forward slashes, so they match src/ and core/src/. The first matching target wins. A target with ratchet_to is below its goal: threshold is the floor measured on 2026-11-19 (cargo llvm-cov 0.9.1, Windows, rounded down to a whole percent) and 'measured' is the exact value then. Raise a floor when coverage improves, never lower it, never set it above a measured value; remove ratchet_to and use 80 once the file reaches it.",
+  "targets": [
+    {
+      "name": "risk",
+      "pattern": "(^|/)src/risk\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "pcapfile",
+      "pattern": "(^|/)src/pcapfile\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "tls",
+      "pattern": "(^|/)src/tls\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "service",
+      "pattern": "(^|/)src/service(\\.rs$|/)",
+      "threshold": 80
+    },
+    {
+      "name": "otpassive/dnp3",
+      "pattern": "(^|/)src/otpassive/dnp3\\.rs$",
+      "threshold": 42,
+      "ratchet_to": 80,
+      "measured": 42.86
+    },
+    {
+      "name": "otpassive/iec104",
+      "pattern": "(^|/)src/otpassive/iec104\\.rs$",
+      "threshold": 35,
+      "ratchet_to": 80,
+      "measured": 35.71
+    },
+    {
+      "name": "otpassive/s7",
+      "pattern": "(^|/)src/otpassive/s7\\.rs$",
+      "threshold": 76,
+      "ratchet_to": 80,
+      "measured": 76.19
+    },
+    {
+      "name": "otpassive",
+      "pattern": "(^|/)src/otpassive(\\.rs$|/)",
+      "threshold": 80
+    },
+    {
+      "name": "ot (active identification)",
+      "pattern": "(^|/)src/ot\\.rs$",
+      "threshold": 66,
+      "ratchet_to": 80,
+      "measured": 66.6
+    },
+    {
+      "name": "ot",
+      "pattern": "(^|/)src/ot/",
+      "threshold": 80
+    },
+    {
+      "name": "nmap",
+      "pattern": "(^|/)src/nmap\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "passive",
+      "pattern": "(^|/)src/passive\\.rs$",
+      "threshold": 65,
+      "ratchet_to": 80,
+      "measured": 65.05
+    },
+    {
+      "name": "udp",
+      "pattern": "(^|/)src/udp\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "arp",
+      "pattern": "(^|/)src/arp\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "osfp",
+      "pattern": "(^|/)src/osfp\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "fingerprint",
+      "pattern": "(^|/)src/fingerprint\\.rs$",
+      "threshold": 80
+    }
+  ]
+}
