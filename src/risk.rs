@@ -55,7 +55,37 @@ pub struct Finding {
     /// JSON, without them. Missing in exports written before the feeds existed.
     #[serde(default, flatten)]
     pub exploit: crate::feeds::Exploit,
+    /// Official documentation for the finding (HTTPS URL), when the rule has one. Missing in
+    /// exports written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
+
+const MS_SMB: &str = "https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3";
+const MS_SMB_SIGNING: &str =
+    "https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-signing-overview";
+const MS_RDP_NLA: &str = "https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remotepc/remote-desktop-allow-access";
+const CISA_TELNET: &str = "https://www.cisa.gov/news-events/cybersecurity-advisories/aa20-245a";
+const MOZILLA_TLS: &str = "https://wiki.mozilla.org/Security/Server_Side_TLS";
+
+/// Documentation link for a rule id, if one is curated. Only official vendor or standards pages.
+fn reference_for(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "smb1-enabled" => MS_SMB,
+        "smb-signing" => MS_SMB_SIGNING,
+        "rdp-no-nla" => MS_RDP_NLA,
+        "telnet-open" => CISA_TELNET,
+        "tls-sslv3"
+        | "tls-deprecated-protocol"
+        | "tls-broken-cipher"
+        | "tls-3des"
+        | "tls-no-pfs"
+        | "tls-weak-signature"
+        | "tls-weak-key" => MOZILLA_TLS,
+        _ => return None,
+    })
+}
+
 impl Finding {
     /// Identity used to decide whether a finding is new compared with a previous scan.
     pub fn key(&self) -> String {
@@ -479,6 +509,7 @@ impl Out<'_> {
             cve: cve.iter().map(|c| (*c).to_string()).collect(),
             advice: advice.into(),
             exploit: Default::default(),
+            reference: reference_for(id).map(str::to_string),
         });
     }
 }
@@ -909,6 +940,7 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             cve: vec![],
             advice: "Verify that writes, program downloads and stop/restart commands come from authorised engineering stations.".into(),
             exploit: Default::default(),
+            reference: None,
         });
     }
     all.sort_by(|a, b| {
@@ -1234,6 +1266,53 @@ mod tests {
         let mut other = host(&[], &[("udp.161", "unknown reply")]);
         other.udp_open = vec![161];
         assert!(ids(&other).is_empty());
+    }
+
+    #[test]
+    fn curated_rules_carry_an_https_reference() {
+        let h = host(
+            &[23, 445, 3389, 443],
+            &[
+                ("svc.23", "telnet"),
+                ("svc.445", "microsoft-ds SMBv1 (signing disabled)"),
+                ("svc.3389", "ms-wbt-server RDP (TLS security)"),
+                ("tls.443.versions", "TLS1.2, TLS1.0 (deprecated)"),
+                ("tls.443.weak", "TLS1.0 enabled (deprecated)"),
+            ],
+        );
+        let f = analyze_host(&h);
+        for (id, host) in [
+            ("telnet-open", "www.cisa.gov"),
+            ("smb1-enabled", "learn.microsoft.com"),
+            ("smb-signing", "learn.microsoft.com"),
+            ("rdp-no-nla", "learn.microsoft.com"),
+            ("tls-deprecated-protocol", "wiki.mozilla.org"),
+        ] {
+            let found = f
+                .iter()
+                .find(|f| f.id == id)
+                .unwrap_or_else(|| panic!("{id}"));
+            let url = found.reference.as_deref().unwrap_or_else(|| panic!("{id}"));
+            assert!(url.starts_with(&format!("https://{host}/")), "{id}: {url}");
+        }
+        // Rules without a curated link stay without one.
+        let ftp = host(&[21], &[("svc.21", "ftp vsFTPd 3.0.3")]);
+        assert_eq!(analyze_host(&ftp)[0].reference, None);
+    }
+
+    #[test]
+    fn finding_json_without_reference_still_loads() {
+        let old = r#"{"severity":"high","id":"telnet-open","title":"Telnet","ip":"10.0.0.5","port":23,"evidence":"telnet","cve":[],"advice":"Disable Telnet."}"#;
+        let f: Finding = serde_json::from_str(old).unwrap();
+        assert_eq!(f.reference, None);
+        // A missing reference is not written back out; a present one round-trips.
+        assert!(!serde_json::to_string(&f).unwrap().contains("reference"));
+        let linked = Finding {
+            reference: Some("https://example.org/doc".into()),
+            ..f
+        };
+        let back: Finding = serde_json::from_str(&serde_json::to_string(&linked).unwrap()).unwrap();
+        assert_eq!(back, linked);
     }
 
     #[test]
