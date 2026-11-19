@@ -4,9 +4,10 @@ mod details;
 mod ot;
 mod settings;
 mod tables;
+mod updates;
 mod windows;
 
-use crate::{devices, passive, risk, scan, store, topology};
+use crate::{devices, passive, risk, scan, store, topology, update};
 use eframe::egui::{self, Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,9 @@ struct Saved {
     notes: BTreeMap<IpAddr, String>,
     /// CVE rules file merged over the built-in rules (like `--cves`); empty: the default rules.
     cves_file: String,
+    /// Ask GitHub for the latest release once when the program starts (notify only, never
+    /// downloads). Off unless the user turns it on.
+    check_updates: bool,
 }
 impl Saved {
     /// What goes to disk: empty notes are dropped.
@@ -289,6 +293,11 @@ struct Scanner {
     error: String,
     /// Why the CVE rules file in the settings could not be loaded; empty when it loaded.
     cves_error: String,
+    /// The answer of the update check that runs at start (when enabled) while it is pending.
+    update_check: Option<updates::Check>,
+    /// A newer release that the check found; shown in the status bar until dismissed.
+    update_notice: Option<update::Release>,
+    update_open: bool,
     settings_open: bool,
     about_open: bool,
     selected: Option<IpAddr>,
@@ -384,6 +393,9 @@ impl Scanner {
             status: "Ready to scan".into(),
             error: String::new(),
             cves_error: String::new(),
+            update_check: None,
+            update_notice: None,
+            update_open: false,
             settings_open: false,
             about_open: false,
             selected: None,
@@ -453,6 +465,10 @@ impl Scanner {
                     );
                 }
             }
+        }
+        // Opt-in, never in screenshot mode: one request, in the background.
+        if app.saved.check_updates && app.screenshot.is_none() {
+            app.start_update_check(&cc.egui_ctx);
         }
         if app.screenshot.is_some()
             && let Ok(state) = std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
@@ -856,6 +872,7 @@ impl eframe::App for Scanner {
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        self.poll_update();
         self.controls(ui);
         egui::Panel::bottom("status").show(ui, |ui| {
             if let Some(run) = &self.run {
@@ -898,6 +915,7 @@ impl eframe::App for Scanner {
                     ui.label(busy);
                 }
                 ui.label(&self.status);
+                self.update_notice_ui(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
                         "{} responding · {} with open ports",
@@ -1028,6 +1046,7 @@ impl eframe::App for Scanner {
             }
         });
         self.settings(ctx);
+        self.update_window(ctx);
         self.details(ctx);
         self.inventory_window(ctx);
         self.topology_window(ctx);
@@ -1383,6 +1402,43 @@ mod tests {
         assert_eq!(disk.cves_file, "C:\\rules\\cves.json");
         let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
         assert!(old.cves_file.is_empty());
+    }
+
+    #[test]
+    fn update_check_is_off_by_default_and_remembered_when_turned_on() {
+        // Off for a new user and for preferences from before the setting existed.
+        assert!(!Saved::default().check_updates);
+        let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
+        assert!(!old.check_updates);
+        let on = Saved {
+            check_updates: true,
+            ..Default::default()
+        };
+        let disk: Saved = serde_json::from_slice(&on.to_disk()).unwrap();
+        assert!(disk.check_updates);
+    }
+
+    #[test]
+    fn update_answers_become_a_notice_a_status_line_or_nothing() {
+        use updates::{Effect, effect};
+        let release = |tag: &str| {
+            update::parse_latest(format!(r#"{{"tag_name":"{tag}"}}"#).as_bytes()).unwrap()
+        };
+        let current = env!("CARGO_PKG_VERSION");
+        let outcome = |tag: &str| update::compare(current, release(tag)).unwrap();
+        assert_eq!(
+            effect(Ok(outcome("v99.0.0"))),
+            Effect::Notice(release("v99.0.0"))
+        );
+        assert_eq!(effect(Ok(outcome(&format!("v{current}")))), Effect::Nothing);
+        assert_eq!(effect(Ok(outcome("v0.0.1"))), Effect::Nothing);
+        assert_eq!(effect(Ok(outcome("v100.0.0-rc.1"))), Effect::Nothing);
+        assert_eq!(
+            effect(Err("no release has been published yet (HTTP 404)".into())),
+            Effect::Failed(
+                "Update check failed: no release has been published yet (HTTP 404)".into()
+            )
+        );
     }
 
     #[test]
