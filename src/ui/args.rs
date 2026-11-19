@@ -32,8 +32,9 @@ pub(super) const FLAGS: [&str; 24] = [
     "dhcp-discover",
     "report-missing",
 ];
-pub(super) const VALUES: [&str; 42] = [
+pub(super) const VALUES: [&str; 43] = [
     "feeds",
+    "nvd",
     "kev",
     "epss",
     "sort",

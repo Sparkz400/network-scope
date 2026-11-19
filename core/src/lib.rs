@@ -97,6 +97,7 @@ pub mod jarm;
 pub mod monitor;
 pub mod nmap;
 pub mod notify;
+pub mod nvd;
 pub mod observations;
 pub(crate) mod osfp;
 pub mod ot;

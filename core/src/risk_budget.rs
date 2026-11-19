@@ -740,6 +740,98 @@ fn every_builtin_cve_rule_triggers_inside_and_not_outside_its_range() {
     }
 }
 
+fn nvd_sample() -> crate::nvd::Nvd {
+    let mut nvd = crate::nvd::Nvd::default();
+    let parsed =
+        crate::nvd::parse_nvd(include_bytes!("../../tests/fixtures/nvd-sample.json")).unwrap();
+    nvd.merge(parsed, "nvd-sample.json").unwrap();
+    nvd
+}
+
+#[test]
+fn nvd_hits_raise_cve_findings_inside_their_range_only() {
+    let nvd = nvd_sample();
+    let run = |id: &[(&str, &str)]| {
+        let mut h = host_of(&spec(&[8080], &[], &[]));
+        for (k, v) in id {
+            h.identity.insert(k.to_string(), v.to_string());
+        }
+        analyze_host_nvd(&h, &CveDb::builtin(), &nvd)
+    };
+    let cpe = |v: &str| -> Vec<Finding> {
+        let c = format!("cpe:2.3:a:example:examplehttpd:{v}:*:*:*:*:*:*:*");
+        run(&[("svc.8080.cpe", c.as_str())])
+    };
+    let hit = cpe("1.5");
+    assert_eq!(hit.len(), 1, "{hit:?}");
+    let f = &hit[0];
+    assert_eq!(f.id, "cve-cve-2099-0001");
+    assert_eq!(f.cve, ["CVE-2099-0001"]);
+    assert_eq!(f.severity, Severity::Medium);
+    assert_eq!(f.confidence, 40);
+    assert!(f.evidence.contains("1.0 < v <= 2.0"), "{}", f.evidence);
+    assert!(f.evidence.contains("Version-based hint"), "{}", f.evidence);
+    // Boundaries and unrelated input: nothing.
+    for v in ["1.0", "2.0.1", "0.9", "*", "-"] {
+        assert!(cpe(v).is_empty(), "{v}");
+    }
+    assert!(run(&[]).is_empty(), "no CPE, no NVD lookup");
+    assert!(run(&[("svc.8080.cpe", "not a cpe")]).is_empty());
+    // AND configurations, rejected and unbounded records never match, whatever the version.
+    for v in ["1.0.1", "3.0", "5.0", "9.0"] {
+        assert!(
+            cpe(v).iter().all(|f| f.id != "cve-cve-2099-0002"
+                && f.id != "cve-cve-2099-0003"
+                && f.id != "cve-cve-2099-0004"),
+            "{v}"
+        );
+    }
+    // Without imported data nothing changes.
+    let none = analyze_host_nvd(
+        &host_of(&spec(
+            &[8080],
+            &[],
+            &[(
+                "svc.8080.cpe",
+                "cpe:2.3:a:example:examplehttpd:1.5:*:*:*:*:*:*:*",
+            )],
+        )),
+        &CveDb::builtin(),
+        &crate::nvd::Nvd::default(),
+    );
+    assert!(none.is_empty());
+}
+
+#[test]
+fn nvd_never_repeats_a_cve_the_builtin_rules_raised() {
+    let nvd = nvd_sample();
+    let host = host_of(&spec(
+        &[22, 8080],
+        &[],
+        &[
+            ("svc.22.product", "OpenSSH"),
+            ("svc.22.version", "9.6p1"),
+            ("svc.22.cpe", "cpe:2.3:a:openbsd:openssh:9.6:p1:*:*:*:*:*:*"),
+            ("svc.8080.product", "Apache"),
+            ("svc.8080.version", "2.4.49"),
+            (
+                "svc.8080.cpe",
+                "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*",
+            ),
+        ],
+    ));
+    let with = analyze_host_nvd(&host, &CveDb::builtin(), &nvd);
+    let without = analyze_host_with(&host, &CveDb::builtin());
+    assert_eq!(
+        with.iter().map(|f| &f.id).collect::<Vec<_>>(),
+        without.iter().map(|f| &f.id).collect::<Vec<_>>(),
+        "NVD has the same two CVEs: the built-in findings are kept, none are added"
+    );
+    for id in ["cve-cve-2024-6387", "cve-cve-2021-41773"] {
+        assert_eq!(with.iter().filter(|f| f.id == id).count(), 1, "{id}");
+    }
+}
+
 #[test]
 fn script_findings_need_the_script_key() {
     let hit = host_of(&spec(&[], &[], &[("finding.script.lab", "high|Lab|x")]));

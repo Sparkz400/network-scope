@@ -248,3 +248,10 @@ path = "fuzz_targets/jarm_response.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "nvd_import"
+path = "fuzz_targets/nvd_import.rs"
+test = false
+doc = false
+bench = false

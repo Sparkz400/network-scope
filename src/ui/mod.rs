@@ -151,6 +151,12 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     {
         crate::feeds::load_active(std::path::Path::new(file))?;
     }
+    // The NVD cache (`feeds import nvd`) is read by every command that analyses findings.
+    if command != "feeds"
+        && let Some(file) = opts.get("nvd")
+    {
+        crate::nvd::load_active(std::path::Path::new(file))?;
+    }
     let handler =
         commands::find(command).ok_or_else(|| format!("Unknown command {command}. Use --help."))?;
     let mut ctx = Ctx {

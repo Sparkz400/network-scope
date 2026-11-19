@@ -590,10 +590,19 @@ impl Out<'_> {
 }
 
 pub fn analyze_host(h: &Host) -> Vec<Finding> {
-    analyze_host_with(h, &cve_db())
+    analyze_host_nvd(h, &cve_db(), &crate::nvd::active())
 }
 
+/// The built-in/user CVE rules only (no imported NVD data); used by the tests.
+#[cfg_attr(not(test), allow(dead_code))]
 fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
+    analyze_host_nvd(h, cves, &crate::nvd::Nvd::default())
+}
+
+/// Every rule, with the CVE rules from `cves` and the imported NVD feed `nvd` (see
+/// [`crate::nvd`]): NVD hits for a port's `svc.<port>.cpe` come after the built-in rules and
+/// never repeat a CVE they already raised.
+fn analyze_host_nvd(h: &Host, cves: &CveDb, nvd: &crate::nvd::Nvd) -> Vec<Finding> {
     let mut o = Out {
         host: h,
         list: vec![],
@@ -903,6 +912,8 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
             ));
         }
         let mut seen = std::collections::BTreeSet::new();
+        // CVE ids the built-in rules raised on this port; the NVD lookup below skips them.
+        let mut raised = std::collections::BTreeSet::<String>::new();
         for (prod, ver) in candidates {
             let prod = prod.to_ascii_lowercase();
             for rule in cves.rules.iter().filter(|r| {
@@ -913,6 +924,7 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                     && in_range(&ver, r.min.as_deref(), r.max.as_deref())
             }) {
                 if seen.insert(rule.cve[0].clone()) {
+                    raised.extend(rule.cve.iter().map(|c| c.to_ascii_uppercase()));
                     let cve: Vec<&str> = rule.cve.iter().map(String::as_str).collect();
                     o.add(
                         rule.severity,
@@ -924,6 +936,31 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                         "Update to a fixed release or confirm the vendor backported the fix.",
                     );
                 }
+            }
+        }
+        // Imported NVD feed (`feeds import nvd`): CVEs whose vulnerable range holds the version
+        // of the CPE the scanner derived for this port.
+        let cpe = get(format!("svc.{p}.cpe"));
+        if !cpe.is_empty() {
+            for hit in nvd
+                .lookup(cpe)
+                .into_iter()
+                .filter(|hit| !raised.contains(&hit.cve))
+                .take(crate::nvd::MAX_FINDINGS_PER_PORT)
+            {
+                o.add(
+                    hit.severity,
+                    &format!("cve-{}", hit.cve.to_ascii_lowercase()),
+                    if hit.title.is_empty() {
+                        &hit.cve
+                    } else {
+                        &hit.title
+                    },
+                    port,
+                    format!("{cpe} in the NVD range {}. {BACKPORT_NOTE}", hit.range),
+                    &[&hit.cve],
+                    "Update to a fixed release or confirm the vendor backported the fix.",
+                );
             }
         }
         if let Some(v) = get(format!("http.{p}.powered_by")).strip_prefix("PHP/")
