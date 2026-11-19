@@ -35,7 +35,7 @@ Comparisons are meaningful only between completed scans with matching scope and 
 network-scope-cli report ID [--baseline ID] --output report.html
 ```
 
-One self-contained HTML file with summary cards, SVG charts, findings with NVD links, a findings-by-host table (highest severity, count per severity), a CPE column when any host has a CPE, changes since a baseline ("New findings", "Resolved findings" and "Findings not re-checked"), a network map from traceroute data, a device table, per-host details and passive observations.
+One self-contained HTML file with summary cards (including the network risk score), a "Fix these first" table with the riskiest hosts (see [Risk score and fix list](findings-and-cves.md#risk-score-and-fix-list)), SVG charts, findings with NVD links, a findings-by-host table (highest severity, count per severity), a CPE column when any host has a CPE, changes since a baseline ("New findings", "Resolved findings" and "Findings not re-checked"), a network map from traceroute data, a device table, per-host details and passive observations.
 
 The report contains no scripts, sets a restrictive Content-Security-Policy, and HTML-escapes every scanned string. Captured metadata is treated as untrusted input.
 
