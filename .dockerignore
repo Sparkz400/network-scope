@@ -19,3 +19,7 @@ scripts/
 *.sqlite
 Dockerfile
 .dockerignore
+
+# ClusterFuzzLite builds .clusterfuzzlite/Dockerfile from this same context and needs the
+# seed corpora (including .pcap/.pcapng files); later rules win, so keep them.
+!fuzz/corpus/**
