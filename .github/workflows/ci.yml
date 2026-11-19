@@ -88,3 +88,46 @@ jobs:
           name: installer
           path: dist/*.exe
           if-no-files-found: error
+
+  # Builds (does not push) the release container image when a pull request touches what it is
+  # built from, so a broken Dockerfile shows up before a release tag. Not a required check.
+  container:
+    name: container image
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Changed files
+        id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(Dockerfile|\.dockerignore|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github/workflows/(ci|release)\.yml)$'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No container inputs changed; skipping the image build."
+          fi
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.changes.outputs.build == 'true'
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        if: steps.changes.outputs.build == 'true'
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: network-scope:ci
+      - name: Smoke test (starts without GUI libraries, shared library check)
+        if: steps.changes.outputs.build == 'true'
+        shell: bash # -e and pipefail, so a failing `docker run | tee` fails the step
+        run: |
+          docker run --rm network-scope:ci --help
+          docker run --rm --entrypoint ldd network-scope:ci /usr/local/bin/network-scope-cli | tee ldd.txt
+          if grep -q 'not found' ldd.txt; then
+            echo "::error::network-scope-cli has unresolved shared libraries in the image"
+            exit 1
+          fi
+          docker image ls network-scope:ci

@@ -39,3 +39,11 @@ updates:
       interval: weekly
     commit-message:
       prefix: "ci"
+
+  # Base images of the release container (Dockerfile at the repository root).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "docker"
