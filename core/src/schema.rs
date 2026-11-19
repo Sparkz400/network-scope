@@ -43,6 +43,9 @@ pub const KINDS: &[&str] = &[
     "ot-assets",
     "feeds-status",
     "interfaces",
+    "mcp-where-seen",
+    "mcp-findings-gained",
+    "mcp-scan",
 ];
 
 /// The `schema` value of a kind at the current version.
@@ -116,6 +119,8 @@ const KEYWORDS: &[&str] = &[
     "minItems",
     "maxItems",
     "maxLength",
+    "minLength",
+    "additionalProperties",
 ];
 
 /// Checks `value` against `schema`: `type` (one name or a list), `properties`, `required`,
@@ -192,6 +197,11 @@ fn check(
     {
         return Err(format!("{path}: longer than {max} characters"));
     }
+    if let (Some(min), Value::String(s)) = (map.get("minLength").and_then(Value::as_u64), value)
+        && (s.chars().count() as u64) < min
+    {
+        return Err(format!("{path}: shorter than {min} characters"));
+    }
     if let Value::Array(items) = value {
         if let Some(min) = map.get("minItems").and_then(Value::as_u64)
             && (items.len() as u64) < min
@@ -221,6 +231,19 @@ fn check(
             for (name, sub) in properties {
                 if let Some(member) = members.get(name) {
                     check(root, sub, member, &format!("{path}.{name}"), depth + 1)?;
+                }
+            }
+            match map.get("additionalProperties") {
+                None | Some(Value::Bool(true)) => {}
+                Some(Value::Bool(false)) => {
+                    if let Some(extra) = members.keys().find(|k| !properties.contains_key(*k)) {
+                        return Err(format!("{path}: unexpected member {extra}"));
+                    }
+                }
+                Some(_) => {
+                    return Err(format!(
+                        "{path}: additionalProperties must be true or false"
+                    ));
                 }
             }
         }
@@ -524,17 +547,23 @@ mod tests {
             assert!(err.contains(why), "{bad}: {err}");
         }
         // Keywords outside the subset are errors, so a schema cannot promise more than is checked.
-        for keyword in [
-            "pattern",
-            "oneOf",
-            "anyOf",
-            "additionalProperties",
-            "format",
-        ] {
+        for keyword in ["pattern", "oneOf", "anyOf", "patternProperties", "format"] {
             let schema = json!({ keyword: true });
             let err = validate(&schema, &json!(1)).unwrap_err();
             assert!(err.contains(keyword), "{err}");
         }
+        // additionalProperties: false rejects unlisted members (used by the MCP tool inputs).
+        let strict = json!({"type": "object", "properties": {"a": {"type": "integer"}}, "additionalProperties": false});
+        assert!(validate(&strict, &json!({"a": 1})).is_ok());
+        let err = validate(&strict, &json!({"a": 1, "fast": true})).unwrap_err();
+        assert!(err.contains("unexpected member fast"), "{err}");
+        assert!(
+            validate(
+                &json!({"properties": {}, "additionalProperties": {}}),
+                &json!({})
+            )
+            .is_err()
+        );
         assert!(validate(&json!({"$ref": "http://x"}), &json!(1)).is_err());
         assert!(validate(&json!({"$ref": "#/$defs/nope"}), &json!(1)).is_err());
     }

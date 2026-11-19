@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:mcp-findings-gained:v1",
+  "title": "Hosts that gained a finding (MCP findings_gained)",
+  "description": "Result of the MCP tool findings_gained: hosts whose newest complete scan has the finding while the last complete scan of the same targets before the date did not.",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "finding_id",
+    "since",
+    "since_date",
+    "hosts",
+    "scopes",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/mcp-findings-gained/v1"
+    },
+    "finding_id": {
+      "type": "string"
+    },
+    "since": {
+      "type": "integer",
+      "description": "Unix seconds"
+    },
+    "since_date": {
+      "type": "string"
+    },
+    "hosts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ip",
+          "port",
+          "severity",
+          "title",
+          "evidence",
+          "scan_id",
+          "baseline_scan_id"
+        ],
+        "properties": {
+          "ip": {
+            "type": "string",
+            "description": "IPv4 or IPv6 address in text form"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "severity": {
+            "$ref": "#/$defs/severity"
+          },
+          "title": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "scan_id": {
+            "type": "integer"
+          },
+          "baseline_scan_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "targets",
+          "latest_scan_id",
+          "baseline_scan_id"
+        ],
+        "properties": {
+          "targets": {
+            "type": "string"
+          },
+          "latest_scan_id": {
+            "type": "integer"
+          },
+          "baseline_scan_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

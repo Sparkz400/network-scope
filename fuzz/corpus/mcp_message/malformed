@@ -1,0 +1,5 @@
+[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"id":{"a":1}}]
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"diff_scans","arguments":{"old_id":-1,"new_id":9223372036854775807}}}
+{"jsonrpc":"1.0","id":null,"method":5}
+[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+not json at all

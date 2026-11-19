@@ -14,6 +14,7 @@
 - [CLI reference](cli-reference.md)
 - [Inventory, diffs and reports](inventory-diff-reports.md)
 - [JSON output and schemas](json-output.md)
+- [MCP server for AI assistants](mcp.md)
 - [Monitoring and alerts](monitoring-alerts.md)
 - [Service and scheduling](service-and-scheduling.md)
 - [Scripting](scripting.md)

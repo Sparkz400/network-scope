@@ -82,6 +82,15 @@
       "items": {
         "$ref": "#/$defs/finding"
       }
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Only from the MCP server: the number of matches before the limit was applied"
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "Only from the MCP server: true when the list was cut at the limit"
     }
   }
 }
