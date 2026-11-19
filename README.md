@@ -9,6 +9,7 @@
   <a href="https://github.com/Sparkz400/network-scope/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Sparkz400/network-scope/ci.yml?branch=main&label=CI" alt="CI status"></a>
   <a href="https://github.com/Sparkz400/network-scope/releases/latest"><img src="https://img.shields.io/github/v/release/Sparkz400/network-scope" alt="Latest release"></a>
   <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <a href="https://www.bestpractices.dev/projects/16920"><img src="https://www.bestpractices.dev/projects/16920/badge" alt="OpenSSF Best Practices"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/Sparkz400/network-scope"><img src="https://api.scorecard.dev/projects/github.com/Sparkz400/network-scope/badge" alt="OpenSSF Scorecard"></a>
   <img src="https://img.shields.io/badge/Rust-1.100%20%C2%B7%20edition%202024-orange?logo=rust" alt="Rust 1.100, edition 2024">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Platform: Windows | Linux | macOS">
