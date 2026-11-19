@@ -49,6 +49,8 @@ fn enip_service(s: u8, path: CipPath) -> Option<(String, bool)> {
         0x10 => ("Set Attribute Single", true),
         0x02 => ("Set Attributes All", true),
         0x05 => ("Reset", true),
+        0x06 => ("Start", true),
+        0x07 => ("Stop", true),
         0x0a => ("Multiple Service Packet", false),
         0x4c => ("Read Tag", false),
         0x4d => ("Write Tag", true),
@@ -246,6 +248,23 @@ mod tests {
             s.fields.get("functions").cloned().unwrap_or_default(),
             s.fields.get("control_traffic").cloned().unwrap_or_default(),
         )
+    }
+
+    #[test]
+    fn cip_start_and_stop_services_are_control_traffic() {
+        // Common services 0x06 Start / 0x07 Stop, e.g. a controller stop (class 0x8e).
+        let (functions, control) = cip_server_traffic(&[
+            vec![0x07, 2, 0x20, 0x8e, 0x24, 0x01],
+            vec![0x06, 2, 0x20, 0x8e, 0x24, 0x01],
+        ]);
+        assert_eq!(functions, "Start x1, Stop x1");
+        assert_eq!(control, "Start x1, Stop x1");
+        // A reply (bit 7 set) is not a request.
+        let (functions, _) = cip_server_traffic(&[
+            vec![0x87, 2, 0x20, 0x8e, 0x24, 0x01],
+            vec![0x0e, 2, 0x20, 0x01, 0x24, 0x01],
+        ]);
+        assert_eq!(functions, "Get Attribute Single x1");
     }
 
     #[test]

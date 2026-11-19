@@ -52,6 +52,10 @@ See [data/README.md](data/README.md) for provenance and licensing details.
 - `data/cip_vendors.tsv`: ODVA CIP vendor ID → vendor name list, extracted from the vendor table in Wireshark's `epan/dissectors/packet-cip.c` (Wireshark is GPL-2.0-or-later). Only the vendor ID/name pairs are used; no Wireshark code is included. See the note in data/README.md.
 - `data/probes.json`, `data/cves.json`: original to Network Scope.
 
+## Test captures
+
+`tests/fixtures/ics/` holds public industrial-protocol packet captures (Modbus/TCP, S7comm, EtherNet/IP, IEC 60870-5-104, DNP3, BACnet, OPC UA, Profinet and others) used only as test input and fuzz seeds; they are not part of the application binary. They come unmodified from [ITI/ICS-Security-Tools](https://github.com/ITI/ICS-Security-Tools) (`pcaps/`, commit `bcb93ee1cdf395a457cc08f639cf29aab5975f01`), licensed [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Attribution, per-file upstream paths and SHA-256 checksums are in [tests/fixtures/ics/PROVENANCE.md](tests/fixtures/ics/PROVENANCE.md).
+
 ## Trademarks
 
 nmap is a trademark of its owners; Network Scope reads and writes the documented nmap XML format and contains no nmap code or data. Modbus, PROFINET, EtherNet/IP, CIP, BACnet, OPC UA and other protocol and product names are trademarks of their respective owners and are used only to describe interoperability.
