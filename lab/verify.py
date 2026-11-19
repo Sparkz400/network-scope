@@ -6,9 +6,11 @@ assert that the expected identities and findings come out. Exit code 0 means all
 """
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +33,51 @@ EXPECT_FINDINGS = {
 }
 
 
+def flaky_device(accepts):
+    """A loopback 'device' that accepts `accepts` connections and then stops listening, so every
+    later connect is refused (or silently dropped, depending on the OS). Returns its port."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    port = server.getsockname()[1]
+
+    def serve():
+        for _ in range(accepts):
+            try:
+                connection, _ = server.accept()
+                connection.close()
+            except OSError:
+                break
+        server.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return port
+
+
+def backoff_notes(exe, work, name, port, extra):
+    out = os.path.join(work, f"{name}.json")
+    subprocess.run([exe, "scan", "127.0.0.1", "--fast", "--tcp-only", "--services", "--ports", str(port),
+                    "--timeout", "1500", "--retries", "0", "--db", os.path.join(work, f"{name}.sqlite"),
+                    "--output", out, "--quiet"] + extra, check=True, timeout=120)
+    host = json.load(open(out))["hosts"][0]
+    return host, [e for e in host["errors"] if e.startswith("backed off:")]
+
+
+def check_backoff(exe, work, failures):
+    """H52: a device that refuses after its first connection gets a 'backed off' note, and
+    --no-backoff turns that off. The healthy lab host (main scan) must not get one."""
+    port = flaky_device(1)
+    host, notes = backoff_notes(exe, work, "flaky", port, [])
+    if port not in host["open"]:
+        failures.append(f"back-off: the flaky port {port} was not found open")
+    if not any(f"port {port} stopped answering after it was found open" in n for n in notes):
+        failures.append(f"back-off: no note for a device that stops answering: {host['errors']}")
+    port = flaky_device(1)
+    _, notes = backoff_notes(exe, work, "flaky-off", port, ["--no-backoff"])
+    if notes:
+        failures.append(f"back-off: --no-backoff still backed off: {notes}")
+
+
 def main():
     exe = sys.argv[1]
     work = tempfile.mkdtemp(prefix="ns-lab-")
@@ -44,6 +91,10 @@ def main():
         subprocess.run([exe, "scan", "127.0.0.1", "--fast", "--deep", "--ot", "--ports", PORTS,
                         "--timeout", "1500", "--db", db, "--output", out], check=True, timeout=120)
         host = json.load(open(out))["hosts"][0]
+        slowed = [e for e in host["errors"] if e.startswith("backed off:")]
+        if slowed:
+            failures.append(f"healthy lab host was backed off: {slowed}")
+        check_backoff(exe, work, failures)
         for key, want in EXPECT_IDENTITY.items():
             got = host["identity"].get(key)
             if got != want:

@@ -38,6 +38,25 @@ Ports that stay silent are retried (`--retries`, default 1). Each retry doubles 
 - The SYN engine ignores it (use `--adaptive-syn`); when SYN falls back to TCP connect it applies.
 - Trade-off: a closed port that answers later than the measured RTT is reported as unanswered, not closed. Windows reports a refused connect only after about 2 s (it retransmits the SYN), so with this flag closed ports on a host that also has open ports usually show as unanswered there; open ports are unaffected. Use it on Linux/macOS scanners, or where distinguishing closed from filtered does not matter.
 
+## Automatic back-off
+
+A scan must never harm a device, so each host has its own pacing controller (on by default; `--no-backoff` or the Settings checkbox turns it off). It only ever slows a host down: it never raises a limit above what Safe Mode, `--parallel` or `--rate` allow.
+
+**Limits per device type.** The type is learned from the ports found open during the scan, and caps the parallel probes to that host:
+
+| Type | Recognised by | Parallel probes | Back-off step | Paused after |
+| --- | --- | --- | --- | --- |
+| OT controller or printer | an OT port (102, 502, 4840, 44818, 47808, ...) or a printer port (515, 9100-9107) is open | at most 2 | 250 ms | 3 strikes |
+| Unclassified (every host at the start) | everything else | at most 32 | 100 ms | 4 strikes |
+| Computer | two or more typical computer ports are open (22, 135, 139, 445, 3389, 5985, databases, ...) and no OT or printer port | no extra cap | 50 ms | 6 strikes |
+
+**What counts as trouble.** A closed port answers with a refusal and a filtered port with silence on a perfectly healthy host, so neither says anything about an ordinary computer; a scan of a host with thousands of closed ports is never slowed. These do count:
+
+- A connection that is **reset or aborted while connecting**, and a port the scan found open that **stops answering** when service or OT identification connects to it again (the "refuses after N connections" pattern). Each is a *strike*: the host's parallel probes are halved, the delay between its probes doubles (starting at the step above, at most 2 s) and, after enough strikes, the host is **paused for the rest of the scan**: no further probes of any kind are sent to it. Ports that were not probed because of a pause are unknown, not closed: the host is marked as not fully checked, so `monitor` and `diff` do not report them as closed.
+- On OT controllers and printers only: a burst of 12 refusals in a row, or 6 timeouts among the last 8 connections, after the host had answered. That slows the host down once and never pauses it.
+
+Every reaction is recorded in the host's notes, first in the list, as `backed off: ...` with the reason and the new limits. The controller is a pure state machine (`core/src/backoff.rs`) with tests for these rules, including the negative cases above.
+
 ## Ports
 
 `--top-ports N` or `top:N` in the port field adds the N most common TCP ports (1-100). The ordering is approximate, recalled from public scanner statistics, and not generated from any third-party services file.

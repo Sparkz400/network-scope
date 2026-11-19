@@ -13,6 +13,14 @@ pub async fn connect(ip: IpAddr, port: u16, timeout: Duration) -> PortState {
     {
         Ok(Ok(_)) => PortState::Open,
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => PortState::Closed,
+        Ok(Err(e))
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            ) =>
+        {
+            PortState::Reset
+        }
         Err(_) => PortState::Unanswered,
         Ok(Err(e)) => PortState::Error(e.to_string()),
     }

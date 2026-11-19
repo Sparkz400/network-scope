@@ -1,5 +1,6 @@
 //! Bounded async scheduling shared by the desktop, CLI and TUI.
 use crate::{
+    backoff::{HostGovernor, Outcome},
     osfp::TcpFp,
     rtt::HostRtt,
     scan::{Event, Host, PortState, Settings},
@@ -509,6 +510,29 @@ fn note(h: &mut Host, text: String) {
         h.errors.push(text);
     }
 }
+/// Puts a back-off note first, so it is not lost when port errors already filled the list.
+fn note_first(h: &mut Host, text: String) {
+    if !h.errors.contains(&text) {
+        h.errors.insert(0, text);
+        h.errors.truncate(8);
+    }
+}
+/// Moves the notes the back-off controller recorded onto the host.
+fn flush_backoff_notes(gov: &HostGovernor, h: &mut Host) {
+    for text in gov.take_notes().into_iter().rev() {
+        note_first(h, text);
+    }
+}
+/// What a port probe tells the back-off controller (local errors are no evidence).
+fn outcome_of(port: u16, state: &PortState) -> Option<Outcome> {
+    match state {
+        PortState::Open => Some(Outcome::Open(port)),
+        PortState::Closed => Some(Outcome::Refused),
+        PortState::Unanswered => Some(Outcome::Timeout),
+        PortState::Reset => Some(Outcome::Reset),
+        PortState::Error(_) => None,
+    }
+}
 
 async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<Ctx>) -> Host {
     let mut h = Host {
@@ -577,15 +601,18 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
+    let parallel = if s.safe {
+        s.port_parallel.clamp(1, 4)
+    } else {
+        s.port_parallel.clamp(1, 1024)
+    };
+    // Per-host pacing: the device-type limits and the back-off (see `backoff`). It replaces the
+    // plain per-host semaphore; without a back-off it behaves exactly like one.
+    let gov = HostGovernor::new(parallel, s.backoff);
     if h.responding || s.scan_nonresponders || s.tcp_only {
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
-        let parallel = if s.safe {
-            s.port_parallel.clamp(1, 4)
-        } else {
-            s.port_parallel.clamp(1, 1024)
-        };
-        let slots = Arc::new(Semaphore::new(parallel));
+        let mut unprobed = 0;
         let mut probes = JoinSet::new();
         // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
         let host_rtt = (s.tcp_adaptive && ctx.syn.is_none()).then(|| Arc::new(HostRtt::default()));
@@ -595,7 +622,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             {
                 r.wait_for_sample(timeout.min(PILOT_WAIT)).await;
             }
-            let Ok(permit) = slots.clone().acquire_owned().await else {
+            let Some(permit) = gov.admit().await else {
+                // The host is paused: it gets no further probes in this scan.
+                unprobed = ports.len() - index;
                 break;
             };
             // Global in-flight bound taken before spawning: with many workers and a
@@ -603,9 +632,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             let Ok(socket) = ctx.sockets.clone().acquire_owned().await else {
                 break;
             };
-            let (s, ctx, rtt) = (s.clone(), ctx.clone(), host_rtt.clone());
+            let (s, ctx, rtt, gov) = (s.clone(), ctx.clone(), host_rtt.clone(), gov.clone());
             probes.spawn(async move {
                 let result = probe_port(ip, port, timeout, &s, &ctx, rtt.as_deref()).await;
+                if let Some(outcome) = outcome_of(port, &result.state) {
+                    gov.record(outcome);
+                }
                 drop(socket);
                 drop(permit);
                 (port, result)
@@ -635,6 +667,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                     h.responding = true;
                 }
                 PortState::Unanswered => h.unanswered += 1,
+                PortState::Reset => {
+                    if h.errors.len() < 8 {
+                        h.errors
+                            .push(format!("TCP {port}: connection reset by the host"));
+                    }
+                }
                 PortState::Error(e) => {
                     if h.errors.len() < 8 {
                         h.errors.push(format!("TCP {port}: {e}"));
@@ -642,16 +680,30 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 }
             }
         }
+        if unprobed > 0 {
+            // The unprobed ports are unknown, not closed: monitor and diff must not report them.
+            h.ports_checked = false;
+            gov.note_unprobed(unprobed);
+        }
     }
-    if s.services && !h.open.is_empty() {
+    flush_backoff_notes(&gov, &mut h);
+    if s.services && !h.open.is_empty() && !gov.paused() {
         let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
         let rounds = if s.safe { 6 } else { 12 };
-        let slots = Arc::new(Semaphore::new(if s.safe { 1 } else { 8 }));
+        let slots = Arc::new(Semaphore::new(
+            (if s.safe { 1 } else { 8 }).min(gov.limit()),
+        ));
         let mut tasks = JoinSet::new();
         for &port in h.open.iter().filter(|p| !crate::service::is_ot_port(**p)) {
+            if gov.paused() {
+                break;
+            }
             let Ok(permit) = slots.clone().acquire_owned().await else {
                 break;
             };
+            if !gov.delay().is_zero() {
+                sleep(gov.delay()).await;
+            }
             let ctx = ctx.clone();
             tasks.spawn(async move {
                 let found = match &ctx.probes {
@@ -676,17 +728,24 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 Some(o) => h
                     .identity
                     .extend(crate::service::identity_entries(port, &o)),
-                None => note(
-                    &mut h,
-                    format!("Service detection: port {port} stopped answering"),
-                ),
+                None => {
+                    note(
+                        &mut h,
+                        format!("Service detection: port {port} stopped answering"),
+                    );
+                    gov.known_open_failed(port);
+                }
             }
         }
+        flush_backoff_notes(&gov, &mut h);
     }
-    if s.udp && !ctx.udp_ports.is_empty() && (h.responding || s.scan_nonresponders) {
+    if s.udp && !ctx.udp_ports.is_empty() && (h.responding || s.scan_nonresponders) && !gov.paused()
+    {
         let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(300, 2000)));
         let tries = (s.retries + 1).min(4);
-        let slots = Arc::new(Semaphore::new(if s.safe { 2 } else { 16 }));
+        let slots = Arc::new(Semaphore::new(
+            (if s.safe { 2 } else { 16 }).min(gov.limit()),
+        ));
         let mut tasks = JoinSet::new();
         let (ports, skipped) = udp_scan_ports(&ctx.udp_ports);
         if !skipped.is_empty() && h.responding {
@@ -703,9 +762,15 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             );
         }
         for port in ports {
+            if gov.paused() {
+                break;
+            }
             let Ok(permit) = slots.clone().acquire_owned().await else {
                 break;
             };
+            if !gov.delay().is_zero() {
+                sleep(gov.delay()).await;
+            }
             let ctx = ctx.clone();
             tasks.spawn(async move {
                 let _dhcp = if port == 67 {
@@ -745,11 +810,11 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if wants_ot(&h, &s) {
+    if wants_ot(&h, &s) && !gov.paused() {
         crate::ot::identify(&mut h, &s, &ctx.gate).await;
         merge_ot_udp(&mut h);
     }
-    if s.trace && h.responding {
+    if s.trace && h.responding && !gov.paused() {
         let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
         for text in notes {
             note(&mut h, text);
@@ -1088,6 +1153,130 @@ mod tests {
         // Without the estimator nothing changes.
         let plain = probe_port(ip, closed, Duration::from_millis(5000), &s, &ctx, None).await;
         assert_eq!(plain.state, PortState::Closed);
+    }
+
+    /// A "device" that accepts one connection and then stops listening: every later connect is
+    /// refused (or silently dropped, depending on the OS).
+    fn flaky_device() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((connection, _)) = listener.accept() {
+                drop(connection);
+            }
+            drop(listener);
+        });
+        port
+    }
+
+    fn scan_loopback(ports: Vec<u16>, backoff: bool, services: bool) -> Host {
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            services,
+            backoff,
+            retries: 0,
+            delay: 0,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        let run = crate::scan::start(vec!["127.0.0.1".parse().unwrap()], ports, s);
+        match run.receiver.recv_timeout(Duration::from_secs(60)).unwrap() {
+            Event::Host(h) => h,
+            _ => panic!("missing host"),
+        }
+    }
+
+    #[test]
+    fn a_device_that_stops_answering_after_it_was_found_open_gets_a_back_off_note() {
+        let port = flaky_device();
+        let h = scan_loopback(vec![port], true, true);
+        assert_eq!(h.open, [port]);
+        let note = h
+            .errors
+            .iter()
+            .find(|e| e.starts_with("backed off:"))
+            .unwrap_or_else(|| panic!("no back-off note in {:?}", h.errors));
+        assert!(
+            note.contains(&format!(
+                "port {port} stopped answering after it was found open"
+            )),
+            "{note}"
+        );
+        assert_eq!(h.errors[0], *note, "the back-off note comes first");
+        // --no-backoff: the same device, no note (the service note stays).
+        let port = flaky_device();
+        let h = scan_loopback(vec![port], false, true);
+        assert!(
+            h.errors.iter().all(|e| !e.starts_with("backed off:")),
+            "{:?}",
+            h.errors
+        );
+    }
+
+    #[test]
+    fn persisting_errors_pause_the_host_for_the_rest_of_the_scan() {
+        // Four open ports that each refuse the identification that follows: four strikes pause an
+        // unclassified host.
+        let ports: Vec<u16> = (0..4).map(|_| flaky_device()).collect();
+        let h = scan_loopback(ports.clone(), true, true);
+        for p in &ports {
+            assert!(h.open.contains(p), "{p} was found open: {:?}", h.open);
+        }
+        assert!(
+            h.errors
+                .iter()
+                .any(|e| e.contains("host paused for the rest of this scan")),
+            "{:?}",
+            h.errors
+        );
+        // Every port had been probed before the identification started.
+        assert!(h.ports_checked);
+    }
+
+    #[test]
+    fn a_healthy_host_with_closed_and_open_ports_is_not_backed_off() {
+        let listeners: Vec<std::net::TcpListener> = (0..5)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let open: Vec<u16> = listeners
+            .iter()
+            .map(|l| l.local_addr().unwrap().port())
+            .collect();
+        // Many closed ports (refused on Linux, silent after ~2 s on Windows loopback).
+        let closed: Vec<u16> = (0..60)
+            .map(|_| {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                l.local_addr().unwrap().port()
+            })
+            .collect();
+        let mut ports = [open.clone(), closed].concat();
+        ports.sort_unstable();
+        ports.dedup();
+        let h = scan_loopback(ports.clone(), true, false);
+        for p in &open {
+            assert!(h.open.contains(p), "{p}");
+        }
+        assert!(
+            h.errors.iter().all(|e| !e.starts_with("backed off:")),
+            "{:?}",
+            h.errors
+        );
+        assert!(h.ports_checked, "every port was probed");
+        assert_eq!(h.open.len() + h.closed + h.unanswered, ports.len());
+    }
+
+    #[test]
+    fn back_off_notes_survive_a_full_error_list() {
+        let mut h = host("10.0.0.1");
+        for i in 0..8 {
+            note(&mut h, format!("TCP {i}: some error"));
+        }
+        note_first(&mut h, "backed off: example".into());
+        assert_eq!(h.errors.len(), 8);
+        assert_eq!(h.errors[0], "backed off: example");
+        note_first(&mut h, "backed off: example".into());
+        assert_eq!(h.errors.len(), 8, "no duplicate");
     }
 
     fn test_ctx() -> Ctx {

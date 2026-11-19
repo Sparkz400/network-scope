@@ -76,6 +76,10 @@ pub struct Settings {
     /// Destination port for TCP traceroute; 0 picks the host's first open port that is
     /// neither an OT nor a printer port.
     pub trace_port: u16,
+    /// Automatic back-off (`backoff` module): per-device-type limits on the parallel probes to
+    /// a host, and a slower pace (or a pause for the rest of the scan) when the host starts
+    /// resetting connections. It only ever slows a host down; `--no-backoff` turns it off.
+    pub backoff: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -119,6 +123,7 @@ impl Default for Settings {
             tcp_adaptive: false,
             trace_method: crate::trace::TraceMethod::Icmp,
             trace_port: 0,
+            backoff: true,
         }
     }
 }
@@ -430,6 +435,8 @@ pub enum PortState {
     Open,
     Closed,
     Unanswered,
+    /// The connection was reset or aborted while connecting (not a plain refusal).
+    Reset,
     Error(String),
 }
 #[cfg(test)]
@@ -439,6 +446,9 @@ pub fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> PortState {
         Err(e) => match e.kind() {
             std::io::ErrorKind::ConnectionRefused => PortState::Closed,
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => PortState::Unanswered,
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted => {
+                PortState::Reset
+            }
             _ => PortState::Error(e.to_string()),
         },
     }
@@ -707,6 +717,10 @@ mod tests {
     fn new_engine_options_are_off_in_old_snapshots() {
         let old: Settings = serde_json::from_str(r#"{"ports":"22","safe":false}"#).unwrap();
         assert!(!old.arp_sweep && !old.syn_adaptive && !old.tcp_adaptive);
+        assert!(
+            old.backoff,
+            "old snapshots and settings files get the back-off"
+        );
         assert_eq!(old.trace_method, crate::trace::TraceMethod::Icmp);
         assert_eq!(old.trace_port, 0);
         let tcp: Settings = serde_json::from_str(r#"{"trace_method":"tcp"}"#).unwrap();
