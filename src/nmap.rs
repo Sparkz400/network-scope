@@ -69,11 +69,7 @@ fn strip_outer_parens(s: &str) -> &str {
             _ => {}
         }
     }
-    if depth == 0 {
-        body
-    } else {
-        s
-    }
+    if depth == 0 { body } else { s }
 }
 
 /// Our product names (from banners and HTTP Server headers) and the names nmap's version
@@ -122,10 +118,10 @@ fn to_nmap_product(product: &str, version: &str) -> (String, String) {
 /// nmap's (product, version) as our scanner names them, so the risk and CVE rules (which match
 /// our names, e.g. `microsoft-iis`) fire on imported data and Windows OpenSSH is recognised.
 fn from_nmap_product(product: &str, version: &str) -> (String, String) {
-    if product.eq_ignore_ascii_case("OpenSSH") {
-        if let Some(v) = version.strip_prefix(NMAP_WINDOWS_SSH) {
-            return ("OpenSSH for Windows".into(), v.to_string());
-        }
+    if product.eq_ignore_ascii_case("OpenSSH")
+        && let Some(v) = version.strip_prefix(NMAP_WINDOWS_SSH)
+    {
+        return ("OpenSSH for Windows".into(), v.to_string());
     }
     let name = PRODUCT_NAMES
         .iter()
@@ -264,7 +260,10 @@ pub fn export(snapshot: &Snapshot, timestamp: i64) -> String {
             let _ = write!(x, "<extraports state=\"closed\" count=\"{}\"/>", h.closed);
         }
         for p in &h.open {
-            let _ = write!(x, "<port protocol=\"tcp\" portid=\"{p}\"><state state=\"open\" reason=\"syn-ack\" reason_ttl=\"0\"/>");
+            let _ = write!(
+                x,
+                "<port protocol=\"tcp\" portid=\"{p}\"><state state=\"open\" reason=\"syn-ack\" reason_ttl=\"0\"/>"
+            );
             if let Some(attrs) = service_attrs(h, *p) {
                 let cpes: Vec<&str> = h
                     .identity
@@ -298,7 +297,10 @@ pub fn export(snapshot: &Snapshot, timestamp: i64) -> String {
             x.push_str("</port>");
         }
         for p in &h.udp_open {
-            let _ = write!(x, "<port protocol=\"udp\" portid=\"{p}\"><state state=\"open\" reason=\"udp-response\" reason_ttl=\"0\"/>");
+            let _ = write!(
+                x,
+                "<port protocol=\"udp\" portid=\"{p}\"><state state=\"open\" reason=\"udp-response\" reason_ttl=\"0\"/>"
+            );
             if let Some(info) = h.identity.get(&format!("udp.{p}")) {
                 let _ = write!(x, "<script id=\"banner\" output=\"{}\"/>", esc(info));
             }
@@ -336,7 +338,11 @@ pub fn export(snapshot: &Snapshot, timestamp: i64) -> String {
         x,
         "<runstats><finished time=\"{timestamp}\" timestr=\"{}\" elapsed=\"0\" exit=\"{}\"/><hosts up=\"{}\" down=\"{}\" total=\"{}\"/></runstats>",
         crate::tls::date(timestamp),
-        if snapshot.complete { "success" } else { "error" },
+        if snapshot.complete {
+            "success"
+        } else {
+            "error"
+        },
         up.len(),
         snapshot.hosts.len() - up.len(),
         snapshot.hosts.len()
@@ -666,10 +672,9 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
     if let Some(s) = root
         .descendants()
         .find(|n| n.has_tag_name("scaninfo") && n.attribute("protocol") == Some("tcp"))
+        && let Some(p) = s.attribute("services").filter(|p| !p.is_empty())
     {
-        if let Some(p) = s.attribute("services").filter(|p| !p.is_empty()) {
-            settings.ports = p.to_string();
-        }
+        settings.ports = p.to_string();
     }
     // Detection settings decide which identity keys a scan can report; take them from the nmap
     // command line so imports with and without -sV/-O are not diffed against each other.
@@ -871,9 +876,11 @@ mod tests {
         assert_eq!(h.ttl, None);
         assert_eq!(s.settings.ports, "1-1000");
         // Imported nmap data feeds the same analysis as our own scans.
-        assert!(crate::risk::analyze(&s.hosts)
-            .iter()
-            .any(|f| f.cve.contains(&"CVE-2021-41773".to_string())));
+        assert!(
+            crate::risk::analyze(&s.hosts)
+                .iter()
+                .any(|f| f.cve.contains(&"CVE-2021-41773".to_string()))
+        );
     }
 
     #[test]
@@ -998,9 +1005,11 @@ mod tests {
         assert!(!plain.settings.services && !plain.settings.os_detect);
         assert!(sv.settings.services && !sv.settings.os_detect);
         assert!(all.settings.services && all.settings.os_detect);
-        assert!(crate::store::diff(&plain, &sv)
-            .unwrap_err()
-            .contains("service detection"));
+        assert!(
+            crate::store::diff(&plain, &sv)
+                .unwrap_err()
+                .contains("service detection")
+        );
         assert!(crate::store::diff(&sv, &import(&doc("nmap -sSV 10.0.0.5")).unwrap()).is_ok());
     }
 

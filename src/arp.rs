@@ -13,8 +13,8 @@ use std::{
     collections::{HashMap, VecDeque},
     net::Ipv4Addr,
     sync::{
-        mpsc::{self, Receiver, Sender, TryRecvError},
         Arc, Mutex,
+        mpsc::{self, Receiver, Sender, TryRecvError},
     },
     time::{Duration, Instant},
 };
@@ -233,13 +233,13 @@ fn io_loop<W: Wire>(
             match wire.next() {
                 Ok(Some(frame)) => {
                     busy = true;
-                    if let Some((ip, mac)) = parse_reply(&frame, source.0) {
-                        if let Some(p) = pending.remove(&ip) {
-                            if p.wait_until.is_some() {
-                                outstanding -= 1;
-                            }
-                            p.finish(Some(mac));
+                    if let Some((ip, mac)) = parse_reply(&frame, source.0)
+                        && let Some(p) = pending.remove(&ip)
+                    {
+                        if p.wait_until.is_some() {
+                            outstanding -= 1;
                         }
+                        p.finish(Some(mac));
                     }
                 }
                 Ok(None) => break,

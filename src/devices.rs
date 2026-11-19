@@ -137,10 +137,9 @@ pub fn classify(e: &Evidence) -> Option<(String, String)> {
             "bosch rexroth",
             "yokogawa",
         ],
-    ) {
-        if s.0.contains_key(OT) {
-            s.add(OT, 15, format!("industrial vendor ({v})"));
-        }
+    ) && s.0.contains_key(OT)
+    {
+        s.add(OT, 15, format!("industrial vendor ({v})"));
     }
 
     for p in [9100u16, 515, 631] {
@@ -614,10 +613,10 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
             by_ip.entry(ip).or_insert_with(|| key.clone());
         }
         for field in ["hostname", "name"] {
-            if let Some(n) = o.fields.get(field).filter(|n| !n.is_empty()) {
-                if o.protocol != "ARP" {
-                    a.hostnames.insert(n.clone());
-                }
+            if let Some(n) = o.fields.get(field).filter(|n| !n.is_empty())
+                && o.protocol != "ARP"
+            {
+                a.hostnames.insert(n.clone());
             }
         }
         a.sources.insert(format!("passive {}", o.protocol));

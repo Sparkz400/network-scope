@@ -1033,11 +1033,11 @@ fn drain_observations(
     let mut index = ObservationIndex::default();
     let mut errors: Vec<String> = vec![];
     for item in items {
-        if let Err(e) = item.and_then(|o| merge_indexed(&mut observations, &mut index, o)) {
-            if !errors.contains(&e) {
-                eprintln!("Warning: {e}");
-                errors.push(e);
-            }
+        if let Err(e) = item.and_then(|o| merge_indexed(&mut observations, &mut index, o))
+            && !errors.contains(&e)
+        {
+            eprintln!("Warning: {e}");
+            errors.push(e);
         }
     }
     (
@@ -1117,8 +1117,10 @@ fn install_panic_hook() {
             if let Some(id) = tui {
                 if id == std::thread::current().id() {
                     restore_terminal();
-                } else if let Ok(mut panics) = TUI_PANICS.lock() {
-                    if panics.len() < 16 {
+                } else {
+                    if let Ok(mut panics) = TUI_PANICS.lock()
+                        && panics.len() < 16
+                    {
                         let thread = std::thread::current();
                         panics.push(format!(
                             "thread '{}' {info}",
@@ -1412,9 +1414,9 @@ fn tui(run: &scan::Running) -> Collected {
     use crossterm::{
         event::{self, Event, KeyEventKind},
         execute,
-        terminal::{enable_raw_mode, EnterAlternateScreen},
+        terminal::{EnterAlternateScreen, enable_raw_mode},
     };
-    use ratatui::{backend::CrosstermBackend, Terminal};
+    use ratatui::{Terminal, backend::CrosstermBackend};
     /// Undoes only what was set up, then prints panics of other threads seen meanwhile.
     struct Restore {
         raw: bool,
@@ -1506,17 +1508,16 @@ fn tui(run: &scan::Running) -> Collected {
         );
         let drawn = terminal.draw(|f| draw_tui(f, &view, &hosts, &progress));
         let input = drawn.and_then(|_| {
-            if event::poll(Duration::from_millis(60))? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
-                        match view.key(k.code, &hosts) {
-                            TuiAction::Stop => run.cancel.store(true, Ordering::Relaxed),
-                            TuiAction::Pause => {
-                                run.pause.fetch_xor(true, Ordering::Relaxed);
-                            }
-                            TuiAction::None => {}
-                        }
+            if event::poll(Duration::from_millis(60))?
+                && let Event::Key(k) = event::read()?
+                && k.kind == KeyEventKind::Press
+            {
+                match view.key(k.code, &hosts) {
+                    TuiAction::Stop => run.cancel.store(true, Ordering::Relaxed),
+                    TuiAction::Pause => {
+                        run.pause.fetch_xor(true, Ordering::Relaxed);
                     }
+                    TuiAction::None => {}
                 }
             }
             Ok(())
@@ -1565,12 +1566,16 @@ mod tests {
         assert_eq!(pos, ["10.0.0.0/24"]);
         assert_eq!(opts["alerts"], "alerts.jsonl");
         assert_eq!(opts["learn"], "true");
-        assert!(options(&args(&["--alerts"]))
-            .unwrap_err()
-            .contains("Missing --alerts"));
-        assert!(options(&args(&["--bogus"]))
-            .unwrap_err()
-            .contains("Unknown"));
+        assert!(
+            options(&args(&["--alerts"]))
+                .unwrap_err()
+                .contains("Missing --alerts")
+        );
+        assert!(
+            options(&args(&["--bogus"]))
+                .unwrap_err()
+                .contains("Unknown")
+        );
     }
 
     #[test]
@@ -1635,9 +1640,11 @@ mod tests {
         assert_eq!(p.notify.timeout, Duration::from_secs(10));
         assert!(!p.notify.dedup);
         assert_eq!(p.notify.renotify, None);
-        assert!(run(&args(&["trace", "127.0.0.1", "--trace-method", "udp"]))
-            .unwrap_err()
-            .contains("--fast"));
+        assert!(
+            run(&args(&["trace", "127.0.0.1", "--trace-method", "udp"]))
+                .unwrap_err()
+                .contains("--fast")
+        );
         let defaults = monitor_policy(&BTreeMap::new()).unwrap();
         assert!(defaults.notify.sinks.is_empty() && defaults.notify.dedup);
         let https = BTreeMap::from([("webhook".to_string(), "https://x".to_string())]);
@@ -1850,7 +1857,7 @@ mod tests {
     #[test]
     fn tui_renders_list_and_detail_views_at_any_size() {
         use crossterm::event::KeyCode;
-        use ratatui::{backend::TestBackend, Terminal};
+        use ratatui::{Terminal, backend::TestBackend};
         let hosts: Vec<scan::Host> = (1..=30)
             .map(|i| tui_host(&format!("10.0.0.{i}"), vec![23]))
             .collect();
@@ -1911,12 +1918,16 @@ mod tests {
                 assert!(script.contains(&format!("--{o}")), "{shell}: --{o}");
             }
         }
-        assert!(completions("bash")
-            .unwrap()
-            .contains("complete -o default -F _network_scope"));
-        assert!(completions("powershell")
-            .unwrap()
-            .contains("Register-ArgumentCompleter -Native"));
+        assert!(
+            completions("bash")
+                .unwrap()
+                .contains("complete -o default -F _network_scope")
+        );
+        assert!(
+            completions("powershell")
+                .unwrap()
+                .contains("Register-ArgumentCompleter -Native")
+        );
         assert!(completions("fish").is_err());
         for f in FILE_VALUES {
             assert!(VALUES.contains(&f), "--{f}");
@@ -1970,12 +1981,16 @@ mod tests {
             out.to_str().unwrap(),
         ]))
         .unwrap();
-        assert!(std::fs::read_to_string(&out)
-            .unwrap()
-            .contains("_network_scope"));
+        assert!(
+            std::fs::read_to_string(&out)
+                .unwrap()
+                .contains("_network_scope")
+        );
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(run(&args(&["completions"]))
-            .unwrap_err()
-            .contains("powershell"));
+        assert!(
+            run(&args(&["completions"]))
+                .unwrap_err()
+                .contains("powershell")
+        );
     }
 }

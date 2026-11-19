@@ -50,7 +50,7 @@ fn handle_unusable(handle: isize, file_type: u32) -> bool {
 #[cfg(windows)]
 fn attach_parent_console() {
     use std::ffi::c_void;
-    extern "system" {
+    unsafe extern "system" {
         fn AttachConsole(id: u32) -> i32;
         fn GetConsoleWindow() -> isize;
         fn GetStdHandle(kind: u32) -> isize;
@@ -118,10 +118,10 @@ pub(crate) fn main() -> eframe::Result<()> {
         attach_parent_console();
         // `--cves FILE` replaces the default user rules (loaded by `ui::run`); otherwise a
         // broken user file is reported here instead of being silently ignored.
-        if !cli_args.iter().any(|a| a == "--cves") {
-            if let Some(warning) = risk::init_cves() {
-                eprintln!("{warning}");
-            }
+        if !cli_args.iter().any(|a| a == "--cves")
+            && let Some(warning) = risk::init_cves()
+        {
+            eprintln!("{warning}");
         }
         if let Err(e) = ui::run(&cli_args) {
             eprintln!("{e}");

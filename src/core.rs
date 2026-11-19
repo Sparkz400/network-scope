@@ -9,9 +9,9 @@ use std::{
     collections::BTreeMap,
     net::IpAddr,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
-        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -349,7 +349,7 @@ async fn probe_port(
                     state,
                     note: None,
                     fp,
-                }
+                };
             }
             Err(e) => note = Some(format!("SYN unavailable; TCP connect fallback: {e}")),
         }
@@ -526,10 +526,10 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                     rtts.push(rtt);
                     h.ttl = echo.ttl;
                 }
-                if let Some(e) = echo.error {
-                    if !h.errors.contains(&e) {
-                        h.errors.push(e);
-                    }
+                if let Some(e) = echo.error
+                    && !h.errors.contains(&e)
+                {
+                    h.errors.push(e);
                 }
             }
         }
@@ -688,10 +688,10 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                     if !r.info.is_empty() {
                         h.identity.insert(format!("udp.{port}"), r.info);
                     }
-                    if h.mac.is_empty() {
-                        if let Some(mac) = r.mac {
-                            h.mac = mac;
-                        }
+                    if h.mac.is_empty()
+                        && let Some(mac) = r.mac
+                    {
+                        h.mac = mac;
                     }
                 }
                 crate::udp::State::Error(e) => note(&mut h, format!("UDP {port}: {e}")),
@@ -748,11 +748,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
 /// Manufacturer, OS family and device type from everything learned about the host.
 fn analyze(h: &mut Host, fp: Option<&TcpFp>) {
     let mut vendor = "";
-    if !h.mac.is_empty() && !crate::oui::locally_administered(&h.mac) {
-        if let Some(v) = crate::oui::vendor(&h.mac) {
-            vendor = v;
-            h.identity.insert("mac.vendor".into(), v.to_string());
-        }
+    if !h.mac.is_empty()
+        && !crate::oui::locally_administered(&h.mac)
+        && let Some(v) = crate::oui::vendor(&h.mac)
+    {
+        vendor = v;
+        h.identity.insert("mac.vendor".into(), v.to_string());
     }
     let ttl = h.ttl;
     if let Some(g) = crate::osfp::guess(ttl, fp, &h.identity, &h.open, vendor) {
@@ -943,9 +944,11 @@ mod tests {
     async fn blocking_permit_is_held_until_the_thread_finishes() {
         let pool = Arc::new(Semaphore::new(1));
         let slow = run_blocking(&pool, || std::thread::sleep(Duration::from_millis(300)));
-        assert!(tokio::time::timeout(Duration::from_millis(50), slow)
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), slow)
+                .await
+                .is_err()
+        );
         // The caller gave up, but the native call is still running and keeps its slot.
         assert_eq!(pool.available_permits(), 0);
         sleep(Duration::from_millis(400)).await;

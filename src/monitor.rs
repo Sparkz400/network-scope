@@ -804,9 +804,10 @@ mod tests {
         assert!(a.iter().any(|a| a.kind == "port-opened"
             && a.severity == Severity::High
             && a.message.contains("23")));
-        assert!(a
-            .iter()
-            .any(|a| a.kind == "new-finding" && a.message.contains("Telnet")));
+        assert!(
+            a.iter()
+                .any(|a| a.kind == "new-finding" && a.message.contains("Telnet"))
+        );
         assert!(
             !a.iter().any(|a| a.kind == "port-closed"),
             "info is below the default threshold"
@@ -822,29 +823,34 @@ mod tests {
             &all,
             1,
         );
-        assert!(a
-            .iter()
-            .any(|a| a.kind == "port-closed" && a.message.contains("80")));
+        assert!(
+            a.iter()
+                .any(|a| a.kind == "port-closed" && a.message.contains("80"))
+        );
         // The same state again produces no change alerts.
-        assert!(evaluate(
-            Some(&after),
-            &after,
-            &known(&["AA:BB:CC:00:00:01"]),
-            &all,
-            1
-        )
-        .is_empty());
+        assert!(
+            evaluate(
+                Some(&after),
+                &after,
+                &known(&["AA:BB:CC:00:00:01"]),
+                &all,
+                1
+            )
+            .is_empty()
+        );
         // A partial scan never produces change alerts: absence proves nothing.
         let mut partial = after.clone();
         partial.complete = false;
-        assert!(evaluate(
-            Some(&before),
-            &partial,
-            &known(&["AA:BB:CC:00:00:01"]),
-            &all,
-            1
-        )
-        .is_empty());
+        assert!(
+            evaluate(
+                Some(&before),
+                &partial,
+                &known(&["AA:BB:CC:00:00:01"]),
+                &all,
+                1
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -903,9 +909,10 @@ mod tests {
             &policy,
             1,
         );
-        assert!(a
-            .iter()
-            .any(|a| a.kind == "address-changed" && a.message.contains("10.0.0.50")));
+        assert!(
+            a.iter()
+                .any(|a| a.kind == "address-changed" && a.message.contains("10.0.0.50"))
+        );
         let missing = a.iter().find(|a| a.kind == "device-missing").unwrap();
         assert!(missing.message.contains("not proof"));
         let quiet = evaluate(
@@ -1156,8 +1163,16 @@ mod tests {
     fn alert_keys_ignore_volatile_details() {
         let k = |kind, subject, message| alert_key(&a(kind, subject, message));
         assert_eq!(
-            k("rogue-dhcp", "dhcp", "2 DHCP servers answer: 10.0.0.1 (answered DHCPDISCOVER offering 10.0.0.57); 10.0.0.9 (seen sending DHCP OFFER/ACK)"),
-            k("rogue-dhcp", "dhcp", "2 DHCP servers answer: 10.0.0.9 (x); 10.0.0.1 (answered DHCPDISCOVER offering 10.0.0.80)")
+            k(
+                "rogue-dhcp",
+                "dhcp",
+                "2 DHCP servers answer: 10.0.0.1 (answered DHCPDISCOVER offering 10.0.0.57); 10.0.0.9 (seen sending DHCP OFFER/ACK)"
+            ),
+            k(
+                "rogue-dhcp",
+                "dhcp",
+                "2 DHCP servers answer: 10.0.0.9 (x); 10.0.0.1 (answered DHCPDISCOVER offering 10.0.0.80)"
+            )
         );
         assert_ne!(
             k(

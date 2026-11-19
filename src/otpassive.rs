@@ -55,10 +55,10 @@ impl Endpoint {
         }
         self.last = self.last.max(ts);
         self.packets += 1;
-        if let Some(p) = peer {
-            if self.peers.len() < 256 {
-                self.peers.insert(p);
-            }
+        if let Some(p) = peer
+            && self.peers.len() < 256
+        {
+            self.peers.insert(p);
         }
     }
     fn function(&mut self, name: &str, control: bool) {
@@ -205,11 +205,7 @@ fn message_len(port: u16, b: &[u8]) -> Framing {
                 None => NeedHeader,
                 Some(n) => {
                     let n = u32::from_le_bytes([n[0], n[1], n[2], n[3]]) as usize;
-                    if n >= 8 {
-                        Len(n)
-                    } else {
-                        NotFramed
-                    }
+                    if n >= 8 { Len(n) } else { NotFramed }
                 }
             }
         }
@@ -635,7 +631,7 @@ fn enip_service(s: u8, path: CipPath) -> Option<(String, bool)> {
                     path.class.map_or("?".into(), |c| format!("0x{c:02X}"))
                 ),
                 false,
-            ))
+            ));
         }
         _ => return None,
     };
@@ -668,10 +664,10 @@ fn cip_request(b: &[u8], depth: usize, out: &mut Vec<(String, bool)>) {
     match wrapper.as_str() {
         "Unconnected Send" => {
             // priority/tick, timeout ticks, embedded request size, embedded request
-            if let Some(n) = le16(data, 2) {
-                if let Some(inner) = data.get(4..4 + usize::from(n)) {
-                    cip_request(inner, depth + 1, out);
-                }
+            if let Some(n) = le16(data, 2)
+                && let Some(inner) = data.get(4..4 + usize::from(n))
+            {
+                cip_request(inner, depth + 1, out);
             }
         }
         "Multiple Service Packet" => {
@@ -782,10 +778,10 @@ impl Tracker {
 
     pub fn feed(&mut self, frame: &[u8], ts: i64) {
         self.frames += 1;
-        if let Some(o) = crate::passive::decode(frame) {
-            if self.passive.len() < 10_000 {
-                let _ = crate::ui::merge_indexed(&mut self.passive, &mut self.passive_index, o);
-            }
+        if let Some(o) = crate::passive::decode(frame)
+            && self.passive.len() < 10_000
+        {
+            let _ = crate::ui::merge_indexed(&mut self.passive, &mut self.passive_index, o);
         }
         let Some(p) = parse_ip(frame) else { return };
         let (src, dst, pl) = (p.src, p.dst, p.payload);
@@ -917,12 +913,11 @@ impl Tracker {
             self.request(Proto::EtherNetIp, client, server, ts, functions, None);
         } else {
             self.response(Proto::EtherNetIp, server, client, ts);
-            if cmd == 0x63 {
-                if let Ok(mut fields) = crate::ot::parse_list_identity(&pl[24..]) {
-                    if let Some(s) = self.server(Proto::EtherNetIp, server) {
-                        s.fields.append(&mut fields);
-                    }
-                }
+            if cmd == 0x63
+                && let Ok(mut fields) = crate::ot::parse_list_identity(&pl[24..])
+                && let Some(s) = self.server(Proto::EtherNetIp, server)
+            {
+                s.fields.append(&mut fields);
             }
         }
     }
@@ -952,7 +947,7 @@ impl Tracker {
                             ts,
                             format!("unconfirmed service {other}"),
                             false,
-                        )
+                        );
                     }
                 };
                 self.bacnet_client(src, ts, name.to_string(), false);
@@ -1241,7 +1236,9 @@ pub fn assets(observations: &[Observation]) -> Vec<Asset> {
 }
 
 pub fn assets_csv(assets: &[Asset]) -> String {
-    let mut out = String::from("asset_id,ip,mac,vendor,name,product,firmware,serial,protocols,roles,control_traffic,first_seen,last_seen,packets\r\n");
+    let mut out = String::from(
+        "asset_id,ip,mac,vendor,name,product,firmware,serial,protocols,roles,control_traffic,first_seen,last_seen,packets\r\n",
+    );
     for a in assets {
         let cells = [
             a.asset_id.clone(),
@@ -1673,9 +1670,11 @@ mod tests {
             ),
             22,
         );
-        assert!(obs(&t, "BACnet/IP client (observed)")
-            .iter()
-            .any(|c| c.fields["functions"].contains("Who-Is")));
+        assert!(
+            obs(&t, "BACnet/IP client (observed)")
+                .iter()
+                .any(|c| c.fields["functions"].contains("Who-Is"))
+        );
         assert_eq!(obs(&t, "BACnet/IP server (observed)").len(), 1);
     }
 
@@ -1766,11 +1765,13 @@ mod tests {
                 "Write Single Coil x1"
             );
         }
-        assert!(read_pcap_file(
-            dir.join("missing.pcap").to_str().unwrap(),
-            &mut Tracker::new()
-        )
-        .is_err());
+        assert!(
+            read_pcap_file(
+                dir.join("missing.pcap").to_str().unwrap(),
+                &mut Tracker::new()
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let mut t = Tracker::new();
         for n in 0..300 {
@@ -2225,9 +2226,11 @@ mod tests {
         );
         assert!(s.fields["functions"].contains("Diagnostics x1"));
         let findings = control_findings(&t.observations());
-        assert!(findings
-            .iter()
-            .any(|(sev, _, e)| *sev == Severity::High && e.contains("Restart Communications")));
+        assert!(
+            findings
+                .iter()
+                .any(|(sev, _, e)| *sev == Severity::High && e.contains("Restart Communications"))
+        );
     }
 
     #[test]

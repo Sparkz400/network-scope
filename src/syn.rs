@@ -22,22 +22,22 @@ use crate::{
     scan::{PortState, Settings},
 };
 use pnet_packet::{
+    MutablePacket, Packet,
     ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket},
     ip::IpNextHeaderProtocols,
     ipv4::{Ipv4Packet, MutableIpv4Packet},
     tcp::{MutableTcpPacket, TcpFlags, TcpPacket},
-    MutablePacket, Packet,
 };
 use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr},
     sync::{
-        mpsc::{self, Receiver, Sender, TryRecvError},
         Arc, Mutex,
+        mpsc::{self, Receiver, Sender, TryRecvError},
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{oneshot, OnceCell};
+use tokio::sync::{OnceCell, oneshot};
 
 pub type Outcome = (PortState, Option<TcpFp>);
 type Reply = oneshot::Sender<Result<Outcome, String>>;

@@ -84,13 +84,20 @@ fn donut(items: &[(String, usize)]) -> String {
         return "<p class=\"muted\">No data.</p>".into();
     }
     let (cx, cy, r, ri) = (90.0_f64, 90.0_f64, 80.0_f64, 46.0_f64);
-    let mut s = String::from("<div class=\"donut\"><svg role=\"img\" viewBox=\"0 0 180 180\" width=\"180\" height=\"180\">");
+    let mut s = String::from(
+        "<div class=\"donut\"><svg role=\"img\" viewBox=\"0 0 180 180\" width=\"180\" height=\"180\">",
+    );
     let mut angle = -std::f64::consts::FRAC_PI_2;
     for (i, (_, n)) in items.iter().enumerate() {
         let color = PALETTE[i % PALETTE.len()];
         let sweep = *n as f64 / total as f64 * std::f64::consts::TAU;
         if items.len() == 1 {
-            let _ = write!(s, "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{}\"/>", (r + ri) / 2.0, r - ri);
+            let _ = write!(
+                s,
+                "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{}\"/>",
+                (r + ri) / 2.0,
+                r - ri
+            );
             break;
         }
         let (a1, a2) = (angle, angle + sweep);
@@ -122,7 +129,10 @@ fn topology_svg(hosts: &[Host]) -> String {
         return "<p class=\"muted\">No path data. Scan with traceroute enabled (--trace) to see the network map.</p>".into();
     }
     if g.nodes.len() > 400 {
-        return format!("<p class=\"muted\">{} nodes: too many to draw. Use <code>topology --format dot</code> and Graphviz.</p>", g.nodes.len());
+        return format!(
+            "<p class=\"muted\">{} nodes: too many to draw. Use <code>topology --format dot</code> and Graphviz.</p>",
+            g.nodes.len()
+        );
     }
     let layers = topology::layers(&g);
     let (col, row) = (190.0, 26.0);
@@ -134,7 +144,9 @@ fn topology_svg(hosts: &[Host]) -> String {
             at[n] = (20.0 + x as f64 * col, 18.0 + y as f64 * row);
         }
     }
-    let mut s = format!("<div class=\"scroll\"><svg role=\"img\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\">");
+    let mut s = format!(
+        "<div class=\"scroll\"><svg role=\"img\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\">"
+    );
     for &(a, b) in &g.edges {
         let _ = write!(
             s,
@@ -205,7 +217,11 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
         o,
         "<h1>Network Scope report</h1><p class=\"muted\">Scope <b>{}</b> &middot; {} &middot; {}</p>",
         esc(&snapshot.targets),
-        if snapshot.complete { "completed scan" } else { "PARTIAL scan (interrupted); absence of a host proves nothing" },
+        if snapshot.complete {
+            "completed scan"
+        } else {
+            "PARTIAL scan (interrupted); absence of a host proves nothing"
+        },
         fmt_time(timestamp)
     );
     let open_ports: usize = snapshot
@@ -232,7 +248,11 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
             },
         ),
     ] {
-        let _ = write!(o, "<div class=\"card\" style=\"border-top:4px solid {color}\"><div class=\"big\">{}</div>{label}</div>", esc(&value));
+        let _ = write!(
+            o,
+            "<div class=\"card\" style=\"border-top:4px solid {color}\"><div class=\"big\">{}</div>{label}</div>",
+            esc(&value)
+        );
     }
     o.push_str("</div><h2>Charts</h2><div class=\"charts\">");
     let sev: Vec<(String, usize)> = [
@@ -367,7 +387,11 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
     o.push_str("<h2>Network map</h2>");
     o.push_str(&topology_svg(&snapshot.hosts));
 
-    let _ = write!(o, "<h2>Devices ({})</h2><div class=\"scroll\"><table><tr><th>Address</th><th>MAC / manufacturer</th><th>Type</th><th>OS (guess)</th><th>Open ports</th><th>Seen by</th></tr>", devs.len());
+    let _ = write!(
+        o,
+        "<h2>Devices ({})</h2><div class=\"scroll\"><table><tr><th>Address</th><th>MAC / manufacturer</th><th>Type</th><th>OS (guess)</th><th>Open ports</th><th>Seen by</th></tr>",
+        devs.len()
+    );
     for d in &devs {
         let ports: Vec<String> = d
             .open_tcp
@@ -378,10 +402,19 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
         let _ = write!(
             o,
             "<tr><td>{}<br><span class=\"muted\">{}</span></td><td>{}<br><span class=\"muted\">{}</span></td><td title=\"{}\">{}</td><td>{} {}</td><td>{}</td><td>{}</td></tr>",
-            esc(&d.ips.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")),
+            esc(&d
+                .ips
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")),
             esc(&d.hostnames.join(", ")),
             esc(&d.mac),
-            esc(&if d.randomized_mac { "randomized/locally administered".to_string() } else { d.vendor.clone() }),
+            esc(&if d.randomized_mac {
+                "randomized/locally administered".to_string()
+            } else {
+                d.vendor.clone()
+            }),
             esc(&d.type_evidence),
             esc(&d.device_type),
             esc(&d.os),
@@ -414,7 +447,11 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
         o.push_str("</table></details>");
     }
     if !snapshot.observations.is_empty() {
-        let _ = write!(o, "<h2>Passive observations ({})</h2><div class=\"scroll\"><table><tr><th>Protocol</th><th>MAC</th><th>IP</th><th>Fields</th></tr>", snapshot.observations.len());
+        let _ = write!(
+            o,
+            "<h2>Passive observations ({})</h2><div class=\"scroll\"><table><tr><th>Protocol</th><th>MAC</th><th>IP</th><th>Fields</th></tr>",
+            snapshot.observations.len()
+        );
         for ob in &snapshot.observations {
             let _ = write!(
                 o,
@@ -1046,11 +1083,13 @@ mod tests {
         assert_eq!(h["services"][1]["product"], "nginx");
         assert_eq!(h["services"][1]["cpe"], "cpe:/a:igor_sysoev:nginx:1.18.0");
         assert_eq!(h["note"], "note \" & <x>");
-        assert!(h["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|f| f["id"] == "telnet-open" && f["severity"] == "high"));
+        assert!(
+            h["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["id"] == "telnet-open" && f["severity"] == "high")
+        );
         assert!(!out.trim_end().contains('\n'), "one line per host");
     }
 }

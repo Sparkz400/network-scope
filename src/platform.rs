@@ -48,12 +48,12 @@ pub fn route_decision(
     route_if: Option<u32>,
     source_if: Option<u32>,
 ) -> RouteResult {
-    if let (Some(route), Some(source)) = (route_if, source_if) {
-        if route != source {
-            return Err(format!(
-                "The route to {dest} leaves through another interface than the source address"
-            ));
-        }
+    if let (Some(route), Some(source)) = (route_if, source_if)
+        && route != source
+    {
+        return Err(format!(
+            "The route to {dest} leaves through another interface than the source address"
+        ));
     }
     if indirect && !gateway.is_unspecified() && gateway != dest {
         Ok(NextHop::Gateway(gateway))
@@ -140,10 +140,11 @@ pub fn parse_route_get(text: &str, interface: &str) -> RouteResult {
     if text.contains("not in table") || text.trim().is_empty() {
         return Err("No route to the target".into());
     }
-    if let Some(dev) = field("interface") {
-        if !interface.is_empty() && dev != interface {
-            return Err(format!("The route leaves through {dev}, not {interface}"));
-        }
+    if let Some(dev) = field("interface")
+        && !interface.is_empty()
+        && dev != interface
+    {
+        return Err(format!("The route leaves through {dev}, not {interface}"));
     }
     Ok(
         match field("gateway").and_then(|g| g.parse::<std::net::Ipv4Addr>().ok()) {
@@ -236,7 +237,7 @@ mod win {
     }
 
     #[link(name = "iphlpapi")]
-    extern "system" {
+    unsafe extern "system" {
         fn IcmpCreateFile() -> Handle;
         fn Icmp6CreateFile() -> Handle;
         fn IcmpCloseHandle(handle: Handle) -> i32;
@@ -601,7 +602,7 @@ mod unix {
                             "ICMP needs root or net.ipv4.ping_group_range ({e}); use TCP probing"
                         )),
                         ..Default::default()
-                    }
+                    };
                 }
             },
         };
@@ -1215,8 +1216,7 @@ mod tests {
 
     #[test]
     fn proc_arp_requires_complete_entry() {
-        let text =
-            "IP address       HW type     Flags       HW address            Mask     Device\n\
+        let text = "IP address       HW type     Flags       HW address            Mask     Device\n\
                     192.168.1.1      0x1         0x2         aa:bb:cc:dd:ee:ff     *        eth0\n\
                     192.168.1.7      0x1         0x0         00:00:00:00:00:00     *        eth0\n";
         assert_eq!(
@@ -1393,8 +1393,7 @@ mod tests {
     #[cfg(target_endian = "little")]
     #[test]
     fn proc_route_best_match() {
-        let text =
-            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+        let text = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
             eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
             eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n\
             eth0\t0000000A\t0201A8C0\t0003\t0\t0\t50\t000000FF\t0\t0\t0\n\
@@ -1559,8 +1558,7 @@ mod tests {
     #[cfg(target_endian = "little")]
     #[test]
     fn proc_route_on_link_networks() {
-        let text =
-            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+        let text = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
             eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
             eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n\
             eth1\t000010AC\t00000000\t0001\t0\t0\t100\t0000FFFF\t0\t0\t0\n\

@@ -104,11 +104,7 @@ fn ordered<T>(
     // Stable: equal keys keep their natural order in both directions.
     rows.sort_by(|&a, &b| {
         let o = cmp(&items[a], &items[b]);
-        if reverse {
-            o.reverse()
-        } else {
-            o
-        }
+        if reverse { o.reverse() } else { o }
     });
     rows
 }
