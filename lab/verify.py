@@ -3,9 +3,17 @@
 assert that the expected identities and findings come out. Exit code 0 means all passed.
 
   python lab/verify.py target/release/network-scope[.exe]
+  python lab/verify.py target/release/network-scope --scenario slow-wan|lossy|fragile-ot|all
+
+The scenarios (see simulators.py) run the same scan against a slow WAN, a lossy network and
+fragile OT devices; their expectations and the numbers they were set from are in
+docs/src/lab-and-testing.md.
 """
+import argparse
 import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -13,6 +21,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORTS = "21,22,23,502,6379,8080,44818"
+OPEN_PORTS = [21, 22, 23, 502, 6379, 8080, 44818]
+OT_PORTS = "102,502,44818"
 
 EXPECT_IDENTITY = {
     "svc.21.product": "vsFTPd",
@@ -29,31 +39,229 @@ EXPECT_FINDINGS = {
     "cve-cve-2011-2523", "cve-cve-2021-41773", "redis-noauth", "telnet-open",
     "ftp-cleartext", "ssh-weak-algorithms", "http-basic-cleartext", "ot-reachable",
 }
+EXPECT_S7 = {"S7.order_code": "6ES7 315-2EH14-0AB0", "S7.firmware": "3.2.1"}
+
+# slow-wan: every reply of the simulators waits 150-300 ms.
+SLOW_WAN_MAX_SCAN_SECONDS = 60
+# lossy: 3 of 10 connections per port are reset after the connect (seed 1), and 3 of 10 BACnet
+# replies are dropped. Network Scope does not retry a reset service or OT request (--retries is
+# for unanswered probes, not for resets), so one scan loses some values. Measured (Windows,
+# 2026-11-19, four runs, always the same): the first scan finds 11 of the 17 expected identity
+# values and findings, the second scan 17 of 17. The floor for the first scan is below that
+# because the order of the connections of one port can shift between runs; a repeated scan (as
+# monitoring does) has up to LOSSY_MAX_SCANS tries to complete the picture.
+LOSSY_LOSS = 0.3
+LOSSY_FIRST_SCAN_MIN = 0.5
+LOSSY_MAX_SCANS = 3
+# fragile-ot: a device crashes above this many new connections per second. A scan makes 2 per
+# device (the port check and the identification) and was measured at 2 in any one second.
+FRAGILE_CONN_LIMIT = 4
+
+
+class Sim:
+    """The simulators as a child process (killed on exit)."""
+
+    def __init__(self, *args):
+        cmd = [sys.executable, os.path.join(HERE, "simulators.py"), "--bind", "127.0.0.1", "--skip", "80", *args]
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+        self.proc.stdout.readline()
+        time.sleep(0.5)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.proc.kill()
+        self.proc.wait()
+
+
+def scan(exe, work, name, *options):
+    """Runs one scan of 127.0.0.1; returns (host, finding ids, seconds)."""
+    db, out = os.path.join(work, name + ".sqlite"), os.path.join(work, name + ".json")
+    started = time.time()
+    subprocess.run([exe, "scan", "127.0.0.1", *options, "--db", db, "--output", out], check=True, timeout=120)
+    seconds = time.time() - started
+    host = json.load(open(out))["hosts"][0]
+    found = subprocess.run([exe, "findings", "1", "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
+    return host, {f["id"] for f in json.loads(found)}, seconds
+
+
+def deep_scan(exe, work, name, *extra):
+    return scan(exe, work, name, "--fast", "--deep", "--ot", "--ports", PORTS, *extra)
+
+
+def missing_identity(host, expect=EXPECT_IDENTITY):
+    return {key: want for key, want in expect.items() if host["identity"].get(key) != want}
+
+
+def check_normal(exe, work, failures):
+    with Sim():
+        host, ids, _ = deep_scan(exe, work, "normal", "--timeout", "1500")
+    for key, want in missing_identity(host).items():
+        failures.append(f"identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
+    for want in sorted(EXPECT_FINDINGS - ids):
+        failures.append(f"finding missing: {want}")
+
+
+def banner_wait(port):
+    """Seconds until the first byte of a connection, or None if it is closed without one."""
+    started = time.time()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as sock:
+            sock.settimeout(3)
+            return time.time() - started if sock.recv(64) else None
+    except OSError:
+        return None
+
+
+def check_slow_wan(exe, work, failures):
+    """Every reply 150-300 ms late: the default timeouts must still find everything."""
+    with Sim("--scenario", "slow-wan"):
+        waits = [banner_wait(21) for _ in range(3)]
+        if None in waits or min(waits) < 0.14:
+            failures.append(f"slow-wan: the simulator does not delay its replies (banner after {waits} s)")
+        waits = [w for w in waits if w]
+        host, ids, seconds = deep_scan(exe, work, "slow")  # no --timeout: the defaults
+    print(f"slow-wan: banner after {min(waits, default=0):.2f}-{max(waits, default=0):.2f} s, scan took {seconds:.1f} s with the default timeouts")
+    if host["open"] != OPEN_PORTS:
+        failures.append(f"slow-wan: open ports {host['open']}, expected {OPEN_PORTS}")
+    for key, want in missing_identity(host).items():
+        failures.append(f"slow-wan identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
+    for want in sorted(EXPECT_FINDINGS - ids):
+        failures.append(f"slow-wan finding missing: {want}")
+    if seconds > SLOW_WAN_MAX_SCAN_SECONDS:
+        failures.append(f"slow-wan: the scan took {seconds:.0f} s (limit {SLOW_WAN_MAX_SCAN_SECONDS} s)")
+
+
+def check_lossy(exe, work, failures):
+    """3 of 10 connections reset: ports are still found, identities come back on a repeated scan."""
+    total = len(EXPECT_IDENTITY) + len(EXPECT_FINDINGS)
+    with Sim("--scenario", "lossy", "--loss", str(LOSSY_LOSS), "--seed", "1"):
+        # Self-check, UDP: 3 of 10 Who-Is requests get no reply. Both checks come first, while the
+        # seeded blocks of ten are still aligned with the first request.
+        replies = 0
+        for _ in range(10):
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(0.5)
+                sock.sendto(bytes([0x81, 0x0B, 0x00, 0x0C, 0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08]), ("127.0.0.1", 47808))
+                try:
+                    replies += bool(sock.recv(64))
+                except OSError:
+                    pass
+        if replies != 10 - round(LOSSY_LOSS * 10):
+            failures.append(f"lossy: {replies} of 10 BACnet requests answered, expected {10 - round(LOSSY_LOSS * 10)}")
+        # Self-check: exactly 3 of 10 connections to one port must be lost, or the scenario is a no-op.
+        lost = sum(banner_wait(21) is None for _ in range(10))
+        if lost != round(LOSSY_LOSS * 10):
+            failures.append(f"lossy: {lost} of 10 test connections lost, expected {round(LOSSY_LOSS * 10)}")
+        have_identity, have_findings = set(), set()
+        for number in range(1, LOSSY_MAX_SCANS + 1):
+            host, ids, _ = deep_scan(exe, work, f"lossy{number}", "--timeout", "1500")
+            if host["open"] != OPEN_PORTS:
+                failures.append(f"lossy scan {number}: open ports {host['open']}, expected {OPEN_PORTS}")
+            have_identity |= set(EXPECT_IDENTITY) - set(missing_identity(host))
+            have_findings |= ids & EXPECT_FINDINGS
+            recovered = (len(have_identity) + len(have_findings)) / total
+            print(f"lossy: after scan {number}: {len(have_identity) + len(have_findings)} of {total} expected values found ({recovered:.0%})")
+            if number == 1 and recovered < LOSSY_FIRST_SCAN_MIN:
+                failures.append(f"lossy: the first scan found {recovered:.0%}, expected at least {LOSSY_FIRST_SCAN_MIN:.0%}")
+            if recovered == 1:
+                break
+        else:
+            failures.append(f"lossy: {total - len(have_identity) - len(have_findings)} expected values still missing after {LOSSY_MAX_SCANS} scans")
+
+
+def read_stats(path):
+    for _ in range(20):
+        try:
+            return json.load(open(path))
+        except (OSError, ValueError):
+            time.sleep(0.1)
+    return {}
+
+
+def fragile_control(kind, offset, work, failures):
+    """The tripwires work: a write or a connection flood really takes a device down."""
+    stats_file = os.path.join(work, f"control-{kind}.json")
+    port = {"modbus-write": 502, "enip-write": 44818, "s7-write": 102, "flood": 502}[kind] + offset
+    with Sim("--scenario", "fragile-ot", "--offset", str(offset), "--conn-limit", str(FRAGILE_CONN_LIMIT), "--stats", stats_file):
+        if kind == "flood":
+            socks = []
+            for _ in range(FRAGILE_CONN_LIMIT + 3):
+                try:
+                    socks.append(socket.create_connection(("127.0.0.1", port), timeout=1))
+                except OSError:
+                    break
+        else:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+            if kind == "modbus-write":
+                sock.sendall(struct.pack(">HHHBBHH", 1, 0, 6, 1, 6, 0, 1))  # write single register
+            elif kind == "enip-write":
+                sock.sendall(struct.pack("<HHII8sI", 0x6F, 0, 0, 0, b"NETSCOPE", 0))  # SendRRData
+            else:
+                sock.sendall(bytes([3, 0, 0, 22, 17, 0xE0, 0, 0, 0, 1, 0, 0xC1, 2, 1, 0, 0xC2, 2, 1, 2, 0xC0, 1, 10]))
+                sock.settimeout(2)
+                sock.recv(64)
+                sock.sendall(bytes([3, 0, 0, 19, 2, 0xF0, 0x80, 0x32, 1, 0, 0, 0, 1, 0, 2, 0, 0, 0x05, 0x01]))  # write variable
+        time.sleep(1)
+        stats = read_stats(stats_file)
+        device = next((d for d in stats.values() if d["port"] == port), {})
+        refused = False
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        except OSError:
+            refused = True
+    if not device.get("crashed") or not refused:
+        failures.append(f"fragile-ot control {kind}: the device did not crash ({device})")
+    if kind != "flood" and device.get("writes") != 1:
+        failures.append(f"fragile-ot control {kind}: expected one counted write ({device})")
+    print(f"fragile-ot control {kind}: crashed={bool(device.get('crashed'))} ({device.get('crashed')})")
+
+
+def check_fragile_ot(exe, work, failures):
+    """The scanner never writes to, nor floods, fragile OT devices (Safe Mode and --fast)."""
+    for kind, offset in (("modbus-write", 10000), ("enip-write", 12000), ("s7-write", 14000), ("flood", 16000)):
+        fragile_control(kind, offset, work, failures)
+    stats_file = os.path.join(work, "fragile-stats.json")
+    runs = (("safe mode", ("--ot", "--ports", OT_PORTS, "--timeout", "1500")),
+            ("--fast", ("--fast", "--ot", "--ports", OT_PORTS, "--timeout", "1500")),
+            ("--fast --deep", ("--fast", "--deep", "--ot", "--ports", PORTS + ",102", "--timeout", "1500")))
+    with Sim("--scenario", "fragile-ot", "--conn-limit", str(FRAGILE_CONN_LIMIT), "--stats", stats_file):
+        for name, options in runs:
+            host, _, seconds = scan(exe, work, "fragile", *options)
+            for key, want in {**EXPECT_S7, "Modbus.vendor": "LabWorks", "EtherNet/IP.vendor": "Rockwell Automation/Allen-Bradley"}.items():
+                if host["identity"].get(key) != want:
+                    failures.append(f"fragile-ot ({name}): identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
+            stats = read_stats(stats_file)
+            print(f"fragile-ot ({name}, {seconds:.1f} s): " + ", ".join(
+                f"{n} {d['connections']} connections (max {d['max_connections_per_second']}/s), {d['requests']} requests, {d['writes']} writes" for n, d in stats.items()))
+            for device_name, device in stats.items():
+                if device["crashed"]:
+                    failures.append(f"fragile-ot ({name}): {device_name} crashed: {device['crashed']}")
+                if device["writes"]:
+                    failures.append(f"fragile-ot ({name}): {device_name} received {device['writes']} write/control request(s)")
+                if device["max_connections_per_second"] > FRAGILE_CONN_LIMIT:
+                    failures.append(f"fragile-ot ({name}): {device_name} saw {device['max_connections_per_second']} connections in one second")
+                if not device["requests"]:
+                    failures.append(f"fragile-ot ({name}): {device_name} received no request, nothing was checked")
+            time.sleep(1.2)  # the rate window of the devices is one second
+
+
+CHECKS = {"normal": check_normal, "slow-wan": check_slow_wan, "lossy": check_lossy, "fragile-ot": check_fragile_ot}
 
 
 def main():
-    exe = sys.argv[1]
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[1], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("exe", help="the built network-scope binary")
+    ap.add_argument("--scenario", choices=[*CHECKS, "all"], default="normal")
+    args = ap.parse_args()
+    exe = os.path.abspath(args.exe)
     work = tempfile.mkdtemp(prefix="ns-lab-")
-    db, out = os.path.join(work, "lab.sqlite"), os.path.join(work, "scan.json")
-    sim = subprocess.Popen([sys.executable, os.path.join(HERE, "simulators.py"), "--bind", "127.0.0.1", "--skip", "80"],
-                           stdout=subprocess.PIPE, text=True)
     failures = []
-    try:
-        sim.stdout.readline()
-        time.sleep(0.5)
-        subprocess.run([exe, "scan", "127.0.0.1", "--fast", "--deep", "--ot", "--ports", PORTS,
-                        "--timeout", "1500", "--db", db, "--output", out], check=True, timeout=120)
-        host = json.load(open(out))["hosts"][0]
-        for key, want in EXPECT_IDENTITY.items():
-            got = host["identity"].get(key)
-            if got != want:
-                failures.append(f"identity {key}: expected {want!r}, got {got!r}")
-        found = subprocess.run([exe, "findings", "1", "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
-        ids = {f["id"] for f in json.loads(found)}
-        for want in sorted(EXPECT_FINDINGS - ids):
-            failures.append(f"finding missing: {want}")
-    finally:
-        sim.kill()
+    for name in (CHECKS if args.scenario == "all" else [args.scenario]):
+        before = len(failures)
+        CHECKS[name](exe, work, failures)
+        print(f"scenario {name}:", "FAILED" if len(failures) > before else "ok")
     for f in failures:
         print("FAIL", f)
     print("lab verification:", "FAILED" if failures else "all checks passed")

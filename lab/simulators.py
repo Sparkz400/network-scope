@@ -6,12 +6,27 @@ real vulnerable software and they never execute anything received from the netwo
 
   python simulators.py --bind 127.0.0.1 --offset 20000   # unprivileged ports 20021, 20022, ...
   python simulators.py --bind 0.0.0.0                    # standard ports (needs root on Linux)
+
+Scenarios (--scenario) make the network or the devices behave badly; lab/verify.py checks them:
+
+  slow-wan    every reply is delayed by 150-300 ms (--delay-min-ms / --delay-max-ms)
+  lossy       a seeded, exact fraction (--loss, default 0.3) of the TCP connections per port is
+              reset right after the connect and of the UDP requests is left unanswered
+  fragile-ot  Modbus (502), EtherNet/IP (44818) and S7 (102) count what they receive and "crash"
+              (close their listener for good) on a write or control request, or on more than
+              --conn-limit new connections within one second; --stats FILE gets the counters
 """
 import argparse
+import collections
+import functools
+import json
+import os
+import random
 import socket
 import socketserver
 import struct
 import threading
+import time
 
 
 def kexinit(lists):
@@ -34,6 +49,140 @@ WEAK_KEX = kexinit([
     "none", "none", "", "",
 ])
 
+SCENARIOS = ("normal", "slow-wan", "lossy", "fragile-ot")
+
+
+class Scenario:
+    """The network conditions of one simulator process."""
+
+    def __init__(self, name="normal", seed=1, loss=0.3, delay=(0.150, 0.300)):
+        self.name = name
+        self.seed = seed
+        self.loss = loss
+        self.delay = delay
+        self.rng = random.Random(seed)
+        self._blocks = {}
+        self._lock = threading.Lock()
+
+    def pause(self):
+        """Latency of one reply (slow-wan)."""
+        if self.name == "slow-wan":
+            time.sleep(self.rng.uniform(*self.delay))
+
+    def drop(self, key):
+        """True for a seeded, exact fraction of the events of one source (lossy).
+
+        Events are taken in blocks of ten; round(loss * 10) of them are dropped, in an order that
+        depends on the seed and the key. So 10 connections to one port always lose the same number.
+        """
+        if self.name != "lossy":
+            return False
+        with self._lock:
+            rng, block = self._blocks.setdefault(key, (random.Random(f"{self.seed}:{key}"), []))
+            if not block:
+                block.extend([True] * round(self.loss * 10) + [False] * (10 - round(self.loss * 10)))
+                rng.shuffle(block)
+            return block.pop()
+
+
+SCENARIO = Scenario()
+
+
+class Conn:
+    """A connection whose replies wait for the scenario's latency."""
+
+    def __init__(self, sock):
+        self.sock = sock
+
+    def sendall(self, data):
+        SCENARIO.pause()
+        self.sock.sendall(data)
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
+class Stats:
+    """The counters of the fragile devices, rewritten to --stats FILE after every event."""
+
+    def __init__(self, path):
+        self.path = path
+        self.devices = {}
+        self.lock = threading.Lock()
+
+    def save(self):
+        if not self.path:
+            return
+        with self.lock:
+            doc = {name: device.snapshot() for name, device in self.devices.items()}
+            tmp = self.path + ".tmp"
+            try:
+                with open(tmp, "w") as handle:
+                    json.dump(doc, handle)
+                os.replace(tmp, self.path)
+            except OSError:
+                pass  # a reader holds the file (Windows); the next event writes it again
+
+
+class Fragile:
+    """An OT device that is easy to knock over.
+
+    It counts connections and requests. A write or control request, or more than `limit` new
+    connections within one second, makes it crash: the listener is closed and stays closed.
+    """
+
+    def __init__(self, name, port, limit, stats):
+        self.name, self.port, self.limit, self.stats = name, port, limit, stats
+        self.server = None
+        self.crashed = None  # reason
+        self.connections = self.requests = self.writes = self.max_per_second = 0
+        self.recent = collections.deque()
+        self.lock = threading.Lock()
+        stats.devices[name] = self
+
+    def snapshot(self):
+        return {"port": self.port, "connections": self.connections, "requests": self.requests,
+                "writes": self.writes, "max_connections_per_second": self.max_per_second,
+                "limit": self.limit, "crashed": self.crashed}
+
+    def connection(self):
+        """Records a new connection; False when the device is (now) down."""
+        with self.lock:
+            if self.crashed:
+                return False
+            now = time.monotonic()
+            self.connections += 1
+            self.recent.append(now)
+            while now - self.recent[0] > 1.0:
+                self.recent.popleft()
+            self.max_per_second = max(self.max_per_second, len(self.recent))
+            if len(self.recent) > self.limit:
+                self._crash(f"{len(self.recent)} connections within 1 s, limit {self.limit}")
+        self.stats.save()
+        return not self.crashed
+
+    def request(self):
+        with self.lock:
+            self.requests += 1
+        self.stats.save()
+
+    def write(self, what):
+        """A write or control request arrived: the device crashes."""
+        with self.lock:
+            self.writes += 1
+            self._crash(what)
+        self.stats.save()
+
+    def _crash(self, reason):
+        if not self.crashed:
+            self.crashed = reason
+            threading.Thread(target=self._close, daemon=True).start()
+
+    def _close(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+
 
 def read_some(conn, n=4096):
     conn.settimeout(2)
@@ -41,6 +190,20 @@ def read_some(conn, n=4096):
         return conn.recv(n)
     except OSError:
         return b""
+
+
+def read_exact(conn, n):
+    conn.settimeout(2)
+    data = b""
+    try:
+        while len(data) < n:
+            chunk = conn.recv(n - len(data))
+            if not chunk:
+                return b""
+            data += chunk
+    except OSError:
+        return b""
+    return data
 
 
 def ssh(conn):
@@ -84,24 +247,41 @@ def redis(conn):
             conn.sendall(b"+PONG\r\n")
 
 
-def modbus(conn):
-    """Read-only Modbus/TCP: Read Holding Registers (3), Report Server ID (17), Device ID (43)."""
-    while True:
+# Modbus function codes that change state or restart the device: coils and registers (5, 6, 15,
+# 16, 22, 23), file records (21) and diagnostics (8). Network Scope sends only 3, 17 and 43.
+MODBUS_WRITES = {5, 6, 8, 15, 16, 21, 22, 23}
+
+
+def modbus_pdu(fc):
+    if fc == 3:
+        return bytes([3, 4, 0, 1, 0, 2])
+    if fc == 17:
+        return bytes([17, 12]) + b"\xff" + b"\xffLabPLC-1000"[:11]
+    if fc == 43:
+        objs = [(0, b"LabWorks"), (1, b"PLC-1000"), (2, b"V1.2.3")]
+        pdu = bytes([43, 14, 1, 1, 0, 0, len(objs)])
+        for oid, val in objs:
+            pdu += bytes([oid, len(val)]) + val
+        return pdu
+    return bytes([fc | 0x80, 1])
+
+
+def modbus(conn, device=None):
+    """Read-only Modbus/TCP: Read Holding Registers (3), Report Server ID (17), Device ID (43).
+
+    With a `device` (fragile-ot) a write or control function code crashes it.
+    """
+    while not (device and device.crashed):
         data = read_some(conn)
         if len(data) < 8:
             return
         tid, _, _, unit, fc = struct.unpack(">HHHBB", data[:8])
-        if fc == 3:
-            pdu = bytes([3, 4, 0, 1, 0, 2])
-        elif fc == 17:
-            pdu = bytes([17, 12]) + b"\xff" + b"\xffLabPLC-1000"[:11]
-        elif fc == 43:
-            objs = [(0, b"LabWorks"), (1, b"PLC-1000"), (2, b"V1.2.3")]
-            pdu = bytes([43, 14, 1, 1, 0, 0, len(objs)])
-            for oid, val in objs:
-                pdu += bytes([oid, len(val)]) + val
-        else:
-            pdu = bytes([fc | 0x80, 1])
+        if device:
+            if fc in MODBUS_WRITES:
+                device.write(f"Modbus write/control function {fc}")
+                return
+            device.request()
+        pdu = modbus_pdu(fc)
         conn.sendall(struct.pack(">HHHB", tid, 0, len(pdu) + 1, unit) + pdu)
 
 
@@ -116,15 +296,91 @@ def enip_identity(context):
     return struct.pack("<HHII", 0x63, len(data), 0, 0) + context + b"\x00" * 4 + data
 
 
-def enip(conn):
+# EtherNet/IP encapsulation commands that carry CIP services (SendRRData, SendUnitData): those
+# can write. Network Scope sends only List Identity (0x63).
+ENIP_WRITES = {0x6F, 0x70}
+
+
+def enip(conn, device=None):
     data = read_some(conn)
+    if device and len(data) >= 2:
+        if struct.unpack("<H", data[:2])[0] in ENIP_WRITES:
+            device.write("EtherNet/IP SendRRData/SendUnitData")
+            return
+        device.request()
     if len(data) >= 24 and data[0] == 0x63:
         conn.sendall(enip_identity(data[12:20]))
+
+
+# S7comm job functions that write or control: write variable (0x05), block download and upload
+# (0x1a-0x1f), PI service such as start/stop (0x28), PLC stop (0x29). Network Scope sends only
+# Setup communication (0xf0) and SZL reads (user data).
+S7_WRITES = {0x05, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x28, 0x29}
+
+
+def tpkt(conn):
+    head = read_exact(conn, 4)
+    if len(head) < 4 or head[:2] != b"\x03\x00":
+        return b""
+    rest = read_exact(conn, struct.unpack(">H", head[2:4])[0] - 4)
+    return head + rest
+
+
+def s7_frame(payload):
+    return struct.pack(">BBH", 3, 0, len(payload) + 7) + bytes([2, 0xF0, 0x80]) + payload
+
+
+def s7_szl(request):
+    """The SZL read reply (ids 0x11 and 0x1c) to a user-data request."""
+    seq, szl_id = request[12], request[29] << 8 | request[30]
+    if szl_id == 0x11:
+        size = 28
+        records = [struct.pack(">H", 1) + b"6ES7 315-2EH14-0AB0 " + bytes(6),
+                   struct.pack(">H", 7) + bytes(23) + bytes([3, 2, 1])]
+    elif szl_id == 0x1C:
+        size = 34
+        records = [struct.pack(">H", i) + text.ljust(32, b"\x00")
+                   for i, text in ((1, b"LabPLC"), (2, b"CPU 315-2 PN/DP"), (5, b"S C-LAB000001"), (7, b"CPU 315-2 PN/DP"))]
+    else:
+        return b""
+    data = (bytes([0xFF, 9]) + struct.pack(">H", 8 + size * len(records)) + struct.pack(">HHHH", szl_id, 1, size, len(records))
+            + b"".join(records))
+    params = bytes([0, 1, 0x12, 8, 0x12, 0x84, 1, seq, 0, 0, 0, 0])
+    header = bytes([0x32, 7, 0, 0]) + request[11:13] + struct.pack(">HH", len(params), len(data))
+    return s7_frame(header + params + data)
+
+
+def s7(conn, device=None):
+    """S7comm identification only: COTP connect, Setup communication, SZL reads 0x11 and 0x1c."""
+    request = tpkt(conn)
+    if len(request) < 6 or request[5] != 0xE0:
+        return
+    conn.sendall(bytes([3, 0, 0, 22, 17, 0xD0, 0, 0, 0, 1, 0, 0xC1, 2, 1, 0, 0xC2, 2, 1, 2, 0xC0, 1, 10]))
+    while not (device and device.crashed):
+        request = tpkt(conn)
+        if len(request) < 19:
+            return
+        if device:
+            if request[8] == 1 and request[17] in S7_WRITES:
+                device.write(f"S7 job function {request[17]:#x}")
+                return
+            device.request()
+        if request[8] == 1 and request[17] == 0xF0:
+            conn.sendall(s7_frame(bytes([0x32, 3, 0, 0]) + request[11:13] + bytes([0, 8, 0, 0, 0, 0, 0xF0, 0, 0, 1, 0, 1, 1, 0xE0])))
+        elif request[8] == 7 and len(request) >= 31:
+            reply = s7_szl(request)
+            if not reply:
+                return
+            conn.sendall(reply)
+        else:
+            return
 
 
 TCP = {
     21: ftp, 22: ssh, 23: telnet, 80: http, 8080: http, 502: modbus, 6379: redis, 44818: enip,
 }
+# Only in the fragile-ot scenario (the default lab has no S7 simulator).
+FRAGILE = {502: ("modbus", modbus), 44818: ("enip", enip), 102: ("s7", s7)}
 
 
 def ssh_debian(conn):
@@ -165,15 +421,32 @@ class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
-def serve_tcp(bind, port, handler):
+def reset(sock):
+    """Close with a TCP reset instead of a FIN: the peer sees the connection lost."""
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    except OSError:
+        pass
+    sock.close()
+
+
+def serve_tcp(bind, port, handler, device=None):
     class H(socketserver.BaseRequestHandler):
         def handle(self):
             try:
-                handler(self.request)
+                if device and not device.connection():
+                    return
+                if SCENARIO.drop(port):
+                    reset(self.request)
+                    return
+                handler(Conn(self.request))
             except OSError:
                 pass
 
-    Server((bind, port), H).serve_forever()
+    server = Server((bind, port), H)
+    if device:
+        device.server = server
+    server.serve_forever()
 
 
 def bacnet(bind, port):
@@ -186,21 +459,41 @@ def bacnet(bind, port):
     while True:
         data, addr = sock.recvfrom(1500)
         if data[:2] in (b"\x81\x0a", b"\x81\x0b"):
+            if SCENARIO.drop(port):
+                continue
+            SCENARIO.pause()
             sock.sendto(reply, addr)
 
 
 def main():
+    global SCENARIO
     ap = argparse.ArgumentParser()
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--offset", type=int, default=0, help="added to every port")
     ap.add_argument("--skip", type=int, nargs="*", default=[], help="ports to leave out (e.g. 80 when the host already serves it)")
+    ap.add_argument("--scenario", choices=SCENARIOS, default="normal", help="network conditions, see the module help")
+    ap.add_argument("--seed", type=int, default=1, help="seed of the lossy and slow-wan scenarios")
+    ap.add_argument("--loss", type=float, default=0.3, help="lossy: fraction of connections and UDP replies lost (0-1, in tenths)")
+    ap.add_argument("--delay-min-ms", type=int, default=150, help="slow-wan: shortest reply delay")
+    ap.add_argument("--delay-max-ms", type=int, default=300, help="slow-wan: longest reply delay")
+    ap.add_argument("--conn-limit", type=int, default=4, help="fragile-ot: new connections per second that crash a device")
+    ap.add_argument("--stats", help="fragile-ot: JSON file for the device counters")
     args = ap.parse_args()
-    for port, handler in TCP.items():
+    SCENARIO = Scenario(args.scenario, args.seed, args.loss, (args.delay_min_ms / 1000, args.delay_max_ms / 1000))
+
+    tcp = {port: (handler, None) for port, handler in TCP.items()}
+    if args.scenario == "fragile-ot":
+        stats = Stats(args.stats)
+        for port, (name, handler) in FRAGILE.items():
+            device = Fragile(name, port + args.offset, args.conn_limit, stats)
+            tcp[port] = (functools.partial(handler, device=device), device)
+        stats.save()
+    for port, (handler, device) in tcp.items():
         if port in args.skip:
             continue
-        threading.Thread(target=serve_tcp, args=(args.bind, port + args.offset, handler), daemon=True).start()
+        threading.Thread(target=serve_tcp, args=(args.bind, port + args.offset, handler, device), daemon=True).start()
     threading.Thread(target=bacnet, args=(args.bind, 47808 + args.offset), daemon=True).start()
-    print("lab simulators listening on", args.bind, "ports", sorted(p + args.offset for p in TCP if p not in args.skip), "and udp", 47808 + args.offset, flush=True)
+    print("lab simulators listening on", args.bind, "ports", sorted(p + args.offset for p in tcp if p not in args.skip), "and udp", 47808 + args.offset, "scenario", args.scenario, flush=True)
     threading.Event().wait()
 
 
