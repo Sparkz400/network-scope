@@ -1802,4 +1802,4 @@ mod tests {
 // False-alarm budget: a case table with one must-trigger and one must-not-trigger host per rule.
 #[cfg(test)]
 #[path = "risk_budget.rs"]
-mod budget;
+pub(crate) mod budget;

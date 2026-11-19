@@ -47,6 +47,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `history [--db FILE]` | List saved scans as JSON |
 | `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
+| `export ID --format compliance-iec62443\|compliance-nis2\|compliance-cis [-csv] [--output FILE]` | Asset inventory with findings mapped to IEC 62443, NIS2 Art. 21 or CIS Controls v8 (Markdown, or CSV with the `-csv` suffix); see [Compliance exports](inventory-diff-reports.md#compliance-exports) |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
 | `findings ID [--min-severity low] [--sort exploited\|severity] [--fail-on-findings]` | Weak TLS/SSH, risky services, CVE hints |
@@ -119,7 +120,7 @@ TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result;
 
 ## Export formats
 
-`--format json|csv|html|nmap|md|jsonl` for `scan` and `export`:
+`--format json|csv|html|nmap|md|jsonl` for `scan` and `export` (`export` also takes `compliance-iec62443|compliance-nis2|compliance-cis`, with `-csv` for CSV):
 
 | Format | Content |
 | --- | --- |

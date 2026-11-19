@@ -907,7 +907,10 @@ pub fn export_at(snapshot: &Snapshot, format: &str, timestamp: i64) -> Result<St
         "nmap" | "xml" => Ok(crate::nmap::export(snapshot, timestamp)),
         "md" | "markdown" => Ok(crate::report::markdown(snapshot, None, timestamp)),
         "jsonl" => crate::report::jsonl(snapshot, timestamp),
-        _ => Err("Choose json, csv, html, nmap, md or jsonl".into()),
+        other => match crate::compliance::Standard::from_format(other) {
+            Some((standard, csv)) => Ok(crate::compliance::export(snapshot, standard, csv, timestamp)),
+            None => Err("Choose json, csv, html, nmap, md or jsonl, or compliance-iec62443, compliance-nis2 or compliance-cis (add -csv for CSV)".into()),
+        },
     }
 }
 #[cfg(test)]

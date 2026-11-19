@@ -625,7 +625,7 @@ fn every_rule_triggers_on_its_evidence_and_stays_quiet_on_the_near_miss() {
 
 /// The ids come from the source text of `risk.rs`, the same extraction the documentation
 /// checker (`docs/check_finding_pages.py`) uses, so a new rule cannot be added unnoticed.
-fn source_rule_ids() -> (std::collections::BTreeSet<String>, Vec<String>) {
+pub(crate) fn source_rule_ids() -> (std::collections::BTreeSet<String>, Vec<String>) {
     let source = include_str!("risk.rs");
     let code = source.split("\n#[cfg(test)]").next().unwrap();
     let add = regex::Regex::new(
