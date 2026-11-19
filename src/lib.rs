@@ -2,14 +2,17 @@
 //! crate `network-scope-core` (`core/`). The two binaries (`src/main.rs` and
 //! `src/bin/network-scope-cli.rs`) call [`run`]; the fuzz targets in `fuzz/` call the entry points
 //! in [`fuzz`] (re-exported from the core crate). Everything else stays crate-private.
+#[cfg(feature = "gui")]
 pub(crate) mod gui;
 pub(crate) mod ui;
 
 // The engine lives in `network-scope-core`; its modules are used here under the same paths
 // (`crate::scan::Host`, `crate::risk::analyze_host`, ...).
+#[cfg(feature = "gui")]
+pub(crate) use network_scope_core::pcapfile;
 pub(crate) use network_scope_core::{
-    capture, core, devices, feeds, monitor, nmap, notify, observations, otpassive, passive,
-    pcapfile, report, risk, scan, script, service, store, syn, topology, trace,
+    capture, core, devices, feeds, monitor, nmap, notify, observations, otpassive, passive, report,
+    risk, scan, script, service, store, syn, topology, trace,
 };
 
 /// The fuzz entry points (`network_scope::fuzz::*`, called by the targets in `fuzz/`).
@@ -21,7 +24,39 @@ pub use network_scope_core::fuzz;
 #[doc(hidden)]
 pub use network_scope_core::ot_readonly;
 
+#[cfg(feature = "gui")]
 use std::path::PathBuf;
+
+/// Why [`run`] failed. Only the desktop GUI can fail this way; a CLI or TUI command reports its
+/// problem on stderr and ends the process with its exit status instead.
+pub enum Error {
+    /// The desktop window could not be opened.
+    #[cfg(feature = "gui")]
+    Gui(eframe::Error),
+}
+// What `fn main() -> Result<..>` prints on failure: exactly the underlying error.
+impl std::fmt::Debug for Error {
+    #[cfg_attr(not(feature = "gui"), allow(unused_variables))]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            #[cfg(feature = "gui")]
+            Self::Gui(ref e) => std::fmt::Debug::fmt(e, f),
+        }
+    }
+}
+impl std::fmt::Display for Error {
+    #[cfg_attr(not(feature = "gui"), allow(unused_variables))]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            #[cfg(feature = "gui")]
+            Self::Gui(ref e) => std::fmt::Display::fmt(e, f),
+        }
+    }
+}
+impl std::error::Error for Error {}
+
+/// Result of [`run`] (and of the `main` of both binaries).
+pub type RunResult = Result<(), Error>;
 
 /// A standard handle the process cannot use: never set (a GUI-subsystem process
 /// started from a console gets NULL handles) or invalid. Redirected handles (files,
@@ -102,7 +137,10 @@ fn attach_parent_console() {
 /// The whole program: CLI or TUI when arguments are given, otherwise the desktop GUI.
 /// Both binaries (`network-scope` with the Windows GUI subsystem in release builds and the
 /// console twin `network-scope-cli`) are thin wrappers around this function.
-pub fn run() -> eframe::Result<()> {
+///
+/// Without the `gui` feature (the CLI-only build) there is no window: started without a command
+/// it prints a message and ends the process with status 2.
+pub fn run() -> RunResult {
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
     if cli_args
         .first()
@@ -130,6 +168,19 @@ pub fn run() -> eframe::Result<()> {
         }
         return Ok(());
     }
+    #[cfg(not(feature = "gui"))]
+    {
+        eprintln!("network-scope-cli: built without the GUI; see --help");
+        std::process::exit(2);
+    }
+    #[cfg(feature = "gui")]
+    run_gui()
+}
+
+/// The desktop window, with the optional `--screenshot FILE` (a self-test that saves the first
+/// frame and exits).
+#[cfg(feature = "gui")]
+fn run_gui() -> RunResult {
     let mut screenshot = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -140,7 +191,7 @@ pub fn run() -> eframe::Result<()> {
             screenshot = Some(PathBuf::from(path));
         }
     }
-    gui::run(screenshot)
+    gui::run(screenshot).map_err(Error::Gui)
 }
 
 #[cfg(test)]

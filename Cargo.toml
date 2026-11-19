@@ -27,11 +27,12 @@ categories = ["command-line-utilities", "network-programming", "gui"]
 path = "src/lib.rs"
 doctest = true
 
-# GUI binary: Windows GUI subsystem in release builds.
+# GUI binary: Windows GUI subsystem in release builds. Needs the `gui` feature.
 [[bin]]
 name = "network-scope"
 path = "src/main.rs"
 test = false
+required-features = ["gui"]
 
 # Console-subsystem twin of the GUI binary for scripts (shells wait, exit codes work).
 [[bin]]
@@ -39,16 +40,23 @@ name = "network-scope-cli"
 path = "src/bin/network-scope-cli.rs"
 test = false
 
+[features]
+default = ["gui"]
+# The desktop GUI (binary `network-scope`, `src/gui`). Without it the package builds only the
+# CLI/TUI binary `network-scope-cli`, which links none of the window-system, graphics or file
+# dialog crates: `cargo build --release --no-default-features --bin network-scope-cli`.
+gui = ["dep:eframe", "dep:egui", "dep:egui_extras", "dep:image", "dep:rfd", "dep:serde", "dep:winit"]
+
 [dependencies]
 network-scope-core = { path = "core" }
-eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
-egui_extras = "0.37.0"
+eframe = { version = "0.37.0", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui_extras = { version = "0.37.0", optional = true }
 # Since 0.32 the bundled symbol/emoji fonts (e.g. the "▶" on Start, the sort arrows) are opt-in.
-egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
-serde = { version = "1", features = ["derive"] }
+egui = { version = "0.37.0", optional = true, default-features = false, features = ["monochrome_emoji_fonts"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = "1"
-rfd = "0.18"
+rfd = { version = "0.18", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
 ratatui = "0.30"
 crossterm = "0.29"
@@ -57,7 +65,7 @@ crossterm = "0.29"
 network-scope-core = { path = "core", features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-winit = "0.30"
+winit = { version = "0.30", optional = true }
 
 [profile.release]
 lto = true

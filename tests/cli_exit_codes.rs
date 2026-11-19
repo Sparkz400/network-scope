@@ -72,6 +72,31 @@ fn run_bin(bin: &str, args: &[&str], db: Option<&str>) -> (i32, String, String) 
 }
 
 #[test]
+fn version_prints_the_package_version() {
+    let (code, out, _) = run_bin(
+        env!("CARGO_BIN_EXE_network-scope-cli"),
+        &["--version"],
+        None,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(
+        out.trim(),
+        concat!("network-scope ", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+// Only in the CLI-only build (`--no-default-features`): without a command there is no window to
+// open, so the binary says so and exits 2.
+#[cfg(not(feature = "gui"))]
+#[test]
+fn cli_only_build_without_arguments_exits_2() {
+    let (code, out, err) = run_bin(env!("CARGO_BIN_EXE_network-scope-cli"), &[], None);
+    assert_eq!(code, 2);
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("built without the GUI; see --help"), "{err}");
+}
+
+#[test]
 fn help_and_plain_success_exit_0() {
     let (code, out, _) = run_bin(env!("CARGO_BIN_EXE_network-scope-cli"), &["--help"], None);
     assert_eq!(code, 0);
@@ -193,6 +218,8 @@ fn diff_gate_counts_new_findings_only() {
     assert_eq!(fixture.run(&["diff", "1", "3", "--fail-on-findings"]).0, 0);
 }
 
+// The GUI binary exists only with the `gui` feature (the default).
+#[cfg(feature = "gui")]
 #[test]
 fn gui_binary_uses_the_same_exit_codes() {
     // The GUI binary runs the same code when it gets arguments. (With a GUI-subsystem release

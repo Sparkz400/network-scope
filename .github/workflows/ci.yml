@@ -79,6 +79,30 @@ jobs:
             target/release/network-scope-cli.exe
           if-no-files-found: error
 
+  # The CLI/TUI binary without the `gui` feature. Unlike the check job this one installs none of
+  # the window-system development packages, which proves the build needs none, and it runs the
+  # binary: version, the no-argument message (there is no window to open) and a real scan.
+  cli-only:
+    name: cli-only build (no GUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked --no-default-features --bin network-scope-cli
+      - name: Run the CLI-only binary
+        run: |
+          bin=target/release/network-scope-cli
+          "$bin" --version
+          status=0
+          "$bin" || status=$?
+          test "$status" -eq 2
+          "$bin" scan 127.0.0.1 --ports 1 --timeout 500 --db "$RUNNER_TEMP/cli-only.sqlite" --quiet
+          ! ldd "$bin" | grep -Ei 'libX11|libxcb|libwayland|libxkbcommon|libGL'
+
   # Every finding rule id in core/src/risk.rs needs a page under docs/src/findings (linked from the
   # GUI and reports). Plain Python, no build; runs on pull requests, which docs.yml does not.
   finding-docs:
@@ -132,7 +156,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --name-only "$BASE" HEAD | grep -qE '^(Dockerfile|\.dockerignore|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github/workflows/(ci|release)\.yml)$'; then
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(Dockerfile|\.dockerignore|Cargo\.toml|core/Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github/workflows/(ci|release)\.yml)$'; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "No container inputs changed; skipping the image build."

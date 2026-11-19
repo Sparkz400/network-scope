@@ -6,6 +6,6 @@
 //! for the console subsystem: shells wait, `%ERRORLEVEL%` and `$LASTEXITCODE` reflect
 //! the run, and output never interleaves with the prompt.
 
-fn main() -> eframe::Result<()> {
+fn main() -> network_scope::RunResult {
     network_scope::run()
 }

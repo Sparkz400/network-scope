@@ -14,6 +14,7 @@ The repository is a Cargo workspace with two crates; plain `cargo build`, `cargo
 
 - `core/` is `network-scope-core`, the engine without any GUI code: scanning, parsers, risk analysis, the SQLite store, reports, monitoring, passive OT discovery. Other tools can depend on it; its crate documentation (`cargo doc -p network-scope-core --open`) lists the entry points. It embeds `data/` (service probes, CVE rules, vendor lists) at compile time.
 - The root package `network-scope` is the application: `src/gui/` (egui desktop app) and `src/ui/` (CLI and TUI). Engine code never depends on these, so a change to the engine belongs in `core/`.
+- The GUI is the cargo feature `gui` (on by default). `cargo build --no-default-features --bin network-scope-cli` builds the CLI/TUI without any GUI crate (CI checks it on Linux without the window-system packages); keep `src/ui/` and `core/` free of GUI types.
 - Adding a CLI command: create `src/ui/commands/<name>.rs` and register it in `src/ui/commands/mod.rs`; the module documentation in `src/ui/mod.rs` has the steps (options go in `src/ui/args.rs`, the help text in `src/ui/help.rs`).
 
 ## Building and testing
