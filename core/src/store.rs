@@ -18,6 +18,10 @@ pub struct Snapshot {
     pub observations: Vec<Observation>,
     #[serde(default)]
     pub notes: BTreeMap<std::net::IpAddr, String>,
+    /// The packets the scan sent, by kind and detail (`Running::sent`); empty for passive
+    /// captures, imports and scans saved before this field existed.
+    #[serde(default)]
+    pub sent: Vec<crate::sendlog::SentEntry>,
 }
 #[derive(Clone, Serialize)]
 pub struct Entry {
@@ -904,8 +908,28 @@ pub fn export_at(snapshot: &Snapshot, format: &str, timestamp: i64) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sent_log_is_stored_and_old_snapshots_have_none() {
+        let mut s = snapshot();
+        s.sent = vec![crate::sendlog::SentEntry {
+            kind: crate::sendlog::PacketKind::UdpProbe,
+            detail: "dns/53".into(),
+            count: 3,
+        }];
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains(r#""kind":"udp-probe""#), "{text}");
+        let back: Snapshot = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.sent, s.sent);
+        // A snapshot saved before the field existed loads with an empty log (no migration needed).
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value.as_object_mut().unwrap().remove("sent");
+        let old: Snapshot = serde_json::from_value(value).unwrap();
+        assert!(old.sent.is_empty());
+    }
     fn snapshot() -> Snapshot {
         Snapshot {
+            sent: vec![],
             targets: "127.0.0.1".into(),
             complete: true,
             settings: Settings::default(),

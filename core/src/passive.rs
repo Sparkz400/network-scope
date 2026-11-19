@@ -667,6 +667,20 @@ fn pump(
     Ok(())
 }
 pub fn start(interface: String, seconds: u64, dcp_source: Option<[u8; 6]>) -> Listening {
+    start_logged(
+        interface,
+        seconds,
+        dcp_source,
+        std::sync::Arc::new(crate::sendlog::SentLog::new()),
+    )
+}
+/// [`start`], counting the DCP Identify frame (the only packet this capture can send) in `sent`.
+pub fn start_logged(
+    interface: String,
+    seconds: u64,
+    dcp_source: Option<[u8; 6]>,
+    sent: std::sync::Arc<crate::sendlog::SentLog>,
+) -> Listening {
     let (tx, receiver) = mpsc::sync_channel(4096);
     let cancel = Arc::new(AtomicBool::new(false));
     let stop = cancel.clone();
@@ -678,12 +692,12 @@ pub fn start(interface: String, seconds: u64, dcp_source: Option<[u8; 6]>) -> Li
             if let Some(source) = dcp_source {
                 // Identify All only. No Set, Reset, Signal or address assignment: the frame
                 // type has no such value (see `ot::readonly`).
-                crate::ot::readonly::DcpFrameTx::new(&mut cap).send(
-                    &crate::ot::readonly::DcpRequest::new(
+                crate::ot::readonly::DcpFrameTx::new(&mut cap)
+                    .with_log(sent)
+                    .send(&crate::ot::readonly::DcpRequest::new(
                         source,
                         crate::ot::readonly::DcpService::IdentifyAll,
-                    ),
-                )?;
+                    ))?;
             }
             let end = Instant::now() + Duration::from_secs(seconds.clamp(1, 86400));
             pump(

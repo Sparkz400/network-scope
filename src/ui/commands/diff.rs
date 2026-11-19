@@ -45,6 +45,7 @@ mod tests {
     #[test]
     fn diff_gate_counts_new_findings_at_or_above_the_threshold() {
         let snapshot = |hosts: Vec<scan::Host>| store::Snapshot {
+            sent: vec![],
             targets: "10.0.0.2".into(),
             complete: true,
             settings: scan::Settings::default(),

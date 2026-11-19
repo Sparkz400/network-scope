@@ -8,6 +8,7 @@
 //! neighbor entry, and many hosts resolve in parallel instead of one blocking
 //! SendARP call each. ARP carries no ports, so OT and printer services are never
 //! addressed.
+use crate::sendlog::PacketKind;
 use crate::{capture::Capture, core::Gate, scan::Settings, syn::Wire};
 use std::{
     collections::{HashMap, VecDeque},
@@ -214,7 +215,10 @@ fn io_loop<W: Wire>(
                 queue.pop_front();
                 continue;
             }
-            if gate.try_take().is_err() {
+            if gate
+                .try_take_for(PacketKind::ArpRequest, "ARP sweep request")
+                .is_err()
+            {
                 break;
             }
             queue.pop_front();

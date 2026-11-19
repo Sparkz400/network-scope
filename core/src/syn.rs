@@ -14,6 +14,7 @@
 //! routing table and each next hop's MAC is resolved once. With `syn_adaptive`, reply
 //! windows follow a smoothed RTT (RFC 6298) and new probes are limited by an AIMD
 //! congestion window; the rate gate still bounds every transmission.
+use crate::sendlog::PacketKind;
 use crate::{
     capture::Capture,
     core::Gate,
@@ -420,7 +421,8 @@ impl SynEngine {
         let neighbor = self.neighbor.clone();
         cell.get_or_init(|| async move {
             // A neighbor lookup can emit an ARP request, so it takes a token too.
-            gate.wait().await;
+            gate.wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
+                .await;
             let text = tokio::task::spawn_blocking(move || neighbor(l2))
                 .await
                 .ok()
@@ -565,7 +567,7 @@ fn io_loop<W: Wire>(
             };
             // One token per transmitted SYN; a refused token leaves the probe queued
             // (its reply window has not started, so it cannot expire meanwhile).
-            if gate.try_take().is_err() {
+            if gate.try_take_for(PacketKind::TcpSyn, "port scan").is_err() {
                 break;
             }
             let Some(p) = pending.get_mut(&key) else {
@@ -648,6 +650,7 @@ fn io_loop<W: Wire>(
                                     p.cookie.wrapping_add(1),
                                     server_seq.wrapping_add(1),
                                 );
+                                gate.note(PacketKind::TcpSyn, "RST closing a half-open connection");
                                 let _ = wire.send(&rst);
                                 (PortState::Open, Some(fp))
                             }
@@ -714,8 +717,8 @@ fn io_loop<W: Wire>(
 }
 
 /// Takes one rate-gate token, sleeping until one is available (blocking callers).
-fn take_blocking(gate: &Gate) {
-    while let Err(wait) = gate.try_take() {
+fn take_blocking(gate: &Gate, kind: PacketKind, detail: &str) {
+    while let Err(wait) = gate.try_take_for(kind, detail) {
         std::thread::sleep(wait.min(Duration::from_millis(20)));
     }
 }
@@ -853,7 +856,7 @@ fn trace_loop<W: Wire>(
         let last = first.saturating_add(TRACE_WAVE - 1).min(probe.hops);
         let mut sent_at = HashMap::new();
         for ttl in first..=last {
-            take_blocking(gate);
+            take_blocking(gate, PacketKind::Traceroute, "TCP SYN, TTL sweep");
             let local = probe.base + u16::from(ttl);
             wire.send(&build_ttl(
                 source,
@@ -933,7 +936,7 @@ pub fn tcp_trace(
     let source_mac = crate::capture::mac(&s.source_mac)?;
     let l2 = crate::platform::next_hop(ip, source_ip, &s.interface)?.l2_address(ip);
     // The neighbor lookup can emit an ARP request.
-    take_blocking(gate);
+    take_blocking(gate, PacketKind::NeighborLookup, "OS neighbor lookup");
     let dest_mac = crate::platform::mac(IpAddr::V4(l2))
         .ok_or_else(|| format!("No ARP answer from next hop {l2}"))
         .and_then(|m| crate::capture::mac(&m))?;

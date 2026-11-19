@@ -56,6 +56,14 @@ Tests (`cargo test`) check this for every possible byte: all 256 function codes 
 
 Limits of the guarantee: it covers the active OT requests listed above, including the Profinet DCP Identify frame. The generic service probes are a separate code path with their own tests and deny lists, and the type does not say anything about what a device does with a read-only request.
 
+## See what will be sent, and what was
+
+`--dry-run` prints, per host, which packet types a command would send (ICMP, ARP, TCP connects or SYNs and their ports, UDP probe names, TLS hellos, SMB negotiates, OT requests with their function codes, DCP) and sends nothing. After a scan, `--sent-log` (and the `sent` field of the JSON export and the status line in the desktop) shows the packets it really sent, counted by kind and detail. See [Dry run and sent log](cli-reference.md#dry-run-and-sent-log).
+
+## Automatic back-off
+
+Each host is paced separately: OT controllers and printers get at most two parallel probes, and a host that resets connections or stops answering a port it had open is slowed down and finally left alone for the rest of the scan. This is on by default; see [Automatic back-off](scanning-engine.md#automatic-back-off).
+
 ## Recommendations for plant networks
 
 - Read-only traffic can still affect fragile equipment. Older controllers, serial gateways and devices with small TCP stacks may slow down, drop connections or fault under any active traffic.

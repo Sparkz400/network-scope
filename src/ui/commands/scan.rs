@@ -2,7 +2,7 @@
 //! format; with `--tui` the live terminal view (`ui::tui`) runs while it works.
 use crate::{
     scan, store,
-    ui::{Ctx, args::scan_settings, guard, output, progress, saved_exit, tui},
+    ui::{Ctx, args::scan_settings, dryrun, guard, output, progress, saved_exit, tui},
 };
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
@@ -17,6 +17,10 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     }
     let hosts = scan::parse_targets(&targets, s.skip_edges, scan::MAX_STREAM)?;
     let ports = scan::parse_ports(&s.ports)?;
+    // --dry-run: print what would be sent and stop before anything is started or saved.
+    if dryrun::requested(opts) {
+        return dryrun::scan_plan(opts, "scan", &hosts, &ports, &s);
+    }
     // Public or out-of-scope targets need confirmation before anything is sent (ROADMAP H54).
     if !guard::enforce(ctx, &hosts)? {
         return Ok(());
@@ -38,6 +42,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         hosts: results,
         observations: vec![],
         notes: BTreeMap::new(),
+        sent: run.sent.snapshot(),
     };
     let id = store::save(db, &snapshot)?;
     progress(
@@ -47,6 +52,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             if complete { "complete" } else { "partial" }
         ),
     );
+    if opts.contains_key("sent-log") {
+        eprintln!("{}", crate::sendlog::format_table(&snapshot.sent));
+    }
     output(
         &store::export_at(&snapshot, format, store::timestamp(db, id)?)?,
         opts,
@@ -109,6 +117,48 @@ pub(in crate::ui) fn accept(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::{run, testutil::args};
+
+    /// The sent log is saved with the scan, appears in the JSON output and in `--sent-log`.
+    #[test]
+    fn a_real_scan_records_what_it_sent() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let dir = std::env::temp_dir().join(format!("ns-sentlog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (db, out) = (dir.join("x.sqlite"), dir.join("out.json"));
+        let status = run(&args(&[
+            "scan",
+            "127.0.0.1",
+            "--tcp-only",
+            "--fast",
+            "--sent-log",
+            "--ports",
+            &port,
+            "--db",
+            db.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+            "--quiet",
+        ]))
+        .unwrap();
+        assert_eq!(status, crate::ui::ExitCode::Success);
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let sent = json["sent"].as_array().unwrap();
+        assert!(
+            sent.iter().any(|e| e["kind"] == "tcp-connect"
+                && e["detail"] == "port scan"
+                && e["count"].as_u64().unwrap() >= 1),
+            "{sent:?}"
+        );
+        // --tcp-only: no ping was sent, so none is logged.
+        assert!(sent.iter().all(|e| e["kind"] != "icmp-echo"), "{sent:?}");
+        let stored = store::load(&db, 1).unwrap();
+        assert_eq!(stored.sent.len(), sent.len());
+        assert!(crate::sendlog::total(&stored.sent) >= 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn scan_errors_do_not_discard_hosts() {

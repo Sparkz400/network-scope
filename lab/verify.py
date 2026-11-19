@@ -78,6 +78,35 @@ def check_backoff(exe, work, failures):
         failures.append(f"back-off: --no-backoff still backed off: {notes}")
 
 
+def check_dry_run_and_sent_log(exe, work, host, failures):
+    """H53: the real scan's JSON carries the sent log; --dry-run lists the plan and sends nothing
+    (a listener that counts connections is the target)."""
+    sent = host.get("sent_in_output")
+    kinds = {e["kind"] for e in sent or []}
+    for want in ("icmp-echo", "tcp-connect", "udp-probe", "ot-request"):
+        if want not in kinds:
+            failures.append(f"sent log: {want} missing from {sorted(kinds)}")
+    counter = socket.socket()
+    counter.bind(("127.0.0.1", 0))
+    counter.listen(8)
+    counter.settimeout(0.5)
+    port = counter.getsockname()[1]
+    db = os.path.join(work, "dry.sqlite")
+    out = subprocess.run([exe, "scan", "127.0.0.1", "--dry-run", "--fast", "--deep", "--ot", "--ports", str(port),
+                          "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
+    if "DRY RUN: nothing was sent." not in out or "tcp-connect" not in out:
+        failures.append(f"dry run output unexpected: {out[:200]!r}")
+    if os.path.exists(db):
+        failures.append("dry run saved a scan")
+    try:
+        counter.accept()
+        failures.append("dry run connected to the target")
+    except socket.timeout:
+        pass
+    finally:
+        counter.close()
+
+
 def main():
     exe = sys.argv[1]
     work = tempfile.mkdtemp(prefix="ns-lab-")
@@ -90,11 +119,14 @@ def main():
         time.sleep(0.5)
         subprocess.run([exe, "scan", "127.0.0.1", "--fast", "--deep", "--ot", "--ports", PORTS,
                         "--timeout", "1500", "--db", db, "--output", out], check=True, timeout=120)
-        host = json.load(open(out))["hosts"][0]
+        document = json.load(open(out))
+        host = document["hosts"][0]
+        host["sent_in_output"] = document.get("sent")
         slowed = [e for e in host["errors"] if e.startswith("backed off:")]
         if slowed:
             failures.append(f"healthy lab host was backed off: {slowed}")
         check_backoff(exe, work, failures)
+        check_dry_run_and_sent_log(exe, work, host, failures)
         for key, want in EXPECT_IDENTITY.items():
             got = host["identity"].get(key)
             if got != want:
