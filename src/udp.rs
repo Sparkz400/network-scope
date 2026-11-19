@@ -1050,6 +1050,18 @@ mod tests {
         (port, rx)
     }
 
+    /// The next non-empty datagram. Other tests send empty probes to ports they believe
+    /// closed; the OS can hand such a port to a responder here right after, so a stray empty
+    /// datagram may arrive first (seen on Linux CI).
+    async fn next_payload(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+        loop {
+            let d = rx.recv().await.unwrap();
+            if !d.is_empty() {
+                return d;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn generic_ports_use_udp_probes_from_the_database() {
         use crate::service::ProbeDb;
@@ -1073,13 +1085,17 @@ mod tests {
             r.info,
             "ms-sql-m Microsoft SQL Server 15.0.2000.5 (server SQL01, instance MSSQLSERVER)"
         );
-        assert_eq!(rx.recv().await.unwrap(), [3], "the probe payload was sent");
+        assert_eq!(
+            next_payload(&mut rx).await,
+            [3],
+            "the probe payload was sent"
+        );
         // A reply that matches no rule still means open, with the generic description.
         let (port, mut rx) = recording_responder(b"??".to_vec()).await;
         probe.ports = vec![port];
         let r = probe_with(ip, port, Kind::Generic, wait, 1, &gate, &[probe.clone()]).await;
         assert_eq!(r.info, "responds (2 bytes)");
-        assert_eq!(rx.recv().await.unwrap(), [3]);
+        assert_eq!(next_payload(&mut rx).await, [3]);
         // Ports without a probe keep the empty datagram.
         let (port, mut rx) = recording_responder(b"x".to_vec()).await;
         let _ = probe_with(ip, port, Kind::Generic, wait, 1, &gate, &[probe.clone()]).await;

@@ -893,7 +893,9 @@ fn hop_unix(ip: IpAddr, ttl: u8, timeout: u32, id: u16) -> Result<HopReply, Stri
     };
     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
         .map_err(|e| format!("Traceroute needs a raw ICMP socket (root): {e}"))?;
-    socket.set_ttl(u32::from(ttl)).map_err(|e| e.to_string())?;
+    socket
+        .set_ttl_v4(u32::from(ttl))
+        .map_err(|e| e.to_string())?;
     let seq = u16::from(ttl);
     let started = Instant::now();
     let deadline = started + Duration::from_millis(u64::from(timeout.max(1)));
