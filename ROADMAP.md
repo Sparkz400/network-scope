@@ -112,7 +112,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 ## J. Code health
 
-61. **Split the largest files** (`src/service.rs` 2.8k lines, `src/otpassive.rs` 2.3k, `src/ui.rs` 2k) into focused modules.
+61. **Split the largest files** (`src/service.rs` 2.8k lines, `src/otpassive.rs` 2.3k (done: `src/otpassive/`, no file over 600 lines), `src/ui.rs` 2k) into focused modules.
 62. **Coverage targets:** at least 80% on parsers and risk rules.
 63. **Run the lab end-to-end check with more scenarios in CI,** such as a simulated slow WAN, packet loss and fragile OT devices.
 
@@ -128,7 +128,7 @@ Turn the inventory into something you can ask research questions of, without giv
 
 67. **A research data layer.** Store hosts, services, certificates, fingerprints and findings in queryable SQLite tables instead of only the per-scan `snapshot` text, and export to Parquet/DuckDB and to STIX 2.1 and OCSF. *Done when "every host that presented this certificate key in the last six months" is one SQL query.*
 68. **Offline vulnerability intelligence for OT.** Match versions against an offline copy of the NVD feed, rank by KEV and EPSS (builds on D25), and match the S7, CIP and OPC UA vendor, product and firmware fields against CISA ICS advisories in CSAF format. *Done when the hand-written rules in `data/cves.json` are a fallback, not the main source.*
-69. **Learn normal OT traffic.** From a pcap or live capture, learn who talks to each PLC, with which function codes and how often, and alert on anything new: a new engineering station, a first-ever write, a Stop outside a maintenance window. Builds on the control-traffic detection in `src/otpassive.rs`. *Done when the lab replays a capture with one injected write from a new station and exactly that is reported.*
+69. **Learn normal OT traffic.** From a pcap or live capture, learn who talks to each PLC, with which function codes and how often, and alert on anything new: a new engineering station, a first-ever write, a Stop outside a maintenance window. Builds on the control-traffic detection in `src/otpassive/`. *Done when the lab replays a capture with one injected write from a new station and exactly that is reported.*
 70. **Fingerprints you can pivot on.** Add JA4X (certificates), JA4H (HTTP), a Shodan-compatible favicon hash and certificate key hashes next to JA4S and HASSH, and group devices that likely share firmware or a key across scans and sites.
 71. **Check network segmentation.** Scan from several vantage points (sensors, or "as if from VLAN X"), compare what each can reach against the declared zones and conduits, and report every unexpected path. *Done when a segmentation report lists each path that breaks the intended IEC 62443 zone model.*
 72. **Reproducible scans.** Record the tool's own scan traffic as pcapng and stamp each result with the tool version and a hash of the rules files, so a finding can be cited and re-run exactly. Extends H53.
