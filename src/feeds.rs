@@ -615,6 +615,7 @@ mod tests {
             cve: cve.iter().map(|c| c.to_string()).collect(),
             advice: String::new(),
             exploit: Exploit::default(),
+            reference: None,
         }
     }
     fn feeds() -> Feeds {

@@ -202,6 +202,10 @@ impl Scanner {
                             });
                             row.col(|ui| {
                                 ui.label(f.cve.join(", "));
+                                // The last column is not clipped, so the link is always visible.
+                                if let Some(url) = f.reference.as_deref().filter(|u| u.starts_with("https://")) {
+                                    ui.hyperlink_to("reference", url).on_hover_text(url);
+                                }
                             });
                             if row.response().clicked() {
                                 focus = Some(vec![f.ip]);
