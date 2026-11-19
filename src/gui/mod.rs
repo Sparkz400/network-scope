@@ -348,6 +348,11 @@ struct Scanner {
     /// Stored time of the inventory snapshot on screen; `None` for live results (exports are
     /// then stamped with the current time).
     opened_stamp: Option<i64>,
+    /// The scope guard wants a yes before this scan starts: what it found (public or
+    /// out-of-scope addresses). Shown as a dialog; `None` when nothing is pending.
+    scope_confirm: Option<String>,
+    /// Set for one call of `start` after the user confirmed the dialog.
+    scope_consent: crate::scope::Consent,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -435,6 +440,8 @@ impl Scanner {
             script_tokens: 0,
             ot: ot::OtState::default(),
             opened_stamp: None,
+            scope_confirm: None,
+            scope_consent: Default::default(),
         };
         // A broken user CVE file is reported, not silently replaced by the built-in rules.
         if app.screenshot.is_none() {
@@ -648,6 +655,12 @@ impl Scanner {
             });
         match parsed {
             Ok((hosts, ports)) => {
+                // The same scope check as the CLI (ROADMAP H54): public or out-of-scope
+                // addresses need a yes in the confirmation dialog first.
+                if let Some(text) = self.scope_check(&hosts) {
+                    self.scope_confirm = Some(text);
+                    return;
+                }
                 // Passive observations stay: the Devices window merges them with this scan.
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
                 self.haystacks.clear();
@@ -664,6 +677,24 @@ impl Scanner {
                 self.run = Some(scan::start(hosts, ports, self.saved.settings.clone()));
             }
             Err(e) => self.error = e,
+        }
+    }
+    /// `Some(description)` when the scope guard needs the user's confirmation for `hosts`.
+    fn scope_check(&mut self, hosts: &[IpAddr]) -> Option<String> {
+        let consent = std::mem::take(&mut self.scope_consent);
+        let declared = match crate::scope::declared(None, crate::scope::default_path().as_deref()) {
+            Ok(declared) => declared,
+            // An unreadable scope file blocks the scan until the user confirms once.
+            Err(_) if consent.out_of_scope => None,
+            Err(e) => {
+                return Some(format!(
+                    "The scope file is invalid ({e}), so nothing is known to be in scope."
+                ));
+            }
+        };
+        match crate::scope::enforce(hosts, declared.as_ref(), consent, None) {
+            Ok(_) => None,
+            Err(_) => Some(crate::scope::assess(hosts, declared.as_ref()).describe()),
         }
     }
     fn poll(&mut self) {
@@ -1034,6 +1065,7 @@ impl eframe::App for Scanner {
         self.devices_window(ctx);
         self.findings_window(ctx);
         self.capture_window(ctx);
+        self.scope_dialog(ctx);
         self.save_prefs_debounced(ctx);
         if self.live() || self.ot.running() || self.screenshot.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));

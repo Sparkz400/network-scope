@@ -30,6 +30,7 @@ These hold with Safe Mode on or off:
 - TCP traceroute never uses OT or printer ports.
 - Passive modes (`listen`, `ot-listen`, pcap import) send nothing. A test fails the build if the passive modules contain socket or send code.
 - Nothing scans automatically; every scan starts with an explicit Start or command.
+- **Scope guard:** public addresses (anything outside the private, CGNAT, loopback and link-local ranges) and addresses outside a declared scope are never scanned without confirmation: a prompt on a terminal, a dialog in the desktop, otherwise a refusal (exit status 2) unless `--yes-public` / `--allow-out-of-scope` is given. See the [CLI reference](cli-reference.md#scope-guard).
 
 ## The read-only promise is a type, not a convention
 

@@ -62,12 +62,17 @@ Scan options:
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
+  --scope CIDR[,CIDR]  Declared scope (also --scope-file FILE; default scope.txt in the config folder)
+  --yes-public    Allow public (non-private) addresses; without it scan/monitor/trace ask on a
+                  terminal and otherwise refuse with exit status 2
+  --allow-out-of-scope  Allow addresses outside the declared scope (covers public ones too)
   --quiet         No progress messages on stderr (errors still print); any command
   --fail-on-findings  findings/diff only: exit 3 when a finding (diff: a new one) is at or
                   above --min-severity (default info); otherwise the exit status is unchanged
 
 Exit status: 0 success, 1 error (arguments, I/O, database), 2 partial result (scan or
-capture stopped early, results saved), 3 findings found (only with --fail-on-findings).
+capture stopped early, results saved; or the scope guard refused to start, nothing sent),
+3 findings found (only with --fail-on-findings).
 
 Safe Mode is on by default: 8 hosts max, >=100 ms between probes, no SYN, no ARP
 sweep, ICMP traceroute only. --fast lifts it.

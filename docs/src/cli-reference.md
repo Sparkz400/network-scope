@@ -17,7 +17,7 @@ General rules:
 | --- | --- |
 | 0 | Success |
 | 1 | Error: bad arguments, I/O, database (also: nothing was saved because the scan or capture failed before collecting anything) |
-| 2 | Partial result: a scan or capture stopped early and its results were saved (marked partial in the inventory) |
+| 2 | Partial result: a scan or capture stopped early and its results were saved (marked partial in the inventory). Also: the [scope guard](#scope-guard) refused to start because the targets are public or outside the declared scope and nothing confirmed them (nothing was sent or saved; the message on stderr says which) |
 | 3 | `findings` / `diff` found something at or above `--min-severity`, **only** when `--fail-on-findings` is given |
 
 Without `--fail-on-findings`, `findings` and `diff` exit 0 however much they report. The flag is an error on any other command (status 1).
@@ -111,8 +111,21 @@ These apply to `scan` and `monitor`.
 | `--tui` | off | Live terminal view |
 | `--format FMT` / `--output FILE` | json | Also write an export of the finished scan |
 | `--db FILE` | | Inventory database |
+| `--scope CIDR[,CIDR...]` | | Declared scope: CIDR blocks, addresses or ranges that may be scanned (see [Scope guard](#scope-guard)) |
+| `--scope-file FILE` | `scope.txt` in the config folder | Read the declared scope from a file instead |
+| `--yes-public` | off | Confirm that public addresses may be scanned |
+| `--allow-out-of-scope` | off | Confirm that addresses outside the declared scope may be scanned (also covers public ones) |
 
 TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result; Up/Down/PgUp/PgDn/Home/End select a row; Enter shows the host's ports, services, findings and identity fields (Enter or Backspace returns); S cycles the sort order (newest, address, open ports).
+
+## Scope guard
+
+Before `scan`, `monitor`, `trace` or the desktop Start button send anything, the targets are checked (nothing is expanded, a /8 is judged as a range):
+
+- **Public addresses** are everything except RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), carrier-grade NAT (`100.64/10`), loopback, link-local (`169.254/16`, `fe80::/10`), unique local (`fc00::/7`) and "this host" (`0/8`, `::`). An IPv4-mapped IPv6 address counts as its IPv4 address.
+- A **declared scope** is a list of CIDR blocks, addresses and ranges, from `--scope 10.0.0.0/8,192.168.1.0/24`, `--scope-file FILE` or the default file `scope.txt` in the config folder (`%LOCALAPPDATA%/NetworkScope/` on Windows, one entry per line or comma separated, `#` starts a comment). Without a scope only the public-address rule applies. With a scope, every address outside it needs confirmation, and a public address inside it does not.
+
+On a terminal the CLI describes what it found and asks `Scan anyway? Type yes to continue`. Anything else (a script, a pipe, `monitor` under a service manager) refuses with exit status 2 unless the flags are given: `--yes-public` for public addresses, `--allow-out-of-scope` for addresses outside the declared scope (it covers public addresses too). The desktop shows a confirmation dialog before the scan starts; it reads the same scope file. A refusal sends nothing and saves nothing.
 
 ## Export formats
 

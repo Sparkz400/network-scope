@@ -52,6 +52,44 @@ impl Scanner {
             notes,
         }
     }
+    /// Confirmation before a scan of public or out-of-scope addresses (ROADMAP H54). "Scan
+    /// anyway" starts the scan with consent for this one start; "Cancel" sends nothing.
+    pub(super) fn scope_dialog(&mut self, ctx: &egui::Context) {
+        let Some(text) = self.scope_confirm.clone() else {
+            return;
+        };
+        let mut choice = None;
+        egui::Window::new("Confirm scan targets")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(text);
+                ui.label(
+                    "Only scan networks you are authorized to test. Nothing has been sent yet.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Scan anyway").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+        match choice {
+            Some(true) => {
+                self.scope_confirm = None;
+                self.scope_consent = crate::scope::Consent {
+                    public: true,
+                    out_of_scope: true,
+                };
+                self.start();
+            }
+            Some(false) => self.scope_confirm = None,
+            None => {}
+        }
+    }
     pub(super) fn topology_window(&mut self, ctx: &egui::Context) {
         if !self.topology_open {
             return;

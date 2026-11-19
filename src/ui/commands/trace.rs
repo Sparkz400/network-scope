@@ -2,16 +2,21 @@
 use crate::ui::{
     Ctx,
     args::{number, scan_settings, trace_method, trace_port},
-    output,
+    guard, output,
 };
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
-    let (opts, pos) = (&ctx.opts, &ctx.pos);
+    let (opts, pos) = (ctx.opts.clone(), ctx.pos.clone());
+    let (opts, pos) = (&opts, &pos);
     let target: std::net::IpAddr = pos
         .first()
         .ok_or("Provide a target IP address")?
         .parse()
         .map_err(|_| "Target must be an IP address".to_string())?;
+    // The same scope rule as `scan` (ROADMAP H54).
+    if !guard::enforce(ctx, &[target][..])? {
+        return Ok(());
+    }
     let hops: u8 = number(opts, "max-hops", 20)?;
     let timeout: u32 = number(opts, "timeout", 1000)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
