@@ -12,8 +12,19 @@ readme = "README.md"
 keywords = ["network-scanner", "inventory", "ot-security", "modbus", "pcap"]
 categories = ["command-line-utilities", "network-programming", "gui"]
 
+# All code is in the library (src/lib.rs); both binaries call `network_scope::run`, and the
+# fuzz targets in fuzz/ call `network_scope::fuzz`. The tests are the library's.
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+# GUI binary: Windows GUI subsystem in release builds.
+[[bin]]
+name = "network-scope"
+path = "src/main.rs"
+test = false
+
 # Console-subsystem twin of the GUI binary for scripts (shells wait, exit codes work).
-# Its tests are the main binary's tests, so they are not run twice.
 [[bin]]
 name = "network-scope-cli"
 path = "src/bin/network-scope-cli.rs"

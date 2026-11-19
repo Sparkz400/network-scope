@@ -173,6 +173,84 @@ impl<'a> Reader<'a> {
         ]))
     }
 }
+/// Body of an ERR message: the status code and reason, as the error text.
+pub(crate) fn transport_error(b: &[u8]) -> Result<String, String> {
+    let mut r = Reader::new(b);
+    let status = r.word()?;
+    Ok(format!(
+        "UA transport error 0x{status:08x}: {}",
+        r.string()?
+    ))
+}
+/// OpenSecureChannel response body: (channel ID, token ID).
+pub(crate) fn parse_open(b: &[u8]) -> Result<(u32, u32), String> {
+    let mut r = Reader::new(b);
+    let channel = r.word()?;
+    if r.string()? != POLICY {
+        return Err("Server did not permit an unsecured discovery channel".into());
+    }
+    r.bytes()?;
+    r.bytes()?;
+    r.word()?;
+    if r.word()? != 1 {
+        return Err("UA open request mismatch".into());
+    }
+    r.response(449, 1)?;
+    r.word()?;
+    if r.word()? != channel {
+        return Err("UA channel ID mismatch".into());
+    }
+    let token = r.word()?;
+    r.take(12)?;
+    r.bytes()?;
+    Ok((channel, token))
+}
+/// GetEndpoints response (request ID 2).
+pub(crate) fn parse_endpoints(b: &[u8]) -> Result<Fields, String> {
+    let mut r = Reader::new(b);
+    r.response(431, 2)?;
+    let mut fields = Fields::new();
+    let n = r.count()?;
+    fields.insert("endpoint_count".into(), n.to_string());
+    for index in 0..n {
+        let prefix = format!("endpoint_{index}");
+        fields.insert(format!("{prefix}.url"), r.string()?);
+        for (k, v) in r.application()? {
+            fields.insert(format!("{prefix}.{k}"), v);
+        }
+        let cert = r.bytes()?;
+        if !cert.is_empty() {
+            fields.insert(
+                format!("{prefix}.certificate_der_hex"),
+                cert.iter().map(|b| format!("{b:02x}")).collect(),
+            );
+        }
+        fields.insert(format!("{prefix}.security_mode"), r.word()?.to_string());
+        fields.insert(format!("{prefix}.security_policy"), r.string()?);
+        for _ in 0..r.count()? {
+            r.string()?;
+            r.word()?;
+            r.string()?;
+            r.string()?;
+            r.string()?;
+        }
+        fields.insert(format!("{prefix}.transport"), r.string()?);
+        fields.insert(format!("{prefix}.security_level"), r.byte()?.to_string());
+    }
+    Ok(fields)
+}
+/// FindServers response (request ID 3).
+pub(crate) fn parse_servers(b: &[u8]) -> Result<Fields, String> {
+    let mut r = Reader::new(b);
+    r.response(425, 3)?;
+    let mut f = Fields::new();
+    for i in 0..r.count()? {
+        for (k, v) in r.application()? {
+            f.insert(format!("server_{i}.{k}"), v);
+        }
+    }
+    Ok(f)
+}
 async fn send(s: &mut TcpStream, kind: &[u8; 4], body: &[u8]) -> Result<(), String> {
     let mut b = kind.to_vec();
     u32le(&mut b, (body.len() + 8) as u32);
@@ -189,12 +267,7 @@ async fn receive(s: &mut TcpStream) -> Result<([u8; 4], Vec<u8>), String> {
     let mut b = vec![0; n - 8];
     s.read_exact(&mut b).await.map_err(|e| e.to_string())?;
     if &h[..3] == b"ERR" {
-        let mut r = Reader::new(&b);
-        let status = r.word()?;
-        return Err(format!(
-            "UA transport error 0x{status:08x}: {}",
-            r.string()?
-        ));
+        return Err(transport_error(&b)?);
     }
     Ok((h[..4].try_into().unwrap(), b))
 }
@@ -277,86 +350,26 @@ async fn discover_stream(mut s: TcpStream, url: &str, gate: &Gate) -> Result<Fie
     if &kind != b"OPNF" {
         return Err("UA discovery channel rejected".into());
     }
-    let mut r = Reader::new(&b);
-    let channel = r.word()?;
-    if r.string()? != POLICY {
-        return Err("Server did not permit an unsecured discovery channel".into());
-    }
-    r.bytes()?;
-    r.bytes()?;
-    r.word()?;
-    if r.word()? != 1 {
-        return Err("UA open request mismatch".into());
-    }
-    r.response(449, 1)?;
-    r.word()?;
-    if r.word()? != channel {
-        return Err("UA channel ID mismatch".into());
-    }
-    let token = r.word()?;
-    r.take(12)?;
-    r.bytes()?;
+    let (channel, token) = parse_open(&b)?;
     gate.wait().await;
     let mut req = request(428, 2);
     string(&mut req, url);
     u32le(&mut req, 0);
     u32le(&mut req, 0);
     let b = service(&mut s, channel, token, 2, &req).await?;
-    let mut r = Reader::new(&b);
-    r.response(431, 2)?;
-    let mut fields = Fields::new();
-    let n = r.count()?;
-    fields.insert("endpoint_count".into(), n.to_string());
-    for index in 0..n {
-        let prefix = format!("endpoint_{index}");
-        fields.insert(format!("{prefix}.url"), r.string()?);
-        for (k, v) in r.application()? {
-            fields.insert(format!("{prefix}.{k}"), v);
-        }
-        let cert = r.bytes()?;
-        if !cert.is_empty() {
-            fields.insert(
-                format!("{prefix}.certificate_der_hex"),
-                cert.iter().map(|b| format!("{b:02x}")).collect(),
-            );
-        }
-        fields.insert(format!("{prefix}.security_mode"), r.word()?.to_string());
-        fields.insert(format!("{prefix}.security_policy"), r.string()?);
-        for _ in 0..r.count()? {
-            r.string()?;
-            r.word()?;
-            r.string()?;
-            r.string()?;
-            r.string()?;
-        }
-        fields.insert(format!("{prefix}.transport"), r.string()?);
-        fields.insert(format!("{prefix}.security_level"), r.byte()?.to_string());
-    }
+    let mut fields = parse_endpoints(&b)?;
     gate.wait().await;
     let mut req = request(422, 3);
     string(&mut req, url);
     u32le(&mut req, 0);
     u32le(&mut req, 0);
     match service(&mut s, channel, token, 3, &req).await {
-        Ok(b) => {
-            let parse = || -> Result<Fields, String> {
-                let mut r = Reader::new(&b);
-                r.response(425, 3)?;
-                let mut f = Fields::new();
-                for i in 0..r.count()? {
-                    for (k, v) in r.application()? {
-                        f.insert(format!("server_{i}.{k}"), v);
-                    }
-                }
-                Ok(f)
-            };
-            match parse() {
-                Ok(f) => fields.extend(f),
-                Err(e) => {
-                    fields.insert("find_servers_error".into(), e);
-                }
+        Ok(b) => match parse_servers(&b) {
+            Ok(f) => fields.extend(f),
+            Err(e) => {
+                fields.insert("find_servers_error".into(), e);
             }
-        }
+        },
         Err(e) => {
             fields.insert("find_servers_error".into(), e);
         }

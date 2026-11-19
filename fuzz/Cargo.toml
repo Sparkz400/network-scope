@@ -1,0 +1,236 @@
+[package]
+name = "network-scope-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+network-scope = { path = ".." }
+
+# Not part of the main workspace: built only by `cargo fuzz` (nightly).
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "pcapfile"
+path = "fuzz_targets/pcapfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "passive_decode"
+path = "fuzz_targets/passive_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "otpassive_feed"
+path = "fuzz_targets/otpassive_feed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_flight"
+path = "fuzz_targets/tls_flight.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls13_server_hello"
+path = "fuzz_targets/tls13_server_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_certificate"
+path = "fuzz_targets/tls_certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fingerprint_server_hello"
+path = "fuzz_targets/fingerprint_server_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "smb_negotiate"
+path = "fuzz_targets/smb_negotiate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ntlm_challenge"
+path = "fuzz_targets/ntlm_challenge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssh_kexinit"
+path = "fuzz_targets/ssh_kexinit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_response"
+path = "fuzz_targets/http_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rdp_reply"
+path = "fuzz_targets/rdp_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "service_banner"
+path = "fuzz_targets/service_banner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "modbus_device_id"
+path = "fuzz_targets/modbus_device_id.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "enip_list_identity"
+path = "fuzz_targets/enip_list_identity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bacnet_iam"
+path = "fuzz_targets/bacnet_iam.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "s7_szl"
+path = "fuzz_targets/s7_szl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "opcua_reply"
+path = "fuzz_targets/opcua_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_dns"
+path = "fuzz_targets/udp_dns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_ntp"
+path = "fuzz_targets/udp_ntp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_ssdp"
+path = "fuzz_targets/udp_ssdp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_snmp"
+path = "fuzz_targets/udp_snmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_netbios"
+path = "fuzz_targets/udp_netbios.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_dhcp"
+path = "fuzz_targets/udp_dhcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nmap_import"
+path = "fuzz_targets/nmap_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "probes_json"
+path = "fuzz_targets/probes_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cves_json"
+path = "fuzz_targets/cves_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arp_reply"
+path = "fuzz_targets/arp_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "syn_reply"
+path = "fuzz_targets/syn_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tcp_options"
+path = "fuzz_targets/tcp_options.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "icmp_reply"
+path = "fuzz_targets/icmp_reply.rs"
+test = false
+doc = false
+bench = false

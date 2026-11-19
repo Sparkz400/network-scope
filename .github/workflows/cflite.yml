@@ -1,0 +1,70 @@
+name: cflite
+
+# Coverage-guided fuzzing of the parsers of untrusted input with ClusterFuzzLite (libFuzzer
+# and AddressSanitizer). Targets: fuzz/fuzz_targets; build: .clusterfuzzlite/.
+# Pull requests fuzz briefly in code-change mode; the weekly batch run fuzzes longer and keeps
+# the growing corpus as a workflow artifact for the next runs.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "fuzz/**"
+      - "data/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".clusterfuzzlite/**"
+      - ".github/workflows/cflite.yml"
+  schedule:
+    - cron: "41 3 * * 3" # weekly, Wednesday 03:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr:
+    name: fuzz (code change)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # download the corpus of earlier batch runs
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+      - name: Run fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 300
+          mode: code-change
+          sanitizer: address
+
+  batch:
+    name: fuzz (batch)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # download the corpus of earlier batch runs
+    steps:
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+      - name: Run fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 1800
+          mode: batch
+          sanitizer: address
