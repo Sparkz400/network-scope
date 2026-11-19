@@ -103,6 +103,7 @@ These apply to `scan` and `monitor`.
 | `--fast` | off | Leave Safe Mode (read-only OT still applies) |
 | `--syn` | off | IPv4 SYN scan via Npcap/libpcap (routed targets via the gateway MAC); else TCP connect |
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
+| `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
 | `--source-ip IPV4` / `--source-mac MAC` | | Source addresses of that interface |

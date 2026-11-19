@@ -19,6 +19,7 @@ use crate::{
     core::Gate,
     osfp::TcpFp,
     platform::{HopReply, NextHop},
+    rtt::RttEstimator,
     scan::{PortState, Settings},
 };
 use pnet_packet::{
@@ -118,36 +119,6 @@ impl Timing {
             adaptive: s.syn_adaptive,
             floor: Duration::from_millis(u64::from(s.minimum_timeout.max(1))),
         }
-    }
-}
-
-/// Smoothed RTT and RTT variance (RFC 6298 section 2, alpha 1/8, beta 1/4).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RttEstimator {
-    srtt: f64,
-    rttvar: f64,
-    samples: u32,
-}
-impl RttEstimator {
-    /// Clock granularity G of RFC 6298.
-    const GRANULARITY: f64 = 0.001;
-    pub fn sample(&mut self, rtt: Duration) {
-        let r = rtt.as_secs_f64();
-        if self.samples == 0 {
-            self.srtt = r;
-            self.rttvar = r / 2.0;
-        } else {
-            self.rttvar = 0.75 * self.rttvar + 0.25 * (self.srtt - r).abs();
-            self.srtt = 0.875 * self.srtt + 0.125 * r;
-        }
-        self.samples = self.samples.saturating_add(1);
-    }
-    /// SRTT + max(G, 4 * RTTVAR), clamped to `[floor, cap]`; `None` before the first sample.
-    pub fn rto(&self, floor: Duration, cap: Duration) -> Option<Duration> {
-        (self.samples > 0).then(|| {
-            Duration::from_secs_f64(self.srtt + (4.0 * self.rttvar).max(Self::GRANULARITY))
-                .clamp(floor, cap.max(floor))
-        })
     }
 }
 
@@ -1276,33 +1247,6 @@ mod tests {
         let log = sent.lock().unwrap().clone();
         assert_eq!(log.len(), 2, "one SYN and one RST: {log:?}");
         assert_eq!(log[1].1, TcpFlags::RST | TcpFlags::ACK);
-    }
-
-    #[test]
-    fn rtt_estimator_follows_rfc_6298() {
-        let (floor, cap) = (Duration::from_millis(1), Duration::from_secs(10));
-        let mut e = RttEstimator::default();
-        assert_eq!(e.rto(floor, cap), None);
-        e.sample(Duration::from_millis(100));
-        // SRTT = R, RTTVAR = R/2, RTO = SRTT + 4 * RTTVAR.
-        let rto = e.rto(floor, cap).unwrap().as_secs_f64();
-        assert!((rto - 0.3).abs() < 1e-9, "{rto}");
-        e.sample(Duration::from_millis(100));
-        let rto = e.rto(floor, cap).unwrap().as_secs_f64();
-        assert!((rto - 0.25).abs() < 1e-9, "RTTVAR decays: {rto}");
-        e.sample(Duration::from_millis(500));
-        assert!(e.rto(floor, cap).unwrap() > Duration::from_millis(500));
-        // Clamped to the minimum timeout and the port timeout.
-        let mut fast = RttEstimator::default();
-        fast.sample(Duration::from_micros(200));
-        assert_eq!(
-            fast.rto(Duration::from_millis(100), cap),
-            Some(Duration::from_millis(100))
-        );
-        assert_eq!(
-            e.rto(floor, Duration::from_millis(200)),
-            Some(Duration::from_millis(200))
-        );
     }
 
     #[test]

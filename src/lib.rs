@@ -21,6 +21,7 @@ pub(crate) mod platform;
 pub(crate) mod probes;
 pub(crate) mod report;
 pub(crate) mod risk;
+pub(crate) mod rtt;
 pub(crate) mod scan;
 pub(crate) mod script;
 pub(crate) mod service;
