@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "description": "Ground truth for lab/benchmark.py. Every host is a loopback address (127.0.0.0/8, the only addresses the benchmark may touch). A host lists exactly the services it serves; 'handler' names the function in lab/simulators.py that serves the port. Everything not listed is closed or absent. 'expect' holds what a scanner should name: service, product, version, device type, OS. Expectations come from what each simulator serves, not from what the tool reports; where the tool disagrees, that is a miss in the benchmark.",
+  "scan": {
+    "closed_tcp_ports": [25, 2222, 8081, 9999],
+    "note": "Port 80 is never used: Windows hosts often run IIS there. The scan covers the open TCP ports below plus closed_tcp_ports on every host."
+  },
+  "hosts": [
+    {
+      "address": "127.0.10.1",
+      "role": "weak Unix server: FTP, SSH, Telnet and a web admin page",
+      "tcp": [
+        {"port": 21, "handler": "ftp", "expect": {"service": "ftp", "product": "vsFTPd", "version": "2.3.4"}},
+        {"port": 22, "handler": "ssh", "expect": {"service": "ssh", "product": "OpenSSH", "version": "7.4"}},
+        {"port": 23, "handler": "telnet", "expect": {"service": "telnet"}},
+        {"port": 8080, "handler": "http", "expect": {"service": "http", "product": "Apache", "version": "2.4.49"}}
+      ],
+      "udp": []
+    },
+    {
+      "address": "127.0.10.2",
+      "role": "PLC: Modbus/TCP, EtherNet/IP and BACnet/IP",
+      "tcp": [
+        {"port": 502, "handler": "modbus", "expect": {"service": "modbus", "identity": {"Modbus.vendor": "LabWorks"}}},
+        {"port": 44818, "handler": "enip", "expect": {"service": "ethernet/ip", "identity": {"EtherNet/IP.vendor": "Rockwell Automation/Allen-Bradley"}}}
+      ],
+      "udp": [
+        {"port": 47808, "handler": "bacnet", "expect": {"service": "bacnet", "identity": {"BACnet.device_id": "1000"}}}
+      ],
+      "expect": {"device_type": "Industrial controller / OT device"}
+    },
+    {
+      "address": "127.0.10.3",
+      "role": "web server only",
+      "tcp": [
+        {"port": 8080, "handler": "http", "expect": {"service": "http", "product": "Apache", "version": "2.4.49"}}
+      ],
+      "udp": []
+    },
+    {
+      "address": "127.0.10.4",
+      "role": "Debian Linux web server (SSH and Apache name the distribution)",
+      "tcp": [
+        {"port": 22, "handler": "ssh_debian", "expect": {"service": "ssh", "product": "OpenSSH"}},
+        {"port": 8080, "handler": "http_debian", "expect": {"service": "http", "product": "Apache", "version": "2.4.56"}}
+      ],
+      "udp": [],
+      "expect": {"os": "Linux", "device_type": "Linux/Unix host"}
+    },
+    {
+      "address": "127.0.10.5",
+      "role": "database server (Redis)",
+      "tcp": [
+        {"port": 6379, "handler": "redis", "expect": {"service": "redis", "product": "Redis", "version": "5.0.7"}}
+      ],
+      "udp": [],
+      "expect": {"device_type": "Database server"}
+    },
+    {
+      "address": "127.0.10.6",
+      "role": "Windows web server (IIS)",
+      "tcp": [
+        {"port": 8080, "handler": "http_iis", "expect": {"service": "http", "product": "Microsoft-IIS", "version": "10.0"}}
+      ],
+      "udp": [],
+      "expect": {"os": "Windows", "device_type": "Windows computer"}
+    }
+  ],
+  "absent_hosts": ["127.0.10.7", "127.0.10.8", "127.0.10.9"]
+}
