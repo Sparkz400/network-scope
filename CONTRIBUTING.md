@@ -28,6 +28,12 @@ cargo build --release --locked
 python lab/verify.py target/release/network-scope        # .exe on Windows
 ```
 
+Accuracy benchmark against the ground truth in `lab/ground_truth.json` (needs an absolute path to the CLI; CI fails when a metric drops below `lab/benchmark_baseline.json`, see [Lab and testing](docs/src/lab-and-testing.md#accuracy-benchmark)):
+
+```sh
+python -I lab/benchmark.py --cli /absolute/path/to/target/release/network-scope-cli --check
+```
+
 Dependency checks (RustSec advisories, licenses, sources), the same ones the `security` workflow runs:
 
 ```sh
