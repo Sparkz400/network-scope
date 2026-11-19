@@ -26,7 +26,7 @@ Some findings carry an optional `reference`: a link to official documentation on
 
 **CVE entries are version-based hints only.** Distributions backport fixes without changing the version string, so confirm with the vendor advisory or an authenticated check. Network Scope is not a vulnerability scanner.
 
-The rules live in [`data/cves.json`](https://github.com/Sparkz400/network-scope/blob/main/data/cves.json) (built in). A user file merges like `probes.json`: `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`), or `--cves FILE` on any command. A rule or CPE entry with the same `id` replaces the built-in one.
+The rules live in [`data/cves.json`](https://github.com/Sparkz400/network-scope/blob/main/data/cves.json) (built in). A user file merges like `probes.json`: `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`), or `--cves FILE` on any command, or the **CVE rules file** field in the GUI Settings (with a Browse button; the path is kept with the preferences and, like `--cves FILE`, replaces the default user file). A rule or CPE entry with the same `id` replaces the built-in one. In the GUI the file is loaded at start-up and when the field is changed; if it cannot be read or parsed, the error is shown under the field and the previous rules stay active.
 
 Rule fields:
 

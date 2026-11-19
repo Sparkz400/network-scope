@@ -114,11 +114,18 @@ impl Dedup {
             renotify: renotify.map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX)),
         }
     }
-    /// Seeds the state from stored alerts (e.g. `store::list_alerts`), so a restarted monitor
-    /// does not repeat what it raised just before: alerts raised within `window` seconds
-    /// before `now` count as active.
-    pub fn restore(&mut self, stored: &[Alert], now: i64, window: i64) {
-        for a in stored.iter().filter(|a| now - a.timestamp <= window) {
+    /// The oldest alert time that can still suppress a repeat at `now`: with `renotify`, an
+    /// alert raised that long ago is raised again anyway; without it, any alert can.
+    pub fn restore_since(&self, now: i64) -> i64 {
+        self.renotify.map_or(0, |r| now.saturating_sub(r))
+    }
+    /// Seeds the state from stored alerts of this monitor (`store::list_alerts_since` with
+    /// `restore_since` and the monitor's targets), so a restarted monitor does not repeat what
+    /// it raised before: the latest raise time of each key is restored, which also restarts the
+    /// `renotify` timer where it was.
+    pub fn restore(&mut self, stored: &[Alert], now: i64) {
+        let since = self.restore_since(now);
+        for a in stored.iter().filter(|a| a.timestamp >= since) {
             let t = self.active.entry(alert_key(a)).or_insert(a.timestamp);
             *t = (*t).max(a.timestamp);
         }
@@ -536,6 +543,15 @@ fn collect_observations(
     warnings
 }
 
+/// Seeds `dedup` from the alerts this monitor raised before a restart: those of scans of the
+/// same targets. Other monitors on the same database (other targets) are not considered, so they
+/// neither suppress nor renotify each other.
+fn restore_dedup(dedup: &mut Dedup, db: &Path, targets_text: &str, now: i64) -> Result<(), String> {
+    let stored = store::list_alerts_since(db, dedup.restore_since(now), Some(targets_text))?;
+    dedup.restore(&stored, now);
+    Ok(())
+}
+
 pub fn run(
     targets_text: &str,
     settings: scan::Settings,
@@ -551,15 +567,9 @@ pub fn run(
     let notify = &cfg.policy.notify;
     let mut dedup = Dedup::new(notify.renotify);
     if notify.dedup {
-        // Alerts raised shortly before a restart are not repeated. A lookup failure only
-        // costs repeated alerts.
-        let window = i64::try_from(cfg.interval.as_secs())
-            .unwrap_or(i64::MAX / 4)
-            .saturating_mul(2)
-            .saturating_add(300);
-        match store::list_alerts(db, 2000) {
-            Ok(stored) => dedup.restore(&stored, now(), window),
-            Err(e) => eprintln!("Alert history not read ({e}); persisting alerts may repeat once"),
+        // A lookup failure only costs repeated alerts.
+        if let Err(e) = restore_dedup(&mut dedup, db, targets_text, now()) {
+            eprintln!("Alert history not read ({e}); persisting alerts may repeat once");
         }
     }
     let mut cycle = 0;
@@ -1291,15 +1301,187 @@ mod tests {
         old.timestamp = 1000;
         let mut ancient = a("new-device", "10.0.0.7", "New device 10.0.0.7");
         ancient.timestamp = 10;
+        // Without renotify any stored alert still counts, however old.
         let mut d = Dedup::new(None);
-        d.restore(&[old.clone(), ancient.clone()], 1500, 900);
-        let (out, n) = d.filter(vec![old, ancient], 1600, true);
+        assert_eq!(d.restore_since(1500), 0);
+        d.restore(&[old.clone(), ancient.clone()], 1500);
+        let (out, n) = d.filter(vec![old.clone(), ancient.clone()], 1600, true);
+        assert_eq!((out.len(), n), (0, 2));
+        // With renotify, an alert older than the interval would be raised again anyway, and
+        // a restored one keeps its original timer.
+        let mut d = Dedup::new(Some(Duration::from_secs(900)));
+        assert_eq!(d.restore_since(1500), 600);
+        d.restore(&[old.clone(), ancient.clone()], 1500);
+        let (out, n) = d.filter(vec![old.clone(), ancient], 1600, true);
         assert_eq!(n, 1, "the recent alert is not repeated after a restart");
+        assert_eq!(kinds(&out), ["new-device"]);
+        let (out, _) = d.filter(vec![old], 1900, true);
+        assert_eq!(out.len(), 1, "raised again 900 s after its stored time");
+    }
+
+    fn temp_db(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "netscope-monitor-{tag}-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn remove_db(path: &Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(p));
+        }
+    }
+
+    /// One monitoring cycle against `db` the way `run` does it: restore, scan row, filter, save.
+    fn cycle(
+        db: &Path,
+        targets: &str,
+        renotify: Option<Duration>,
+        now: i64,
+        produced: Vec<Alert>,
+    ) -> Vec<Alert> {
+        let mut d = Dedup::new(renotify);
+        restore_dedup(&mut d, db, targets, now).unwrap();
+        let id = store::save(
+            db,
+            &Snapshot {
+                targets: targets.into(),
+                complete: true,
+                settings: scan::Settings::default(),
+                hosts: vec![],
+                observations: vec![],
+                notes: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        let (out, _) = d.filter(produced, now, true);
+        store::save_alerts(db, id, &out).unwrap();
+        out
+    }
+
+    fn at(t: i64, kind: &str, subject: &str, message: &str) -> Alert {
+        alert(t, Severity::High, kind, subject, message)
+    }
+
+    #[test]
+    fn a_restarted_monitor_does_not_repeat_what_it_raised() {
+        let db = temp_db("restart");
+        let rogue = |t| {
+            at(
+                t,
+                "rogue-dhcp",
+                "10.0.0.66",
+                "Unexpected DHCP server 10.0.0.66",
+            )
+        };
+        let hour = Some(Duration::from_secs(3600));
+        // long before the restart, outside any short window, and with other alerts in between
         assert_eq!(
-            kinds(&out),
-            ["new-device"],
-            "outside the window it is raised"
+            cycle(&db, "10.0.0.0/24", hour, 1000, vec![rogue(1000)]).len(),
+            1
         );
+        for t in [1100, 1200] {
+            let noise = at(
+                t,
+                "port-opened",
+                "10.0.0.5",
+                &format!("10.0.0.5: TCP port {t} newly open"),
+            );
+            cycle(&db, "10.0.0.0/24", hour, t, vec![rogue(t), noise]);
+        }
+        // a "restart" is a new Dedup: still suppressed 3000 s later, long after the old
+        // two-intervals window, and the renotify timer continues from the first raise
+        assert!(cycle(&db, "10.0.0.0/24", hour, 4000, vec![rogue(4000)]).is_empty());
+        assert_eq!(
+            cycle(&db, "10.0.0.0/24", hour, 4600, vec![rogue(4600)]).len(),
+            1,
+            "renotify window elapsed (3600 s after the raise at 1000)"
+        );
+        // after that raise the timer starts over
+        assert!(cycle(&db, "10.0.0.0/24", hour, 5000, vec![rogue(5000)]).is_empty());
+        // without renotify a persisting alert stays suppressed across restarts
+        assert!(cycle(&db, "10.0.0.0/24", None, 900_000, vec![rogue(900_000)]).is_empty());
+        remove_db(&db);
+    }
+
+    #[test]
+    fn many_stored_alerts_do_not_push_older_state_out() {
+        let db = temp_db("many");
+        let first = cycle(
+            &db,
+            "10.0.0.0/24",
+            None,
+            1,
+            vec![at(1, "rogue-dhcp", "10.0.0.66", "x")],
+        );
+        assert_eq!(first.len(), 1);
+        // more alerts than any fixed row limit
+        let noise: Vec<Alert> = (0..2500)
+            .map(|i| {
+                at(
+                    2,
+                    "port-opened",
+                    "10.0.0.5",
+                    &format!("10.0.0.5: TCP port {i} newly open"),
+                )
+            })
+            .collect();
+        cycle(&db, "10.0.0.0/24", None, 2, noise);
+        let again = cycle(
+            &db,
+            "10.0.0.0/24",
+            None,
+            3,
+            vec![at(3, "rogue-dhcp", "10.0.0.66", "x")],
+        );
+        assert!(again.is_empty());
+        remove_db(&db);
+    }
+
+    #[test]
+    fn monitors_with_other_targets_on_one_database_do_not_suppress_each_other() {
+        let db = temp_db("scopes");
+        let rogue = |t| {
+            at(
+                t,
+                "rogue-dhcp",
+                "dhcp",
+                "2 DHCP servers answer: 10.0.0.1 (x); 10.0.0.9 (y)",
+            )
+        };
+        let cap = |t| {
+            at(
+                t,
+                "capture-incomplete",
+                "eth0",
+                "Passive capture incomplete: 5 dropped",
+            )
+        };
+        let day = Some(Duration::from_secs(86_400));
+        assert_eq!(
+            cycle(&db, "10.0.0.0/24", day, 100, vec![rogue(100), cap(100)]).len(),
+            2
+        );
+        // monitor B (other targets) raises the identical conditions: not suppressed by A
+        assert_eq!(
+            cycle(&db, "10.0.1.0/24", day, 200, vec![rogue(200), cap(200)]).len(),
+            2
+        );
+        // each monitor, restarted, still suppresses its own and only its own
+        assert!(cycle(&db, "10.0.0.0/24", day, 300, vec![rogue(300), cap(300)]).is_empty());
+        assert!(cycle(&db, "10.0.1.0/24", day, 400, vec![rogue(400), cap(400)]).is_empty());
+        // a third scope has its own history
+        assert_eq!(
+            cycle(&db, "192.168.0.0/24", day, 500, vec![rogue(500)]).len(),
+            1
+        );
+        remove_db(&db);
     }
 
     #[test]

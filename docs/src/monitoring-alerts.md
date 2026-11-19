@@ -25,7 +25,7 @@ network-scope-cli monitor TARGETS [scan options] --interval 300 [--cycles N]
 
 ## De-duplication
 
-A condition that persists is alerted once, again after a complete cycle without it, or after `--renotify-hours` (default 24; 0 = only after it resolved). `--no-dedup` alerts every cycle. A restarted monitor does not repeat alerts raised within two intervals before start.
+A condition that persists is alerted once, again after a complete cycle without it, or after `--renotify-hours` (default 24; 0 = only after it resolved). `--no-dedup` alerts every cycle. A restarted monitor restores this state from the alerts it stored: a condition it raised before the restart is not repeated while it persists, and the `--renotify-hours` timer continues from the original alert (with 0, any stored alert counts, however old). Only alerts of scans of the same targets count, so several monitors with different targets can share one database without suppressing each other's alerts (two monitors with the identical targets text share their history). One limit remains: a condition that resolved and came back during the downtime, or in the first cycle after the restart, cannot be told from one that persisted, and is not raised until it has resolved once more or the renotify time has passed.
 
 ## Rogue DHCP
 
