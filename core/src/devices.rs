@@ -1,14 +1,20 @@
 //! One record per device. Active scan results and passive observations are merged on the MAC
 //! address (or on the IP address when no MAC is known), then enriched with the manufacturer
 //! from the embedded IEEE registry and a scored device-type guess.
-use crate::{oui, passive::Observation, scan::Host};
+use crate::{
+    evidence::{Evidence, confidence_from_scores},
+    oui,
+    passive::Observation,
+    scan::Host,
+};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::IpAddr,
 };
 
-pub struct Evidence<'a> {
+/// What the classifier looks at: everything known about one device.
+pub struct Facts<'a> {
     pub mac: &'a str,
     pub vendor: &'a str,
     pub tcp: &'a [u16],
@@ -89,14 +95,26 @@ pub fn is_virtual_mac(mac: &str) -> bool {
 
 /// Derived keys that describe software configuration, not the device: CPE names (user
 /// templates are free text), SSH HASSH and TLS JA4S fingerprints. Keyword rules skip them.
-const NON_EVIDENCE_SUFFIXES: [&str; 4] = [".cpe", ".hassh", ".hassh_algorithms", ".ja4s"];
+const NON_EVIDENCE_SUFFIXES: [&str; 5] = [
+    ".cpe",
+    ".hassh",
+    ".hassh_algorithms",
+    ".ja4s",
+    ".confidence",
+];
 fn is_device_evidence(key: &str) -> bool {
     // Passive hints are scored by their own rule; their reasons must not feed keyword matching.
     !key.starts_with("passive.") && !NON_EVIDENCE_SUFFIXES.iter().any(|s| key.ends_with(s))
 }
 
 /// (device type, evidence) when the combined evidence is strong enough.
-pub fn classify(e: &Evidence) -> Option<(String, String)> {
+pub fn classify(e: &Facts) -> Option<(String, String)> {
+    classify_detailed(e).map(|(kind, why)| (kind, why.because()))
+}
+
+/// The device type with its reasons and a confidence score (0-100): the evidence behind the
+/// winning type, plus half of its lead over the runner-up.
+pub fn classify_detailed(e: &Facts) -> Option<(String, Evidence)> {
     let mut s = Scores::default();
     let all_text = e
         .identity
@@ -486,11 +504,17 @@ pub fn classify(e: &Evidence) -> Option<(String, String)> {
     if score < 30 {
         return None;
     }
+    let runner_up = ranked.get(1).map_or(0, |(_, (v, _))| *v);
     let mut kind = name.to_string();
+    let mut why = why;
     if is_virtual_mac(e.mac) {
         kind.push_str(" [virtual machine]");
+        why.push("virtual-machine MAC prefix".into());
     }
-    Some((kind, why.join("; ")))
+    Some((
+        kind,
+        Evidence::new(why, confidence_from_scores(score, runner_up)),
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -505,6 +529,12 @@ pub struct Device {
     pub type_evidence: String,
     pub os: String,
     pub os_confidence: String,
+    /// Why the device type was concluded, with a 0-100 confidence (also in `type_evidence`).
+    #[serde(skip_serializing_if = "Evidence::is_empty")]
+    pub device_type_evidence: Evidence,
+    /// Why the OS family was guessed, with a 0-100 confidence (also in `os_confidence`).
+    #[serde(skip_serializing_if = "Evidence::is_empty")]
+    pub os_evidence: Evidence,
     pub open_tcp: Vec<u16>,
     pub open_udp: Vec<u16>,
     pub services: BTreeMap<String, String>,
@@ -726,7 +756,7 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
                     }
                 }
             }
-            let (device_type, type_evidence) = classify(&Evidence {
+            let (device_type, device_type_evidence) = classify_detailed(&Facts {
                 mac: &a.mac,
                 vendor: &vendor,
                 tcp: &tcp,
@@ -752,7 +782,9 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
                 ips: a.ips.into_iter().collect(),
                 hostnames,
                 device_type,
-                type_evidence,
+                type_evidence: device_type_evidence.because(),
+                device_type_evidence,
+                os_evidence: Evidence::from_identity(&a.identity, "os").unwrap_or_default(),
                 os,
                 os_confidence: a.identity.get("os.confidence").cloned().unwrap_or_default(),
                 open_tcp: tcp,
@@ -807,7 +839,9 @@ fn smb_names(identity: &BTreeMap<String, String>) -> BTreeSet<String> {
 }
 
 pub fn csv(devices: &[Device]) -> String {
-    let mut out = String::from("id,mac,vendor,ips,hostnames,type,os,open_tcp,open_udp,sources\n");
+    let mut out = String::from(
+        "id,mac,vendor,ips,hostnames,type,os,open_tcp,open_udp,sources,type_confidence,type_evidence,os_confidence,os_evidence\n",
+    );
     for d in devices {
         let cells = [
             d.id.clone(),
@@ -832,6 +866,10 @@ pub fn csv(devices: &[Device]) -> String {
                 .collect::<Vec<_>>()
                 .join(" "),
             d.sources.join("; "),
+            d.device_type_evidence.confidence.to_string(),
+            d.device_type_evidence.because(),
+            d.os_evidence.confidence.to_string(),
+            d.os_evidence.because(),
         ];
         out.push_str(
             &cells
@@ -1274,8 +1312,8 @@ mod tests {
         tcp: &'a [u16],
         identity: &'a BTreeMap<String, String>,
         os: &'a str,
-    ) -> Evidence<'a> {
-        Evidence {
+    ) -> Facts<'a> {
+        Facts {
             mac: "",
             vendor,
             tcp,
@@ -1467,7 +1505,7 @@ mod tests {
             None,
             "a web port alone is not a device type"
         );
-        let vm = Evidence {
+        let vm = Facts {
             mac: "00:0C:29:AA:BB:CC",
             ..ev("", &[445, 3389], &none, "Windows")
         };
@@ -1671,5 +1709,91 @@ mod tests {
         assert!(srv1.hostnames.contains(&"SRV1".to_string()));
         assert!(srv1.hostnames.contains(&"srv1.corp.example".to_string()));
         assert_eq!(srv1.smb_names.len(), 2);
+    }
+    #[test]
+    fn device_type_carries_reasons_and_a_confidence() {
+        let id: BTreeMap<String, String> = BTreeMap::new();
+        // A print port alone (25) is below the threshold; with the vendor OUI and a service
+        // text that names the model it is concluded, and every reason is listed.
+        assert!(classify_detailed(&ev("", &[9100], &id, "")).is_none());
+        let id: BTreeMap<String, String> =
+            [("svc.80".to_string(), "http HP LaserJet 4250".to_string())].into();
+        let (kind, why) = classify_detailed(&ev("Hewlett-Packard", &[9100, 80], &id, "")).unwrap();
+        assert_eq!(kind, PRINTER);
+        assert!(
+            why.reasons.iter().any(|r| r == "print port 9100"),
+            "{why:?}"
+        );
+        assert!(
+            why.reasons.iter().any(|r| r.contains("laserjet")),
+            "{why:?}"
+        );
+        assert!((50..=95).contains(&why.confidence), "{why:?}");
+        // More agreeing evidence never lowers the score; a contested call scores lower than
+        // an uncontested one.
+        let strong = classify_detailed(&ev("Hewlett-Packard", &[9100, 515, 631, 80], &id, ""))
+            .unwrap()
+            .1
+            .confidence;
+        assert!(strong >= why.confidence);
+        let contested: BTreeMap<String, String> = [
+            ("svc.80".to_string(), "http HP LaserJet 4250".to_string()),
+            ("svc.22".to_string(), "ssh OpenSSH 9.6".to_string()),
+        ]
+        .into();
+        let (_, mixed) = classify_detailed(&ev("", &[9100, 22, 80], &contested, "Linux")).unwrap();
+        assert!(mixed.confidence <= strong, "{mixed:?}");
+        // The plain wrapper keeps its text.
+        let (k2, text) = classify(&ev("Hewlett-Packard", &[9100, 80], &id, "")).unwrap();
+        assert_eq!((k2.as_str(), text), (PRINTER, why.because()));
+        // A virtual machine says why.
+        let empty = BTreeMap::new();
+        let vm = Facts {
+            mac: "00:50:56:00:00:01",
+            ..ev("", &[3389, 445], &empty, "Windows")
+        };
+        if let Some((kind, why)) = classify_detailed(&vm) {
+            assert!(kind.ends_with("[virtual machine]"));
+            assert!(why.reasons.iter().any(|r| r.contains("virtual-machine")));
+        }
+    }
+
+    #[test]
+    fn merged_devices_expose_both_evidence_blocks_and_csv_columns() {
+        let id = [
+            ("svc.9100", "jetdirect"),
+            ("svc.80", "http HP LaserJet 4250"),
+            ("os.guess", "Embedded Linux/RTOS"),
+            ("os.confidence", "55%"),
+            ("os.evidence", "minimal TCP options; initial TTL 64"),
+        ];
+        let d = merge(
+            &[host("10.0.0.9", "00:11:22:33:44:55", &[9100, 80], &id)],
+            &[],
+        );
+        let d = &d[0];
+        assert_eq!(d.device_type, PRINTER);
+        assert!(d.device_type_evidence.confidence > 0);
+        assert_eq!(d.type_evidence, d.device_type_evidence.because());
+        assert_eq!(d.os_evidence.confidence, 55);
+        assert_eq!(
+            d.os_evidence.reasons,
+            ["minimal TCP options", "initial TTL 64"]
+        );
+        let json = serde_json::to_value(d).unwrap();
+        assert_eq!(json["os_evidence"]["confidence"], 55);
+        assert!(json["device_type_evidence"]["reasons"].is_array());
+        let csv = csv(std::slice::from_ref(d));
+        assert!(
+            csv.lines()
+                .next()
+                .unwrap()
+                .ends_with("type_confidence,type_evidence,os_confidence,os_evidence")
+        );
+        assert!(csv.contains(",\"55\","), "{csv}");
+        // A device with nothing to say has no evidence blocks in the JSON.
+        let bare = merge(&[host("10.0.0.10", "", &[], &[])], &[]);
+        let json = serde_json::to_value(&bare[0]).unwrap();
+        assert!(json.get("os_evidence").is_none() && json.get("device_type_evidence").is_none());
     }
 }

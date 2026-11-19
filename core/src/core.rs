@@ -805,10 +805,7 @@ fn analyze(h: &mut Host, fp: Option<&TcpFp>) {
     let ttl = h.ttl;
     if let Some(g) = crate::osfp::guess(ttl, fp, &h.identity, &h.open, vendor) {
         h.identity.insert("os.guess".into(), g.name.clone());
-        h.identity
-            .insert("os.confidence".into(), format!("{}%", g.confidence));
-        h.identity
-            .insert("os.evidence".into(), g.evidence.join("; "));
+        g.evidence().store(&mut h.identity, "os");
     }
     if let Some(fp) = fp {
         h.identity
@@ -816,7 +813,7 @@ fn analyze(h: &mut Host, fp: Option<&TcpFp>) {
     }
     let os = h.identity.get("os.guess").cloned().unwrap_or_default();
     let hostnames = [h.hostname.clone()];
-    let evidence = crate::devices::Evidence {
+    let facts = crate::devices::Facts {
         mac: &h.mac,
         vendor,
         tcp: &h.open,
@@ -831,9 +828,9 @@ fn analyze(h: &mut Host, fp: Option<&TcpFp>) {
         ttl,
         protocols: &[],
     };
-    if let Some((kind, why)) = crate::devices::classify(&evidence) {
+    if let Some((kind, why)) = crate::devices::classify_detailed(&facts) {
         h.identity.insert("device.type".into(), kind);
-        h.identity.insert("device.evidence".into(), why);
+        why.store(&mut h.identity, "device");
     }
 }
 #[cfg(test)]
@@ -953,6 +950,39 @@ mod tests {
             udp_open: vec![],
             trace: vec![],
         }
+    }
+
+    #[test]
+    fn scan_analysis_stores_reasons_and_confidence_for_os_and_device_type() {
+        let mut h = host("10.0.0.1");
+        h.ttl = Some(128);
+        h.open = vec![9100, 80, 515];
+        h.identity
+            .insert("svc.80".into(), "http HP LaserJet 4250".into());
+        // Enough for an OS call (TTL 128 alone is below the threshold).
+        h.identity
+            .insert("udp.137".into(), "NetBIOS name table".into());
+        analyze(&mut h, None);
+        assert_eq!(h.identity["device.type"], "Printer / MFP");
+        let device = crate::evidence::Evidence::from_identity(&h.identity, "device").unwrap();
+        assert!(device.confidence >= 30, "{device:?}");
+        assert!(device.reasons.iter().any(|r| r.contains("print port")));
+        assert!(h.identity["device.confidence"].ends_with('%'));
+        let os = crate::evidence::Evidence::from_identity(&h.identity, "os").unwrap();
+        assert_eq!(h.identity["os.guess"], "Windows");
+        assert!(
+            os.reasons.contains(&"initial TTL 128".to_string()),
+            "{os:?}"
+        );
+        // Nothing known: no conclusion, so no evidence keys.
+        let mut bare = host("10.0.0.2");
+        analyze(&mut bare, None);
+        assert!(
+            !bare
+                .identity
+                .keys()
+                .any(|k| k.starts_with("os.") || k.starts_with("device."))
+        );
     }
 
     #[tokio::test]

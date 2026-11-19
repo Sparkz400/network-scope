@@ -90,6 +90,7 @@ pub(crate) mod arp;
 pub mod capture;
 pub mod core;
 pub mod devices;
+pub mod evidence;
 pub mod feeds;
 pub(crate) mod fingerprint;
 pub mod monitor;

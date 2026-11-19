@@ -1,6 +1,6 @@
 //! The live terminal view of `scan --tui`: host list, detail view, sort, pause and stop keys.
 use super::commands::scan::{Collected, accept, collect};
-use crate::{risk, scan};
+use crate::{evidence::Evidence, risk, scan};
 use std::{sync::atomic::Ordering, time::Duration};
 
 fn stop_key(code: crossterm::event::KeyCode) -> bool {
@@ -203,9 +203,19 @@ fn detail_lines(h: &scan::Host) -> Vec<String> {
             }
         ),
         format!("MAC: {}", if h.mac.is_empty() { "-" } else { &h.mac }),
-        String::new(),
-        format!("Open TCP ports ({})", h.open.len()),
     ];
+    // Conclusions with their reasons and confidence ("Printer / MFP (75 %) because ...").
+    for (label, key, prefix) in [("OS", "os.guess", "os"), ("Type", "device.type", "device")] {
+        if let Some(value) = h.identity.get(key) {
+            lines.push(format!(
+                "{label}: {}",
+                Evidence::from_identity(&h.identity, prefix)
+                    .map_or_else(|| value.clone(), |e| e.line(value))
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push(format!("Open TCP ports ({})", h.open.len()));
     for p in &h.open {
         let service = h.identity.get(&format!("svc.{p}"));
         lines.push(format!(
@@ -228,11 +238,16 @@ fn detail_lines(h: &scan::Host) -> Vec<String> {
     lines.push(format!("Findings ({})", findings.len()));
     for f in &findings {
         lines.push(format!(
-            "  [{}] {}{}: {}",
+            "  [{}] {}{}: {}{}",
             f.severity.name(),
             f.title,
             f.port.map_or(String::new(), |p| format!(" (port {p})")),
-            f.evidence
+            f.evidence,
+            if f.confidence > 0 {
+                format!(" [confidence {} %]", f.confidence)
+            } else {
+                String::new()
+            }
         ));
     }
     let identity: Vec<String> = h
@@ -551,6 +566,34 @@ mod tests {
                 assert!(screen.contains("Findings ("), "{screen}");
             }
         }
+    }
+
+    #[test]
+    fn tui_details_show_conclusions_with_reasons_and_confidence() {
+        let mut h = tui_host("10.0.0.2", vec![23]);
+        let text = detail_lines(&h).join("\n");
+        assert!(!text.contains("OS:") && !text.contains("Type:"), "{text}");
+        assert!(text.contains("[confidence 90 %]"), "{text}");
+        h.identity.insert("os.guess".into(), "Linux".into());
+        h.identity.insert("os.confidence".into(), "70%".into());
+        h.identity.insert(
+            "os.evidence".into(),
+            "initial TTL 64; TCP options M,S,T,N,W".into(),
+        );
+        h.identity
+            .insert("device.type".into(), "Printer / MFP".into());
+        let lines = detail_lines(&h);
+        assert!(
+            lines.contains(
+                &"OS: Linux (70 %) because initial TTL 64; TCP options M,S,T,N,W".to_string()
+            ),
+            "{lines:?}"
+        );
+        // A conclusion without stored reasons is shown plainly.
+        assert!(
+            lines.contains(&"Type: Printer / MFP".to_string()),
+            "{lines:?}"
+        );
     }
 
     #[test]

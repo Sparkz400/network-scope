@@ -59,6 +59,15 @@ A reply means open, an ICMP port-unreachable means closed, silence is "open or f
 - The **manufacturer** comes from the embedded IEEE registry (MA-L, MA-M and MA-S); locally administered/randomised MACs are marked instead of looked up. EtherNet/IP vendor names come from the ODVA vendor list. See [Data sources](data-sources.md).
 - The **device type** is a second scored guess with its evidence listed.
 
+### Evidence and confidence
+
+Every conclusion says why. The OS guess, the device type and each finding carry an `Evidence`: a list of short reasons (`print port 9100`, `service text mentions laserjet`, `initial TTL 64`) and a confidence from 0 to 100.
+
+- **OS guess and device type:** the confidence is the score of the winning candidate plus half of its lead over the runner-up, limited to 10 to 95. It says how much independent evidence agrees and how far ahead the answer is; it is not a calibrated probability. In a scan result the reasons are the identity keys `os.evidence` / `device.evidence` and the scores `os.confidence` / `device.confidence` (`"70%"`). `devices ID` adds `device_type_evidence` and `os_evidence` objects (`{"reasons": [...], "confidence": 70}`) to each device, and the CSV gets `type_confidence`, `type_evidence`, `os_confidence` and `os_evidence` columns at the end. A guess imported from Nmap XML carries Nmap's accuracy as its confidence and no reasons.
+- **Findings:** `confidence` is a property of the rule: 95 when the server itself reported the condition (a TLS parameter, an SMB flag, an unauthenticated answer), 90 when the rule reads a service name or banner (Telnet, FTP, HTTP Basic), 70 for the PHP end-of-life table, 50 when only an open port number is the evidence (`ot-reachable`), 40 for version-based hints (`cve-*`, `heartbleed`, SMBGhost) because distributions backport fixes, and 60 for findings from user scripts. It is in the JSON and JSONL exports, the HTML and Markdown reports (under the evidence) and the TUI host details; exports written before the score existed load with it unset.
+- **Where it is shown:** the TUI host details (`OS: Linux (70 %) because ...`, `Type: ...`), the GUI host details (hover the OS and Type lines for the reasons), the Devices table of the HTML report (confidence next to the value, reasons as a tooltip), the Markdown summary (a `Why` column) and the JSON/JSONL exports.
+- The reasons and scores are not compared by `diff` and `monitor`: a scan that could see more or less gives different reasons for the same device, which is not a change of the device. A changed guess (`os.guess`, `device.type`) is still reported.
+
 SYN-ACK fingerprinting needs the SYN engine, so TCP-connect scans get TTL and service evidence only.
 
 ## Devices

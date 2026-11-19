@@ -177,6 +177,45 @@ fn topology_svg(hosts: &[Host]) -> String {
     s
 }
 
+/// A line under a finding's evidence ("confidence 90 %"), empty for an unscored finding.
+fn confidence_line_html(confidence: u8) -> String {
+    if confidence == 0 {
+        String::new()
+    } else {
+        format!("<br><span class=\"muted\">confidence {confidence} %</span>")
+    }
+}
+
+/// " (75 %)" after a Markdown table value, empty for an unscored conclusion.
+fn confidence_md(confidence: u8) -> String {
+    if confidence == 0 {
+        String::new()
+    } else {
+        format!(" ({confidence} %)")
+    }
+}
+
+/// The reasons behind a device's type and OS for the Markdown "Why" column.
+fn devices_why(d: &devices::Device) -> String {
+    let mut parts = vec![];
+    if !d.device_type_evidence.reasons.is_empty() {
+        parts.push(format!("type: {}", d.device_type_evidence.because()));
+    }
+    if !d.os_evidence.reasons.is_empty() {
+        parts.push(format!("OS: {}", d.os_evidence.because()));
+    }
+    parts.join(" / ")
+}
+
+/// " 75 %" in muted text, empty for an unscored conclusion.
+fn confidence_html(confidence: u8) -> String {
+    if confidence == 0 {
+        String::new()
+    } else {
+        format!(" <span class=\"muted\">{confidence} %</span>")
+    }
+}
+
 fn cve_links(ids: &[String]) -> String {
     ids.iter()
         .map(|id| {
@@ -413,7 +452,7 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
             .collect();
         let _ = write!(
             o,
-            "<tr><td>{}<br><span class=\"muted\">{}</span></td><td>{}<br><span class=\"muted\">{}</span></td><td title=\"{}\">{}</td><td>{} {}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}<br><span class=\"muted\">{}</span></td><td>{}<br><span class=\"muted\">{}</span></td><td title=\"{}\">{}{}</td><td title=\"{}\">{}{}</td><td>{}</td><td>{}</td></tr>",
             esc(&d
                 .ips
                 .iter()
@@ -427,10 +466,17 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
             } else {
                 d.vendor.clone()
             }),
-            esc(&d.type_evidence),
+            esc(&d.device_type_evidence.line(&d.device_type)),
             esc(&d.device_type),
+            confidence_html(d.device_type_evidence.confidence),
+            esc(&d.os_evidence.line(&d.os)),
             esc(&d.os),
-            esc(&d.os_confidence),
+            if d.os_evidence.confidence > 0 {
+                confidence_html(d.os_evidence.confidence)
+            } else {
+                // Not scored: show whatever text the import carried.
+                format!(" <span class=\"muted\">{}</span>", esc(&d.os_confidence))
+            },
             esc(&ports.join(", ")),
             esc(&d.sources.join("; "))
         );
@@ -554,8 +600,10 @@ fn findings_table(findings: &[risk::Finding], cpes: &Cpes) -> String {
         }
         let _ = write!(
             o,
-            "<td>{}</td><td>{}{}</td><td>{}",
+            "<td title=\"{}\">{}{}</td><td>{}{}</td><td>{}",
+            esc(&f.explain().line("")),
             esc(&f.evidence),
+            confidence_line_html(f.confidence),
             cve_links(&f.cve),
             crate::feeds::badges_html(f),
             esc(&f.advice)
@@ -706,8 +754,13 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
             }
             let _ = writeln!(
                 o,
-                " {} | {} | {} |",
+                " {}{} | {} | {} |",
                 md(&f.evidence),
+                if f.confidence > 0 {
+                    format!(" (confidence {} %)", f.confidence)
+                } else {
+                    String::new()
+                },
                 md(&f.cve.join(", ")),
                 reference_url(f).map_or(String::new(), |u| format!("<{u}>"))
             );
@@ -764,7 +817,7 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
     }
     let _ = writeln!(
         o,
-        "\n## Devices ({})\n\n| Address | MAC | Vendor | Type | OS (guess) | Open ports |\n|---|---|---|---|---|---|",
+        "\n## Devices ({})\n\n| Address | MAC | Vendor | Type | OS (guess) | Open ports | Why |\n|---|---|---|---|---|---|---|",
         devs.len()
     );
     for d in &devs {
@@ -782,13 +835,16 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
             .join(", ");
         let _ = writeln!(
             o,
-            "| {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {}{} | {}{} | {} | {} |",
             md(&ips),
             md(&d.mac),
             md(&d.vendor),
             md(&d.device_type),
+            confidence_md(d.device_type_evidence.confidence),
             md(&d.os),
-            md(&ports.join(", "))
+            confidence_md(d.os_evidence.confidence),
+            md(&ports.join(", ")),
+            md(&devices_why(d))
         );
     }
     o.push_str(
@@ -834,6 +890,7 @@ pub fn jsonl(snapshot: &Snapshot, timestamp: i64) -> Result<String, String> {
                     "title": f.title,
                     "port": f.port,
                     "evidence": f.evidence,
+                    "confidence": f.confidence,
                     "cve": f.cve,
                     "reference": f.reference,
                 })
@@ -849,6 +906,8 @@ pub fn jsonl(snapshot: &Snapshot, timestamp: i64) -> Result<String, String> {
             "hostname": h.hostname,
             "device_type": dev.map(|d| d.device_type.as_str()).unwrap_or(""),
             "os": h.identity.get("os.guess"),
+            "device_type_evidence": dev.map(|d| &d.device_type_evidence),
+            "os_evidence": dev.map(|d| &d.os_evidence),
             "open_tcp": h.open,
             "open_udp": h.udp_open,
             "services": services,
@@ -1131,6 +1190,50 @@ mod tests {
                 .unwrap()
                 .starts_with("https://")
         );
+    }
+
+    #[test]
+    fn reports_show_the_evidence_and_confidence_of_every_conclusion() {
+        let mut s = snapshot();
+        s.hosts[0].identity.insert(
+            "os.evidence".into(),
+            "initial TTL 64; TCP options <b>M,S,T,N,W</b>".into(),
+        );
+        s.hosts[0]
+            .identity
+            .insert("os.confidence".into(), "70%".into());
+        s.hosts[0]
+            .identity
+            .insert("svc.9100".into(), "jetdirect HP LaserJet 4250".into());
+        s.hosts[0].open.push(9100);
+        let html = html(&s, None, 0);
+        // OS guess: confidence in the cell, the reasons in the tooltip (escaped).
+        assert!(html.contains("70 %"), "{html}");
+        assert!(
+            html.contains("because initial TTL 64; TCP options &lt;b&gt;M,S,T,N,W&lt;/b&gt;"),
+            "{html}"
+        );
+        // Device type: tooltip with the reasons.
+        assert!(html.contains("print port 9100"), "{html}");
+        // Finding: confidence under the evidence.
+        assert!(html.contains("confidence 90 %"), "{html}");
+        assert!(!html.contains("<b>M,S,T"), "reasons must be escaped");
+        let md = markdown(&s, None, 0);
+        assert!(md.contains("(confidence 90 %)"), "{md}");
+        assert!(md.contains("| Why |"), "{md}");
+        assert!(md.contains("OS: initial TTL 64; TCP options"), "{md}");
+        assert!(md.contains("Linux (70 %)"), "{md}");
+        let out = jsonl(&s, 0).unwrap();
+        let h: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(h["os_evidence"]["confidence"], 70);
+        assert_eq!(h["os_evidence"]["reasons"][0], "initial TTL 64");
+        let telnet = h["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == "telnet-open")
+            .unwrap();
+        assert_eq!(telnet["confidence"], 90);
     }
 
     #[test]
