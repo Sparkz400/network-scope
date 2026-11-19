@@ -43,16 +43,18 @@ EXPECT_S7 = {"S7.order_code": "6ES7 315-2EH14-0AB0", "S7.firmware": "3.2.1"}
 
 # slow-wan: every reply of the simulators waits 150-300 ms.
 SLOW_WAN_MAX_SCAN_SECONDS = 60
-# lossy: 3 of 10 connections per port are reset after the connect (seed 1), and 3 of 10 BACnet
+# lossy: 3 of 10 connections per port are reset after the connect (seeded), and 3 of 10 BACnet
 # replies are dropped. Network Scope does not retry a reset service or OT request (--retries is
-# for unanswered probes, not for resets), so one scan loses some values. Measured (Windows,
-# 2026-11-19, four runs, always the same): the first scan finds 11 of the 17 expected identity
-# values and findings, the second scan 17 of 17. The floor for the first scan is below that
-# because the order of the connections of one port can shift between runs; a repeated scan (as
-# monitoring does) has up to LOSSY_MAX_SCANS tries to complete the picture.
+# for unanswered probes, not for resets), so one scan loses some values; a repeated scan (as
+# monitoring does) picks them up. Measured on Windows, 2026-11-19, with `--seed 1..20`: the first
+# scan finds 41-100% of the 17 expected identity values and findings (seed 1, the default: 11 of
+# 17 = 65%, in every run), all of them are found within 1-3 scans, and within 5 for the worst
+# seed (7). The limits are set past the worst seed, so that a different connection order on
+# another platform does not fail the check.
 LOSSY_LOSS = 0.3
-LOSSY_FIRST_SCAN_MIN = 0.5
-LOSSY_MAX_SCANS = 3
+LOSSY_SEED = 1
+LOSSY_FIRST_SCAN_MIN = 0.3
+LOSSY_MAX_SCANS = 6
 # fragile-ot: a device crashes above this many new connections per second. A scan makes 2 per
 # device (the port check and the identification) and was measured at 2 in any one second.
 FRAGILE_CONN_LIMIT = 4
@@ -136,7 +138,7 @@ def check_slow_wan(exe, work, failures):
 def check_lossy(exe, work, failures):
     """3 of 10 connections reset: ports are still found, identities come back on a repeated scan."""
     total = len(EXPECT_IDENTITY) + len(EXPECT_FINDINGS)
-    with Sim("--scenario", "lossy", "--loss", str(LOSSY_LOSS), "--seed", "1"):
+    with Sim("--scenario", "lossy", "--loss", str(LOSSY_LOSS), "--seed", str(LOSSY_SEED)):
         # Self-check, UDP: 3 of 10 Who-Is requests get no reply. Both checks come first, while the
         # seeded blocks of ten are still aligned with the first request.
         replies = 0
@@ -251,10 +253,13 @@ CHECKS = {"normal": check_normal, "slow-wan": check_slow_wan, "lossy": check_los
 
 
 def main():
+    global LOSSY_SEED
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("exe", help="the built network-scope binary")
     ap.add_argument("--scenario", choices=[*CHECKS, "all"], default="normal")
+    ap.add_argument("--seed", type=int, default=LOSSY_SEED, help="seed of the lossy scenario (to try others)")
     args = ap.parse_args()
+    LOSSY_SEED = args.seed
     exe = os.path.abspath(args.exe)
     work = tempfile.mkdtemp(prefix="ns-lab-")
     failures = []
