@@ -1179,7 +1179,8 @@ mod tests {
         name(&mut leaf_params);
         leaf_params.is_ca = rcgen::IsCa::ExplicitNoCa;
         leaf_params.use_authority_key_identifier_extension = true;
-        let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
+        let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+        let leaf = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
         let leaf_f = describe_cert(leaf.der()).unwrap();
         assert_eq!(leaf_f["subject"], leaf_f["issuer"]);
         assert_eq!(leaf_f["self_signed"], "false");
