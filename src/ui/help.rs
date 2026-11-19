@@ -3,6 +3,7 @@
 pub(super) const HELP: &str = r#"Network Scope — portable Rust network inventory
 
 network-scope                         Desktop GUI
+network-scope --version               Print the version
 network-scope scan TARGETS [options]  Active scan, saved to SQLite
 network-scope listen --interface ID [--seconds 60]  Passive capture only
 network-scope dcp --interface ID --source-mac MAC  Read-only DCP Identify

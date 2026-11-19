@@ -122,6 +122,10 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         .position(|a| a != "--quiet")
         .unwrap_or(args.len());
     let (global, args) = args.split_at(split);
+    if ["--version", "-V"].contains(&args.first().map_or("", String::as_str)) {
+        println!("network-scope {}", env!("CARGO_PKG_VERSION"));
+        return Ok(ExitCode::Success);
+    }
     if args.is_empty() || ["help", "--help", "-h"].contains(&args[0].as_str()) {
         println!("{}", help::HELP);
         return Ok(ExitCode::Success);
@@ -265,7 +269,7 @@ mod tests {
         for line in help::HELP.lines() {
             // `network-scope COMMAND ...`; the bare `network-scope` line is the GUI.
             if let Some(rest) = line.strip_prefix("network-scope ")
-                && !rest.starts_with(' ')
+                && !rest.starts_with([' ', '-'])
             {
                 documented.insert(rest.split_whitespace().next().unwrap());
             }

@@ -63,6 +63,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `probes [--probes FILE]` | List and validate the TCP and UDP probe database |
 | `completions powershell\|bash` | Print a shell completion script |
 | `help`, `--help`, `-h` | Print the help text |
+| `--version`, `-V` | Print the program version |
 
 ## Targets
 

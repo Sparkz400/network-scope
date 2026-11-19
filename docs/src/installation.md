@@ -121,6 +121,16 @@ sudo apt-get install libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev 
   libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 ```
 
+### CLI-only build
+
+The GUI is an optional cargo feature (`gui`, on by default). For servers, containers and CI, where no window system exists, build the command-line program alone:
+
+```sh
+cargo build --release --locked --no-default-features --bin network-scope-cli
+```
+
+This compiles none of the GUI crates (eframe, egui, the file dialogs) and needs none of the Linux development packages above; the result is a considerably smaller `network-scope-cli` with the complete CLI and TUI (`scan --tui` included). Started without a command it prints `built without the GUI; see --help` and exits with status 2 instead of opening a window. The `network-scope` GUI binary is not built in this configuration.
+
 ### Windows installer from source
 
 With [Inno Setup 6](https://jrsoftware.org/isinfo.php):
