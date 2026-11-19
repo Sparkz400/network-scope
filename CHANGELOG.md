@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Safe Mode badge** in the status bar of the desktop: a green "Safe Mode" or amber "Fast" label next to the status text, updated as soon as the setting changes. The tooltip lists the limits (Safe Mode) or the enabled opt-in features (Fast); a click opens Settings. `NETWORK_SCOPE_SCREENSHOT_STATE` accepts a `-fast` suffix (for example `main-small-fast`) to render with Safe Mode off.
+
 ## [0.5.1] - 2026-11-19
 
 Fuzzing, a container image and signed SLSA provenance for releases; the desktop GUI moves to egui 0.37 and several dependencies get major upgrades.

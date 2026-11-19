@@ -860,6 +860,22 @@ impl eframe::App for Scanner {
                 );
             }
             ui.horizontal(|ui| {
+                // Read from the live settings every frame, so toggling Safe Mode in Settings
+                // changes the badge at once; a running scan keeps its own snapshot.
+                let badge = safe_badge(&self.saved.settings);
+                let color = badge_color(badge.safe, ui.visuals().dark_mode);
+                if ui
+                    .add(
+                        egui::Label::new(RichText::new(badge.label).strong().color(color))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(badge.tooltip)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    self.settings_open = true;
+                }
+                ui.separator();
                 if let Some(busy) = self.busy.label() {
                     ui.spinner();
                     ui.label(busy);
@@ -1119,6 +1135,65 @@ fn ping_text(ping: Option<u32>) -> String {
     })
     .unwrap_or_else(|| "—".into())
 }
+/// Text of the status bar badge that shows the active traffic profile.
+struct SafeBadge {
+    safe: bool,
+    label: &'static str,
+    tooltip: String,
+}
+/// Safe Mode shows the limits the engine enforces (`core::run`: 8 hosts, a gate of at least
+/// 100 ms, SYN and ARP sweep ignored, ICMP traceroute only). Otherwise the tooltip lists the
+/// opt-in transmitting features that the current settings enable.
+fn safe_badge(s: &scan::Settings) -> SafeBadge {
+    if s.safe {
+        return SafeBadge {
+            safe: true,
+            label: "Safe Mode",
+            tooltip: "At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep \
+                      and TCP/UDP traceroute are off. Click to open Settings."
+                .into(),
+        };
+    }
+    let mut on = vec![format!(
+        "up to {} hosts at a time",
+        s.workers.clamp(1, 4096)
+    )];
+    if s.syn {
+        on.push("SYN scan".into());
+    }
+    if s.arp_sweep {
+        on.push("ARP sweep".into());
+    }
+    if s.trace {
+        match s.trace_method {
+            crate::trace::TraceMethod::Icmp => {}
+            crate::trace::TraceMethod::Tcp => on.push("TCP traceroute".into()),
+            crate::trace::TraceMethod::Udp => on.push("UDP traceroute".into()),
+        }
+    }
+    on.push(if s.max_rate > 0 {
+        format!("rate cap {} pps", s.max_rate)
+    } else {
+        "no rate cap".into()
+    });
+    SafeBadge {
+        safe: false,
+        label: "Fast",
+        tooltip: format!(
+            "Safe Mode is off: {}. Click to open Settings.",
+            on.join(", ")
+        ),
+    }
+}
+/// Green for Safe Mode, amber for Fast; darker shades on the light theme, lighter on the dark one.
+fn badge_color(safe: bool, dark: bool) -> Color32 {
+    match (safe, dark) {
+        (true, false) => Color32::from_rgb(20, 110, 60),
+        (true, true) => Color32::from_rgb(110, 210, 140),
+        (false, false) => Color32::from_rgb(165, 95, 0),
+        (false, true) => Color32::from_rgb(255, 190, 70),
+    }
+}
 fn host_status(host: &scan::Host) -> &'static str {
     if host.responding {
         "Responding"
@@ -1135,7 +1210,7 @@ pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
             .with_inner_size(
                 if screenshot.is_some()
                     && std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
-                        .is_ok_and(|s| !s.ends_with("-small"))
+                        .is_ok_and(|s| !s.contains("-small"))
                 {
                     [1100.0, 720.0]
                 } else {
@@ -1172,6 +1247,64 @@ mod tests {
             udp_open: vec![],
             trace: vec![],
         }
+    }
+
+    #[test]
+    fn safe_badge_describes_the_active_profile() {
+        let safe = safe_badge(&scan::Settings {
+            safe: true,
+            syn: true,
+            max_rate: 500,
+            ..Default::default()
+        });
+        assert!(safe.safe);
+        assert_eq!(safe.label, "Safe Mode");
+        assert!(
+            safe.tooltip
+                .starts_with("At most 8 hosts at a time, at least 100 ms between probes;")
+        );
+        assert!(
+            safe.tooltip
+                .contains("SYN, ARP sweep and TCP/UDP traceroute are off")
+        );
+        assert!(
+            !safe.tooltip.contains("500"),
+            "Safe Mode ignores the rate cap"
+        );
+
+        let plain = safe_badge(&scan::Settings {
+            safe: false,
+            workers: 1024,
+            ..Default::default()
+        });
+        assert!(!plain.safe);
+        assert_eq!(plain.label, "Fast");
+        assert!(plain.tooltip.contains("up to 1024 hosts"));
+        assert!(plain.tooltip.contains("no rate cap"));
+        assert!(!plain.tooltip.contains("SYN") && !plain.tooltip.contains("ARP"));
+
+        let full = safe_badge(&scan::Settings {
+            safe: false,
+            syn: true,
+            arp_sweep: true,
+            max_rate: 500,
+            trace: true,
+            trace_method: crate::trace::TraceMethod::Tcp,
+            ..Default::default()
+        });
+        for part in [
+            "SYN scan",
+            "ARP sweep",
+            "rate cap 500 pps",
+            "TCP traceroute",
+        ] {
+            assert!(
+                full.tooltip.contains(part),
+                "{part} missing: {}",
+                full.tooltip
+            );
+        }
+        assert_ne!(badge_color(true, false), badge_color(false, false));
     }
 
     #[test]
