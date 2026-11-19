@@ -369,6 +369,8 @@ impl Tracker {
 }
 
 #[cfg(test)]
+mod real_traffic;
+#[cfg(test)]
 mod testutil;
 
 #[cfg(test)]
@@ -530,6 +532,7 @@ mod tests {
             ("ingest.rs", include_str!("ingest.rs")),
             ("modbus.rs", include_str!("modbus.rs")),
             ("packet.rs", include_str!("packet.rs")),
+            ("real_traffic.rs", include_str!("real_traffic.rs")),
             ("reassembly.rs", include_str!("reassembly.rs")),
             ("s7.rs", include_str!("s7.rs")),
             ("testutil.rs", include_str!("testutil.rs")),
