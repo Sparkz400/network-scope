@@ -1,4 +1,4 @@
-use super::{Job, Scanner, tables};
+use super::{Job, Scanner, tables, win_size};
 use crate::{capture, devices, passive, risk, store, topology};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -65,7 +65,8 @@ impl Scanner {
         let (graph, layers) = &self.topology.value;
         egui::Window::new("Network topology")
             .open(&mut open)
-            .default_size([780.0, 460.0])
+            .default_size(win_size([780.0, 460.0]))
+            .default_pos(self.window_origin)
             .show(ctx, |ui| {
                 if graph.nodes.len() <= 1 {
                     ui.label("No path data yet. Enable \"Record router path\" in Settings and scan again.");
@@ -148,9 +149,10 @@ impl Scanner {
         let view = &mut self.findings_view;
         egui::Window::new("Findings (weak configuration, risky services, CVE hints)")
             .open(&mut open)
-            .default_size([900.0, 420.0])
+            .default_size(win_size([900.0, 420.0]))
+            .default_pos(self.window_origin)
             // Wide tables must not push the window past the screen edge.
-            .max_width((ctx.screen_rect().width() - 24.0).max(320.0))
+            .max_width((ctx.content_rect().width() - 24.0).max(320.0))
             .show(ctx, |ui| {
                 ui.label(format!(
                     "{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host.",
@@ -242,9 +244,10 @@ impl Scanner {
         let view = &mut self.devices_view;
         egui::Window::new("Devices (active + passive merged)")
             .open(&mut open)
-            .default_size([980.0, 420.0])
+            .default_size(win_size([980.0, 420.0]))
+            .default_pos(self.window_origin)
             // Wide tables must not push the window past the screen edge.
-            .max_width((ctx.screen_rect().width() - 24.0).max(320.0))
+            .max_width((ctx.content_rect().width() - 24.0).max(320.0))
             .show(ctx, |ui| {
                 ui.label(format!(
                     "{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host.",
@@ -344,7 +347,8 @@ impl Scanner {
         let mut open = self.history_open;
         egui::Window::new("Saved inventory & scan differences")
             .open(&mut open)
-            .default_width(650.0)
+            .default_size(win_size([650.0, 420.0]))
+            .default_pos(self.window_origin)
             .show(ctx, |ui| {
                 ui.label(
                     "Scans are saved automatically, including interrupted scans marked as partial.",
@@ -510,9 +514,8 @@ impl Scanner {
         egui::Window::new("Passive discovery / Profinet DCP / OT")
             .vscroll(true)
             .open(&mut open)
-            .default_width(760.0)
+            .default_size(win_size([760.0, 620.0]))
             .default_pos([24.0, 40.0])
-            .default_height(620.0)
             .show(ctx, |ui| {
                 ui.label("Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP");
                 ui.label(

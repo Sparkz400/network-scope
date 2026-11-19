@@ -1,15 +1,19 @@
 use super::*;
 impl Scanner {
-    pub(super) fn controls(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
+    pub(super) fn controls(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("controls").show(ui, |ui| {
+            // Menus close through `ui.close()` or an outside click (as before 0.32), so e.g.
+            // removing a favorite keeps the menu open.
+            egui::MenuBar::new()
+                .config(menu_config())
+                .ui(ui, |ui| {
                 ui.menu_button("Scan", |ui| {
                     if ui
                         .add_enabled(self.run.is_none(), egui::Button::new("Start scan"))
                         .clicked()
                     {
                         self.start();
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -18,7 +22,7 @@ impl Scanner {
                         )
                         .clicked()
                     {
-                        ui.close_menu();
+                        ui.close();
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("Address list", &["txt"])
                             .pick_file()
@@ -36,7 +40,7 @@ impl Scanner {
                         .clicked()
                     {
                         self.export("csv");
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -46,7 +50,7 @@ impl Scanner {
                         .clicked()
                     {
                         self.export("json");
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -56,7 +60,7 @@ impl Scanner {
                         .clicked()
                     {
                         self.export("html");
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -66,7 +70,7 @@ impl Scanner {
                         .clicked()
                     {
                         self.export("md");
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -79,7 +83,7 @@ impl Scanner {
                         .clicked()
                     {
                         self.clear();
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
                 ui.menu_button("Favorites", |ui| {
@@ -87,7 +91,7 @@ impl Scanner {
                         if !self.saved.favorites.contains(&self.targets) {
                             self.saved.favorites.push(self.targets.clone());
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     let mut remove = None;
@@ -98,7 +102,7 @@ impl Scanner {
                                 .clicked()
                             {
                                 self.targets = target.clone();
-                                ui.close_menu();
+                                ui.close();
                             }
                             if ui.small_button("Remove").clicked() {
                                 remove = Some(i);
@@ -241,4 +245,9 @@ impl Scanner {
             ui.add_space(3.0);
         });
     }
+}
+/// Menu behaviour shared by the menu bar and the details window.
+pub(super) fn menu_config() -> egui::containers::menu::MenuConfig {
+    egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
 }
