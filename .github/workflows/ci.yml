@@ -69,6 +69,19 @@ jobs:
           name: benchmark-${{ runner.os }}
           path: benchmark-results/
           if-no-files-found: ignore
+      # The same lab under bad conditions (lab/simulators.py --scenario, lab/verify.py --scenario):
+      # a slow WAN (150-300 ms per reply), lost connections and UDP replies, and fragile OT devices
+      # that crash on a write or a connection burst. Linux only; each scenario is its own step so
+      # a failure names the condition.
+      - name: Lab scenario slow-wan (replies 150-300 ms late, default timeouts)
+        if: runner.os == 'Linux'
+        run: python lab/verify.py target/release/network-scope --scenario slow-wan
+      - name: Lab scenario lossy (3 of 10 connections reset, repeated scans recover)
+        if: runner.os == 'Linux'
+        run: python lab/verify.py target/release/network-scope --scenario lossy
+      - name: Lab scenario fragile-ot (zero writes, connection rate under the limit)
+        if: runner.os == 'Linux'
+        run: python lab/verify.py target/release/network-scope --scenario fragile-ot
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: network-scope-${{ runner.os }}
