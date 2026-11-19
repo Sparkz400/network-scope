@@ -31,7 +31,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "
 rusqlite = { version = "0.41", features = ["bundled"] }
 ratatui = "0.30"
 crossterm = "0.29"
-libloading = "0.8"
+libloading = "0.9"
 pnet_packet = "0.35"
 socket2 = { version = "0.5", features = ["all"] }
 regex = "1"
