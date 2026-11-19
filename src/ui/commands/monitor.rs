@@ -5,7 +5,7 @@ use crate::{
     ui::{
         Ctx,
         args::{number, scan_settings},
-        guard,
+        dryrun, guard,
     },
 };
 use std::{collections::BTreeMap, time::Duration};
@@ -19,6 +19,10 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     // The same scope rule as `scan`; monitor runs unattended, so without a terminal it refuses
     // unless --yes-public / --allow-out-of-scope is given.
     let hosts = crate::scan::parse_targets(&targets, s.skip_edges, crate::scan::MAX_STREAM)?;
+    if dryrun::requested(opts) {
+        let ports = crate::scan::parse_ports(&s.ports)?;
+        return dryrun::scan_plan(opts, "monitor", &hosts, &ports, &s);
+    }
     if !guard::enforce(ctx, &hosts)? {
         return Ok(());
     }

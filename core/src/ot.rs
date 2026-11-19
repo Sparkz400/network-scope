@@ -5,6 +5,7 @@
 //! (see the module documentation there).
 pub(crate) mod opcua;
 pub mod readonly;
+use crate::sendlog::{PacketKind, SentLog};
 use crate::{
     core::Gate,
     scan::{Host, Settings},
@@ -16,6 +17,7 @@ use readonly::{
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 use tokio::io::AsyncReadExt;
@@ -36,25 +38,35 @@ fn be16(b: &[u8], i: usize) -> Result<u16, String> {
             .unwrap(),
     ))
 }
+/// The protocols `identify` talks to and their ports (BACnet over UDP, the rest over TCP).
+/// The dry run (`plan`) reads this table too.
+pub(crate) const TARGETS: [(&str, u16); 5] = [
+    ("Modbus", 502),
+    ("S7", 102),
+    ("OPC UA", 4840),
+    ("EtherNet/IP", 44818),
+    ("BACnet", 47808),
+];
 pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) {
-    for (protocol, port) in [
-        ("Modbus", 502),
-        ("S7", 102),
-        ("OPC UA", 4840),
-        ("EtherNet/IP", 44818),
-        ("BACnet", 47808),
-    ] {
+    for (protocol, port) in TARGETS {
         if port != 47808 && !h.open.contains(&port) {
             continue;
         }
-        gate.wait().await;
+        // The requests themselves are counted by the logged sockets; the TCP connect here.
+        if port == 47808 {
+            gate.wait().await;
+        } else {
+            gate.wait_for(PacketKind::TcpConnect, "OT identification")
+                .await;
+        }
+        let log = gate.log();
         let task = async {
             match port {
-                502 => modbus(h.ip, s.modbus_unit).await.map(Some),
+                502 => modbus(h.ip, s.modbus_unit, log).await.map(Some),
                 102 => s7(h.ip, s.s7_rack, s.s7_slot, gate).await.map(Some),
                 4840 => opcua::discover(h.ip, gate).await.map(Some),
-                44818 => enip(h.ip).await.map(Some),
-                _ => bacnet(SocketAddr::new(h.ip, 47808)).await,
+                44818 => enip(h.ip, log).await.map(Some),
+                _ => bacnet(SocketAddr::new(h.ip, 47808), log).await,
             }
         };
         match tokio::time::timeout(identify_timeout(port, s.port_timeout), task).await {
@@ -93,10 +105,11 @@ fn no_listener(e: &std::io::Error) -> bool {
         std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused
     )
 }
-async fn modbus(ip: IpAddr, unit: u8) -> Result<Fields, String> {
+async fn modbus(ip: IpAddr, unit: u8, log: &Arc<SentLog>) -> Result<Fields, String> {
     let socket = OtStream::connect((ip, 502))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .with_log(log.clone());
     modbus_stream(socket, unit).await
 }
 async fn modbus_stream(socket: impl Into<OtStream>, unit: u8) -> Result<Fields, String> {
@@ -158,10 +171,11 @@ pub(crate) fn parse_modbus(b: &[u8]) -> Result<Fields, String> {
     }
     Ok(result)
 }
-async fn enip(ip: IpAddr) -> Result<Fields, String> {
+async fn enip(ip: IpAddr, log: &Arc<SentLog>) -> Result<Fields, String> {
     let socket = OtStream::connect((ip, 44818))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .with_log(log.clone());
     enip_stream(socket).await
 }
 async fn enip_stream(socket: impl Into<OtStream>) -> Result<Fields, String> {
@@ -231,7 +245,7 @@ pub(crate) fn parse_list_identity(b: &[u8]) -> Result<Fields, String> {
 }
 /// `Ok(None)`: no BACnet device answers there (port unreachable). Silence is left to the
 /// caller's timeout.
-async fn bacnet(target: SocketAddr) -> Result<Option<Fields>, String> {
+async fn bacnet(target: SocketAddr, log: &Arc<SentLog>) -> Result<Option<Fields>, String> {
     if !target.is_ipv4() {
         return Ok(None);
     }
@@ -242,7 +256,8 @@ async fn bacnet(target: SocketAddr) -> Result<Option<Fields>, String> {
     };
     let socket = OtUdp::connect(local, target)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .with_log(log.clone());
     // Unicast Who-Is. Never a subnet-wide broadcast.
     match socket.send(&BacnetRequest::new(BacnetService::WhoIs)).await {
         Ok(_) => {}
@@ -383,7 +398,8 @@ async fn s7(ip: IpAddr, rack: u8, slot: u8, gate: &Gate) -> Result<Fields, Strin
         S7Request::connection_request(rack, slot).ok_or("S7 rack must be 0–7 and slot 0–31")?;
     let mut socket = OtStream::connect((ip, 102))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .with_log(gate.log().clone());
     let response = tpkt(&mut socket, &cr).await?;
     if response.get(5) != Some(&0xd0) {
         return Err("COTP connection refused".into());
@@ -512,7 +528,11 @@ mod tests {
         let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let target = closed.local_addr().unwrap();
         drop(closed);
-        let r = tokio::time::timeout(Duration::from_secs(2), bacnet(target)).await;
+        let r = tokio::time::timeout(
+            Duration::from_secs(2),
+            bacnet(target, &Arc::new(SentLog::new())),
+        )
+        .await;
         // A timeout (no ICMP delivered on this platform) is silence, left to the caller.
         if let Ok(result) = r {
             assert_eq!(result, Ok(None));
@@ -525,7 +545,10 @@ mod tests {
             let (_, from) = device.recv_from(&mut b).await.unwrap();
             device.send_to(&bvlc(0, &[]), from).await.unwrap();
         });
-        let f = bacnet(address).await.unwrap().unwrap();
+        let f = bacnet(address, &Arc::new(SentLog::new()))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(f["device_id"], "42");
         server.await.unwrap();
     }

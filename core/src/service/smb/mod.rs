@@ -1,7 +1,7 @@
 //! SMB 1 and SMB 2/3: NEGOTIATE requests, the SMB1/SMB2 probing flow and its Outcome. The
 //! SMB2 reply details live in `smb2`, the NTLM challenge in `ntlm`.
 use super::{Fields, Outcome, Service, connect, negotiate_once};
-use crate::core::Gate;
+use crate::{core::Gate, sendlog::PacketKind};
 use std::{net::IpAddr, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
@@ -241,15 +241,19 @@ async fn smb2_exchange(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> (
     let Some(mut s) = connect(ip, port, limit, gate).await else {
         return (vec![], Fields::new());
     };
+    gate.note(PacketKind::SmbNegotiate, "SMB2 negotiate");
     if s.write_all(&smb2_negotiate_request()).await.is_err() {
         return (vec![], Fields::new());
     }
     let reply = read_frame(&mut s, limit).await;
     let mut ntlm = Fields::new();
-    if !gate.is_safe()
-        && parse_smb2_negotiate(&reply).is_some()
-        && s.write_all(&smb2_session_setup_request()).await.is_ok()
-    {
+    if !gate.is_safe() && parse_smb2_negotiate(&reply).is_some() && {
+        gate.note(
+            PacketKind::SmbNegotiate,
+            "NTLM SESSION_SETUP (no AUTHENTICATE)",
+        );
+        s.write_all(&smb2_session_setup_request()).await.is_ok()
+    } {
         ntlm = parse_ntlm_challenge(&read_frame(&mut s, limit).await);
     }
     (reply, ntlm)
@@ -267,8 +271,17 @@ pub(super) async fn smb_negotiate(
 ) -> Option<Outcome> {
     let (reply, ntlm) = smb2_exchange(ip, port, limit, gate).await;
     let smb2 = parse_smb(&reply);
-    let smb1 =
-        smb1_accepted(&negotiate_once(ip, port, limit, gate, &smb1_negotiate_request()).await);
+    let smb1 = smb1_accepted(
+        &negotiate_once(
+            ip,
+            port,
+            limit,
+            gate,
+            (PacketKind::SmbNegotiate, "SMB1 negotiate"),
+            &smb1_negotiate_request(),
+        )
+        .await,
+    );
     let mut out = Outcome::default();
     match (smb2, smb1) {
         (Some(svc), smb1) => {

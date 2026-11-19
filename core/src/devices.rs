@@ -1493,6 +1493,7 @@ mod tests {
 
     fn history_snapshot(ip: &str, mac: &str, open: &[u16]) -> crate::store::Snapshot {
         crate::store::Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete: true,
             settings: crate::scan::Settings {

@@ -1,4 +1,5 @@
 //! Traceroute: all TTLs are probed in parallel (one blocking ICMP probe each), then assembled.
+use crate::sendlog::PacketKind;
 use crate::{core::Gate, platform::HopReply};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -132,6 +133,7 @@ pub async fn in_waves<F, Fut>(
     max_hops: u8,
     wave: u8,
     gate: &Gate,
+    detail: &str,
     mut probe: F,
 ) -> (Vec<(u8, HopReply)>, Option<String>)
 where
@@ -146,7 +148,7 @@ where
         let last = first.saturating_add(wave - 1).min(hops);
         let mut set = JoinSet::new();
         for ttl in first..=last {
-            gate.wait().await;
+            gate.wait_for(PacketKind::Traceroute, detail).await;
             let fut = probe(ttl);
             set.spawn(async move { (ttl, fut.await) });
         }
@@ -178,7 +180,7 @@ pub async fn trace_udp(
     blocking: &Arc<Semaphore>,
     gate: &Gate,
 ) -> Result<Vec<Hop>, String> {
-    let (replies, error) = in_waves(max_hops, WAVE, gate, |ttl| {
+    let (replies, error) = in_waves(max_hops, WAVE, gate, "UDP datagrams, TTL sweep", |ttl| {
         let blocking = blocking.clone();
         async move {
             let permit = blocking.acquire_owned().await.map_err(|e| e.to_string())?;
@@ -208,7 +210,8 @@ pub async fn trace(
     let hops = max_hops.clamp(1, 64);
     let id = next_trace_id();
     for ttl in 1..=hops {
-        gate.wait().await;
+        gate.wait_for(PacketKind::Traceroute, "ICMP echo, TTL sweep")
+            .await;
         let Ok(permit) = blocking.clone().acquire_owned().await else {
             break;
         };
@@ -347,7 +350,7 @@ mod tests {
     async fn waves_ascend_and_stop_at_the_destination() {
         let sent = Arc::new(std::sync::Mutex::new(vec![]));
         let log = sent.clone();
-        let (replies, error) = in_waves(30, 3, &Gate::unlimited(), move |ttl| {
+        let (replies, error) = in_waves(30, 3, &Gate::unlimited(), "test", move |ttl| {
             log.lock().unwrap().push(ttl);
             async move {
                 Ok(if ttl >= 5 {
@@ -366,7 +369,7 @@ mod tests {
         // A local failure (no raw socket) stops after the first wave.
         let count = Arc::new(std::sync::Mutex::new(0));
         let c = count.clone();
-        let (replies, error) = in_waves(30, 3, &Gate::unlimited(), move |_| {
+        let (replies, error) = in_waves(30, 3, &Gate::unlimited(), "test", move |_| {
             *c.lock().unwrap() += 1;
             async { Err("needs a raw socket".to_string()) }
         })

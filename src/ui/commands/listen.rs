@@ -3,7 +3,7 @@
 use crate::{
     observations::{ObservationIndex, merge_indexed},
     passive, scan, store,
-    ui::{Ctx, args::number, output, progress, saved_exit},
+    ui::{Ctx, args::number, dryrun, output, progress, saved_exit},
 };
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
@@ -16,6 +16,9 @@ pub(super) fn interfaces(ctx: &mut Ctx) -> Result<(), String> {
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let (opts, command, db) = (&ctx.opts, &ctx.command, &ctx.db);
+    if command == "dcp" && dryrun::requested(opts) {
+        return dryrun::dcp_plan(opts);
+    }
     let interface = opts
         .get("interface")
         .ok_or("Provide --interface from the interfaces command")?;
@@ -31,7 +34,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     } else {
         None
     };
-    let run = passive::start(interface.clone(), seconds, source);
+    let sent = std::sync::Arc::new(crate::sendlog::SentLog::new());
+    let run = passive::start_logged(interface.clone(), seconds, source, sent.clone());
     let (observations, error) = drain_observations(&run.receiver);
     if error.is_some() {
         run.cancel.store(true, Ordering::Relaxed);
@@ -47,6 +51,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         hosts: vec![],
         observations,
         notes: BTreeMap::new(),
+        sent: sent.snapshot(),
     };
     let id = store::save(db, &snapshot)?;
     progress(

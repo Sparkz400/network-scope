@@ -18,6 +18,7 @@ impl Scanner {
         let mut notes = self.saved.notes.clone();
         super::prune_notes(&mut notes);
         store::Snapshot {
+            sent: self.scan_sent.clone(),
             targets: combined_scope(&self.scan_scope, &self.capture_scope),
             complete: self.scan_complete && self.capture_complete && !self.live(),
             settings: self.scan_settings.clone(),
@@ -31,6 +32,7 @@ impl Scanner {
         let mut notes = self.saved.notes.clone();
         super::prune_notes(&mut notes);
         store::Snapshot {
+            sent: self.scan_sent.clone(),
             targets: self.scan_scope.clone(),
             complete: self.scan_complete && self.run.is_none(),
             settings: self.scan_settings.clone(),
@@ -44,6 +46,7 @@ impl Scanner {
         let mut notes = self.saved.notes.clone();
         super::prune_notes(&mut notes);
         store::Snapshot {
+            sent: vec![],
             targets: self.capture_scope.clone(),
             complete: self.capture_complete && self.listening.is_none(),
             settings: self.saved.settings.clone(),
@@ -157,6 +160,7 @@ impl Scanner {
         if self.findings.stale(self.generation, self.live()) {
             // Borrow the data into a snapshot instead of deep-cloning it.
             let snapshot = store::Snapshot {
+                sent: vec![],
                 targets: String::new(),
                 complete: false,
                 settings: Default::default(),

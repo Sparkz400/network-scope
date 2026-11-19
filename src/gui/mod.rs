@@ -351,6 +351,8 @@ struct Scanner {
     /// The scope guard wants a yes before this scan starts: what it found (public or
     /// out-of-scope addresses). Shown as a dialog; `None` when nothing is pending.
     scope_confirm: Option<String>,
+    /// What the last scan sent, by packet kind and detail (saved with the scan).
+    scan_sent: Vec<crate::sendlog::SentEntry>,
     /// Set for one call of `start` after the user confirmed the dialog.
     scope_consent: crate::scope::Consent,
 }
@@ -441,6 +443,7 @@ impl Scanner {
             ot: ot::OtState::default(),
             opened_stamp: None,
             scope_confirm: None,
+            scan_sent: vec![],
             scope_consent: Default::default(),
         };
         // A broken user CVE file is reported, not silently replaced by the built-in rules.
@@ -602,6 +605,7 @@ impl Scanner {
         };
         self.scan_settings = snapshot.settings;
         self.scan_complete = snapshot.complete;
+        self.scan_sent = snapshot.sent;
         self.selected = None;
         self.script_test = None;
         self.previous.clear();
@@ -631,6 +635,7 @@ impl Scanner {
         self.selected = None;
         self.script_test = None;
         self.scan_scope.clear();
+        self.scan_sent.clear();
         self.capture_scope.clear();
         self.scan_complete = true;
         self.capture_complete = true;
@@ -670,6 +675,7 @@ impl Scanner {
                 self.scan_scope = self.targets.clone();
                 self.scan_settings = self.saved.settings.clone();
                 self.opened_stamp = None;
+                self.scan_sent.clear();
                 self.error.clear();
                 self.status = format!("Scanning {} addresses", hosts.len());
                 self.recount();
@@ -726,8 +732,9 @@ impl Scanner {
                 }
             }
             if done {
+                self.scan_sent = run.sent.snapshot();
                 self.status = format!(
-                    "{} · {} of {} addresses · {:.1}s",
+                    "{} · {} of {} addresses · {:.1}s · {} packets sent",
                     if run.cancel.load(Ordering::Relaxed) {
                         "Stopped"
                     } else {
@@ -735,7 +742,8 @@ impl Scanner {
                     },
                     self.results.len(),
                     run.total,
-                    run.started.elapsed().as_secs_f32()
+                    run.started.elapsed().as_secs_f32(),
+                    crate::sendlog::total(&self.scan_sent)
                 );
             }
         }
@@ -928,7 +936,11 @@ impl eframe::App for Scanner {
                     ui.spinner();
                     ui.label(busy);
                 }
-                ui.label(&self.status);
+                let status = ui.label(&self.status);
+                if !self.scan_sent.is_empty() {
+                    // The scan summary: every kind of packet the scan sent, with counts.
+                    status.on_hover_text(crate::sendlog::format_table(&self.scan_sent));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
                         "{} responding · {} with open ports",
@@ -1142,6 +1154,7 @@ impl eframe::App for Scanner {
         }
         if let Some((label, observations)) = ot_partial.filter(|(_, o)| !o.is_empty()) {
             let snapshot = store::Snapshot {
+                sent: vec![],
                 targets: label,
                 complete: false,
                 settings: Default::default(),

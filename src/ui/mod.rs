@@ -29,6 +29,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 mod args;
 mod commands;
+mod dryrun;
 mod guard;
 mod help;
 mod tui;
@@ -144,6 +145,17 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let (pos, mut opts) = args::options(&args[1..])?;
     if opts.contains_key("fail-on-findings") && !matches!(command.as_str(), "findings" | "diff") {
         return Err("--fail-on-findings applies to the findings and diff commands only".into());
+    }
+    if opts.contains_key("dry-run") && !dryrun::COMMANDS.contains(&command.as_str()) {
+        return Err(format!(
+            "--dry-run applies to {} only",
+            dryrun::COMMANDS.join(", ")
+        ));
+    }
+    if opts.contains_key("sent-log") && !matches!(command.as_str(), "scan" | "trace" | "dcp") {
+        return Err(
+            "--sent-log applies to scan, trace and dcp (monitor stores the log with each scan: see export --format json)".into(),
+        );
     }
     if !global.is_empty() {
         opts.insert("quiet".into(), "true".into());

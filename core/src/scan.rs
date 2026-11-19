@@ -465,6 +465,9 @@ pub struct Running {
     pub pause: Arc<AtomicBool>,
     pub total: usize,
     pub started: Instant,
+    /// What this scan has sent so far, by packet kind and detail (final after `Event::Done`).
+    /// Save it with the scan as `store::Snapshot::sent`.
+    pub sent: Arc<crate::sendlog::SentLog>,
 }
 impl Drop for Running {
     fn drop(&mut self) {
@@ -486,12 +489,14 @@ pub fn start_stream(
     let (tx, receiver) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
+    let sent = Arc::new(crate::sendlog::SentLog::new());
     let run = Running {
         receiver,
         cancel: cancel.clone(),
         pause: pause.clone(),
         total,
         started: Instant::now(),
+        sent: sent.clone(),
     };
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -508,6 +513,7 @@ pub fn start_stream(
                     cancel,
                     pause,
                     tx.clone(),
+                    sent,
                 ));
                 rt.shutdown_timeout(Duration::from_secs(1));
             }

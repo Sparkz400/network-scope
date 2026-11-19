@@ -2,7 +2,7 @@
 use crate::ui::{
     Ctx,
     args::{number, scan_settings, trace_method, trace_port},
-    guard, output,
+    dryrun, guard, output,
 };
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
@@ -13,19 +13,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         .ok_or("Provide a target IP address")?
         .parse()
         .map_err(|_| "Target must be an IP address".to_string())?;
-    // The same scope rule as `scan` (ROADMAP H54).
-    if !guard::enforce(ctx, &[target][..])? {
-        return Ok(());
-    }
     let hops: u8 = number(opts, "max-hops", 20)?;
     let timeout: u32 = number(opts, "timeout", 1000)?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .max_blocking_threads(128)
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    let blocking = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
     let method = match opts.get("trace-method") {
         Some(m) => trace_method(m)?,
         None => crate::trace::TraceMethod::Icmp,
@@ -34,6 +23,27 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     if method != crate::trace::TraceMethod::Icmp && !opts.contains_key("fast") {
         return Err("TCP/UDP traceroute needs --fast (Safe Mode allows ICMP only)".into());
     }
+    if dryrun::requested(opts) {
+        let port = match method {
+            crate::trace::TraceMethod::Tcp => Some(trace_port(
+                opts.get("trace-port")
+                    .ok_or("TCP traceroute needs --trace-port N (an open port)")?,
+            )?),
+            _ => None,
+        };
+        return dryrun::trace_plan(opts, target, method, port, hops);
+    }
+    // The same scope rule as `scan` (ROADMAP H54).
+    if !guard::enforce(ctx, &[target][..])? {
+        return Ok(());
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(128)
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let blocking = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
     let rate: u32 = number(opts, "rate", 0)?;
     let gate = if rate > 0 {
         crate::core::Gate::per_second(f64::from(rate), (f64::from(rate) / 10.0).max(1.0))
@@ -79,6 +89,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             h.ip.map_or("*".to_string(), |ip| ip.to_string()),
             h.rtt.map_or(String::new(), |r| format!("{r} ms"))
         ));
+    }
+    if opts.contains_key("sent-log") {
+        eprintln!("{}", crate::sendlog::format_table(&gate.log().snapshot()));
     }
     output(text.trim_end(), opts)
 }

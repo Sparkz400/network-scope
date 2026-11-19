@@ -59,6 +59,9 @@ Scan options:
   --syn           IPv4 SYN via Npcap (routed targets via the gateway MAC); else TCP connect
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
   --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
+  --dry-run       scan, monitor, trace, dcp: print per host which packet types would be sent
+                  (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
+  --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)
   --no-backoff    Turn off the automatic back-off (per-device-type parallel limits and slowing or
                   pausing a host that resets connections; on by default, it only ever slows down)
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
