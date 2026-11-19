@@ -16,7 +16,7 @@ Whoever can reach such a port can often read and sometimes change the process da
 
 ## How it is detected
 
-The finding is based on the port number only. It is raised when one of these TCP ports is open: 102, 502, 789, 1911, 1962, 2404, 4840, 9600, 18245, 20000, 34962, 34963, 34964, 44818, 47808 or 48898, or 2222 unless the service greets as SSH (2222 is also a common SSH port). These ports are used by protocols such as S7comm, Modbus/TCP, IEC 60870-5-104, OPC UA, DNP3, PROFINET, EtherNet/IP and BACnet. The evidence reads like `TCP 502 open`.
+The finding is based on the port number only. It is raised when one of these TCP ports is open: 102, 502, 789, 1911, 1962, 2404, 4840, 9600, 18245, 20000, 34962, 34963, 34964, 44818, 47808 or 48898, or 2222, unless the service on the port is identified as SSH (2222 is a common SSH port; a service imported from Nmap XML or a server moved onto an industrial port number also counts as not industrial when it is SSH). These ports are used by protocols such as S7comm, Modbus/TCP, IEC 60870-5-104, OPC UA, DNP3, PROFINET, EtherNet/IP and BACnet. The evidence reads like `TCP 502 open`.
 
 Generic service detection never sends probes to these ports (to avoid disturbing fragile equipment), and this finding does not use the result of the separate `--ot` identification, so it does not say what really runs there. UDP ports are not part of this finding.
 

@@ -705,7 +705,8 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                 "Prefer modern algorithms; drop SHA-1 and CBC modes.",
             );
         }
-        if svc.contains("protocol 1.") && !svc.contains("protocol 1.99") {
+        // Only an SSH service: other protocols print "protocol 1.x" for their own version.
+        if name == "ssh" && svc.contains("protocol 1.") && !svc.contains("protocol 1.99") {
             o.add(
                 Severity::High,
                 "ssh-protocol-1",
@@ -851,9 +852,11 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
         }
         // 2222/tcp is EtherNet/IP I/O (and legacy Allen-Bradley CSP) but also a very common
         // alternative SSH port; service detection only listens there, so an SSH greeting
-        // means it is not an industrial service.
-        let ssh_on_2222 = p == 2222 && name == "ssh";
-        if crate::service::is_ot_port_candidate(p) && !ssh_on_2222 {
+        // means it is not an industrial service. The same holds on every other industrial
+        // port number: nothing there speaks SSH (a service imported from Nmap XML, or a
+        // server moved onto the port).
+        let ssh_on_ot_port = name == "ssh";
+        if crate::service::is_ot_port_candidate(p) && !ssh_on_ot_port {
             o.add(Severity::Medium, "ot-reachable", "Industrial protocol port is reachable from the scanner", port, format!("TCP {p} open"), &[], "OT services should only be reachable from the control network; check segmentation.");
         }
     }
@@ -1668,3 +1671,8 @@ mod tests {
         assert!(smbghost_hint("3.1.1", "LZ77", "10.0.18362").is_some());
     }
 }
+
+// False-alarm budget: a case table with one must-trigger and one must-not-trigger host per rule.
+#[cfg(test)]
+#[path = "risk_budget.rs"]
+mod budget;
