@@ -26,6 +26,7 @@
     - [TLS certificate expires within 30 days](findings/tls-cert-expiring.md)
     - [TLS certificate is not yet valid](findings/tls-cert-not-yet-valid.md)
     - [Self-signed TLS certificate](findings/tls-self-signed.md)
+    - [Self-signed certificate with a bad signature](findings/tls-self-signed-bad-signature.md)
     - [Certificate signed with a weak hash](findings/tls-weak-signature.md)
     - [Certificate uses a short RSA key](findings/tls-weak-key.md)
     - [SSLv3 is enabled](findings/tls-sslv3.md)

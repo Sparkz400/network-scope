@@ -138,9 +138,9 @@ fn signature_name(oid: &str) -> String {
 }
 
 /// Issuer equals subject, and when both key identifiers are present the authority key
-/// identifier names the certificate's own key. (Checking the signature itself would need
-/// x509-parser's `verify` feature, which is not enabled.) A CA-issued certificate that
-/// happens to carry its issuer's name is thereby not reported as self-signed.
+/// identifier names the certificate's own key. A CA-issued certificate that happens to carry
+/// its issuer's name is thereby usually not reported as self-signed; when the key identifiers
+/// are missing the claim is checked by the signature itself ([`self_signature`]).
 fn is_self_signed(cert: &X509Certificate<'_>) -> bool {
     if cert.subject() != cert.issuer() {
         return false;
@@ -162,6 +162,56 @@ fn is_self_signed(cert: &X509Certificate<'_>) -> bool {
     }
 }
 
+/// Result of checking a certificate's signature against its own public key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfSignature {
+    /// The signature verifies with the certificate's own key: it really is self-signed.
+    Valid,
+    /// The algorithm and key are supported and the signature does not verify: the certificate
+    /// claims to be self-issued but was not signed with its own key (or is corrupt).
+    Invalid,
+    /// The check cannot be made here (an algorithm or key size the verifier does not support,
+    /// such as MD5 or RSA below 1024 bits). Never reported as a problem.
+    Unchecked(&'static str),
+}
+impl SelfSignature {
+    /// The identity value (`tls.<port>.self_signature`): `valid`, `invalid` or
+    /// `unchecked (reason)`.
+    pub fn describe(self) -> String {
+        match self {
+            Self::Valid => "valid".into(),
+            Self::Invalid => "invalid".into(),
+            Self::Unchecked(why) => format!("unchecked ({why})"),
+        }
+    }
+}
+
+/// Verifies the certificate's signature with its own public key (ring through x509-parser's
+/// `verify` feature). Three outcomes, because "the verifier cannot do this" must never look like
+/// a forged certificate: ring accepts RSA keys of 2048 to 8192 bits for SHA-256 and up (1024 to
+/// 8192 for the legacy SHA-1), ECDSA on P-256 and P-384, Ed25519 and RSA-PSS; everything else
+/// (MD5, RSA-512, secp521r1, ...) is `Unchecked`, not `Invalid`.
+pub fn self_signature(cert: &X509Certificate<'_>) -> SelfSignature {
+    let sha1 = {
+        let oid = cert.signature_algorithm.algorithm.to_id_string();
+        oid == "1.2.840.113549.1.1.5" || oid == "1.3.14.3.2.29"
+    };
+    if let Ok(PublicKey::RSA(rsa)) = cert.public_key().parsed() {
+        let bits = rsa.key_size();
+        let min = if sha1 { 1024 } else { 2048 };
+        if !(min..=8192).contains(&bits) {
+            return SelfSignature::Unchecked("RSA key size outside what the verifier supports");
+        }
+    }
+    match cert.verify_signature(None) {
+        Ok(()) => SelfSignature::Valid,
+        Err(X509Error::SignatureUnsupportedAlgorithm) => {
+            SelfSignature::Unchecked("signature algorithm not supported by the verifier")
+        }
+        Err(_) => SelfSignature::Invalid,
+    }
+}
+
 pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
     let (_, cert) =
         X509Certificate::from_der(der).map_err(|e| format!("Certificate not parseable: {e}"))?;
@@ -177,7 +227,11 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
         f.insert("cn".into(), cn.to_string());
     }
     f.insert("issuer".into(), cert.issuer().to_string());
-    f.insert("self_signed".into(), is_self_signed(&cert).to_string());
+    let self_signed = is_self_signed(&cert);
+    f.insert("self_signed".into(), self_signed.to_string());
+    if self_signed {
+        f.insert("self_signature".into(), self_signature(&cert).describe());
+    }
     if let Ok(Some(san)) = cert.subject_alternative_name() {
         let names: Vec<String> = san
             .value
@@ -329,7 +383,7 @@ fn mix(seed: u64) -> u64 {
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^ (x >> 31)
 }
-fn random32() -> [u8; 32] {
+pub(crate) fn random32() -> [u8; 32] {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1184,6 +1238,127 @@ mod tests {
         let leaf_f = describe_cert(leaf.der()).unwrap();
         assert_eq!(leaf_f["subject"], leaf_f["issuer"]);
         assert_eq!(leaf_f["self_signed"], "false");
+    }
+
+    /// Replaces every occurrence of `from` in `der` by `to` (same length).
+    fn patch(der: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+        assert_eq!(from.len(), to.len());
+        let mut out = der.to_vec();
+        let mut found = 0;
+        for i in 0..out.len().saturating_sub(from.len()) {
+            if out[i..i + from.len()] == *from {
+                out[i..i + to.len()].copy_from_slice(to);
+                found += 1;
+            }
+        }
+        assert!(found >= 1, "pattern not found");
+        out
+    }
+
+    #[test]
+    fn self_signature_has_three_outcomes() {
+        let sig = |der: &[u8]| describe_cert(der).unwrap().get("self_signature").cloned();
+        // Valid: the certificate was signed with its own key (ECDSA P-256 and Ed25519).
+        let (der, _) = test_identity();
+        assert_eq!(sig(&der).as_deref(), Some("valid"));
+        let ed_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let ed = rcgen::CertificateParams::new(vec!["ed.local".to_string()])
+            .unwrap()
+            .self_signed(&ed_key)
+            .unwrap();
+        assert_eq!(sig(ed.der()).as_deref(), Some("valid"));
+        // Invalid: one bit of the signature flipped. The certificate still parses.
+        let mut bad = der.to_vec();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x01;
+        let f = describe_cert(&bad).unwrap();
+        assert_eq!(f["self_signed"], "true");
+        assert_eq!(f["self_signature"], "invalid");
+        // Invalid: the signed content changed (the name, in issuer and subject alike).
+        let cn = describe_cert(&der).unwrap()["cn"].clone();
+        let flipped: String = cn
+            .chars()
+            .map(|c| if c == 'a' { 'b' } else { 'a' })
+            .collect();
+        let tampered = patch(&der, cn.as_bytes(), flipped.as_bytes());
+        let f = describe_cert(&tampered).unwrap();
+        assert_eq!(f["self_signed"], "true", "{f:?}");
+        assert_eq!(f["self_signature"], "invalid", "{f:?}");
+        // Unchecked: a signature algorithm the verifier lacks (ecdsa-with-SHA512 on P-256).
+        let unsupported = patch(
+            &der,
+            &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02],
+            &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04],
+        );
+        let f = describe_cert(&unsupported).unwrap();
+        assert!(f["self_signature"].starts_with("unchecked ("), "{f:?}");
+        // Real RSA certificates made with `openssl req -x509 -newkey rsa:<bits> -<hash>`:
+        // 2048 bit SHA-256 and 1024 bit SHA-1 verify; 1024 bit SHA-256 is outside what the
+        // verifier takes, which is "unchecked" and not a forged certificate.
+        let rsa2048 = include_bytes!("../../tests/fixtures/self-signed-rsa2048-sha256.der");
+        assert_eq!(sig(rsa2048).as_deref(), Some("valid"));
+        let rsa1024_sha1 = include_bytes!("../../tests/fixtures/self-signed-rsa1024-sha1.der");
+        assert_eq!(sig(rsa1024_sha1).as_deref(), Some("valid"));
+        let small = describe_cert(include_bytes!(
+            "../../tests/fixtures/self-signed-rsa1024-sha256.der"
+        ))
+        .unwrap();
+        assert!(
+            small["self_signature"].starts_with("unchecked ("),
+            "{small:?}"
+        );
+        // A corrupt RSA signature is invalid.
+        let mut rsa_bad = rsa2048.to_vec();
+        let last = rsa_bad.len() - 1;
+        rsa_bad[last] ^= 0x80;
+        assert_eq!(sig(&rsa_bad).as_deref(), Some("invalid"));
+    }
+
+    #[test]
+    fn a_certificate_that_is_not_self_issued_has_no_self_signature() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "ca");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let issuer = rcgen::Issuer::from_params(&ca_params, &key);
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(vec!["leaf.local".into()])
+            .unwrap()
+            .signed_by(&leaf_key, &issuer)
+            .unwrap();
+        let f = describe_cert(leaf.der()).unwrap();
+        assert_eq!(f["self_signed"], "false");
+        assert!(!f.contains_key("self_signature"), "{f:?}");
+    }
+
+    #[test]
+    fn a_ca_issued_certificate_with_the_issuers_name_fails_the_self_signature() {
+        // Same distinguished name as its CA and no key identifiers: the name-based test says
+        // "self-signed", the signature shows the CA's key signed it.
+        let name = |p: &mut rcgen::CertificateParams| {
+            p.distinguished_name
+                .push(rcgen::DnType::CommonName, "same-name");
+        };
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+        name(&mut ca_params);
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let mut leaf_params = rcgen::CertificateParams::new(vec!["leaf.local".into()]).unwrap();
+        name(&mut leaf_params);
+        leaf_params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        leaf_params.use_authority_key_identifier_extension = false;
+        leaf_params.key_identifier_method = rcgen::KeyIdMethod::Sha256;
+        let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+        let leaf = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
+        let f = describe_cert(leaf.der()).unwrap();
+        assert_eq!(f["subject"], f["issuer"]);
+        // Whether rcgen writes a subject key identifier or not, the signature decides.
+        if f["self_signed"] == "true" {
+            assert_eq!(f["self_signature"], "invalid", "{f:?}");
+        }
     }
 
     #[test]

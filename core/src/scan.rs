@@ -76,6 +76,9 @@ pub struct Settings {
     /// Destination port for TCP traceroute; 0 picks the host's first open port that is
     /// neither an OT nor a printer port.
     pub trace_port: u16,
+    /// JARM-style TLS fingerprint (ten extra ClientHellos per TLS port). Opt-in, and ignored in
+    /// Safe Mode like the other transmitting extras.
+    pub jarm: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -119,6 +122,7 @@ impl Default for Settings {
             tcp_adaptive: false,
             trace_method: crate::trace::TraceMethod::Icmp,
             trace_port: 0,
+            jarm: false,
         }
     }
 }
@@ -701,7 +705,7 @@ mod tests {
     #[test]
     fn new_engine_options_are_off_in_old_snapshots() {
         let old: Settings = serde_json::from_str(r#"{"ports":"22","safe":false}"#).unwrap();
-        assert!(!old.arp_sweep && !old.syn_adaptive && !old.tcp_adaptive);
+        assert!(!old.arp_sweep && !old.syn_adaptive && !old.tcp_adaptive && !old.jarm);
         assert_eq!(old.trace_method, crate::trace::TraceMethod::Icmp);
         assert_eq!(old.trace_port, 0);
         let tcp: Settings = serde_json::from_str(r#"{"trace_method":"tcp"}"#).unwrap();

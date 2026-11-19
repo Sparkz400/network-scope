@@ -128,6 +128,14 @@ impl Scanner {
                             "Adaptive SYN timing (RTT-based timeouts, slows down on packet loss)",
                         ),
                     );
+                    ui.add_enabled(
+                        !s.safe && s.services,
+                        egui::Checkbox::new(
+                            &mut s.jarm,
+                            "JARM TLS fingerprint (10 extra connections per TLS port; needs service detection)",
+                        ),
+                    )
+                    .on_disabled_hover_text("Needs service detection, and not in Safe Mode");
                     if s.syn || s.arp_sweep {
                         ui.label("Configure interface, source IPv4 and MAC in Passive / DCP.");
                     }

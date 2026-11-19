@@ -79,6 +79,7 @@ pub fn rule_confidence(id: &str) -> Option<u8> {
         | "tls-cert-expiring"
         | "tls-cert-not-yet-valid"
         | "tls-self-signed"
+        | "tls-self-signed-bad-signature"
         | "tls-weak-signature"
         | "tls-weak-key"
         | "tls-sslv3"
@@ -654,7 +655,25 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                     "Check the device clock and reissue the certificate with a correct validity period.",
                 );
             }
-            if get(format!("tls.{p}.self_signed")) == "true" {
+            if get(format!("tls.{p}.self_signed")) == "true"
+                && get(format!("tls.{p}.self_signature")) == "invalid"
+            {
+                // Issuer equals subject, but the signature does not verify with the
+                // certificate's own key. Reported instead of the plain self-signed finding;
+                // "unchecked" (an algorithm the verifier lacks) never lands here.
+                o.add(
+                    Severity::Medium,
+                    "tls-self-signed-bad-signature",
+                    "Certificate claims to be self-signed but its signature does not verify",
+                    port,
+                    format!(
+                        "{}: signature does not verify with the certificate's own key",
+                        get(format!("tls.{p}.subject"))
+                    ),
+                    &[],
+                    "Replace the certificate. Either it was issued by another key under its own name, or it is corrupt or has been tampered with.",
+                );
+            } else if get(format!("tls.{p}.self_signed")) == "true" {
                 o.add(
                     Severity::Low,
                     "tls-self-signed",
