@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Safe Mode badge** in the status bar of the desktop: a green "Safe Mode" or amber "Fast" label next to the status text, updated as soon as the setting changes. The tooltip lists the limits (Safe Mode) or the enabled opt-in features (Fast); a click opens Settings. `NETWORK_SCOPE_SCREENSHOT_STATE` accepts a `-fast` suffix (for example `main-small-fast`) to render with Safe Mode off.
+### Changed
+
+- Internal: `src/otpassive.rs` is split into the module directory `src/otpassive/` (reassembly, packet parsing, one file per protocol decoder, asset inventory, control findings, capture ingest). No behaviour change.
 
 ## [0.5.1] - 2026-11-19
 

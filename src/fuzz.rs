@@ -46,6 +46,7 @@ pub const TARGETS: &[Target] = &[
     ("nmap_import", nmap_import),
     ("probes_json", probes_json),
     ("cves_json", cves_json),
+    ("feeds_import", feeds_import),
     ("arp_reply", arp_reply),
     ("syn_reply", syn_reply),
     ("tcp_options", tcp_options),
@@ -268,6 +269,20 @@ pub fn probes_json(data: &[u8]) {
             std::hint::black_box(service::ProbeDb::identify(probe, data));
         }
     }
+}
+
+/// A CISA KEV catalog or an EPSS CSV (both parsers get the same bytes), followed through the
+/// enrichment of a finding.
+pub fn feeds_import(data: &[u8]) {
+    let mut feeds = crate::feeds::Feeds::default();
+    if let Ok(p) = crate::feeds::parse_kev(data) {
+        feeds.kev = Some(p.data);
+    }
+    if let Ok(p) = crate::feeds::parse_epss(data) {
+        feeds.epss = Some(p.data);
+    }
+    let cves = ["CVE-2021-44228".to_string(), "CVE-2023-48795".to_string()];
+    std::hint::black_box(feeds.exploit_for(&cves));
 }
 
 /// A user `cves.json`, merged with the built-in rules; every rule is then evaluated.

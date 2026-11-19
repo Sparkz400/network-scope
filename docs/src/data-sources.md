@@ -9,6 +9,10 @@ Network Scope embeds four data files at build time. Their provenance and licensi
 | `data/probes.json` | Service probes and match rules | Original to Network Scope |
 | `data/cves.json` | Version-based CVE hints and CPE templates | Original to Network Scope |
 
+## Imported feeds
+
+CISA KEV and FIRST EPSS are not embedded. You download them and import them with `feeds import`; the cache is `feeds.json` next to the user `cves.json` (or `--feeds FILE`). See [Findings and CVE hints](findings-and-cves.md#known-exploited-and-epss-offline-feeds) for the download addresses and what changes.
+
 ## User overrides
 
 `probes.json` and `cves.json` can be extended without rebuilding:

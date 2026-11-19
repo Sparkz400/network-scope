@@ -542,9 +542,10 @@ fn findings_table(findings: &[risk::Finding], cpes: &Cpes) -> String {
         }
         let _ = write!(
             o,
-            "<td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<td>{}</td><td>{}{}</td><td>{}</td></tr>",
             esc(&f.evidence),
             cve_links(&f.cve),
+            crate::feeds::badges_html(f),
             esc(&f.advice)
         );
     }
