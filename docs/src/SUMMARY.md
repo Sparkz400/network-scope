@@ -15,6 +15,7 @@
 - [Inventory, diffs and reports](inventory-diff-reports.md)
 - [JSON output and schemas](json-output.md)
 - [Monitoring and alerts](monitoring-alerts.md)
+- [Service and scheduling](service-and-scheduling.md)
 - [Scripting](scripting.md)
 
 # How it works

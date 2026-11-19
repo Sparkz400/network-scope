@@ -8,9 +8,25 @@ use crate::{
         args::{number, scan_settings},
     },
 };
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
+    run_monitor(ctx, None, true)
+}
+
+/// The monitor loop behind `monitor` and `service run`. `stop` ends it cleanly when set from
+/// another thread (the service control handler); `echo` prints each alert on stdout, which a
+/// service has no use for.
+pub(in crate::ui) fn run_monitor(
+    ctx: &Ctx,
+    stop: Option<Arc<AtomicBool>>,
+    echo: bool,
+) -> Result<(), String> {
     let opts = &ctx.opts;
     let targets = ctx.pos.join(" ");
     let mut s = scan_settings(opts)?;
@@ -24,6 +40,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         interface: opts.get("interface").cloned().unwrap_or_default(),
         listen_seconds: number(opts, "listen-seconds", 30)?,
         quiet: opts.contains_key("quiet"),
+        stop,
     };
     let mut file = match opts.get("alerts") {
         Some(p) => Some(
@@ -38,7 +55,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let on_alert = on_alert_script(opts, &ctx.db)?;
     monitor::run(&targets, s, &ctx.db, &cfg, &mut |a| {
         let line = crate::schema::line("alert", a).unwrap_or_default();
-        println!("{line}");
+        if echo {
+            println!("{line}");
+        }
         if let Some(f) = file.as_mut() {
             use std::io::Write;
             let _ = writeln!(f, "{line}");
@@ -47,6 +66,21 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             run_on_alert(script, a, cfg.quiet);
         }
     })
+}
+/// The checks `monitor` makes before it starts looping, without starting anything: options,
+/// targets, ports and the on-alert script. `service install` runs them, so a bad option fails
+/// there and not in a service that then stops.
+pub(in crate::ui) fn check(ctx: &Ctx) -> Result<(), String> {
+    let opts = &ctx.opts;
+    let s = scan_settings(opts)?;
+    monitor_policy(opts)?;
+    number(opts, "interval", 300u64)?;
+    number(opts, "cycles", 0u32)?;
+    number(opts, "listen-seconds", 30u64)?;
+    on_alert_script(opts, &ctx.db)?;
+    crate::scan::parse_targets(&ctx.pos.join(" "), s.skip_edges, crate::scan::MAX_STREAM)?;
+    crate::scan::parse_ports(&s.ports)?;
+    Ok(())
 }
 /// `--on-alert SCRIPT [--on-alert-dir DIR]`: the script and the directory it may write to
 /// (default: `alert-scripts` next to the database).
