@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 25] = [
+pub(super) const FLAGS: [&str; 26] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -32,6 +32,7 @@ pub(super) const FLAGS: [&str; 25] = [
     "report-missing",
     "yes-public",
     "allow-out-of-scope",
+    "no-backoff",
 ];
 pub(super) const VALUES: [&str; 44] = [
     "feeds",
@@ -152,6 +153,8 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     s.arp_sweep = opts.contains_key("arp-sweep");
     s.syn_adaptive = opts.contains_key("adaptive-syn");
     s.tcp_adaptive = opts.contains_key("adaptive-tcp");
+    // On by default; it only ever slows a host down (see `backoff`).
+    s.backoff = !opts.contains_key("no-backoff");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
         s.trace = true;
@@ -301,6 +304,9 @@ mod tests {
         .unwrap();
         let s = scan_settings(&opts).unwrap();
         assert!(s.arp_sweep && s.syn_adaptive && s.tcp_adaptive && s.trace && s.safe);
+        assert!(s.backoff, "the back-off is on unless --no-backoff is given");
+        let (_, opts) = options(&args(&["--no-backoff"])).unwrap();
+        assert!(!scan_settings(&opts).unwrap().backoff);
         assert_eq!(s.trace_method, crate::trace::TraceMethod::Tcp);
         assert_eq!(s.trace_port, 8443);
         assert!(trace_method("ping").is_err());
