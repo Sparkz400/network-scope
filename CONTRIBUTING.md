@@ -28,6 +28,12 @@ cargo build --release --locked
 python lab/verify.py target/release/network-scope        # .exe on Windows
 ```
 
+Accuracy benchmark against the ground truth in `lab/ground_truth.json` (needs an absolute path to the CLI; CI fails when a metric drops below `lab/benchmark_baseline.json`, see [Lab and testing](docs/src/lab-and-testing.md#accuracy-benchmark)):
+
+```sh
+python -I lab/benchmark.py --cli /absolute/path/to/target/release/network-scope-cli --check
+```
+
 Dependency checks (RustSec advisories, licenses, sources), the same ones the `security` workflow runs:
 
 ```sh
@@ -40,7 +46,7 @@ The `secrets` workflow scans the whole git history with [gitleaks](https://githu
 
 CI runs all of the above on Windows, Linux and macOS. A pull request must pass CI.
 
-Documentation lives in `docs/src` (mdBook). Preview it with `mdbook serve docs` if you have [mdBook](https://rust-lang.github.io/mdBook/) installed. Keep pages plain Markdown with relative links between them.
+Documentation lives in `docs/src` (mdBook). Preview it with `mdbook serve docs` if you have [mdBook](https://rust-lang.github.io/mdBook/) installed. Keep pages plain Markdown with relative links between them. Every finding rule id in `src/risk.rs` needs a page `docs/src/findings/<id>.md` (same sections as the existing pages, listed in `SUMMARY.md` and `findings/index.md`); `python -I docs/check_finding_pages.py` checks this and runs in CI.
 
 ## Fuzzing
 
@@ -68,7 +74,7 @@ Network Scope is used on industrial networks. Every change that sends traffic mu
 2. **Rate gate.** Every transmitted probe goes through the scheduler's rate gate (one token per packet, retransmits included) and respects the global in-flight bounds. No side channels that bypass `--rate` or Safe Mode spacing.
 3. **Safe Mode.** Anything beyond a single connection or a single read-only request per port must be disabled in Safe Mode, with the GUI control greyed out and the behaviour documented.
 4. **Never OT or printer ports.** Generic TCP and UDP probes, traceroute ports and user probe files must never send to industrial ports (the OT port list in the code, including 2222, 2221-2223, 47808-47823, 34962-34964, 20000, 1089-1091, 5006/5007, 1740-1743, 34980, 17185) or printer ports (515, 9100-9107). Extend the existing deny lists rather than adding new ones.
-5. **OT is read-only.** OT protocol code may only send identification requests. No writes, no program/block access, no control or diagnostic commands that change state, no authentication attempts.
+5. **OT is read-only.** OT protocol code may only send identification requests. No writes, no program/block access, no control or diagnostic commands that change state, no authentication attempts. This is enforced by types: build requests only with the allow-listed request types in `src/ot/readonly.rs` and send them only through `OtStream::send` / `OtUdp::send`, never with a raw socket write. Adding a variant to an allow-list enum (and the matching test expectation) needs an explicit review; the tests in that module check every function code byte.
 6. **Passive modules are send-free.** `otpassive`, `pcapfile` and the `PassiveCapture` wrapper in `capture` must not contain socket or send code; the test `this_module_cannot_transmit` enforces this. Do not weaken it, and keep the passive listener (`passive`) receive-only as well.
 7. **Bounded parsing.** Every parser of network or file input must bound lengths, counts and recursion and must never panic on malformed input. Add a test with truncated and oversized input, and a fuzz target (see [Fuzzing](#fuzzing)).
 8. **Honest documentation.** Document what a probe sends, and state plainly what has not been tested against real devices.

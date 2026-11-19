@@ -1,6 +1,7 @@
 //! Bounded async scheduling shared by the desktop, CLI and TUI.
 use crate::{
     osfp::TcpFp,
+    rtt::HostRtt,
     scan::{Event, Host, PortState, Settings},
     service::ProbeDb,
     syn::SynEngine,
@@ -181,6 +182,22 @@ fn wants_ot(h: &Host, s: &Settings) -> bool {
     s.ot && (h.responding || s.scan_nonresponders)
 }
 
+/// UDP ports the OT identification talks to over UDP. A parsed reply (`<protocol>.*`
+/// identity keys) proves the port answered, so the host lists it as open UDP like a
+/// port found by the UDP scan. Today that is only BACnet/IP; EtherNet/IP is identified
+/// over TCP 44818.
+const OT_UDP: [(&str, u16); 1] = [("BACnet", 47808)];
+
+fn merge_ot_udp(h: &mut Host) {
+    for (protocol, port) in OT_UDP {
+        let prefix = format!("{protocol}.");
+        if h.identity.keys().any(|k| k.starts_with(&prefix)) && !h.udp_open.contains(&port) {
+            h.udp_open.push(port);
+            h.udp_open.sort_unstable();
+        }
+    }
+}
+
 struct Ctx {
     gate: Arc<Gate>,
     blocking: Arc<Semaphore>,
@@ -327,12 +344,20 @@ struct PortProbe {
     fp: Option<TcpFp>,
 }
 
+/// Ports probed before the rest of a host's ports when `tcp_adaptive` is on, so the
+/// host's connect RTT is known when the remaining probes choose their timeout.
+const PILOT_PORTS: usize = 3;
+/// Longest wait for that first completed connect. A host that answers nothing costs
+/// this once, in addition to the port timeout.
+const PILOT_WAIT: Duration = Duration::from_millis(250);
+
 async fn probe_port(
     ip: IpAddr,
     port: u16,
     timeout: Duration,
     s: &Settings,
     ctx: &Ctx,
+    rtt: Option<&HostRtt>,
 ) -> PortProbe {
     // The caller already holds this probe's in-flight permit (`ctx.sockets`).
     let cap = timeout.max(Duration::from_millis(u64::from(s.port_timeout)));
@@ -354,8 +379,22 @@ async fn probe_port(
             Err(e) => note = Some(format!("SYN unavailable; TCP connect fallback: {e}")),
         }
     }
-    let state = connect_with_retries(&ctx.gate, timeout, cap, s.retries, |attempt| {
-        crate::probes::connect(ip, port, attempt)
+    // Adaptive: the first attempt waits for the host's measured RTT, never longer than
+    // `timeout`; retries still double up to the user's port timeout.
+    let first = rtt.map_or(timeout, |r| {
+        let floor = Duration::from_millis(u64::from(s.minimum_timeout.max(1)));
+        r.timeout(timeout, floor, cap)
+    });
+    let state = connect_with_retries(&ctx.gate, first, cap, s.retries, |attempt| async move {
+        let started = Instant::now();
+        let state = crate::probes::connect(ip, port, attempt).await;
+        // An answer, open or refused, is an RTT sample; silence and local errors are not.
+        if let Some(r) = rtt
+            && matches!(state, PortState::Open | PortState::Closed)
+        {
+            r.sample(started.elapsed());
+        }
+        state
     })
     .await;
     PortProbe {
@@ -548,7 +587,14 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         };
         let slots = Arc::new(Semaphore::new(parallel));
         let mut probes = JoinSet::new();
-        for &port in ports.iter() {
+        // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
+        let host_rtt = (s.tcp_adaptive && ctx.syn.is_none()).then(|| Arc::new(HostRtt::default()));
+        for (index, &port) in ports.iter().enumerate() {
+            if index == PILOT_PORTS
+                && let Some(r) = &host_rtt
+            {
+                r.wait_for_sample(timeout.min(PILOT_WAIT)).await;
+            }
             let Ok(permit) = slots.clone().acquire_owned().await else {
                 break;
             };
@@ -557,9 +603,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             let Ok(socket) = ctx.sockets.clone().acquire_owned().await else {
                 break;
             };
-            let (s, ctx) = (s.clone(), ctx.clone());
+            let (s, ctx, rtt) = (s.clone(), ctx.clone(), host_rtt.clone());
             probes.spawn(async move {
-                let result = probe_port(ip, port, timeout, &s, &ctx).await;
+                let result = probe_port(ip, port, timeout, &s, &ctx, rtt.as_deref()).await;
                 drop(socket);
                 drop(permit);
                 (port, result)
@@ -701,6 +747,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     }
     if wants_ot(&h, &s) {
         crate::ot::identify(&mut h, &s, &ctx.gate).await;
+        merge_ot_udp(&mut h);
     }
     if s.trace && h.responding {
         let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
@@ -960,6 +1007,105 @@ mod tests {
         assert_eq!(pool.available_permits(), 1);
     }
 
+    /// Scans 127.0.0.1 over TCP connect and returns (open ports, closed count, unanswered).
+    fn loopback_scan(ports: Vec<u16>, adaptive: bool, safe: bool) -> (Vec<u16>, usize, usize) {
+        let s = Settings {
+            tcp_only: true,
+            safe,
+            tcp_adaptive: adaptive,
+            // Windows reports a refused loopback connect only after ~2 s (SYN retransmits).
+            port_timeout: 5000,
+            delay: 0,
+            ..Settings::default()
+        };
+        let run = crate::scan::start(vec!["127.0.0.1".parse().unwrap()], ports, s);
+        let event = run.receiver.recv_timeout(Duration::from_secs(30)).unwrap();
+        let Event::Host(h) = event else {
+            panic!("missing host")
+        };
+        (h.open, h.closed, h.unanswered)
+    }
+
+    #[test]
+    fn adaptive_connect_scan_classifies_like_the_default() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().port();
+        // Closed ports: bind and release, so nothing listens there.
+        let closed: Vec<u16> = (0..6)
+            .map(|_| {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                l.local_addr().unwrap().port()
+            })
+            .collect();
+        let mut ports = closed.clone();
+        ports.push(open);
+        // More ports than the pilot batch, so the RTT-derived timeout is used too.
+        let plain = loopback_scan(ports.clone(), false, false);
+        let adaptive = loopback_scan(ports.clone(), true, false);
+        assert_eq!(plain, (vec![open], closed.len(), 0));
+        assert_eq!(adaptive.0, plain.0, "open ports never change");
+        if cfg!(windows) {
+            // Windows reports a refused connect only after ~2 s, so once an accept has
+            // shortened the wait, a closed port may be counted as unanswered instead.
+            assert_eq!(adaptive.1 + adaptive.2, closed.len());
+        } else {
+            assert_eq!(adaptive, plain);
+        }
+        // Safe Mode (rate gate, few parallel probes) behaves the same.
+        let safe = loopback_scan(ports[..4].to_vec(), true, true);
+        assert_eq!((safe.0.len(), safe.1 + safe.2), (0, 4));
+    }
+
+    #[tokio::test]
+    async fn connect_probe_records_an_rtt_sample_only_for_answers() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().port();
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let s = Settings {
+            safe: false,
+            tcp_adaptive: true,
+            ..Settings::default()
+        };
+        let ctx = test_ctx();
+        for (port, want) in [(open, PortState::Open), (closed, PortState::Closed)] {
+            let rtt = HostRtt::default();
+            let timeout = Duration::from_millis(5000);
+            let got = probe_port(ip, port, timeout, &s, &ctx, Some(&rtt)).await;
+            assert_eq!(got.state, want);
+            assert!(rtt.has_sample(), "{want:?} is an RTT sample");
+            let next = rtt.timeout(timeout, Duration::from_millis(100), timeout);
+            assert!(next <= timeout);
+            if want == PortState::Open {
+                // A loopback accept is far below the 100 ms floor: the wait shrinks to it.
+                // (A refused connect is not asserted: Windows takes ~2 s to report it.)
+                assert_eq!(next, Duration::from_millis(100));
+            }
+        }
+        // Without the estimator nothing changes.
+        let plain = probe_port(ip, closed, Duration::from_millis(5000), &s, &ctx, None).await;
+        assert_eq!(plain.state, PortState::Closed);
+    }
+
+    fn test_ctx() -> Ctx {
+        Ctx {
+            gate: Arc::new(Gate::unlimited()),
+            blocking: Arc::new(Semaphore::new(4)),
+            sockets: Arc::new(Semaphore::new(4)),
+            dhcp: Semaphore::new(1),
+            syn: None,
+            syn_error: None,
+            arp: None,
+            arp_error: None,
+            probes: None,
+            udp_ports: vec![],
+            scripts: None,
+        }
+    }
+
     #[test]
     fn ot_identification_for_responding_or_explicitly_scanned_silent_hosts() {
         let s = Settings {
@@ -992,6 +1138,63 @@ mod tests {
                 ..Settings::default()
             }
         ));
+    }
+
+    #[test]
+    fn ot_udp_reply_lists_the_port_as_open_udp() {
+        let mut h = host("10.0.0.1");
+        h.udp_open = vec![161];
+        h.identity.insert("BACnet.device_id".into(), "1000".into());
+        merge_ot_udp(&mut h);
+        assert_eq!(h.udp_open, [161, 47808]);
+        merge_ot_udp(&mut h);
+        assert_eq!(h.udp_open, [161, 47808], "no duplicate on repeat");
+        // No BACnet identity (or only another protocol's): nothing is added.
+        let mut other = host("10.0.0.2");
+        other.identity.insert("Modbus.vendor".into(), "x".into());
+        merge_ot_udp(&mut other);
+        assert!(other.udp_open.is_empty());
+    }
+
+    #[test]
+    fn ot_scan_lists_bacnet_port_in_udp_open() {
+        // The fixed BACnet port may be taken (lab simulator, another test run): skip then.
+        let Ok(device) = std::net::UdpSocket::bind("127.0.0.1:47808") else {
+            return;
+        };
+        device
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut b = [0u8; 64];
+            if let Ok((_, from)) = device.recv_from(&mut b) {
+                let iam = [
+                    0x81, 0x0a, 0, 20, 1, 0, 0x10, 0, 0xc4, 2, 0, 0, 42, 0x22, 5, 0xdc, 0x91, 3,
+                    0x21, 15,
+                ];
+                let _ = device.send_to(&iam, from);
+            }
+        });
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            ot: true,
+            scan_nonresponders: true,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        let run = crate::scan::start(vec!["127.0.0.1".parse().unwrap()], vec![1], s);
+        let event = run.receiver.recv_timeout(Duration::from_secs(15)).unwrap();
+        let Event::Host(h) = event else {
+            panic!("missing host")
+        };
+        drop(run);
+        let _ = server.join();
+        assert_eq!(
+            h.identity.get("BACnet.device_id").map(String::as_str),
+            Some("42")
+        );
+        assert_eq!(h.udp_open, [47808]);
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub(crate) mod platform;
 pub(crate) mod probes;
 pub(crate) mod report;
 pub(crate) mod risk;
+pub(crate) mod rtt;
 pub(crate) mod scan;
 pub(crate) mod script;
 pub(crate) mod service;
@@ -34,6 +35,11 @@ pub(crate) mod ui;
 
 #[doc(hidden)]
 pub mod fuzz;
+
+/// The read-only OT request types (see [`ot::readonly`]). Public only so that the
+/// `compile_fail` doctests there can show that a write or control request does not compile.
+#[doc(hidden)]
+pub use ot::readonly as ot_readonly;
 
 use std::path::PathBuf;
 
@@ -131,9 +137,16 @@ pub fn run() -> eframe::Result<()> {
         {
             eprintln!("{warning}");
         }
-        if let Err(e) = ui::run(&cli_args) {
-            eprintln!("{e}");
-            std::process::exit(1);
+        let status = match ui::run(&cli_args) {
+            Ok(status) => status,
+            Err(e) => {
+                eprintln!("{e}");
+                ui::ExitCode::Error
+            }
+        };
+        // The only process exit of the CLI path (both binaries run through here).
+        if status != ui::ExitCode::Success {
+            std::process::exit(status.code());
         }
         return Ok(());
     }

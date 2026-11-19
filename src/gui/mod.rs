@@ -24,6 +24,8 @@ struct Saved {
     settings: scan::Settings,
     favorites: Vec<String>,
     notes: BTreeMap<IpAddr, String>,
+    /// CVE rules file merged over the built-in rules (like `--cves`); empty: the default rules.
+    cves_file: String,
 }
 impl Saved {
     /// What goes to disk: empty notes are dropped.
@@ -285,6 +287,8 @@ struct Scanner {
     search: String,
     status: String,
     error: String,
+    /// Why the CVE rules file in the settings could not be loaded; empty when it loaded.
+    cves_error: String,
     settings_open: bool,
     about_open: bool,
     selected: Option<IpAddr>,
@@ -379,6 +383,7 @@ impl Scanner {
             search: String::new(),
             status: "Ready to scan".into(),
             error: String::new(),
+            cves_error: String::new(),
             settings_open: false,
             about_open: false,
             selected: None,
@@ -432,10 +437,22 @@ impl Scanner {
             opened_stamp: None,
         };
         // A broken user CVE file is reported, not silently replaced by the built-in rules.
-        if app.screenshot.is_none()
-            && let Some(warning) = risk::init_cves()
-        {
-            app.error = warning;
+        if app.screenshot.is_none() {
+            if app.saved.cves_file.trim().is_empty() {
+                if let Some(warning) = risk::init_cves() {
+                    app.error = warning;
+                }
+            } else {
+                app.apply_cves_file();
+                if !app.cves_error.is_empty() {
+                    // Keep the default rules active and tell the user why the file is unused.
+                    let _ = risk::init_cves();
+                    app.error = format!(
+                        "CVE rules file: {}; using the default rules instead",
+                        app.cves_error
+                    );
+                }
+            }
         }
         if app.screenshot.is_some()
             && let Ok(state) = std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
@@ -1328,6 +1345,44 @@ mod tests {
         assert_eq!(s.probe_file, current.probe_file);
         let d = scan::Settings::default();
         assert_eq!((s.workers, s.safe, s.ports), (d.workers, d.safe, d.ports));
+    }
+
+    #[test]
+    fn cve_rules_file_is_loaded_validated_and_persisted() {
+        let dir = std::env::temp_dir().join(format!("ns-gui-cves-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.json");
+        std::fs::write(
+            &good,
+            r#"{"rules":[{"id":"lab-1","product":"labd","min":"1.0","max":"2.0","severity":"critical","cve":["CVE-2099-0001"],"title":"Lab daemon"}]}"#,
+        )
+        .unwrap();
+        let builtin = risk::CveDb::builtin();
+        let db = settings::load_cve_rules(&format!("  {}  ", good.display())).unwrap();
+        assert_eq!(
+            db.rules.len(),
+            builtin.rules.len() + 1,
+            "added to the built-in rules"
+        );
+        assert!(db.rules.iter().any(|r| r.id == "lab-1"));
+        // A file that does not parse is an error naming the file; so is a missing one.
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "not json").unwrap();
+        let e = settings::load_cve_rules(&bad.display().to_string()).unwrap_err();
+        assert!(e.contains("bad.json"), "{e}");
+        let e =
+            settings::load_cve_rules(&dir.join("missing.json").display().to_string()).unwrap_err();
+        assert!(e.contains("missing.json"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+        // The path is part of the preferences; preferences from before it existed still load.
+        let saved = Saved {
+            cves_file: "C:\\rules\\cves.json".into(),
+            ..Default::default()
+        };
+        let disk: Saved = serde_json::from_slice(&saved.to_disk()).unwrap();
+        assert_eq!(disk.cves_file, "C:\\rules\\cves.json");
+        let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
+        assert!(old.cves_file.is_empty());
     }
 
     #[test]
