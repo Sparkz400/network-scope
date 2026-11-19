@@ -35,6 +35,11 @@ pub(crate) mod ui;
 #[doc(hidden)]
 pub mod fuzz;
 
+/// The read-only OT request types (see [`ot::readonly`]). Public only so that the
+/// `compile_fail` doctests there can show that a write or control request does not compile.
+#[doc(hidden)]
+pub use ot::readonly as ot_readonly;
+
 use std::path::PathBuf;
 
 /// A standard handle the process cannot use: never set (a GUI-subsystem process
