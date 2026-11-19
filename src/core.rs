@@ -181,6 +181,22 @@ fn wants_ot(h: &Host, s: &Settings) -> bool {
     s.ot && (h.responding || s.scan_nonresponders)
 }
 
+/// UDP ports the OT identification talks to over UDP. A parsed reply (`<protocol>.*`
+/// identity keys) proves the port answered, so the host lists it as open UDP like a
+/// port found by the UDP scan. Today that is only BACnet/IP; EtherNet/IP is identified
+/// over TCP 44818.
+const OT_UDP: [(&str, u16); 1] = [("BACnet", 47808)];
+
+fn merge_ot_udp(h: &mut Host) {
+    for (protocol, port) in OT_UDP {
+        let prefix = format!("{protocol}.");
+        if h.identity.keys().any(|k| k.starts_with(&prefix)) && !h.udp_open.contains(&port) {
+            h.udp_open.push(port);
+            h.udp_open.sort_unstable();
+        }
+    }
+}
+
 struct Ctx {
     gate: Arc<Gate>,
     blocking: Arc<Semaphore>,
@@ -701,6 +717,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     }
     if wants_ot(&h, &s) {
         crate::ot::identify(&mut h, &s, &ctx.gate).await;
+        merge_ot_udp(&mut h);
     }
     if s.trace && h.responding {
         let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
@@ -992,6 +1009,63 @@ mod tests {
                 ..Settings::default()
             }
         ));
+    }
+
+    #[test]
+    fn ot_udp_reply_lists_the_port_as_open_udp() {
+        let mut h = host("10.0.0.1");
+        h.udp_open = vec![161];
+        h.identity.insert("BACnet.device_id".into(), "1000".into());
+        merge_ot_udp(&mut h);
+        assert_eq!(h.udp_open, [161, 47808]);
+        merge_ot_udp(&mut h);
+        assert_eq!(h.udp_open, [161, 47808], "no duplicate on repeat");
+        // No BACnet identity (or only another protocol's): nothing is added.
+        let mut other = host("10.0.0.2");
+        other.identity.insert("Modbus.vendor".into(), "x".into());
+        merge_ot_udp(&mut other);
+        assert!(other.udp_open.is_empty());
+    }
+
+    #[test]
+    fn ot_scan_lists_bacnet_port_in_udp_open() {
+        // The fixed BACnet port may be taken (lab simulator, another test run): skip then.
+        let Ok(device) = std::net::UdpSocket::bind("127.0.0.1:47808") else {
+            return;
+        };
+        device
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut b = [0u8; 64];
+            if let Ok((_, from)) = device.recv_from(&mut b) {
+                let iam = [
+                    0x81, 0x0a, 0, 20, 1, 0, 0x10, 0, 0xc4, 2, 0, 0, 42, 0x22, 5, 0xdc, 0x91, 3,
+                    0x21, 15,
+                ];
+                let _ = device.send_to(&iam, from);
+            }
+        });
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            ot: true,
+            scan_nonresponders: true,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        let run = crate::scan::start(vec!["127.0.0.1".parse().unwrap()], vec![1], s);
+        let event = run.receiver.recv_timeout(Duration::from_secs(15)).unwrap();
+        let Event::Host(h) = event else {
+            panic!("missing host")
+        };
+        drop(run);
+        let _ = server.join();
+        assert_eq!(
+            h.identity.get("BACnet.device_id").map(String::as_str),
+            Some("42")
+        );
+        assert_eq!(h.udp_open, [47808]);
     }
 
     #[test]
