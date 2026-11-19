@@ -70,7 +70,7 @@ What is done to get there (`scripts/repro_env.sh`, used by `release.yml` for eve
 
 The `reproducible` workflow (job `reproducible build`) runs on Linux when `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/`, `core/`, `data/`, `assets/` or the script change, and every Wednesday. It exports the commit twice into two directories with different paths, builds `network-scope-cli` in each, and fails if the SHA-256 differs; the two binaries are then attached to the run for comparison with `diffoscope` or `cmp`.
 
-Only the Linux x86_64 command-line binary is checked. The Windows and macOS release builds use the same flags, but their reproducibility is not tested and not claimed. The GUI binary links the same code and is expected to behave the same, but it is not part of the check.
+Only the Linux x86_64 command-line binary is checked. The Windows and macOS release builds use the same flags (on Windows also `/Brepro`, so the linker does not stamp the link time), but they are not claimed to be reproducible: a local rehearsal on Windows (two directories, same commit, `network-scope-cli.exe`) still produced different files, about 8,000 bytes apart, without a build path in either. The cause was not investigated. The GUI binary links the same code and is expected to behave the same, but it is not part of the check.
 
 ### Rebuild a release yourself
 
@@ -82,7 +82,8 @@ cd network-scope
 git checkout v0.5.1
 
 # the environment of the release build: SOURCE_DATE_EPOCH, RUSTFLAGS, CFLAGS, ...
-while IFS= read -r line; do export "$line"; done < <(sh scripts/repro_env.sh "$PWD")
+env_lines="$(sh scripts/repro_env.sh "$PWD")"
+while IFS= read -r line; do export "$line"; done <<< "$env_lines"
 
 cargo build --release --locked --bin network-scope-cli
 sha256sum target/release/network-scope-cli
@@ -92,4 +93,4 @@ tar -xzf network-scope-0.5.1-linux-x86_64.tar.gz
 sha256sum network-scope-0.5.1-linux-x86_64/network-scope-cli
 ```
 
-Equal hashes mean the release binary was built from this source with this toolchain. The two commands must run in a `bash`; `scripts/repro_env.sh` only prints the variables, so you can read it first.
+Equal hashes mean the release binary was built from this source with this toolchain. Run this in `bash` (the `<<<` is not POSIX `sh`). `scripts/repro_env.sh` only prints the variables, so you can read it first.
