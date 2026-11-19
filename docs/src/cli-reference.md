@@ -8,6 +8,7 @@ General rules:
 - `--quiet` (before or after the command, any command) suppresses progress lines on stderr, including monitor's per-cycle lines; errors still print and the exit status is unchanged.
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
+- `--nvd FILE` selects the NVD cache (default `nvd.json` next to `feeds.json`); see [NVD import](findings-and-cves.md#nvd-import-offline).
 - `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
 - `--format` and `--output FILE` select an export where a command produces one. Without `--output` the result is printed to stdout.
 
@@ -50,7 +51,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
 | `findings ID [--min-severity low] [--sort exploited\|severity] [--fail-on-findings]` | Weak TLS/SSH, risky services, CVE hints |
 | `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
-| `feeds status [--feeds FILE]` | Show what the feeds cache holds (JSON) |
+| `feeds import nvd FILE... [--nvd FILE]` | Import NVD CVE JSON 2.0 feed files (unpack `.gz` first) into the NVD cache; CPE matches become `cve` findings. No network access |
+| `feeds status [--feeds FILE] [--nvd FILE]` | Show what the feeds cache and the NVD cache hold (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
 | `alerts [--db FILE]` | Alerts raised by monitor runs |
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |

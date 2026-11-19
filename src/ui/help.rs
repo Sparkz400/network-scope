@@ -17,6 +17,7 @@ network-scope import FILE.xml                  Import an nmap XML scan into the 
 network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]
                                                Weak TLS/SSH, risky services, CVE hints
 network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
+network-scope feeds import nvd FILE...   Offline NVD CVE JSON 2.0 feed files (unzip .gz first) for CVE findings
 network-scope feeds status                     What the feeds cache holds
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
@@ -53,6 +54,7 @@ Scan options:
   --probes FILE   Extra service probes (TCP and UDP), merged over data/probes.json by name
   --cves FILE     Extra CVE/CPE rules, merged over data/cves.json by id; any command
   --feeds FILE    KEV/EPSS cache (default: feeds.json next to the user cves.json); any command
+  --nvd FILE      NVD cache (default: nvd.json next to feeds.json); any command
   --script PATH   Rhai script (or folder of .rhai files) run against every host
   --db FILE       Defaults to LOCALAPPDATA/NetworkScope/inventory.sqlite
   --fast          Disable conservative rate limits (read-only OT still applies)

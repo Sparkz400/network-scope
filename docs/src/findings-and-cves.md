@@ -73,9 +73,38 @@ Either option may be given alone; the part not imported keeps its previous conte
 - Findings are ranked by in KEV first, then severity, then EPSS, then host, port and id. Without a cache the order is the usual severity order. `findings ID --sort severity` restores the usual order even with feeds; `--sort exploited` is the default.
 - The HTML report shows a "Known exploited" badge (with the date CISA added it and "Ransomware use" where KEV says so) and "EPSS NN %" next to the CVE links.
 
-**Limits.** KEV and EPSS describe a CVE, not your host: a version-based hint that matches a known exploited CVE is still only a hint (see above). EPSS is a statistical estimate, not a prediction for one device. The desktop Findings window does not show these fields yet. Importing the NVD feed is a separate roadmap item and is not part of this.
+**Limits.** KEV and EPSS describe a CVE, not your host: a version-based hint that matches a known exploited CVE is still only a hint (see above). EPSS is a statistical estimate, not a prediction for one device. The desktop Findings window does not show these fields yet. The NVD import is described next.
 
 Sources and terms: KEV is published by the US government (CISA); EPSS is published free of charge by the EPSS Special Interest Group at FIRST. See [data/README.md](https://github.com/Sparkz400/network-scope/blob/main/data/README.md). The EPSS download address was checked on FIRST's data page (`first.org/epss/data`) on 2026-11-19.
+
+## NVD import (offline)
+
+The built-in rules in `data/cves.json` cover a handful of well-known products. For everything else you can import the NVD (National Vulnerability Database) CVE feed, and the scanner matches the CPE names it derives (`svc.<port>.cpe`) against it:
+
+```sh
+# nvdcve-2.0-2024.json and friends: the "CVE JSON 2.0" feed files, downloaded by you
+gunzip nvdcve-2.0-2024.json.gz           # gzip is not read directly (no extra dependency)
+network-scope-cli feeds import nvd nvdcve-2.0-2023.json nvdcve-2.0-2024.json
+network-scope-cli feeds status
+network-scope-cli findings 1
+```
+
+Network Scope never downloads the files. Files saved from the NVD API 2.0 (`/rest/json/cves/2.0`) have the same layout and import too. A `.gz` file is detected and refused with the `gunzip` hint. You can import several files in one call and repeat the import to refresh: a CVE that is imported again replaces the earlier entry, everything else is kept.
+
+**Cache.** The import writes a compact index (`nvd.json`, next to `feeds.json`; `--nvd FILE` on any command selects another one), not the whole feed: for each CVE the rating (CVSS 4.0, 3.1, 3.0 or 2, the newest present; `info` when NVD has not rated it), a short title and its vulnerable CPE ranges. The file is read while parsing, so memory use does not grow with the size of the feed (an unpacked year file is a few hundred MB). The cache is loaded only when a scan has a CPE to look up. It is a file for the same reason as `feeds.json`: a global lookup table, not part of a scan or the SQLite inventory (no store migration is involved).
+
+**What becomes a finding.** For every open port with a `svc.<port>.cpe`, each CVE whose vulnerable range contains the CPE's version becomes a finding `cve-cve-YYYY-NNNN` (see [Version-based CVE hint](findings/cve-hints.md)) with the NVD rating as its severity, the first sentence of the NVD description as its title and the matching range in the evidence ("8.5 <= v < 9.8"). KEV and EPSS data rank them like every CVE finding. At most 50 per port are listed, highest severity first. A CVE that a built-in rule already raised on the port is not repeated, and `data/cves.json` stays the fallback: without an imported cache nothing changes.
+
+**Matching is deliberately conservative:**
+
+- only matches marked `vulnerable` count; a match without any version bound (all versions) or with the "not applicable" version `-` is ignored, because it would flag every host running the product;
+- a configuration that combines the application with a platform (AND, for example "on this operating system or hardware") is not matched, since the scan cannot confirm the platform;
+- versions are compared with their letter suffixes and patch levels (`1.0.1e` is older than `1.0.1f`, `9.6` older than `9.6p1`, `1.0rc1` older than `1.0`), start and end bounds may be inclusive or exclusive, and a CPE without a version with digits matches nothing;
+- rejected CVEs and CVEs that name no usable product are dropped; only application (`a`) and operating-system (`o`) and hardware (`h`) CPEs are matched, and only for the products the scanner derives a CPE for (see below).
+
+Like every version-based hint, a match is **not** a confirmed vulnerability: distributions backport fixes without changing the version string, and the product and vendor names of the derived CPEs were written from memory and not checked against the NVD dictionary (see CPE names). The fixture in `tests/fixtures/nvd-sample.json` was written by hand following the NVD 2.0 schema (two real CVE ids with paraphrased text, the rest synthetic `CVE-2099-*`); the importer has not been run on a full real NVD download in this project's tests. The feed parser is fuzzed (`nvd_import`).
+
+NVD data is a work of the US government (NIST) and free to use; see [data/README.md](https://github.com/Sparkz400/network-scope/blob/main/data/README.md).
 
 ## CPE names
 
