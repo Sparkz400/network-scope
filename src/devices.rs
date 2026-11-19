@@ -50,6 +50,29 @@ const SBC: &str = "Single-board computer";
 const DATABASE: &str = "Database server";
 const VOIP: &str = "VoIP phone";
 const NAS: &str = "NAS / storage";
+const MOBILE: &str = "Smartphone / tablet";
+
+/// Identity keys that carry passive hints (see `passive::hints`): `passive.hint.<category>` for
+/// strong and `passive.hint_weak.<category>` for weak evidence, the value being the reason.
+const PASSIVE_HINT: &str = "passive.hint.";
+const PASSIVE_HINT_WEAK: &str = "passive.hint_weak.";
+
+fn hint_kind(category: &str) -> Option<&'static str> {
+    Some(match category {
+        "printer" => PRINTER,
+        "camera" => CAMERA,
+        "network" => NETWORK,
+        "windows" => WINDOWS,
+        "linux" => LINUX,
+        "apple" => APPLE,
+        "media" => MEDIA,
+        "iot" => IOT,
+        "voip" => VOIP,
+        "nas" => NAS,
+        "mobile" => MOBILE,
+        _ => return None,
+    })
+}
 
 const VIRTUAL_PREFIXES: [&str; 8] = [
     "005056", "000C29", "000569", "001C14", "080027", "525400", "00155D", "00163E",
@@ -68,7 +91,8 @@ pub fn is_virtual_mac(mac: &str) -> bool {
 /// templates are free text), SSH HASSH and TLS JA4S fingerprints. Keyword rules skip them.
 const NON_EVIDENCE_SUFFIXES: [&str; 4] = [".cpe", ".hassh", ".hassh_algorithms", ".ja4s"];
 fn is_device_evidence(key: &str) -> bool {
-    !NON_EVIDENCE_SUFFIXES.iter().any(|s| key.ends_with(s))
+    // Passive hints are scored by their own rule; their reasons must not feed keyword matching.
+    !key.starts_with("passive.") && !NON_EVIDENCE_SUFFIXES.iter().any(|s| key.ends_with(s))
 }
 
 /// (device type, evidence) when the combined evidence is strong enough.
@@ -287,8 +311,40 @@ pub fn classify(e: &Evidence) -> Option<(String, String)> {
     if has(&all_text, &["internetgatewaydevice"]).is_some() {
         s.add(NETWORK, 40, "UPnP InternetGatewayDevice");
     }
-    if e.protocols.iter().any(|p| p == "LLDP") {
-        s.add(NETWORK, 25, "LLDP announcement");
+    // Switches send LLDP/CDP, but so do IP phones, access points and servers. The announcement
+    // counts only when no passive hint names a more specific kind of device (e.g. a phone).
+    let specific_hint = e.identity.keys().any(|k| {
+        k.strip_prefix(PASSIVE_HINT)
+            .is_some_and(|c| c != "network" && hint_kind(c).is_some())
+    });
+    if !specific_hint {
+        for protocol in ["LLDP", "CDP"] {
+            if e.protocols.iter().any(|p| p == protocol) {
+                s.add(NETWORK, 25, format!("{protocol} announcement"));
+            }
+        }
+    }
+    // Passive hints (mDNS/SSDP/WS-Discovery services, DHCP fingerprints, LLDP/CDP capabilities).
+    // A strong hint is enough on its own; weak ones only add up with other evidence. A weak
+    // hint is ignored when the same category has a strong one.
+    for (key, why) in e.identity {
+        let (category, strong) = match (
+            key.strip_prefix(PASSIVE_HINT),
+            key.strip_prefix(PASSIVE_HINT_WEAK),
+        ) {
+            (Some(c), _) => (c, true),
+            (None, Some(c)) if !e.identity.contains_key(&format!("{PASSIVE_HINT}{c}")) => {
+                (c, false)
+            }
+            _ => continue,
+        };
+        if let Some(kind) = hint_kind(category) {
+            s.add(
+                kind,
+                if strong { 40 } else { 20 },
+                format!("passive: {why}"),
+            );
+        }
     }
 
     if e.os == "Windows" {
@@ -648,12 +704,34 @@ pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
                 (a.tcp.into_iter().collect(), a.udp.into_iter().collect());
             let os = a.identity.get("os.guess").cloned().unwrap_or_default();
             let protocols: Vec<String> = a.observations.keys().cloned().collect();
+            // Classification input: the active identity plus the passive hints, as if the scan
+            // had reported them. `a.identity` itself stays active-only (services, OS).
+            let mut identity = a.identity.clone();
+            for fields in a.observations.values() {
+                for (category, strong, why) in crate::passive::hints::stored(fields) {
+                    let key = format!(
+                        "{}{category}",
+                        if strong {
+                            PASSIVE_HINT
+                        } else {
+                            PASSIVE_HINT_WEAK
+                        }
+                    );
+                    let reasons = identity.entry(key).or_default();
+                    if !reasons.contains(&why) && reasons.len() < 300 {
+                        if !reasons.is_empty() {
+                            reasons.push_str("; ");
+                        }
+                        reasons.push_str(&why);
+                    }
+                }
+            }
             let (device_type, type_evidence) = classify(&Evidence {
                 mac: &a.mac,
                 vendor: &vendor,
                 tcp: &tcp,
                 udp: &udp,
-                identity: &a.identity,
+                identity: &identity,
                 hostnames: &hostnames,
                 os: &os,
                 ttl: a.ttl,
@@ -1121,6 +1199,75 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         }
+    }
+    #[test]
+    fn passive_hints_are_scored_like_active_evidence() {
+        let kind = |fields: &[(&str, &str)]| {
+            merge(&[], &[obs("mDNS", "aa:bb:cc:00:00:01", None, fields)])[0]
+                .device_type
+                .clone()
+        };
+        let d = merge(
+            &[],
+            &[obs(
+                "mDNS",
+                "aa:bb:cc:00:00:01",
+                None,
+                &[("hint.printer", "mDNS _ipp._tcp")],
+            )],
+        );
+        assert_eq!(d[0].device_type, "Printer / MFP");
+        assert_eq!(d[0].type_evidence, "passive: mDNS _ipp._tcp");
+        // A weak hint alone is not enough, and a weak hint beside a strong one of the same
+        // category does not double count.
+        assert_eq!(kind(&[("hint_weak.media", "x")]), "");
+        assert_eq!(
+            merge(
+                &[],
+                &[
+                    obs("mDNS", "aa:bb:cc:00:00:01", None, &[("hint.media", "a")]),
+                    obs(
+                        "SSDP/UPnP",
+                        "aa:bb:cc:00:00:01",
+                        None,
+                        &[("hint_weak.media", "b")]
+                    ),
+                ]
+            )[0]
+            .type_evidence,
+            "passive: a"
+        );
+        // Weak hints of one category from several protocols count once (a single signal kind).
+        let two = merge(
+            &[],
+            &[
+                obs("mDNS", "aa:bb:cc:00:00:01", None, &[("hint_weak.nas", "a")]),
+                obs(
+                    "SSDP/UPnP",
+                    "aa:bb:cc:00:00:01",
+                    None,
+                    &[("hint_weak.nas", "b")],
+                ),
+            ],
+        );
+        assert_eq!(two[0].device_type, "");
+        // Unknown categories and arbitrary keys are ignored.
+        assert_eq!(
+            kind(&[("hint.bogus", "x"), ("passive.hint.printer", "y")]),
+            ""
+        );
+        // The reason text never feeds the keyword rules: "printer" in a reason is not a
+        // service banner.
+        assert_eq!(kind(&[("hint_weak.media", "printer laserjet ipp")]), "");
+        // An LLDP announcement alone (25) stays below the threshold; with a phone hint the
+        // announcement no longer counts as network evidence.
+        let lldp = |fields: &[(&str, &str)]| {
+            merge(&[], &[obs("LLDP", "aa:bb:cc:00:00:01", None, fields)])[0]
+                .device_type
+                .clone()
+        };
+        assert_eq!(lldp(&[("name", "x")]), "");
+        assert_eq!(lldp(&[("hint.voip", "p")]), "VoIP phone");
     }
     fn ev<'a>(
         vendor: &'a str,
