@@ -42,12 +42,20 @@ jobs:
         run: |
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
           sudo systemctl stop ssh.socket ssh.service || true
+      # macOS: binding 127.0.0.1 below port 1024 needs root, and Remote Login holds port 22.
+      - name: Free the lab ports (macOS)
+        if: runner.os == 'macOS'
+        run: sudo launchctl bootout system/com.openssh.sshd || true
       - name: Lab end-to-end check (simulated weak and OT services on loopback)
         shell: bash
         run: |
           exe=target/release/network-scope
           [ "$RUNNER_OS" = "Windows" ] && exe=target/release/network-scope.exe
-          python lab/verify.py "$exe"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            sudo "$(command -v python)" lab/verify.py "$exe"
+          else
+            python lab/verify.py "$exe"
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: network-scope-${{ runner.os }}
