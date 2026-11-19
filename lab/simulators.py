@@ -127,6 +127,39 @@ TCP = {
 }
 
 
+def ssh_debian(conn):
+    """SSH banner that names a Linux distribution (used by the accuracy benchmark)."""
+    conn.sendall(b"SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u1\r\n" + WEAK_KEX)
+    read_some(conn)
+
+
+def web_server(server, powered_by=None):
+    """HTTP 200 handler that sends a fixed Server header (and X-Powered-By)."""
+    def handler(conn):
+        read_some(conn)
+        body = b"<html><title>Lab page</title></html>"
+        head = b"HTTP/1.1 200 OK\r\nServer: " + server.encode() + b"\r\n"
+        if powered_by:
+            head += b"X-Powered-By: " + powered_by.encode() + b"\r\n"
+        head += (b"Content-Type: text/html\r\nContent-Length: " + str(len(body)).encode()
+                 + b"\r\nConnection: close\r\n\r\n")
+        conn.sendall(head + body)
+    return handler
+
+
+def http_debian(conn):
+    web_server("Apache/2.4.56 (Debian)")(conn)
+
+
+def http_iis(conn):
+    web_server("Microsoft-IIS/10.0", "ASP.NET")(conn)
+
+
+# Extra handlers that main() and the Docker lab do not serve. The accuracy benchmark
+# (benchmark.py) puts them on their own loopback addresses.
+VARIANTS = {"ssh_debian": ssh_debian, "http_debian": http_debian, "http_iis": http_iis}
+
+
 class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
