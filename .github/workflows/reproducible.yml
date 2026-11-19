@@ -1,0 +1,96 @@
+name: reproducible
+
+# Builds network-scope-cli twice, from two copies of the same commit in different directories, and
+# compares the SHA-256 of the binaries. A mismatch means the build depends on its environment
+# (paths, time, ...), so a release could not be rebuilt and compared by someone else.
+# The environment (SOURCE_DATE_EPOCH, --remap-path-prefix, CARGO_INCREMENTAL=0) is
+# scripts/repro_env.sh, the same one release.yml uses. Linux only; how to repeat the check
+# locally is in docs/src/supply-chain.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "core/**"
+      - "data/**"
+      - "assets/**"
+      - "scripts/repro_env.sh"
+      - ".github/workflows/reproducible.yml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "core/**"
+      - "data/**"
+      - "assets/**"
+      - "scripts/repro_env.sh"
+      - ".github/workflows/reproducible.yml"
+  schedule:
+    - cron: "43 4 * * 3" # weekly, Wednesday 04:43 UTC: a new runner image or toolchain can break it
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  reproducible:
+    name: reproducible build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Linux GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Build twice in different directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          # Two exports of the same commit; different depth and length of the path on purpose.
+          dir_a="$RUNNER_TEMP/a/src"
+          dir_b="$RUNNER_TEMP/second-build-location/nested/network-scope-copy"
+          mkdir -p "$dir_a" "$dir_b" out
+          for dir in "$dir_a" "$dir_b"; do
+            git archive HEAD | tar -x -C "$dir"
+          done
+          n=0
+          for dir in "$dir_a" "$dir_b"; do
+            n=$((n + 1))
+            (
+              while IFS= read -r line; do export "$line"; done < <(sh scripts/repro_env.sh "$dir")
+              cd "$dir"
+              # rust-toolchain.toml is part of the export, so both builds use the pinned toolchain.
+              cargo build --release --locked --bin network-scope-cli
+            )
+            cp "$dir/target/release/network-scope-cli" "out/network-scope-cli.$n"
+          done
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+          sha256sum out/network-scope-cli.1 out/network-scope-cli.2 | tee out/SHA256SUMS
+          h1="$(sha256sum out/network-scope-cli.1 | cut -d' ' -f1)"
+          h2="$(sha256sum out/network-scope-cli.2 | cut -d' ' -f1)"
+          if [ "$h1" != "$h2" ]; then
+            echo "::error::network-scope-cli is not reproducible: the two builds differ (see the uploaded binaries)"
+            cmp -l out/network-scope-cli.1 out/network-scope-cli.2 | wc -l | sed 's/^/differing bytes: /' || true
+            exit 1
+          fi
+          echo "Both builds are identical: $h1"
+
+      - name: Keep the binaries of a failed comparison
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducible-build-mismatch
+          path: out/
+          if-no-files-found: ignore

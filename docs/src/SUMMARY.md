@@ -67,6 +67,7 @@
 # Reference
 
 - [Lab and testing](lab-and-testing.md)
+- [Supply chain: SBOM and reproducible builds](supply-chain.md)
 - [Data sources](data-sources.md)
 - [FAQ and troubleshooting](faq.md)
 - [Changelog](changelog.md)
