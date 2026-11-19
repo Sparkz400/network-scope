@@ -32,7 +32,13 @@ network-scope devices ID [--format json|csv]   One record per device (active + p
 network-scope devices --history MAC|IP [--format text|json]   Timeline of one device across saved scans
 network-scope topology ID [--format ascii|dot] Network path map from traceroute data
 network-scope trace TARGET [--max-hops 20] [--timeout 1000] [--fast --trace-method udp|tcp --trace-port N]
-network-scope probes [--probes FILE]           List/validate the TCP and UDP probe database
+network-scope probes [--probes FILE]           List the TCP and UDP probe database
+network-scope probes validate FILE             Load a probe file like a scan would, then lint it
+network-scope probes lint [FILE]               Safety lint (OT/printer ports, write-like payloads, size,
+                                               regex shape); default: the built-in data/probes.json
+network-scope fingerprints export-unknown [SCAN_ID] [--output FILE]
+                                               Banners nothing identified, from the local store, as JSON
+                                               to review and redact (never uploaded)
 network-scope completions powershell|bash      Print a shell completion script
 
 Scan options:

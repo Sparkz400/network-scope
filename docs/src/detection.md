@@ -17,7 +17,7 @@ Every open TCP port gets a banner wait plus data-driven probes from `data/probes
 
 Put a `probes.json` in `%LOCALAPPDATA%/NetworkScope` or pass `--probes FILE`. A probe with the same name replaces the built-in one; new names are added (a name can move between TCP and UDP). The file format and rule syntax are described in the `_comment` field of [`data/probes.json`](https://github.com/Sparkz400/network-scope/blob/main/data/probes.json): fields `name`, `proto` (tcp|udp), `ports`, `send`, `send_hex`, `wait_ms`, `rules[{re, service, product, version, info}]`; rules are regular expressions over the raw reply bytes, `$1..$9` expand capture groups, and the first matching rule wins.
 
-`network-scope probes` lists and validates TCP and UDP probes; a bad regex or hex string stops the scan with an error. `--probes` applies to UDP-only scans too.
+`network-scope probes` lists the TCP and UDP probes; a bad regex or hex string stops the scan with an error. `probes validate FILE` checks a probe file the way a scan would load it, and `probes lint [FILE]` runs the safety linter. `--probes` applies to UDP-only scans too. To contribute a fingerprint, see [Contributing fingerprints](contributing-fingerprints.md).
 
 ## TLS
 

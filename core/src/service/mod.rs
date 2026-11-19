@@ -3,7 +3,8 @@
 //!
 //! This file holds the detection flow (`detect`, the send policy, the shared socket helpers);
 //! the protocols live in the submodules: `probes` (probes.json matching), `http`, `ssh`,
-//! `smb` (with `smb2` and `ntlm`) and `rdp`.
+//! `smb` (with `smb2` and `ntlm`), `rdp`, `lint` (the safety linter for probe files) and `unknown` (unidentified banners for
+//! contributions).
 use crate::{core::Gate, tls};
 use std::{collections::BTreeMap, net::IpAddr, time::Duration};
 use tokio::{
@@ -13,16 +14,22 @@ use tokio::{
 };
 
 mod http;
+mod lint;
 mod probes;
 mod rdp;
 mod smb;
 mod ssh;
+mod unknown;
 
 pub use http::parse_http;
+pub use lint::{
+    Issue as LintIssue, Level as LintLevel, error_count as lint_error_count, lint as lint_probes,
+};
 pub use probes::{Probe, ProbeDb, udp_probes};
 pub use rdp::parse_rdp_standard_reply;
 pub use smb::{parse_ntlm_challenge, parse_smb, parse_smb2_negotiate, smb1_accepted, smb2_fields};
 pub use ssh::parse_kexinit;
+pub use unknown::{UnknownExport, unknown_banners};
 
 pub(crate) use http::http_outcome;
 pub(crate) use ssh::kexinit_fields;
