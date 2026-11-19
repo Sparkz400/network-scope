@@ -532,9 +532,9 @@ pub fn diff_output(
 /// `lines` (the original JSON array of change lines, the default output of `diff`).
 pub fn render_diff(report: &DiffReport, format: &str) -> Result<String, String> {
     match format {
-        "json" => serde_json::to_string_pretty(report).map_err(|e| e.to_string()),
+        "json" => crate::schema::object("diff", report),
         "text" => Ok(report.text()),
-        "lines" => serde_json::to_string_pretty(&report.lines()).map_err(|e| e.to_string()),
+        "lines" => crate::schema::list("diff-lines", "lines", &report.lines()),
         _ => Err("Choose json, text or lines".into()),
     }
 }
@@ -849,7 +849,7 @@ pub fn device_history(path: &Path, query: &str) -> Result<crate::devices::Device
 /// not recorded).
 pub fn export_at(snapshot: &Snapshot, format: &str, timestamp: i64) -> Result<String, String> {
     match format {
-        "json" => serde_json::to_string_pretty(snapshot).map_err(|e| e.to_string()),
+        "json" => crate::schema::object("scan", snapshot),
         "csv" => {
             let mut out = String::from(
                 "IP,MAC,Responding,Hostname,Open ports,Identity,Observation protocol,Note\r\n",
@@ -1348,9 +1348,12 @@ mod tests {
         assert_eq!(json["changes"][1]["old"], "ssh OpenSSH 9.6p1");
         assert_eq!(json["summary"]["hosts_removed"], 1);
         assert_eq!(json["ignored_keys"][0], "*.days_left");
-        let lines: Vec<String> =
+        assert_eq!(json["schema"], "network-scope/diff/v1");
+        let wrapped: serde_json::Value =
             serde_json::from_str(&diff_output(&a, &b, "lines", &IgnoreList::new(&[])).unwrap())
                 .unwrap();
+        assert_eq!(wrapped["schema"], "network-scope/diff-lines/v1");
+        let lines: Vec<String> = serde_json::from_value(wrapped["lines"].clone()).unwrap();
         assert_eq!(lines, diff(&a, &b).unwrap());
         assert!(diff_output(&a, &b, "xml", &IgnoreList::new(&[])).is_err());
         // UDP changes are categorised separately.

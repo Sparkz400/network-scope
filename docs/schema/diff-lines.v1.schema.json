@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:diff-lines:v1",
+  "title": "Scan comparison, change lines",
+  "description": "Output of `diff OLD NEW` (the default `--format lines`): the change lines of the text diff.",
+  "type": "object",
+  "required": [
+    "schema",
+    "lines"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/diff-lines/v1"
+    },
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

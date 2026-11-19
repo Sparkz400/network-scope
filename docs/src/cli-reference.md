@@ -9,6 +9,7 @@ General rules:
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
 - `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
+- `--json-schema v1` selects the version of the JSON output format (any command). Every JSON document carries a `schema` member; see [JSON output and schemas](json-output.md).
 - `--format` and `--output FILE` select an export where a command produces one. Without `--output` the result is printed to stdout.
 
 ## Exit codes
@@ -133,7 +134,7 @@ Exports from `scan`, `listen`, `dcp` and `export` carry the stored scan time. De
 
 | Option | Meaning |
 | --- | --- |
-| `--format lines` (default) | JSON array of change lines |
+| `--format lines` (default) | JSON object with the change lines (`lines`) |
 | `--format json` | Structured report for CI and monitors |
 | `--format text` | Plain lines |
 | `--ignore K,K` | Extra ignored keys: exact keys, globs (`http.*.title`) or suffixes (`.server`) |

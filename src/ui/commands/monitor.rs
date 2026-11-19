@@ -35,7 +35,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         None => None,
     };
     monitor::run(&targets, s, &ctx.db, &cfg, &mut |a| {
-        let line = serde_json::to_string(a).unwrap_or_default();
+        let line = crate::schema::line("alert", a).unwrap_or_default();
         println!("{line}");
         if let Some(f) = file.as_mut() {
             use std::io::Write;

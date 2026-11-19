@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:findings:v1",
+  "title": "Findings",
+  "description": "Output of `findings ID`: weak TLS/SSH, risky services and CVE hints of one scan.",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "severity",
+        "id",
+        "title",
+        "ip",
+        "port",
+        "evidence",
+        "cve",
+        "advice"
+      ],
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "ip": {
+          "type": "string",
+          "description": "IPv4 or IPv6 address in text form"
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "cve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "advice": {
+          "type": "string"
+        },
+        "reference": {
+          "type": "string",
+          "description": "HTTPS URL of the documentation page, when the rule has one"
+        },
+        "kev": {
+          "type": "boolean",
+          "description": "Present only with imported feeds"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "findings"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/findings/v1"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    }
+  }
+}

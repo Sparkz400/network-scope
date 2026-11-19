@@ -840,6 +840,7 @@ pub fn jsonl(snapshot: &Snapshot, timestamp: i64) -> Result<String, String> {
             })
             .collect();
         let record = serde_json::json!({
+            "schema": crate::schema::id("host"),
             "timestamp": timestamp,
             "scope": snapshot.targets,
             "complete": snapshot.complete,

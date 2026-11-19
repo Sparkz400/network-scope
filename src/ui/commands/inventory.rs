@@ -1,20 +1,19 @@
 //! Commands on the saved inventory: `history`, `alerts` and `import` (an nmap XML scan).
 use crate::{
-    nmap, store,
+    nmap, schema, store,
     ui::{Ctx, output, progress},
 };
 
 pub(super) fn history(ctx: &mut Ctx) -> Result<(), String> {
     output(
-        &serde_json::to_string_pretty(&store::list(&ctx.db)?).map_err(|e| e.to_string())?,
+        &schema::list("scans", "scans", &store::list(&ctx.db)?)?,
         &ctx.opts,
     )
 }
 
 pub(super) fn alerts(ctx: &mut Ctx) -> Result<(), String> {
     output(
-        &serde_json::to_string_pretty(&store::list_alerts(&ctx.db, 500)?)
-            .map_err(|e| e.to_string())?,
+        &schema::list("alerts", "alerts", &store::list_alerts(&ctx.db, 500)?)?,
         &ctx.opts,
     )
 }
