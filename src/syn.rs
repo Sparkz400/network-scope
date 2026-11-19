@@ -1249,14 +1249,21 @@ mod tests {
     fn stopped_probes_are_never_sent() {
         // 20 probes behind a 20/s gate; the caller is aborted after the first sends.
         let (tx, sent) = engine(Gate::per_second(20.0, 1.0), None);
+        let start = std::time::Instant::now();
         let answers: Vec<_> = (1..=20).map(|p| submit(&tx, p, 1000, 1000, 2)).collect();
         std::thread::sleep(Duration::from_millis(60));
         drop(answers);
+        // Sends before the stop are limited by the 20/s gate (burst 1); slow CI runners
+        // oversleep, so the bound follows the time that really passed.
+        let allowed = 2 + (start.elapsed().as_secs_f64() * 20.0).ceil() as usize;
         std::thread::sleep(Duration::from_millis(30));
         let after_stop = sent.lock().unwrap().len();
         std::thread::sleep(Duration::from_millis(400));
         assert_eq!(sent.lock().unwrap().len(), after_stop, "SYNs kept leaving");
-        assert!(after_stop <= 3, "{after_stop}");
+        assert!(
+            after_stop <= allowed,
+            "{after_stop} sent, at most {allowed} allowed"
+        );
     }
 
     #[test]

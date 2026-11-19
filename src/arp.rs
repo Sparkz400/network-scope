@@ -454,9 +454,13 @@ mod tests {
             tries: 3,
         };
         let (tx, sent) = engine(Gate::per_second(20.0, 1.0), vec![], timing);
+        let start = std::time::Instant::now();
         let answers: Vec<_> = (1..=20).map(|n| ask(&tx, host(n))).collect();
         std::thread::sleep(Duration::from_millis(60));
         drop(answers);
+        // Sends before the stop are limited by the 20/s gate (burst 1); slow CI runners
+        // oversleep, so the bound follows the time that really passed.
+        let allowed = 2 + (start.elapsed().as_secs_f64() * 20.0).ceil() as usize;
         std::thread::sleep(Duration::from_millis(30));
         let after_stop = sent.lock().unwrap().len();
         std::thread::sleep(Duration::from_millis(700));
@@ -465,6 +469,9 @@ mod tests {
             after_stop,
             "requests kept leaving"
         );
-        assert!(after_stop <= 3, "{after_stop}");
+        assert!(
+            after_stop <= allowed,
+            "{after_stop} sent, at most {allowed} allowed"
+        );
     }
 }
