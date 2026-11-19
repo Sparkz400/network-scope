@@ -29,6 +29,25 @@ Comparisons are meaningful only between completed scans with matching scope and 
 - Only sightings create events: a scan that does not mention the device produces no "not seen" event.
 - Port events come only from **completed** active scans that checked the device's ports with the same TCP port set; UDP is compared only for ports probed in both; SMB-only names are not compared.
 
+## What changed
+
+```sh
+network-scope-cli changes [--since last|12h|7d|2w|2026-11-01|2026-11-01T08:30] [--format text|json]
+```
+
+`changes` answers "what is different now?" in one list: **new devices**, devices **not observed** any more, **changed devices** (address, MAC, host name, ports opened or closed, service details) and **new** and **resolved risks**. It compares the newest completed scan with
+
+- the completed scan before it (`--since last`, the default), or
+- the state at the start of a window (`12h`, `7d`, `2w`) or at a UTC date or time: the newest comparable scan taken at or before it.
+
+It works on devices, not addresses (see [Device identity](device-identity.md)): a device that moved to another address or randomised MAC is *changed*, not "gone" plus "new". When a [baseline](#approved-baseline) exists, new devices that are not on it are marked, and the number of devices not on the baseline is reported.
+
+Only comparable scans are compared: the same targets and the same detection settings, as for `diff`. If the newest comparable partner is not the previous scan, an older one is used; if there is none, the answer is empty and a `notice` says why (no scans yet, only one scan, only partial scans, settings differ, or nothing was scanned inside the window). A window that starts before the oldest scan compares with the oldest scan and says so. These cases are answers, not errors.
+
+Two cautions are built in. A device that is not observed is not proof that it is offline. A risk that disappeared counts as **resolved** only when the newer scan checked its evidence again (the host answered and the port was probed); otherwise it is listed as *not checked again*. A device known only from passive traffic is not called gone by a scan that captured nothing.
+
+`--format json` prints the `Changes` structure of the core library (`network_scope_core::changes::changes(db, &Since::Last, now)`), which the desktop app uses for its home screen: `summary` (counts), `current` and `previous` scans, `new_devices`, `gone_devices`, `changed_devices` (with the list of changes), `new_risks`, `resolved_risks`, `unconfirmed_risks`, `unknown_devices` and `notice`.
+
 ## Approved baseline
 
 ```sh

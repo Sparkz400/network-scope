@@ -45,6 +45,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `interfaces` | List capture interfaces |
 | `history [--db FILE]` | List saved scans as JSON |
 | `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
+| `changes [--since last\|7d\|DATE] [--format text\|json]` | New, gone and changed devices and new and resolved risks, see [Inventory](inventory-diff-reports.md#what-changed) |
 | `baseline approve [SCAN_ID]` / `set DEVICE [...]` / `show` / `remove DEVICE` / `clear` | Approved baseline of expected devices, see [Inventory](inventory-diff-reports.md#approved-baseline) |
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |

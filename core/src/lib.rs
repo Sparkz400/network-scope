@@ -89,6 +89,7 @@
 pub(crate) mod arp;
 pub mod baseline;
 pub mod capture;
+pub mod changes;
 pub mod core;
 pub mod devices;
 pub mod feeds;
