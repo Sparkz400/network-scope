@@ -1,0 +1,35 @@
+# Reviewed OSV/RustSec advisories that do not affect Network Scope.
+# Read by osv-scanner and by the OpenSSF Scorecard "Vulnerabilities" check.
+# Every entry expires: re-review it then, or drop it once the upstream crate has moved on.
+# Real vulnerabilities are never listed here; they are fixed (see CHANGELOG, Security).
+# cargo deny / cargo audit still report all of these in CI.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2027-05-19
+reason = "paste is unmaintained (no vulnerability). It is only listed in Cargo.lock as a dependency of the optional metal GPU backend, which Network Scope never enables: `cargo tree -i paste --target all` finds no path, so it is not compiled."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0249"
+ignoreUntil = 2027-05-19
+reason = "smartstring is unmaintained (no vulnerability); used by the rhai scripting engine, which owns the dependency."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+ignoreUntil = 2027-05-19
+reason = "ttf-parser is unmaintained (no vulnerability); egui uses it only to parse the fonts compiled into the binary, never untrusted fonts."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2027-05-19
+reason = "zvariant is unmaintained (no vulnerability); part of zbus, used on Linux by the file dialog (rfd) to talk to the desktop portal."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2027-05-19
+reason = "zbus_names is unmaintained (no vulnerability); part of zbus, used on Linux by the file dialog (rfd)."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2027-05-19
+reason = "zvariant_derive is unmaintained (no vulnerability); part of zbus, used on Linux by the file dialog (rfd)."

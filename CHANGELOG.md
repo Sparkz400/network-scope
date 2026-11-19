@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-11-18
+## [0.5.0] - 2026-11-19
 
 First public release. The [documentation](https://sparkz400.github.io/network-scope/) describes current behaviour; this entry lists what changed since 0.4 and what has not been verified.
 
@@ -39,6 +39,7 @@ First public release. The [documentation](https://sparkz400.github.io/network-sc
 
 ### Changed
 
+- Rust edition 2024 (toolchain pinned to 1.100.0); ratatui 0.30 and crossterm 0.29.
 - First scan after upgrading: `tls.<port>.ciphers` gains a `TLS1.3:` part on TLS 1.3 servers, and nmap imports stored by 0.4 differ in `svc.<port>.product` spelling; both show as identity changes once.
 - A diff of an old /23-or-larger snapshot against a new one can list inner .0/.255 addresses as new devices.
 - OT passive `packets` counts messages, not segments, on the reassembled ports.
@@ -94,7 +95,8 @@ First public release. The [documentation](https://sparkz400.github.io/network-sc
 ### Security
 
 - **Bundled SQLite 3.54.1** (rusqlite 0.41): fixes RUSTSEC-2026-0459 / CVE-2026-119375, where a crafted database and `-wal` file pair could make queries return uninitialised memory. Only inventory files from an untrusted source were exposed.
-- Checks in CI: `cargo deny` (advisories, licenses, sources) and `cargo audit` on every change and weekly, and a gitleaks secret scan of the full history on every push; release files carry signed build provenance (`gh attestation verify`).
+- Checks in CI: `cargo deny` (advisories, licenses, sources) and `cargo audit` on every change and weekly, and a gitleaks secret scan of the full history on every push; CodeQL static analysis; every GitHub Action pinned to a commit SHA. Release files carry signed build provenance (`gh attestation verify`), and the Sigstore bundle is attached to the release.
+- `osv-scanner.toml` lists the six transitive "unmaintained" advisories (no vulnerabilities) with a reason and an expiry date for review.
 
 ### Not done
 
