@@ -1,5 +1,5 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
-//! (main, findings, devices, ot, script; append "-small" for the default 800x450 window). Screenshot runs never save to the inventory or preferences.
+//! (main, findings, devices, settings, ot, script; append "-small" for the default 800x450 window). Screenshot runs never save to the inventory or preferences.
 use super::*;
 
 fn demo_host(ip: &str, open: &[u16], identity: &[(&str, &str)]) -> scan::Host {
@@ -208,6 +208,13 @@ impl Scanner {
         match state.trim_end_matches("-small") {
             "findings" => self.findings_open = true,
             "devices" => self.devices_open = true,
+            "settings" => {
+                // The CVE rules field with a load error, as after a bad path.
+                self.settings_open = true;
+                self.saved.cves_file = r"C:\rules\plant-cves.json".into();
+                self.cves_error =
+                    r#"C:\rules\plant-cves.json: bad version "abc" in rule lab-1"#.into();
+            }
             "ot" => {
                 self.capture_open = true;
                 self.ot.demo();
