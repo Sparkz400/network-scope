@@ -291,6 +291,11 @@ struct Scanner {
     screenshot: Option<PathBuf>,
     frames: usize,
     screenshot_requested: bool,
+    /// Top-left of the area below the menu and status panels, where windows without a fixed
+    /// position open (egui 0.31 auto-placed them there; newer egui uses the whole screen).
+    window_origin: egui::Pos2,
+    /// Filled by the screenshot callback once the integration has read the frame back.
+    screenshot_image: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<egui::ColorImage>>>>,
     sort_column: usize,
     sort_reverse: bool,
     history_open: bool,
@@ -350,10 +355,10 @@ struct ScriptTest {
 impl Scanner {
     fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
-        let mut style = (*cc.egui_ctx.style()).clone();
+        let mut style = (*cc.egui_ctx.global_style()).clone();
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx.set_global_style(style);
         let mut saved: Saved = if screenshot.is_none() {
             std::fs::read(saved_path())
                 .ok()
@@ -380,6 +385,8 @@ impl Scanner {
             screenshot,
             frames: 0,
             screenshot_requested: false,
+            screenshot_image: Default::default(),
+            window_origin: egui::pos2(16.0, 16.0),
             sort_column: 0,
             sort_reverse: false,
             history_open: false,
@@ -807,14 +814,33 @@ impl Scanner {
     }
 }
 
+/// Initial window size from the size of its content area. Since egui 0.32 `default_size` and
+/// friends include the title bar and frame, which 0.31 added on top; this keeps windows as large
+/// as before.
+fn win_size(content: [f32; 2]) -> egui::Vec2 {
+    egui::vec2(content[0] + 12.0, content[1] + 45.0)
+}
+/// egui's own default content size of a window, as an outer size (see [`win_size`]).
+fn default_win_size() -> egui::Vec2 {
+    win_size([340.0, 420.0])
+}
+
 impl eframe::App for Scanner {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// Runs before every `ui` call and also while the window is hidden, so background jobs,
+    /// scans and captures keep draining their channels.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_jobs();
         self.poll();
         self.poll_capture();
         self.poll_ot();
-        self.controls(ctx);
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        if self.live() || self.ot.running() {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
+        self.controls(ui);
+        egui::Panel::bottom("status").show(ui, |ui| {
             if let Some(run) = &self.run {
                 let label = if run.cancel.load(Ordering::Relaxed) {
                     "Stopping…"
@@ -848,7 +874,8 @@ impl eframe::App for Scanner {
             });
         });
         self.refresh_rows();
-        egui::CentralPanel::default().show(ctx, |ui| {
+        self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
+        egui::CentralPanel::default().show(ui, |ui| {
             let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
             let scroll_row = self.scroll_to.take().and_then(|ip| {
@@ -982,34 +1009,41 @@ impl eframe::App for Scanner {
         // egui_glow panics when it reads back a zero-sized framebuffer, which happens if the
         // window is still being sized or was minimized; wait until it has a real size.
         let drawable = ctx.input(|i| {
-            let r = i.screen_rect();
+            let r = i.viewport_rect();
             r.width() >= 1.0 && r.height() >= 1.0 && i.viewport().minimized != Some(true)
         });
         if self.screenshot.is_some() && self.frames >= 120 && drawable && !self.screenshot_requested
         {
             self.screenshot_requested = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            // The image arrives through a callback; keep it for the next frame and wake it up.
+            let slot = std::sync::Arc::clone(&self.screenshot_image);
+            let repaint = ctx.clone();
+            ctx.request_screenshot(move |image| {
+                if let Ok(mut slot) = slot.lock() {
+                    *slot = Some(image);
+                }
+                repaint.request_repaint();
+            });
         }
         if let Some(path) = &self.screenshot {
-            for event in ctx.input(|i| i.events.clone()) {
-                if let egui::Event::Screenshot { image, .. } = event {
-                    let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
-                    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    match image::save_buffer(
-                        path,
-                        &pixels,
-                        image.size[0] as u32,
-                        image.size[1] as u32,
-                        image::ColorType::Rgba8,
-                    ) {
-                        Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                        Err(e) => {
-                            self.error = format!("Screenshot failed: {e}");
-                            eprintln!("{}", self.error);
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
+            let taken = self.screenshot_image.lock().ok().and_then(|mut s| s.take());
+            if let Some(image) = taken {
+                let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+                if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match image::save_buffer(
+                    path,
+                    &pixels,
+                    image.size[0] as u32,
+                    image.size[1] as u32,
+                    image::ColorType::Rgba8,
+                ) {
+                    Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    Err(e) => {
+                        self.error = format!("Screenshot failed: {e}");
+                        eprintln!("{}", self.error);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
             }

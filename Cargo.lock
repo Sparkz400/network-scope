@@ -1934,6 +1934,7 @@ dependencies = [
  "crossterm",
  "dns-lookup",
  "eframe",
+ "egui",
  "egui_extras",
  "image",
  "libloading 0.9.1",

@@ -277,8 +277,8 @@ mod tests {
             )),
             ..Default::default()
         };
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 if plain {
                     plain_labels(ui);
                 }
@@ -300,7 +300,9 @@ mod tests {
                         });
                     });
             });
-        });
+        })
+        // The test never paints, so the font atlas upload is dropped on purpose.
+        .drop_without_applying_deltas();
         (clicked, rect)
     }
     fn click_label(plain: bool) -> Option<usize> {

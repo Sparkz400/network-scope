@@ -11,7 +11,9 @@ impl Scanner {
         let mut open = true;
         egui::Window::new(format!("Host details · {ip}"))
             .open(&mut open)
-            .default_width(400.0)
+            // 30 px above egui's default height: 0.37 widgets are taller, and the script result
+            // must stay in view.
+            .default_size(win_size([400.0, 450.0]))
             .default_pos([24.0, 40.0])
             .vscroll(true)
             .show(ctx, |ui| {
@@ -111,7 +113,9 @@ impl Scanner {
                         ctx.copy_text(ip.to_string());
                     }
                     ui.add_enabled_ui(!self.busy.testing, |ui| {
-                        ui.menu_button("Test script…", |ui| {
+                        let menu = egui::containers::menu::MenuButton::new("Test script…")
+                            .config(super::controls::menu_config());
+                        menu.ui(ui, |ui| {
                             let configured = self.saved.settings.scripts.trim();
                             if ui
                                 .add_enabled(
@@ -125,10 +129,10 @@ impl Scanner {
                                 .clicked()
                             {
                                 test = Some(configured.to_string());
-                                ui.close_menu();
+                                ui.close();
                             }
                             if ui.button("Choose .rhai file…").clicked() {
-                                ui.close_menu();
+                                ui.close();
                                 if let Some(path) = rfd::FileDialog::new()
                                     .add_filter("Rhai script", &["rhai"])
                                     .pick_file()
@@ -137,7 +141,7 @@ impl Scanner {
                                 }
                             }
                         })
-                        .response
+                        .0
                         .on_hover_text(
                             "Runs the script on a copy of this host. Nothing is rescanned or changed until you choose Apply.",
                         );

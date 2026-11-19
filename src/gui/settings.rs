@@ -3,6 +3,8 @@ impl Scanner {
     pub(super) fn settings(&mut self, ctx: &egui::Context) {
         egui::Window::new("Scan settings").vscroll(true)
             .open(&mut self.settings_open)
+            .default_size(default_win_size())
+            .default_pos(self.window_origin)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.add_enabled_ui(self.run.is_none(), |ui| {
@@ -182,6 +184,8 @@ impl Scanner {
             });
         egui::Window::new("About Network Scope")
             .open(&mut self.about_open)
+            .default_size(default_win_size())
+            .default_pos(self.window_origin)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.heading("Network Scope");
