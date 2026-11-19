@@ -21,6 +21,7 @@ Licenses as declared by each crate's metadata for the versions in `Cargo.lock` (
 | libloading | Run-time loading of Npcap/libpcap | ISC |
 | rustls | TLS handshakes | Apache-2.0 OR ISC OR MIT |
 | tokio-rustls | Async TLS | MIT OR Apache-2.0 |
+| rustls-platform-verifier | HTTPS webhook certificates verified by the OS store | MIT OR Apache-2.0 |
 | ring (via rustls) | Cryptographic primitives | Apache-2.0 AND ISC |
 | x509-parser | Certificate parsing | MIT OR Apache-2.0 |
 | rusqlite | SQLite inventory | MIT |

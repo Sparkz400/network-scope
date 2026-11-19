@@ -42,7 +42,7 @@ Use `--ignore` with exact keys, globs (`http.*.title`) or suffixes (`.server`). 
 
 ## My webhook uses HTTPS
 
-HTTPS webhooks are not supported (no CA store is bundled). Use an http:// relay on localhost.
+`--webhook https://…` works. The server certificate is checked against the operating system's certificate store, and verification cannot be turned off. If delivery fails with "certificate … rejected", the certificate is not issued by a CA the system trusts, has expired, or does not match the host name (or IP address) in the URL. Install your private CA in the system certificate store, or use the receiver's real host name instead of an IP address. See [Alert delivery](monitoring-alerts.md#alert-delivery).
 
 ## Where are my settings and the database?
 

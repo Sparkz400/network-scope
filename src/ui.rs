@@ -17,7 +17,7 @@ network-scope findings ID [--min-severity low] Weak TLS/SSH, risky services, CVE
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
         [--interface ID --listen-seconds 30] [--alerts FILE]   Repeat scans and alert on changes
-        [--webhook http://URL,...] [--syslog [udp://|tcp://]HOST[:PORT],...]
+        [--webhook http(s)://URL,...] [--syslog [udp://|tcp://]HOST[:PORT],...]
         [--alert-timeout 5] [--no-dedup] [--renotify-hours 24]
 network-scope alerts [--db FILE]               Alerts raised by monitor runs
 network-scope scripts PATH                     Check Rhai scripts (use --script PATH with scan)
@@ -1647,8 +1647,10 @@ mod tests {
         );
         let defaults = monitor_policy(&BTreeMap::new()).unwrap();
         assert!(defaults.notify.sinks.is_empty() && defaults.notify.dedup);
-        let https = BTreeMap::from([("webhook".to_string(), "https://x".to_string())]);
-        assert!(monitor_policy(&https).unwrap_err().contains("HTTPS"));
+        let https = BTreeMap::from([("webhook".to_string(), "https://hooks.local/a".to_string())]);
+        assert_eq!(monitor_policy(&https).unwrap().notify.sinks.len(), 1);
+        let ftp = BTreeMap::from([("webhook".to_string(), "ftp://x".to_string())]);
+        assert!(monitor_policy(&ftp).unwrap_err().contains("https://"));
         let slow = BTreeMap::from([("alert-timeout".to_string(), "600".to_string())]);
         assert!(monitor_policy(&slow).is_err());
     }
