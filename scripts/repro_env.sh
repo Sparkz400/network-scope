@@ -2,7 +2,8 @@
 # Prints the environment of a reproducible release build as KEY=VALUE lines.
 #
 #   scripts/repro_env.sh <source-dir> >> "$GITHUB_ENV"                                   (workflow)
-#   while IFS= read -r l; do export "$l"; done < <(scripts/repro_env.sh <source-dir>)    (bash)
+#   env_lines="$(sh scripts/repro_env.sh <source-dir>)"                                  (bash)
+#   while IFS= read -r l; do export "$l"; done <<< "$env_lines"
 #
 # Run from a checkout of the repository: SOURCE_DATE_EPOCH is the commit time of HEAD there (kept
 # if it is already set). <source-dir> is the directory cargo builds in, as the compiler sees it
@@ -25,7 +26,12 @@ fi
 echo "SOURCE_DATE_EPOCH=$epoch"
 echo "CARGO_INCREMENTAL=0"
 echo "TZ=UTC"
-echo "RUSTFLAGS=${RUSTFLAGS:-} --remap-path-prefix=$src=/build --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
+flags="${RUSTFLAGS:-} --remap-path-prefix=$src=/build --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
+# MSVC link.exe stamps the link time into the PE header; /Brepro derives it from the content.
+if [ "$windows" = true ]; then
+  flags="$flags -C link-arg=/Brepro"
+fi
+echo "RUSTFLAGS=$flags"
 # The bundled C code (SQLite, ring) embeds __FILE__ paths; MSVC has no -ffile-prefix-map.
 if [ "$windows" = false ]; then
   echo "CFLAGS=${CFLAGS:-} -ffile-prefix-map=$src=/build -ffile-prefix-map=$cargo_home=/cargo"

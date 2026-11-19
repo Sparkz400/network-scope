@@ -68,8 +68,10 @@ jobs:
           n=0
           for dir in "$dir_a" "$dir_b"; do
             n=$((n + 1))
+            # In a variable first, so a failing script stops the job (not a process substitution).
+            env_lines="$(sh scripts/repro_env.sh "$dir")"
             (
-              while IFS= read -r line; do export "$line"; done < <(sh scripts/repro_env.sh "$dir")
+              while IFS= read -r line; do export "$line"; done <<< "$env_lines"
               cd "$dir"
               # rust-toolchain.toml is part of the export, so both builds use the pinned toolchain.
               cargo build --release --locked --bin network-scope-cli
