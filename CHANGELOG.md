@@ -7,11 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-19
+
+Fuzzing, a container image and signed SLSA provenance for releases; the desktop GUI moves to egui 0.37 and several dependencies get major upgrades.
+
 ### Added
 
 - **Fuzzing**: cargo-fuzz targets for the parsers of untrusted input (pcap/pcapng, passive frames, OT tracker with TCP reassembly, TLS, SMB, NTLM, SSH, HTTP, RDP, banners, Modbus, EtherNet/IP, BACnet, S7, OPC UA, UDP replies, ARP, SYN-ACK and TCP options, ICMP/ICMPv6 ping and traceroute replies, nmap XML, `probes.json`, `cves.json`) with seed corpora, run on pull requests and weekly by ClusterFuzzLite. The code now builds as a library (`src/lib.rs`) that both binaries call; their behaviour is unchanged.
 - **Container image** of the CLI on GitHub Container Registry, `ghcr.io/sparkz400/network-scope:<version>` and `:latest` (linux/amd64; Debian slim, unprivileged user, libpcap included), with a build provenance attestation in the registry (`gh attestation verify oci://ghcr.io/sparkz400/network-scope:<version> --owner Sparkz400`). Pull requests that change the Dockerfile or Cargo files build and smoke-test the image in CI. Not yet built outside CI; raw-socket and capture features in the container are untested.
 - **SLSA level 3 provenance** for the release files from slsa-github-generator, attached as `network-scope-<version>.intoto.jsonl` (verify with `slsa-verifier`, see SECURITY.md).
+
+### Changed
+
+- **Desktop GUI on egui/eframe 0.37** (from 0.31): same windows and behaviour. Controls are a few pixels taller, the Findings window opens narrower, and windows opened at the same time stack instead of tiling. Scans and captures keep processing while the window is minimised.
+- Dependencies: rusqlite 0.43 (bundled SQLite), rfd 0.18, libloading 0.9, x509-parser 0.18, socket2 0.6, roxmltree 0.21, dns-lookup 4; rcgen 0.14 (tests only). The lab image is Python 3.15, pinned by digest.
+
+### Security
+
+- nmap XML import sets roxmltree's new `entity_resolver` explicitly to none, so imported files can never resolve external entities (no XXE).
+- Reviewed "unmaintained" advisories are also recorded for `fuzz/Cargo.lock`; secret scanning with push protection, CodeQL and gitleaks guard the repository.
 
 ## [0.5.0] - 2026-11-19
 

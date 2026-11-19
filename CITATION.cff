@@ -9,7 +9,7 @@ abstract: >-
   protocols (Modbus/TCP, S7, EtherNet/IP, BACnet/IP, OPC UA).
 authors:
   - alias: Sparkz400
-version: 0.5.0
+version: 0.5.1
 license: MIT
 repository-code: "https://github.com/Sparkz400/network-scope"
 url: "https://sparkz400.github.io/network-scope/"
