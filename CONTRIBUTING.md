@@ -40,7 +40,7 @@ The `secrets` workflow scans the whole git history with [gitleaks](https://githu
 
 CI runs all of the above on Windows, Linux and macOS. A pull request must pass CI.
 
-Documentation lives in `docs/src` (mdBook). Preview it with `mdbook serve docs` if you have [mdBook](https://rust-lang.github.io/mdBook/) installed. Keep pages plain Markdown with relative links between them.
+Documentation lives in `docs/src` (mdBook). Preview it with `mdbook serve docs` if you have [mdBook](https://rust-lang.github.io/mdBook/) installed. Keep pages plain Markdown with relative links between them. Every finding rule id in `src/risk.rs` needs a page `docs/src/findings/<id>.md` (same sections as the existing pages, listed in `SUMMARY.md` and `findings/index.md`); `python -I docs/check_finding_pages.py` checks this and runs in CI.
 
 ## Fuzzing
 
