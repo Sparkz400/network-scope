@@ -11,6 +11,7 @@ network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
         [--fail-on-findings [--min-severity low]]
+network-scope changes [--since last|7d|2026-11-01] [--format text|json]   New, gone and changed devices, new and resolved risks
 network-scope baseline approve [SCAN_ID]       Approve the devices of a completed scan as the expected devices
 network-scope baseline set DEVICE [--owner TEXT] [--tag a,b] [--untag a,b]
         [--criticality low|medium|high|critical|none] [--expected yes|no]   Describe one device
