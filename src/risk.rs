@@ -1139,6 +1139,104 @@ mod tests {
     }
 
     #[test]
+    fn telnet_rule_needs_an_identified_telnet_service() {
+        let hit = host(&[23], &[("svc.23", "telnet")]);
+        assert_eq!(ids(&hit), ["telnet-open"]);
+        // Port 23 open, but the banner identified another service.
+        let ssh = host(&[23], &[("svc.23", "ssh OpenSSH 9.9 (protocol 2.0)")]);
+        assert!(!ids(&ssh).contains(&"telnet-open".to_string()));
+        // Port 23 open, nothing identified: only a port-number guess.
+        let guess = host(&[23], &[("svc.23", "unidentified (port suggests telnet)")]);
+        assert!(!ids(&guess).contains(&"telnet-open".to_string()));
+        // No identity at all.
+        assert!(!ids(&host(&[23], &[])).contains(&"telnet-open".to_string()));
+    }
+
+    #[test]
+    fn ftp_cleartext_rule_ignores_ftps_only_servers() {
+        let hit = host(&[21], &[("svc.21", "ftp vsFTPd 3.0.3")]);
+        assert_eq!(ids(&hit), ["ftp-cleartext"]);
+        // Implicit FTPS on 990 speaks TLS from the first byte, so it is not identified as
+        // plain "ftp".
+        let ftps = host(
+            &[990],
+            &[
+                ("svc.990", "ftps"),
+                ("tls.990.subject", "CN=ftp.example"),
+                ("tls.990.days_left", "200"),
+                ("tls.990.versions", "TLS1.3, TLS1.2"),
+                ("tls.990.key", "RSA 2048"),
+            ],
+        );
+        assert!(ids(&ftps).is_empty(), "{:?}", ids(&ftps));
+        let guess = host(&[21], &[("svc.21", "unidentified (port suggests ftp)")]);
+        assert!(!ids(&guess).contains(&"ftp-cleartext".to_string()));
+    }
+
+    #[test]
+    fn redis_rule_needs_a_version_read_without_authentication() {
+        let hit = host(
+            &[6379],
+            &[
+                ("svc.6379", "redis Redis 7.0.11"),
+                ("svc.6379.version", "7.0.11"),
+            ],
+        );
+        let f = analyze_host(&hit);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].id, "redis-noauth");
+        assert_eq!(f[0].severity, Severity::Critical);
+        // Redis identified but no version read (the server answered NOAUTH).
+        let no_version = host(&[6379], &[("svc.6379", "redis Redis")]);
+        assert!(!ids(&no_version).contains(&"redis-noauth".to_string()));
+        // A version field on a port that is not identified as Redis.
+        let other = host(
+            &[6379],
+            &[
+                ("svc.6379", "memcached 1.6.9"),
+                ("svc.6379.version", "1.6.9"),
+            ],
+        );
+        assert!(!ids(&other).contains(&"redis-noauth".to_string()));
+    }
+
+    #[test]
+    fn http_basic_rule_only_fires_on_plain_http() {
+        let basic = "Basic realm=\"router\"";
+        let hit = host(&[80], &[("svc.80", "http"), ("http.80.auth", basic)]);
+        assert_eq!(ids(&hit), ["http-basic-cleartext"]);
+        // The same header over TLS is fine.
+        let tls = host(&[443], &[("svc.443", "https"), ("http.443.auth", basic)]);
+        assert!(!ids(&tls).contains(&"http-basic-cleartext".to_string()));
+        // Plain HTTP with another scheme, or no challenge at all.
+        let bearer = host(
+            &[80],
+            &[("svc.80", "http"), ("http.80.auth", "Bearer realm=\"api\"")],
+        );
+        assert!(!ids(&bearer).contains(&"http-basic-cleartext".to_string()));
+        let none = host(&[80], &[("svc.80", "http")]);
+        assert!(!ids(&none).contains(&"http-basic-cleartext".to_string()));
+    }
+
+    #[test]
+    fn snmp_rule_needs_an_answer_on_udp_161() {
+        let mut hit = host(&[], &[("udp.161", "SNMP sysDescr: Linux")]);
+        hit.udp_open = vec![161];
+        assert_eq!(ids(&hit), ["snmp-public"]);
+        // Port reported open but no SNMP answer was recorded.
+        let mut silent = host(&[], &[]);
+        silent.udp_open = vec![161];
+        assert!(ids(&silent).is_empty());
+        // A sysDescr answer recorded, but 161 is not among the open UDP ports.
+        let closed = host(&[], &[("udp.161", "SNMP sysDescr: Linux")]);
+        assert!(ids(&closed).is_empty());
+        // Some other reply recorded on 161.
+        let mut other = host(&[], &[("udp.161", "unknown reply")]);
+        other.udp_open = vec![161];
+        assert!(ids(&other).is_empty());
+    }
+
+    #[test]
     fn not_yet_valid_certificate_is_reported() {
         let h = host(
             &[443],
