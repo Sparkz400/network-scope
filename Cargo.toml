@@ -42,7 +42,7 @@ roxmltree = "0.20"
 rhai = { version = "1", default-features = false, features = ["std", "sync", "no_module"] }
 
 [dev-dependencies]
-rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 winit = "0.30"
