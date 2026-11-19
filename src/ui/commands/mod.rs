@@ -16,6 +16,7 @@ mod probes;
 pub(in crate::ui) mod scan;
 mod scripts;
 mod trace;
+mod update;
 
 use super::Ctx;
 
@@ -47,6 +48,7 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("trace", trace::run),
     ("probes", probes::run),
     ("fingerprints", fingerprints::run),
+    ("update", update::run),
     ("completions", completions::run),
 ];
 

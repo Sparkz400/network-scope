@@ -39,6 +39,8 @@ network-scope probes lint [FILE]               Safety lint (OT/printer ports, wr
 network-scope fingerprints export-unknown [SCAN_ID] [--output FILE]
                                                Banners nothing identified, from the local store, as JSON
                                                to review and redact (never uploaded)
+network-scope update check                     Ask GitHub for the latest release (one HTTPS request); prints
+                                               the release page and how to verify a download; never downloads
 network-scope completions powershell|bash      Print a shell completion script
 
 Scan options:

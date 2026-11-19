@@ -8,6 +8,9 @@
 //! administrator installed) apply. There is no way to switch verification off: an untrusted or
 //! mismatching certificate fails the delivery with a warning. Plain http:// stays available for
 //! localhost and trusted LAN receivers.
+//!
+//! The connection code (`open_stream`, the OS-verified TLS configuration) is shared with the
+//! opt-in update check in `update`.
 use crate::{monitor::Alert, risk::Severity};
 use rustls::{ClientConfig, ClientConnection, StreamOwned, pki_types::ServerName};
 use rustls_platform_verifier::Verifier;
@@ -29,10 +32,10 @@ const MAX_SYSLOG: usize = 2048;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Webhook {
     /// `https://` (TLS verified against the OS certificate store) instead of `http://`.
-    tls: bool,
-    host: String,
-    port: u16,
-    path: String,
+    pub(crate) tls: bool,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) path: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,17 +87,17 @@ fn host_port(text: &str, default_port: u16) -> Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
-impl Sink {
-    /// `http://host[:port][/path]` (default port 80) or `https://host[:port][/path]` (default
-    /// port 443, certificate verified against the OS certificate store).
-    pub fn webhook(url: &str) -> Result<Self, String> {
+impl Webhook {
+    /// Parses `http://host[:port][/path]` or `https://host[:port][/path]`; `what` names the kind
+    /// of URL in error messages ("Webhook", "Update").
+    pub(crate) fn parse(url: &str, what: &str) -> Result<Self, String> {
         let url = url.trim();
         let (tls, rest) = match url.split_once("://") {
             Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => (false, rest),
             Some((scheme, rest)) if scheme.eq_ignore_ascii_case("https") => (true, rest),
             _ => {
                 return Err(format!(
-                    "Webhook URL must start with http:// or https://: {url}"
+                    "{what} URL must start with http:// or https://: {url}"
                 ));
             }
         };
@@ -103,21 +106,32 @@ impl Sink {
             None => (rest, "/"),
         };
         if authority.contains('@') {
-            return Err("Webhook URLs with user:password@ are not supported".into());
+            return Err(format!("{what} URLs with user:password@ are not supported"));
         }
         if path.chars().any(|c| c.is_control() || c == ' ') {
-            return Err(format!("Invalid webhook path: {path}"));
+            return Err(format!(
+                "Invalid {} path: {path}",
+                what.to_ascii_lowercase()
+            ));
         }
         let (host, port) = host_port(authority, if tls { 443 } else { 80 })?;
         if tls && ServerName::try_from(host.clone()).is_err() {
             return Err(format!("Not a valid host name for HTTPS: {host}"));
         }
-        Ok(Self::Webhook(Webhook {
+        Ok(Self {
             tls,
             host,
             port,
             path: path.to_string(),
-        }))
+        })
+    }
+}
+
+impl Sink {
+    /// `http://host[:port][/path]` (default port 80) or `https://host[:port][/path]` (default
+    /// port 443, certificate verified against the OS certificate store).
+    pub fn webhook(url: &str) -> Result<Self, String> {
+        Webhook::parse(url, "Webhook").map(Self::Webhook)
     }
     /// `udp://host[:port]` (default port 514), `tcp://host[:port]` (default 601) or
     /// `host[:port]` (UDP).
@@ -201,13 +215,13 @@ fn connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String
 /// The TLS client configuration for HTTPS webhooks: the same rustls version and ring crypto
 /// provider as the TLS scanner, with the server certificate verified by the operating system
 /// (Windows CryptoAPI, macOS Security.framework, the system CA bundle on Linux).
-fn platform_tls_config() -> Result<Arc<ClientConfig>, String> {
+pub(crate) fn platform_tls_config() -> Result<Arc<ClientConfig>, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Verifier::new(provider.clone()).map_err(|e| e.to_string())?;
     tls_config(verifier, provider)
 }
 
-fn tls_config(
+pub(crate) fn tls_config(
     verifier: Verifier,
     provider: Arc<rustls::crypto::CryptoProvider>,
 ) -> Result<Arc<ClientConfig>, String> {
@@ -221,7 +235,7 @@ fn tls_config(
 }
 
 /// A readable message for a failed TLS handshake; certificate problems say what to fix.
-fn tls_error(e: &io::Error, host: &str) -> String {
+pub(crate) fn tls_error(e: &io::Error, host: &str) -> String {
     if matches!(
         e.kind(),
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
@@ -284,6 +298,51 @@ fn round_trip(stream: &mut (impl Read + Write), request: &str) -> Result<(), Str
     }
 }
 
+/// A connected stream, plain or TLS, for the small HTTP clients of this crate (the webhook POST
+/// and the update check).
+pub(crate) trait Duplex: Read + Write {
+    /// Tells the peer we are done (TLS close_notify); best effort.
+    fn finish(&mut self) {}
+}
+impl Duplex for TcpStream {}
+impl Duplex for StreamOwned<ClientConnection, TcpStream> {
+    fn finish(&mut self) {
+        self.conn.send_close_notify();
+        let _ = self.flush();
+    }
+}
+
+/// Connects to `host:port` and, for `tls`, completes the handshake with `config` (see
+/// `platform_tls_config`; the certificate is verified by the operating system). Every socket
+/// operation is bounded by `timeout`, and the handshake as a whole by one more.
+pub(crate) fn open_stream(
+    tls: bool,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    config: Option<&Arc<ClientConfig>>,
+) -> Result<Box<dyn Duplex>, String> {
+    let mut tcp = connect(host, port, timeout)?;
+    if !tls {
+        return Ok(Box::new(tcp));
+    }
+    let config = config.ok_or("TLS is not available")?;
+    // An IP literal is sent without SNI and matched against the certificate's IP addresses.
+    let name = ServerName::try_from(host.to_string())
+        .map_err(|_| format!("{host}: not a valid host name for TLS"))?;
+    let mut conn = ClientConnection::new(config.clone(), name).map_err(|e| e.to_string())?;
+    // Handshake first, so a certificate error is reported as such.
+    let deadline = Instant::now() + timeout;
+    while conn.is_handshaking() {
+        if Instant::now() > deadline {
+            return Err("TLS handshake timed out".into());
+        }
+        conn.complete_io(&mut tcp)
+            .map_err(|e| tls_error(&e, host))?;
+    }
+    Ok(Box::new(StreamOwned::new(conn, tcp)))
+}
+
 /// One POST; Ok when the server answered 2xx. HTTPS needs `tls` (see `platform_tls_config`).
 fn post(
     w: &Webhook,
@@ -291,7 +350,7 @@ fn post(
     timeout: Duration,
     tls: Option<&Arc<ClientConfig>>,
 ) -> Result<(), String> {
-    let mut tcp = connect(&w.host, w.port, timeout)?;
+    let mut stream = open_stream(w.tls, &w.host, w.port, timeout, tls)?;
     let host = if w.host.contains(':') {
         format!("[{}]", w.host)
     } else {
@@ -308,29 +367,8 @@ fn post(
         w.path,
         body.len()
     );
-    if !w.tls {
-        return round_trip(&mut tcp, &request);
-    }
-    let config = tls.ok_or("TLS is not available")?;
-    // An IP literal is sent without SNI and matched against the certificate's IP addresses.
-    let name = ServerName::try_from(w.host.clone())
-        .map_err(|_| format!("{}: not a valid host name for TLS", w.host))?;
-    let mut conn = ClientConnection::new(config.clone(), name).map_err(|e| e.to_string())?;
-    // Handshake first, so a certificate error is reported as such. Every socket operation is
-    // bounded by the timeout, and the handshake as a whole by one more.
-    let deadline = Instant::now() + timeout;
-    while conn.is_handshaking() {
-        if Instant::now() > deadline {
-            return Err("TLS handshake timed out".into());
-        }
-        conn.complete_io(&mut tcp)
-            .map_err(|e| tls_error(&e, &w.host))?;
-    }
-    let mut stream = StreamOwned::new(conn, tcp);
     let result = round_trip(&mut stream, &request);
-    // Best effort: tell the server we are done.
-    stream.conn.send_close_notify();
-    let _ = stream.flush();
+    stream.finish();
     result
 }
 
@@ -522,7 +560,7 @@ fn deliver_with(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::net::TcpListener;
 
@@ -722,7 +760,7 @@ mod tests {
     }
 
     /// A CA and a server certificate it issued for `ip` (DER), plus the server's key.
-    fn test_pki(
+    pub(crate) fn test_pki(
         ip: &str,
     ) -> (
         rustls::pki_types::CertificateDer<'static>,
@@ -778,7 +816,7 @@ mod tests {
     }
 
     /// The production TLS setup, except that `root` is trusted in addition to the system's CAs.
-    fn trusting(
+    pub(crate) fn trusting(
         root: &rustls::pki_types::CertificateDer<'static>,
     ) -> impl Fn() -> Result<Arc<ClientConfig>, String> {
         let root = root.clone();

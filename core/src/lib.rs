@@ -116,6 +116,7 @@ pub(crate) mod tls;
 pub mod topology;
 pub mod trace;
 pub(crate) mod udp;
+pub mod update;
 
 #[doc(hidden)]
 pub mod fuzz;

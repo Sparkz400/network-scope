@@ -104,6 +104,27 @@ gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz
 
 Each release also has a CycloneDX SBOM, and the Linux command-line binary can be rebuilt and compared bit for bit: see [Supply chain: SBOM and reproducible builds](supply-chain.md).
 
+## Checking for updates
+
+Network Scope tells you when a newer release exists; it **never downloads or replaces anything**. The check is off until you ask for it:
+
+```sh
+network-scope-cli update check
+```
+
+prints either `Network Scope 0.5.1 is up to date.` or `Version X is available`, followed by the release page and the commands that verify a download (the checksum with `sha256sum`, `gh attestation verify` and `slsa-verifier`, the ones above). You download the file for your platform, verify it and install it yourself.
+
+In the desktop app, **Settings > Check for updates on start** (off by default) does the same once when the program starts and shows a notice in the status bar when a newer release exists. Without that setting, and without running the command, the program never contacts GitHub for this.
+
+What the check does:
+
+- One HTTPS request to `https://api.github.com/repos/Sparkz400/network-scope/releases/latest`, with the headers `Host`, `User-Agent: network-scope/<version>`, `Accept` and `Connection: close`. It sends no identifier, no cookie and no scan data. GitHub sees the IP address of the connection, as for any request.
+- The server certificate is verified against the operating system's certificate store (the same code as the [HTTPS webhooks](monitoring-alerts.md)); an untrusted certificate fails the check.
+- Only the release tag is used from the answer, after it has been checked as a strict semantic version (`vMAJOR.MINOR.PATCH`). The release link and the commands are built from that version, not copied from the answer. Pre-releases and drafts are not offered. Versions are compared by semantic versioning, so `0.10.0` is newer than `0.9.0`.
+- The answer is read up to 1 MiB within a time limit, redirects are not followed. A failed check (no network, rate limit, an answer that is not a release) is an error message (exit status 1 on the command line), never a reason to do anything else.
+
+The unit tests use an in-process server on 127.0.0.1 and a hand-written fixture shaped like GitHub's answer (with a hostile `html_url` and release text to show that they are ignored); they make no network calls. A run of `update check` against the real endpoint on Windows (2026-11-19) completed the TLS handshake with the system certificate store and recognised GitHub's rate-limit answer (HTTP 403 for an address that had used up its 60 unauthenticated requests per hour); a successful answer from the live endpoint has not been seen yet.
+
 ## Build from source
 
 Requires a current stable Rust toolchain ([rustup](https://rustup.rs/)).
