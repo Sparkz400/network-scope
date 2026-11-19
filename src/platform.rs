@@ -820,12 +820,12 @@ fn neighbor_unix(ip: IpAddr) -> Option<Neighbor> {
     use std::process::Command;
     // Only on-link targets have a neighbor entry; never poke routed addresses.
     // Without a readable routing table (macOS) the target is assumed on-link.
-    if let IpAddr::V4(v4) = ip {
-        if let Ok(text) = std::fs::read_to_string("/proc/net/route") {
-            let routes = parse_proc_route(&text);
-            if !routes.is_empty() && !on_link(&routes, v4) {
-                return None;
-            }
+    if let IpAddr::V4(v4) = ip
+        && let Ok(text) = std::fs::read_to_string("/proc/net/route")
+    {
+        let routes = parse_proc_route(&text);
+        if !routes.is_empty() && !on_link(&routes, v4) {
+            return None;
         }
     }
     let run = |program: &str, args: &[&str]| {
