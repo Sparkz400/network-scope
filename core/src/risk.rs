@@ -59,6 +59,62 @@ pub struct Finding {
     /// exports written before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    /// How sure the rule is that the condition is real (0-100; see [`rule_confidence`]). 0 in
+    /// exports written before the score existed, and then left out of the JSON.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub confidence: u8,
+}
+fn is_zero(v: &u8) -> bool {
+    *v == 0
+}
+
+/// Confidence (0-100) that a finding of this rule is real. Direct observations (the server
+/// said so) score 95, rules that read a service name or banner 90, an open port number alone 50
+/// and version-based hints 40 (distributions backport fixes). `None` for an id without an
+/// entry; a test requires one for every rule. The run-time families are looked up by their
+/// prefix (`cve-`, `script-`).
+pub fn rule_confidence(id: &str) -> Option<u8> {
+    Some(match id {
+        "tls-cert-expired"
+        | "tls-cert-expiring"
+        | "tls-cert-not-yet-valid"
+        | "tls-self-signed"
+        | "tls-weak-signature"
+        | "tls-weak-key"
+        | "tls-sslv3"
+        | "tls-deprecated-protocol"
+        | "tls-broken-cipher"
+        | "tls-3des"
+        | "tls-no-pfs"
+        | "ssh-weak-algorithms"
+        | "ssh-legacy-algorithms"
+        | "redis-noauth"
+        | "memcached-open"
+        | "mqtt-anonymous"
+        | "ldap-anonymous"
+        | "postgres-no-tls"
+        | "rdp-no-nla"
+        | "smb1-enabled"
+        | "smb-signing"
+        | "smb-no-encryption"
+        | "docker-api"
+        | "snmp-public" => 95,
+        "ssh-protocol-1"
+        | "telnet-open"
+        | "ftp-cleartext"
+        | "vnc-exposed"
+        | "mail-cleartext"
+        | "http-basic-cleartext"
+        | "netbios-ns"
+        | "upnp-exposed" => 90,
+        "ot-control-traffic" => 85,
+        "php-eol" => 70,
+        "ot-reachable" => 50,
+        "heartbleed" | "cve-cve-2020-0796" => 40,
+        _ if id.starts_with("cve-") => 40,
+        _ if id.starts_with("script-") => 60,
+        _ => return None,
+    })
 }
 
 const MS_SMB: &str = "https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3";
@@ -87,6 +143,19 @@ fn reference_for(id: &str) -> Option<&'static str> {
 }
 
 impl Finding {
+    /// The reasons for the finding and its confidence: what was observed, and how the rule
+    /// works (see the finding's documentation page for the false positives).
+    pub fn explain(&self) -> crate::evidence::Evidence {
+        let basis = match self.confidence {
+            90.. => "observed directly",
+            60..=89 => "inferred from what the service reported",
+            50..=59 => "inferred from the port number only",
+            1..=49 => "version-based hint, fixes may be backported",
+            0 => "",
+        };
+        crate::evidence::Evidence::new([self.evidence.as_str(), basis], self.confidence)
+    }
+
     /// Identity used to decide whether a finding is new compared with a previous scan.
     pub fn key(&self) -> String {
         format!(
@@ -514,6 +583,7 @@ impl Out<'_> {
             advice: advice.into(),
             exploit: Default::default(),
             reference: reference_for(id).map(str::to_string),
+            confidence: rule_confidence(id).unwrap_or(0),
         });
     }
 }
@@ -948,6 +1018,7 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             advice: "Verify that writes, program downloads and stop/restart commands come from authorised engineering stations.".into(),
             exploit: Default::default(),
             reference: None,
+            confidence: rule_confidence("ot-control-traffic").unwrap_or(0),
         });
     }
     all.sort_by(|a, b| {

@@ -74,6 +74,12 @@ pub struct Guess {
     pub confidence: u8,
     pub evidence: Vec<String>,
 }
+impl Guess {
+    /// The reasons and the score as the shared [`crate::evidence::Evidence`].
+    pub fn evidence(&self) -> crate::evidence::Evidence {
+        crate::evidence::Evidence::new(self.evidence.iter().cloned(), self.confidence)
+    }
+}
 
 pub fn initial_ttl(observed: u8) -> u8 {
     [32u8, 64, 128, 255]
@@ -366,8 +372,7 @@ pub fn guess(
         return None;
     }
     let runner_up = ranked.get(1).map_or(0, |(_, (v, _))| *v);
-    let margin = (score - runner_up).max(0);
-    let confidence = (score.min(70) + margin.min(30) / 2).clamp(10, 95) as u8;
+    let confidence = crate::evidence::confidence_from_scores(score, runner_up);
     Some(Guess {
         name: name.to_string(),
         confidence,

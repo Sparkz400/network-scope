@@ -18,7 +18,7 @@ network-scope-cli diff OLD NEW [--format lines|json|text] [--ignore K,K]
 
 A finding counts as **resolved** only if the new scan looked at its evidence again (host answered; TCP ports checked; UDP port probed in both); otherwise it is **unconfirmed**.
 
-`--ignore` adds exact keys, globs (`http.*.title`) or suffixes (`.server`) to the always-ignored volatile keys `*.days_left`, `*.clock_skew` and `*.boot_time`.
+`--ignore` adds exact keys, globs (`http.*.title`) or suffixes (`.server`) to the always-ignored volatile keys `*.days_left`, `*.clock_skew`, `*.boot_time`, `*.confidence` and `*.evidence` (the reasons and scores behind OS and device-type guesses; a changed guess itself is still reported).
 
 Comparisons are meaningful only between completed scans with matching scope and settings. A timeout never proves that a device is offline.
 

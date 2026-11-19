@@ -235,6 +235,7 @@ mod tests {
             advice: String::new(),
             exploit: Default::default(),
             reference: None,
+            confidence: 0,
         }
     }
 

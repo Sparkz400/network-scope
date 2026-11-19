@@ -616,6 +616,7 @@ mod tests {
             advice: String::new(),
             exploit: Exploit::default(),
             reference: None,
+            confidence: 0,
         }
     }
     fn feeds() -> Feeds {

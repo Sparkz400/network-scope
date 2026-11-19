@@ -774,3 +774,41 @@ fn false_alarm_budget_is_zero_for_every_rule() {
     }
     println!("{}", report.join("\n"));
 }
+
+#[test]
+fn every_rule_has_a_confidence_and_findings_explain_themselves() {
+    let (ids, _) = source_rule_ids();
+    for id in &ids {
+        let c =
+            rule_confidence(id).unwrap_or_else(|| panic!("{id} has no entry in rule_confidence"));
+        assert!((1..=100).contains(&c), "{id}: {c}");
+    }
+    assert_eq!(rule_confidence("cve-cve-2024-6387"), Some(40));
+    assert_eq!(rule_confidence("script-lab"), Some(60));
+    assert_eq!(rule_confidence("no-such-rule"), None);
+    // Direct observations outrank port-number guesses, and version hints rank lowest.
+    assert!(rule_confidence("tls-weak-key") > rule_confidence("ot-reachable"));
+    assert!(rule_confidence("ot-reachable") > rule_confidence("cve-cve-2011-2523"));
+
+    let case = cases().into_iter().find(|c| c.id == "telnet-open").unwrap();
+    let found = analyze_host_with(&host_of(&case.hit), &CveDb::builtin());
+    let f = found.iter().find(|f| f.id == "telnet-open").unwrap();
+    assert_eq!(f.confidence, 90);
+    let why = f.explain();
+    assert_eq!(why.confidence, 90);
+    assert_eq!(why.reasons, ["telnet", "observed directly"]);
+    // The score is in the JSON; an export from before the score existed loads with 0 and
+    // writes no key.
+    let json = serde_json::to_value(f).unwrap();
+    assert_eq!(json["confidence"], 90);
+    let old = r#"{"severity":"high","id":"telnet-open","title":"t","ip":"10.0.0.5","port":23,"evidence":"telnet","cve":[],"advice":"a"}"#;
+    let loaded: Finding = serde_json::from_str(old).unwrap();
+    assert_eq!(loaded.confidence, 0);
+    assert!(
+        serde_json::to_value(&loaded)
+            .unwrap()
+            .get("confidence")
+            .is_none()
+    );
+    assert_eq!(loaded.explain().reasons, ["telnet"]);
+}
