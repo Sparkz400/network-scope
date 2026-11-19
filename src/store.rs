@@ -494,17 +494,23 @@ impl DiffReport {
     }
 }
 
-/// Renders a diff for the CLI: `json` (the `DiffReport`), `text` (lines plus findings) or
-/// `lines` (the original JSON array of change lines, the default output of `diff`).
+/// Compares and renders in one step (see [`render_diff`]); the CLI computes the report itself
+/// so that it can also derive the exit status from it.
+#[cfg(test)]
 pub fn diff_output(
     a: &Snapshot,
     b: &Snapshot,
     format: &str,
     ignore: &IgnoreList,
 ) -> Result<String, String> {
-    let report = diff_report(a, b, ignore)?;
+    render_diff(&diff_report(a, b, ignore)?, format)
+}
+
+/// Renders a diff for the CLI: `json` (the `DiffReport`), `text` (lines plus findings) or
+/// `lines` (the original JSON array of change lines, the default output of `diff`).
+pub fn render_diff(report: &DiffReport, format: &str) -> Result<String, String> {
     match format {
-        "json" => serde_json::to_string_pretty(&report).map_err(|e| e.to_string()),
+        "json" => serde_json::to_string_pretty(report).map_err(|e| e.to_string()),
         "text" => Ok(report.text()),
         "lines" => serde_json::to_string_pretty(&report.lines()).map_err(|e| e.to_string()),
         _ => Err("Choose json, text or lines".into()),
