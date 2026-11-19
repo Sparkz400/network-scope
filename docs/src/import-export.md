@@ -55,3 +55,40 @@ Importing fills the expected list but does not turn on alerting: a partial list 
 ### Limits
 
 Files up to 32 MB and 100,000 devices; every value is cut at 4,096 characters. The parsers never panic on malformed input and have a fuzz target (`import_inventory`). The Windows DHCP XML and the NetBox shapes follow the vendors' documentation and sample exports; they have not been tested against a real server or a real instance. The formats differ between versions, so a file that does not import is reported with the reason.
+
+## Export to other systems
+
+```sh
+network-scope-cli export ID --format netbox|netbox-devices|snipeit|splunk|elastic|servicenow [--output FILE]
+```
+
+One record per device of the saved scan (active scan and passive observations merged), with its risks. The files are what the target's own import or API takes.
+
+| Format | Output | Fields |
+| --- | --- | --- |
+| `netbox` | JSON array for `POST /api/ipam/ip-addresses/` (NetBox bulk create) | `address` (`/32` or `/128`), `status` (`active`), `dns_name` (when the host name is a plain DNS name), `description` |
+| `netbox-devices` | JSON array for `POST /api/dcim/devices/` | `name`, `device_type` (`{"model": ..}`), `role` (`{"name": ..}`), `site` (`{"name": ..}`), `status`, `comments`; needs `--netbox-site`, `--netbox-role` and `--netbox-device-type`, because NetBox requires them |
+| `snipeit` | CSV for the Snipe-IT asset importer | `Name`, `Asset Tag` (`NS-` and the MAC or address), `Category`, `Manufacturer`, `Model`, `Asset Notes`, `MAC Address`, `IP Address` (the last two are custom fields to map in the importer's column mapper) |
+| `splunk` | HTTP Event Collector events, one JSON object per line (concatenated JSON, which HEC accepts) | `time`, `source`, `sourcetype` (`network-scope:device`), `index` (only with `--index`), `event` with the device, its ports and its findings |
+| `elastic` | `_bulk` NDJSON: an action line and a document per device, the last line ends with a newline | index `network-scope` (or `--index`), `_id` from scan time and device, `@timestamp`, the same document as the Splunk event |
+| `servicenow` | CSV with `cmdb_ci` column names | `name`, `sys_class_name`, `ip_address`, `mac_address`, `manufacturer`, `os`, `short_description`, `discovery_source` (`Network Scope`), `operational_status` |
+
+CSV cells that a spreadsheet would read as a formula get a leading `'`. The ServiceNow file is meant for an import set with your own transform map; the class names (`cmdb_ci_computer`, `cmdb_ci_netgear`, `cmdb_ci_printer`, `cmdb_ci_hardware`) are a suggestion.
+
+### Pushing
+
+```sh
+export NETBOX_TOKEN=...
+network-scope-cli export 12 --format netbox --push https://netbox.example.com --token-env NETBOX_TOKEN
+```
+
+`--push URL --token-env VAR` sends the export to NetBox, Splunk HEC or Elastic instead of (or besides, with `--output`) writing it. Nothing is ever sent without both options.
+
+- **The token is read from the environment variable you name, and is sent only in the `Authorization` header.** A URL with `user:password@`, a query string or a fragment is refused, so no credential ends up in a URL, a log or the shell history. A missing or empty variable fails before any connection is made. The token is never printed.
+- **`https://` is verified against the operating system's certificate store**, like webhooks. Plain `http://` is accepted only for this machine (`localhost`, `127.0.0.0/8`, `::1`): a token does not cross a network in clear text.
+- A URL that names only a server gets the target's API path (`/api/ipam/ip-addresses/`, `/api/dcim/devices/`, `/services/collector/event`, `/_bulk`); a URL with a path is used as given. The scheme is chosen by the target: NetBox `Token` (or `Bearer` for `nbt_` tokens), Splunk `Splunk`, Elastic `ApiKey` (the base64 `encoded` value of the API key).
+- The request is bounded by a 30 second timeout and fails unless the server answers 2xx. It is one request; nothing is retried.
+- NetBox bulk creation is all-or-none: if any address already exists, the whole request is rejected. Push to a fresh NetBox, or import the file after removing what it already holds.
+- `snipeit` and `servicenow` are files for the target's importer and cannot be pushed.
+
+The field names follow the vendors' documentation. The exports and the pushes were tested against a local mock server only, not against a real NetBox, Snipe-IT, Splunk, Elastic or ServiceNow instance.

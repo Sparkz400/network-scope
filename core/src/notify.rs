@@ -284,13 +284,30 @@ fn round_trip(stream: &mut (impl Read + Write), request: &str) -> Result<(), Str
     }
 }
 
-/// One POST; Ok when the server answered 2xx. HTTPS needs `tls` (see `platform_tls_config`).
+/// One POST of a JSON alert; Ok when the server answered 2xx. HTTPS needs `tls` (see
+/// `platform_tls_config`).
 fn post(
     w: &Webhook,
     body: &str,
     timeout: Duration,
     tls: Option<&Arc<ClientConfig>>,
 ) -> Result<(), String> {
+    post_with(w, body, "application/json", &[], timeout, tls)
+}
+
+/// One POST with a content type and extra request headers; Ok when the server answered 2xx.
+fn post_with(
+    w: &Webhook,
+    body: &str,
+    content_type: &str,
+    headers: &[(String, String)],
+    timeout: Duration,
+    tls: Option<&Arc<ClientConfig>>,
+) -> Result<(), String> {
+    let extra: String = headers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}\r\n"))
+        .collect();
     let mut tcp = connect(&w.host, w.port, timeout)?;
     let host = if w.host.contains(':') {
         format!("[{}]", w.host)
@@ -304,7 +321,7 @@ fn post(
     };
     let request = format!(
         "POST {} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: network-scope\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+         {extra}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         w.path,
         body.len()
     );
@@ -334,6 +351,63 @@ fn post(
     result
 }
 
+/// A request header value from the user must not be able to end the header or start another.
+fn header_value(name: &str, value: &str) -> Result<String, String> {
+    if value.is_empty() || value.chars().any(|c| c.is_control() || c == ' ') {
+        return Err(format!(
+            "{name}: empty, or contains spaces or control characters"
+        ));
+    }
+    Ok(value.to_string())
+}
+
+/// Whether `host` is this machine (plain HTTP is only allowed there when a token is sent).
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// An opt-in push of an export to a server the user named (NetBox, Splunk HEC, Elastic): one
+/// POST of `body` with `Authorization: <scheme> <token>`. The credential travels only in that
+/// header, never in the URL: a URL with `user:password@`, a query string or a fragment is
+/// refused. `https://` is verified against the operating system's certificate store like
+/// webhooks; plain `http://` is accepted only for this machine (`localhost`, `127.0.0.0/8`,
+/// `::1`), because a token must not cross a network in clear text. Bounded by `timeout`.
+pub fn push(
+    url: &str,
+    auth: (&str, &str),
+    content_type: &str,
+    body: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    if url.contains(['?', '#']) {
+        return Err(
+            "The push URL must not contain a query string or fragment: credentials never go in a URL"
+                .into(),
+        );
+    }
+    let Sink::Webhook(w) = Sink::webhook(url)? else {
+        return Err("Not an HTTP URL".into());
+    };
+    if !w.tls && !is_loopback_host(&w.host) {
+        return Err(format!(
+            "{}: a token is only sent over https:// (plain http:// is accepted for localhost only)",
+            w.host
+        ));
+    }
+    let scheme = header_value("Authorization scheme", auth.0)?;
+    let token = header_value("Token", auth.1)?;
+    let headers = [("Authorization".to_string(), format!("{scheme} {token}"))];
+    let config = if w.tls {
+        Some(platform_tls_config().map_err(|e| format!("TLS setup failed: {e}"))?)
+    } else {
+        None
+    };
+    post_with(&w, body, content_type, &headers, timeout, config.as_ref())
+}
+
 /// syslog severity: critical 2, error 3, warning 4, notice 5, informational 6.
 fn syslog_severity(s: Severity) -> u8 {
     match s {
@@ -346,7 +420,7 @@ fn syslog_severity(s: Severity) -> u8 {
 }
 
 /// UTC "YYYY-MM-DDTHH:MM:SSZ" (RFC 3339) of a Unix timestamp.
-fn rfc3339(ts: i64) -> String {
+pub(crate) fn rfc3339(ts: i64) -> String {
     let (days, secs) = (ts.div_euclid(86_400), ts.rem_euclid(86_400));
     // civil-from-days (H. Hinnant)
     let z = days + 719_468;
