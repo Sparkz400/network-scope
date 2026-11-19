@@ -8,6 +8,7 @@ General rules:
 - `--quiet` (before or after the command, any command) suppresses progress lines on stderr, including monitor's per-cycle lines; errors still print and the exit status is unchanged.
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
+- `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
 - `--format` and `--output FILE` select an export where a command produces one. Without `--output` the result is printed to stdout.
 
 ## Commands
@@ -24,7 +25,9 @@ General rules:
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
-| `findings ID [--min-severity low]` | Weak TLS/SSH, risky services, CVE hints |
+| `findings ID [--min-severity low] [--sort exploited\|severity]` | Weak TLS/SSH, risky services, CVE hints |
+| `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
+| `feeds status [--feeds FILE]` | Show what the feeds cache holds (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
 | `alerts [--db FILE]` | Alerts raised by monitor runs |
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
@@ -112,7 +115,11 @@ Exports from `scan`, `listen`, `dcp` and `export` carry the stored scan time. De
 
 ## findings options
 
-`--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`.
+`--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`, `--feeds FILE`, `--sort exploited|severity` (default `exploited`: known exploited first, then severity, then EPSS, when feeds are imported; the same as `severity` without feeds).
+
+## feeds options
+
+`feeds import` needs `--kev FILE` (`known_exploited_vulnerabilities.json`) and/or `--epss FILE` (plain CSV; run `gunzip` on the `.csv.gz` first). The part not given keeps its previous content. `--feeds FILE` writes to another cache file.
 
 ## monitor options
 
@@ -166,6 +173,8 @@ network-scope-cli diff 1 2 --format json --ignore http.*.title,.server
 network-scope-cli export 2 --format html --output report.html
 network-scope-cli export 3 --format jsonl --output hosts.jsonl
 network-scope-cli findings 3 --min-severity medium --cves my-cves.json
+network-scope-cli feeds import --kev known_exploited_vulnerabilities.json --epss epss_scores-current.csv
+network-scope-cli findings 3 --sort exploited
 network-scope-cli report 3 --baseline 2 --output report.html
 network-scope-cli export 3 --format nmap --output scan.xml
 network-scope-cli import nmap-result.xml

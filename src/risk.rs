@@ -41,7 +41,7 @@ impl Severity {
     }
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Finding {
     pub severity: Severity,
     pub id: String,
@@ -51,6 +51,10 @@ pub struct Finding {
     pub evidence: String,
     pub cve: Vec<String>,
     pub advice: String,
+    /// KEV and EPSS data from the imported feeds (`feeds import`); empty, and left out of the
+    /// JSON, without them. Missing in exports written before the feeds existed.
+    #[serde(default, flatten)]
+    pub exploit: crate::feeds::Exploit,
 }
 impl Finding {
     /// Identity used to decide whether a finding is new compared with a previous scan.
@@ -474,6 +478,7 @@ impl Out<'_> {
             evidence: evidence.into(),
             cve: cve.iter().map(|c| (*c).to_string()).collect(),
             advice: advice.into(),
+            exploit: Default::default(),
         });
     }
 }
@@ -886,6 +891,7 @@ pub fn analyze(hosts: &[Host]) -> Vec<Finding> {
             .then(a.port.cmp(&b.port))
             .then(a.id.cmp(&b.id))
     });
+    crate::feeds::apply(&mut all);
     all
 }
 
@@ -902,6 +908,7 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             evidence,
             cve: vec![],
             advice: "Verify that writes, program downloads and stop/restart commands come from authorised engineering stations.".into(),
+            exploit: Default::default(),
         });
     }
     all.sort_by(|a, b| {
@@ -911,6 +918,7 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             .then(a.port.cmp(&b.port))
             .then(a.id.cmp(&b.id))
     });
+    crate::feeds::apply(&mut all);
     all
 }
 
