@@ -29,6 +29,24 @@ Comparisons are meaningful only between completed scans with matching scope and 
 - Only sightings create events: a scan that does not mention the device produces no "not seen" event.
 - Port events come only from **completed** active scans that checked the device's ports with the same TCP port set; UDP is compared only for ports probed in both; SMB-only names are not compared.
 
+## Approved baseline
+
+```sh
+network-scope-cli baseline approve [SCAN_ID]
+network-scope-cli baseline set DEVICE [--owner TEXT] [--tag a,b] [--untag a,b] [--criticality low|medium|high|critical|none] [--expected yes|no]
+network-scope-cli baseline show [--format text|json]
+network-scope-cli baseline remove DEVICE
+network-scope-cli baseline clear
+```
+
+A baseline is the list of devices you expect on the network, with an owner, a criticality and tags for each. `baseline approve` takes the devices of a completed scan (the newest one, or `SCAN_ID`) as the expected devices; it records them in the inventory like `monitor` does and only ever adds, so approving again after a scan found a new device approves that one too and keeps what you described for the others. `approve` is also what starts the baseline: until one is approved, nothing is checked.
+
+`baseline set` describes one device. `DEVICE` is a device key (as shown by `devices ID`), a MAC address in any notation, an IP address (the device that held it last) or a host name; if a name or MAC matches several devices, use the key. `--tag` adds tags, `--untag` removes them (comma-separated; at most 20 tags, 40 characters each), `--owner ""` clears the owner, `--criticality none` clears the criticality. `--expected no` keeps the description but takes the device off the expected list.
+
+Entries are keyed by the stable [device key](device-identity.md), so a device keeps its place on the baseline when it changes address or randomised MAC address. The baseline is stored in the inventory database (schema version 4).
+
+Once a baseline exists, `monitor` raises an [`unknown-device` alert](monitoring-alerts.md#alert-kinds) (Medium) for every device that is not on the expected list. This does not depend on `--learn` or on the first run, because the baseline is what you declared, not what was seen. `baseline clear` deletes the baseline and with it the alert.
+
 ## Reports
 
 ```sh

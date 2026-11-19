@@ -11,6 +11,11 @@ network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
         [--fail-on-findings [--min-severity low]]
+network-scope baseline approve [SCAN_ID]       Approve the devices of a completed scan as the expected devices
+network-scope baseline set DEVICE [--owner TEXT] [--tag a,b] [--untag a,b]
+        [--criticality low|medium|high|critical|none] [--expected yes|no]   Describe one device
+network-scope baseline show [--format text|json]   Expected devices, owners, tags, criticality
+network-scope baseline remove DEVICE | clear   Drop one device, or the whole baseline (alerting off)
 network-scope export ID --format json|csv|html|nmap|md|jsonl [--baseline ID] [--output FILE]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
