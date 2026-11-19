@@ -1,6 +1,28 @@
 use super::*;
+/// The CVE rules for a rules file path from the settings, loaded like `--cves FILE` (built-in
+/// rules plus the file). An empty path means the default rules. A file that cannot be read or
+/// parsed is an error carrying the path and the reason; nothing is installed here.
+pub(super) fn load_cve_rules(path: &str) -> Result<risk::CveDb, String> {
+    let path = path.trim();
+    risk::CveDb::load((!path.is_empty()).then(|| std::path::Path::new(path)))
+}
 impl Scanner {
+    /// Loads the CVE rules file named in the settings and makes it the active rules for later
+    /// scans and findings. On an error the previous rules stay active and the error is kept
+    /// for the settings window.
+    pub(super) fn apply_cves_file(&mut self) {
+        match load_cve_rules(&self.saved.cves_file) {
+            Ok(db) => {
+                risk::set_cves(db);
+                self.cves_error.clear();
+                // Findings on screen are recomputed with the new rules.
+                self.data_changed();
+            }
+            Err(e) => self.cves_error = e,
+        }
+    }
     pub(super) fn settings(&mut self, ctx: &egui::Context) {
+        let mut apply_cves = false;
         egui::Window::new("Scan settings").vscroll(true)
             .open(&mut self.settings_open)
             .default_size(default_win_size())
@@ -125,6 +147,40 @@ impl Scanner {
                         ui.label("Script (.rhai file or folder)");
                         ui.add(egui::TextEdit::singleline(&mut s.scripts).desired_width(220.0));
                     });
+                    ui.label("CVE rules file (added to the built-in rules)");
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(
+                            egui::TextEdit::singleline(&mut self.saved.cves_file)
+                                .hint_text("cves.json")
+                                .desired_width(190.0),
+                        );
+                        // Enter or leaving the field loads the file, so a path is not
+                        // parsed on every keystroke.
+                        if edit.lost_focus() {
+                            apply_cves = true;
+                        }
+                        if ui.button("Browse…").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("CVE rules", &["json"])
+                                .pick_file()
+                        {
+                            self.saved.cves_file = path.display().to_string();
+                            apply_cves = true;
+                        }
+                        if !self.saved.cves_file.is_empty() && ui.button("Clear").clicked() {
+                            self.saved.cves_file.clear();
+                            apply_cves = true;
+                        }
+                    });
+                    if !self.cves_error.is_empty() {
+                        ui.scope(|ui| {
+                            ui.set_max_width(360.0);
+                            ui.colored_label(
+                                egui::Color32::DARK_RED,
+                                format!("{} (previous rules stay active)", self.cves_error),
+                            );
+                        });
+                    }
                     ui.checkbox(&mut s.os_detect, "Guess OS, manufacturer and device type");
                     ui.checkbox(&mut s.trace, "Record router path to each responding host (traceroute)");
                     if s.trace {
@@ -182,6 +238,9 @@ impl Scanner {
                     ui.label("Settings can be changed after this scan finishes.");
                 }
             });
+        if apply_cves {
+            self.apply_cves_file();
+        }
         egui::Window::new("About Network Scope")
             .open(&mut self.about_open)
             .default_size(default_win_size())
