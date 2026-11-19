@@ -79,6 +79,20 @@ jobs:
             target/release/network-scope-cli.exe
           if-no-files-found: error
 
+  # Every finding rule id in src/risk.rs needs a page under docs/src/findings (linked from the
+  # GUI and reports). Plain Python, no build; runs on pull requests, which docs.yml does not.
+  finding-docs:
+    name: finding documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -I docs/check_finding_pages.py
+
   installer:
     name: windows installer
     needs: check
