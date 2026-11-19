@@ -122,6 +122,7 @@ jobs:
           tags: network-scope:ci
       - name: Smoke test (starts without GUI libraries, shared library check)
         if: steps.changes.outputs.build == 'true'
+        shell: bash # -e and pipefail, so a failing `docker run | tee` fails the step
         run: |
           docker run --rm network-scope:ci --help
           docker run --rm --entrypoint ldd network-scope:ci /usr/local/bin/network-scope-cli | tee ldd.txt
