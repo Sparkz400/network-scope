@@ -234,6 +234,7 @@ mod tests {
             cve: vec![],
             advice: String::new(),
             exploit: Default::default(),
+            reference: None,
         }
     }
 
