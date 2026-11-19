@@ -121,7 +121,7 @@ fn provenance_lists_every_fixture() {
 
 #[test]
 fn modbus_reads_diagnostics_and_writes() {
-    // Part 1: three clients talk to two devices; one client sends writes, one sends
+    // Part 1: two clients talk to two devices; one client sends writes, the other sends
     // diagnostics (Force Listen Only, Restart Communications).
     let t = track("modbus_test_data_part1.pcap");
     assert_eq!(
@@ -181,8 +181,11 @@ fn modbus_reads_diagnostics_and_writes() {
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!((f[0].0, f[0].1.as_str()), (Severity::High, "10.0.0.3"));
     assert!(f[0].2.contains("from 10.0.0.9, 10.0.0.57"), "{}", f[0].2);
-    // The truncated MBAP keep-alives (six zero bytes) are given up on, not fatal.
-    assert_eq!(t.reassembly_stats().0, 0);
+    // The device at 10.0.0.8 ends two of its Read Device Identification replies with three
+    // bytes beyond the length in the MBAP header. The reply itself decodes; the surplus is held
+    // as the start of a next message and given up on (once when the next reply arrives, once
+    // at the end of the capture). Nothing is lost, but the counter shows it.
+    assert_eq!(t.reassembly_stats(), (0, 2));
 
     // Part 2: one master walks the function code space against one device.
     let t = track("modbus_test_data_part2.pcap");
@@ -221,6 +224,9 @@ fn modbus_reads_diagnostics_and_writes() {
 
 #[test]
 fn s7_block_download_is_flagged() {
+    // The capture also holds the PLC's own Download Block (x3) and Download Ended (x1) jobs.
+    // They travel from port 102 and are counted as presence only; the download is flagged by
+    // the client's Request Download and PLC Control.
     let t = track("s7comm_downloading_block_db1.pcap");
     let server = one(&t, "S7comm server (observed)");
     assert_eq!(
@@ -298,7 +304,7 @@ fn s7_status_reading_is_not_control_traffic_and_its_szl_decodes() {
     // parser matches it against the request our probe sends (PDU reference 0, 2), so the
     // real reference is rewritten to that.
     let mut szl = BTreeMap::new();
-    let mut segmented = None;
+    let mut segmented = vec![];
     let mut reader = crate::pcapfile::Reader::new(
         std::fs::File::open(path("s7comm_reading_plc_status.pcap")).unwrap(),
     )
@@ -310,19 +316,28 @@ fn s7_status_reading_is_not_control_traffic_and_its_szl_decodes() {
         }
         let mut reply = p.payload.to_vec();
         reply[11..13].copy_from_slice(&[0, 2]);
+        // the SZL id the reply carries (after the 12-byte parameter block and the data header)
+        let params = usize::from(u16::from_be_bytes([reply[13], reply[14]]));
+        let carried = reply
+            .get(17 + params + 4..17 + params + 6)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]));
         for id in [0x11, 0x1c] {
-            match ot::parse_szl(&reply, 2, id, &mut szl) {
-                Err(e) if e.contains("segmented") => segmented = Some(e),
-                _ => {}
+            if let Err(e) = ot::parse_szl(&reply, 2, id, &mut szl)
+                && e.contains("segmented")
+            {
+                segmented.extend(carried);
             }
         }
     }
     // SZL 0x11 (module identification): order number and firmware of an ET 200S IM151-8 CPU
     assert_eq!(szl["order_code"], "6ES7 151-8AB01-0AB0");
     assert_eq!(szl["firmware"], "3.2.6");
-    // SZL 0x1c (component identification) came back in two fragments, which the probe does not
-    // join: it says so instead of returning half a record.
-    assert!(segmented.is_some());
+    // SZL 0x1c (component identification) came back in several fragments, which the probe does
+    // not join: it says so instead of returning half a record. (The reply to the SZL 0x00 list
+    // request is fragmented as well and is rejected the same way, for either id tried.)
+    segmented.sort_unstable();
+    segmented.dedup();
+    assert_eq!(segmented, [0x0000, 0x001c]);
     assert!(!szl.contains_key("serial"), "{szl:?}");
 }
 
@@ -673,8 +688,10 @@ fn captures_without_a_decoder_yet_produce_no_ot_observations() {
 
 #[test]
 fn iec61850_mms_captures_do_not_crash_or_flag_control_traffic() {
-    // MMS shares TCP port 102 with S7comm and has no decoder of its own yet; only presence is
-    // asserted so that a later MMS decoder can claim these captures.
+    // MMS shares TCP port 102 with S7comm and has no decoder of its own yet. The tracker
+    // currently labels these conversations "S7comm" (any TPKT/COTP traffic on port 102 counts
+    // as presence). That label is deliberately not asserted, so that an MMS decoder can claim
+    // the captures; only "no control traffic" is.
     for name in ["mms_read_request.pcap", "mms_stop_request.pcap"] {
         let t = track(name);
         assert!(findings(&t).is_empty(), "{name}");
