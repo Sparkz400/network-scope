@@ -2,3 +2,7 @@
 /screenshot.png
 /.claude/
 /docs/book/
+/benchmark.json
+/benchmark.md
+/benchmark-results/
+__pycache__/
