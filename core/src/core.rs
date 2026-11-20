@@ -1705,9 +1705,24 @@ mod tests",
 
     #[test]
     fn a_device_that_stops_answering_after_it_was_found_open_gets_a_back_off_note() {
-        let port = flaky_device();
-        let h = scan_loopback(vec![port], true, true);
-        assert_eq!(h.open, [port]);
+        // The fake device closes its listener on its own thread. On a slow runner (coverage
+        // instrumentation) the identification connect can reach the backlog before that, and
+        // then the device has not stopped answering yet; such a run proves nothing, so the test
+        // tries a fresh device a few times and needs one run where the device really stopped.
+        let mut seen = vec![];
+        let (port, h) = (0..5)
+            .find_map(|_| {
+                let port = flaky_device();
+                let h = scan_loopback(vec![port], true, true);
+                assert_eq!(h.open, [port]);
+                if h.errors.is_empty() {
+                    seen.push(h.errors.clone());
+                    None
+                } else {
+                    Some((port, h))
+                }
+            })
+            .unwrap_or_else(|| panic!("the device never stopped answering in time: {seen:?}"));
         let note = h
             .errors
             .iter()
