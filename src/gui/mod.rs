@@ -5,6 +5,7 @@ mod ot;
 mod scheduler;
 mod settings;
 mod tables;
+mod timeline;
 mod windows;
 
 use crate::{devices, passive, risk, scan, store, topology};
@@ -159,6 +160,8 @@ enum Job {
     ExportAssets(Vec<crate::otpassive::Asset>, bool, PathBuf),
     /// Loads a script file/folder and runs it on a copy of the host (token, path, host).
     TestScript(u64, String, Box<scan::Host>),
+    /// The timeline of one device (token, MAC or IP address): `store::device_history`.
+    History(u64, String),
 }
 enum Done {
     Saved(&'static str, usize, Result<i64, String>),
@@ -169,6 +172,7 @@ enum Done {
     PrefsWritten(Result<(), String>),
     Exported(PathBuf, Result<(), String>),
     ScriptTested(u64, Result<crate::script::Outcome, String>),
+    History(u64, Result<Box<crate::devices::DeviceHistory>, String>),
 }
 fn write_file(path: &std::path::Path, data: Result<String, String>) -> Result<(), String> {
     data.and_then(|d| std::fs::write(path, d).map_err(|e| format!("{}: {e}", path.display())))
@@ -208,6 +212,9 @@ fn run_job(job: Job) -> Done {
             token,
             crate::script::Scripts::load(&path).map(|s| s.dry_run(&host)),
         ),
+        Job::History(token, query) => {
+            Done::History(token, store::device_history(&path, &query).map(Box::new))
+        }
     }
 }
 struct Worker {
@@ -251,6 +258,7 @@ struct Busy {
     prefs: bool,
     exporting: usize,
     testing: bool,
+    history: bool,
 }
 impl Busy {
     fn label(&self) -> Option<&'static str> {
@@ -260,6 +268,8 @@ impl Busy {
             Some("Writing export…")
         } else if self.testing {
             Some("Running script…")
+        } else if self.history {
+            Some("Reading device history…")
         } else if self.loading {
             Some("Opening inventory…")
         } else if self.comparing {
@@ -347,6 +357,9 @@ struct Scanner {
     devices_view: tables::View,
     script_test: Option<ScriptTest>,
     script_tokens: u64,
+    /// The device timeline window (opened from the host details).
+    timeline: Option<timeline::Timeline>,
+    timeline_tokens: u64,
     ot: ot::OtState,
     /// Stored time of the inventory snapshot on screen; `None` for live results (exports are
     /// then stamped with the current time).
@@ -442,6 +455,8 @@ impl Scanner {
             devices_view: tables::View::default(),
             script_test: None,
             script_tokens: 0,
+            timeline: None,
+            timeline_tokens: 0,
             ot: ot::OtState::default(),
             opened_stamp: None,
             schedule_anchor: None,
@@ -486,6 +501,7 @@ impl Scanner {
             Job::WritePrefs(_) => self.busy.prefs = true,
             Job::Export(..) | Job::ExportAssets(..) => self.busy.exporting += 1,
             Job::TestScript(..) => self.busy.testing = true,
+            Job::History(..) => self.busy.history = true,
         }
         let sent = self
             .worker
@@ -564,6 +580,13 @@ impl Scanner {
                     match result {
                         Ok(()) => self.status = format!("Saved {}", path.display()),
                         Err(e) => self.error = format!("Export failed: {e}"),
+                    }
+                }
+                Done::History(token, result) => {
+                    self.busy.history = false;
+                    // An answer for a window that was closed or asked again since is dropped.
+                    if let Some(t) = self.timeline.as_mut().filter(|t| t.token == token) {
+                        t.result = Some(result);
                     }
                 }
                 Done::ScriptTested(token, result) => {
@@ -1042,6 +1065,7 @@ impl eframe::App for Scanner {
         });
         self.settings(ctx);
         self.details(ctx);
+        self.timeline_window(ctx);
         self.inventory_window(ctx);
         self.topology_window(ctx);
         self.devices_window(ctx);

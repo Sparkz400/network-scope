@@ -95,6 +95,8 @@ pub fn alert_key(a: &Alert) -> String {
             servers.join(",")
         }
         "capture-incomplete" | "dhcp-discover-failed" | "rogue-dhcp" => String::new(),
+        // The subject is the stable device key; the addresses in the message change.
+        "unknown-device" => String::new(),
         // new-device/device-missing (the subject is only the first IP; the message names the
         // device), new-finding (title and evidence, as fine as `risk::Finding::key`),
         // port-opened/closed ("ip: TCP port N ..."), address-changed and anything else
@@ -165,10 +167,11 @@ impl Dedup {
 /// Alert kinds `evaluate` filters by `min_severity`, with the highest severity each can have.
 /// (`new-finding` can have any severity; notices such as `capture-incomplete` are never
 /// filtered.)
-const KIND_MAX_SEVERITY: [(&str, Severity); 6] = [
+const KIND_MAX_SEVERITY: [(&str, Severity); 7] = [
     ("port-closed", Severity::Info),
     ("device-missing", Severity::Low),
     ("address-changed", Severity::Medium),
+    ("unknown-device", Severity::Medium),
     ("new-device", Severity::High),
     ("port-opened", Severity::High),
     ("rogue-dhcp", Severity::Critical),
@@ -265,6 +268,19 @@ fn alert(
     }
 }
 
+/// What a monitoring cycle knows beyond the two snapshots: the inventory's view of device
+/// identity. Empty (the default) means every device is its own key, as before device identity.
+#[derive(Clone, Debug, Default)]
+pub struct Context {
+    /// `Device::id` -> stable device key (see [`crate::identity`]), for the devices of both
+    /// snapshots. A device missing here is keyed by its id.
+    pub keys: HashMap<String, String>,
+    /// The approved baseline ([`crate::baseline`]). With one, a device that is not on its
+    /// expected list raises `unknown-device`; without one (`None`, or a baseline that does not
+    /// [`exist`](crate::baseline::Baseline::exists)) nothing is checked.
+    pub baseline: Option<crate::baseline::Baseline>,
+}
+
 pub fn evaluate(
     prev: Option<&Snapshot>,
     cur: &Snapshot,
@@ -272,13 +288,64 @@ pub fn evaluate(
     policy: &Policy,
     now: i64,
 ) -> Vec<Alert> {
+    evaluate_with(prev, cur, known, policy, &Context::default(), now)
+}
+
+/// [`evaluate`] with device identity: `known` is keyed by stable device key, and a device that
+/// came back under another address and another (randomised) MAC is neither new nor missing.
+pub fn evaluate_with(
+    prev: Option<&Snapshot>,
+    cur: &Snapshot,
+    known: &HashMap<String, (i64, i64)>,
+    policy: &Policy,
+    ctx: &Context,
+    now: i64,
+) -> Vec<Alert> {
     let mut out = vec![];
     let cur_devices = devices::merge(&cur.hosts, &cur.observations);
     let learning = policy.learn || known.is_empty();
+    let key_of = |d: &devices::Device| -> String {
+        ctx.keys.get(&d.id).cloned().unwrap_or_else(|| d.id.clone())
+    };
+    let describe = |d: &devices::Device| -> String {
+        format!(
+            "{} {} {} {}",
+            d.ips
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("/"),
+            d.mac,
+            d.vendor,
+            d.device_type
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+    };
+
+    // Not on the approved baseline. Independent of `learn` and of the first run: a baseline is
+    // what the operator declared, not what was seen. The subject is the stable device key, so
+    // the alert keeps its identity (and its de-duplication) when the device changes address.
+    if let Some(baseline) = ctx.baseline.as_ref().filter(|b| b.exists()) {
+        let keys: Vec<String> = cur_devices.iter().map(key_of).collect();
+        let expected = baseline.expects(&cur_devices, &keys);
+        for ((d, key), expected) in cur_devices.iter().zip(&keys).zip(expected) {
+            if !expected {
+                out.push(alert(
+                    now,
+                    Severity::Medium,
+                    "unknown-device",
+                    key.clone(),
+                    format!("Device not in the approved baseline: {}", describe(d)),
+                ));
+            }
+        }
+    }
 
     if !learning {
         for d in &cur_devices {
-            if known.contains_key(&d.id) {
+            if known.contains_key(&key_of(d)) {
                 continue;
             }
             let ot = d.device_type.starts_with("Industrial")
@@ -290,20 +357,7 @@ pub fn evaluate(
                 if ot { Severity::High } else { Severity::Medium },
                 "new-device",
                 d.ips.first().map_or(d.id.clone(), ToString::to_string),
-                format!(
-                    "New device {} {} {} {}",
-                    d.ips
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    d.mac,
-                    d.vendor,
-                    d.device_type
-                )
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" "),
+                format!("New device {}", describe(d)),
             ));
         }
     }
@@ -416,6 +470,7 @@ pub fn evaluate(
         let prev_devices = devices::merge(&prev.hosts, &prev.observations);
         let now_by_id: HashMap<&str, &devices::Device> =
             cur_devices.iter().map(|d| (d.id.as_str(), d)).collect();
+        let now_keys: HashSet<String> = cur_devices.iter().map(key_of).collect();
         for d in &prev_devices {
             match now_by_id.get(d.id.as_str()) {
                 Some(n)
@@ -433,7 +488,8 @@ pub fn evaluate(
                         format!("{} moved from {:?} to {:?}", d.mac, d.ips, n.ips),
                     ));
                 }
-                None if policy.report_missing => {
+                // Present under another id (a rotated MAC, a new address): not missing.
+                None if policy.report_missing && !now_keys.contains(&key_of(d)) => {
                     // Low, so the explicitly requested report passes the default threshold.
                     out.push(alert(
                         now,
@@ -739,18 +795,32 @@ pub fn run(
         let prev = store::latest_complete(db, targets_text, id)?.map(|(_, _, s)| s);
         let known = store::known_devices(db)?;
         let t = now();
-        let mut alerts = evaluate(prev.as_ref(), &snapshot, &known, &cfg.policy, t);
+        // Match the devices of both scans against the inventory, so a device that changed its
+        // address or randomised MAC keeps its key. The registry is written only after the
+        // comparison (and only for complete scans), or every new device would already be known.
+        let cur_devices = devices::merge(&snapshot.hosts, &snapshot.observations);
+        let registry = store::device_registry(db)?;
+        let matches = crate::identity::resolve(&registry, &cur_devices);
+        let mut ctx = Context {
+            keys: crate::identity::key_map(&cur_devices, &matches),
+            // Read every cycle, so an approval made while the monitor runs applies at once.
+            baseline: Some(crate::baseline::load(db)?),
+        };
+        if let Some(p) = &prev {
+            let prev_devices = devices::merge(&p.hosts, &p.observations);
+            let prev_matches = crate::identity::resolve(&registry, &prev_devices);
+            for (id, key) in crate::identity::key_map(&prev_devices, &prev_matches) {
+                ctx.keys.entry(id).or_insert(key);
+            }
+        }
+        let mut alerts = evaluate_with(prev.as_ref(), &snapshot, &known, &cfg.policy, &ctx, t);
         alerts.extend(notices);
         let mut suppressed = 0;
         if notify.dedup {
             (alerts, suppressed) = dedup.filter(alerts, t, complete);
         }
-        let keys: Vec<String> = devices::merge(&snapshot.hosts, &snapshot.observations)
-            .into_iter()
-            .map(|d| d.id)
-            .collect();
         if complete {
-            store::touch_devices(db, &keys, t)?;
+            store::record_devices(db, &cur_devices, t)?;
         }
         store::save_alerts(db, id, &alerts)?;
         if !cfg.quiet {
@@ -860,6 +930,150 @@ mod tests {
             ..Policy::default()
         };
         assert!(!kinds(&evaluate(Some(&base), &cur, &known, &learn, 1)).contains(&"new-device"));
+    }
+
+    #[test]
+    fn a_device_that_rotated_its_mac_and_address_is_neither_new_nor_missing() {
+        let identity = [
+            ("ssh.22.hostkey_sha256", "aaaa"),
+            ("tls.443.spki_sha256", "bbbb"),
+        ];
+        let before = snap(
+            vec![host("10.0.0.5", "02:00:00:00:00:01", &[22, 443], &identity)],
+            vec![],
+        );
+        let after = snap(
+            vec![host(
+                "10.0.0.77",
+                "06:11:22:33:44:55",
+                &[22, 443],
+                &identity,
+            )],
+            vec![],
+        );
+        let policy = Policy {
+            report_missing: true,
+            ..Policy::default()
+        };
+        let known = known(&["02:00:00:00:00:01"]);
+        // Without device identity: one new device and one missing device.
+        let plain = evaluate(Some(&before), &after, &known, &policy, 1);
+        assert!(kinds(&plain).contains(&"new-device"), "{plain:?}");
+        assert!(kinds(&plain).contains(&"device-missing"), "{plain:?}");
+        // With the inventory's view of identity: the same device.
+        let mut registry = crate::identity::Registry::new();
+        let old_devices = devices::merge(&before.hosts, &before.observations);
+        registry.learn(&old_devices[0].id, &old_devices[0]);
+        let new_devices = devices::merge(&after.hosts, &after.observations);
+        let matches = crate::identity::resolve(&registry, &new_devices);
+        let ctx = Context {
+            keys: crate::identity::key_map(&new_devices, &matches),
+            ..Default::default()
+        };
+        let a = evaluate_with(Some(&before), &after, &known, &policy, &ctx, 1);
+        assert!(
+            !kinds(&a).contains(&"new-device") && !kinds(&a).contains(&"device-missing"),
+            "{a:?}"
+        );
+        // A different device with a new MAC and nothing in common is still new.
+        let stranger = snap(
+            vec![host("10.0.0.88", "06:99:99:99:99:99", &[22, 443], &[])],
+            vec![],
+        );
+        let devices = devices::merge(&stranger.hosts, &stranger.observations);
+        let matches = crate::identity::resolve(&registry, &devices);
+        let ctx = Context {
+            keys: crate::identity::key_map(&devices, &matches),
+            ..Default::default()
+        };
+        let a = evaluate_with(Some(&before), &stranger, &known, &policy, &ctx, 1);
+        assert!(kinds(&a).contains(&"new-device"), "{a:?}");
+    }
+
+    fn approved_baseline(tag: &str, approved: &Snapshot) -> crate::baseline::Baseline {
+        let path = std::env::temp_dir().join(format!(
+            "netscope-monitor-baseline-{tag}-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        store::save(&path, approved).unwrap();
+        crate::baseline::approve(&path, None, 10).unwrap();
+        let baseline = crate::baseline::load(&path).unwrap();
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(p));
+        }
+        baseline
+    }
+
+    #[test]
+    fn unknown_devices_alert_only_once_a_baseline_exists() {
+        let approved = snap(
+            vec![host("10.0.0.5", "00:00:0C:00:00:01", &[22], &[])],
+            vec![],
+        );
+        let cur = snap(
+            vec![
+                host("10.0.0.5", "00:00:0C:00:00:01", &[22], &[]),
+                host("10.0.0.9", "00:00:0C:00:00:09", &[80], &[]),
+            ],
+            vec![],
+        );
+        let devices = devices::merge(&cur.hosts, &cur.observations);
+        let known = known(&["00:00:0C:00:00:01", "00:00:0C:00:00:09"]);
+        let with = |baseline: Option<crate::baseline::Baseline>, policy: &Policy| {
+            let ctx = Context {
+                keys: devices
+                    .iter()
+                    .map(|d| (d.id.clone(), d.id.clone()))
+                    .collect(),
+                baseline,
+            };
+            evaluate_with(Some(&approved), &cur, &known, policy, &ctx, 1)
+        };
+        let baseline = approved_baseline("unknown", &approved);
+        let a = with(Some(baseline.clone()), &Policy::default());
+        let unknown: Vec<_> = a.iter().filter(|a| a.kind == "unknown-device").collect();
+        assert_eq!(unknown.len(), 1, "{a:?}");
+        assert_eq!(unknown[0].severity, Severity::Medium);
+        assert_eq!(unknown[0].subject, "00:00:0C:00:00:09", "the stable key");
+        assert!(unknown[0].message.contains("10.0.0.9"), "{:?}", unknown[0]);
+        assert!(
+            !kinds(&a).contains(&"new-device"),
+            "the device is known, just not approved"
+        );
+        // Not gated by --learn, and the same condition at another address is the same alert.
+        let learn = Policy {
+            learn: true,
+            ..Policy::default()
+        };
+        assert_eq!(
+            with(Some(baseline.clone()), &learn)
+                .iter()
+                .filter(|a| a.kind == "unknown-device")
+                .count(),
+            1
+        );
+        let mut moved = unknown[0].clone();
+        moved.message = "Device not in the approved baseline: 10.0.0.77 vendor".into();
+        assert_eq!(alert_key(&moved), alert_key(unknown[0]));
+        // No baseline, or an empty "baseline" object, checks nothing.
+        for none in [None, Some(crate::baseline::Baseline::default())] {
+            let a = with(none, &Policy::default());
+            assert!(!kinds(&a).contains(&"unknown-device"), "{a:?}");
+        }
+        // --min-severity above medium hides it, and the hint says so.
+        let high = Policy {
+            min_severity: Severity::High,
+            report_missing: true,
+            ..Policy::default()
+        };
+        assert!(!kinds(&with(Some(baseline), &high)).contains(&"unknown-device"));
+        assert!(severity_hint(&high).unwrap().contains("unknown-device"));
     }
 
     #[test]

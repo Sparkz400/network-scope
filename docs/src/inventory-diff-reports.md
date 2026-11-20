@@ -24,10 +24,49 @@ Comparisons are meaningful only between completed scans with matching scope and 
 
 ## Device history
 
-`devices --history MAC|IP [--format text|json]` gives the timeline of one device across all saved scans and captures: first/last seen, addresses, MACs, names, the open ports of the latest completed scan, and events (`first-seen`, `ip-changed`, `mac-changed`, `hostname-changed`, `port-opened`, `port-closed`, `udp-answering`, `udp-silent`).
+`devices --history MAC|IP [--format text|json]` gives the timeline of one device across all saved scans and captures: first/last seen, addresses, MACs, names, the open ports of the latest completed scan, and events (`first-seen`, `ip-changed`, `mac-changed`, `hostname-changed`, `port-opened`, `port-closed`, `udp-answering`, `udp-silent`, `finding-appeared`, `finding-resolved`).
 
 - Only sightings create events: a scan that does not mention the device produces no "not seen" event.
+- A finding appears or is resolved only between scans that both checked its port (the same TCP port list, or a UDP port probed in both); findings are matched without their address, so a device that moved keeps its findings.
 - Port events come only from **completed** active scans that checked the device's ports with the same TCP port set; UDP is compared only for ports probed in both; SMB-only names are not compared.
+
+## What changed
+
+```sh
+network-scope-cli changes [--since last|12h|7d|2w|2026-11-01|2026-11-01T08:30] [--format text|json]
+```
+
+`changes` answers "what is different now?" in one list: **new devices**, devices **not observed** any more, **changed devices** (address, MAC, host name, ports opened or closed, service details) and **new** and **resolved risks**. It compares the newest completed scan with
+
+- the completed scan before it (`--since last`, the default), or
+- the state at the start of a window (`12h`, `7d`, `2w`) or at a UTC date or time: the newest comparable scan taken at or before it.
+
+It works on devices, not addresses (see [Device identity](device-identity.md)): a device that moved to another address or randomised MAC is *changed*, not "gone" plus "new". When a [baseline](#approved-baseline) exists, new devices that are not on it are marked, and the number of devices not on the baseline is reported.
+
+Only comparable scans are compared: the same targets and the same detection settings, as for `diff`. If the newest comparable partner is not the previous scan, an older one is used; if there is none, the answer is empty and a `notice` says why (no scans yet, only one scan, only partial scans, settings differ, or nothing was scanned inside the window). A window that starts before the oldest scan compares with the oldest scan and says so. These cases are answers, not errors.
+
+Two cautions are built in. A device that is not observed is not proof that it is offline. A risk that disappeared counts as **resolved** only when the newer scan checked its evidence again (the host answered and the port was probed); otherwise it is listed as *not checked again*. A device known only from passive traffic is not called gone by a scan that captured nothing.
+
+`--format json` prints the `Changes` structure of the core library (`network_scope_core::changes::changes(db, &Since::Last, now)`), which the desktop app uses for its home screen: `summary` (counts), `current` and `previous` scans, `new_devices`, `gone_devices`, `changed_devices` (with the list of changes), `new_risks`, `resolved_risks`, `unconfirmed_risks`, `unknown_devices` and `notice`.
+
+## Approved baseline
+
+```sh
+network-scope-cli baseline approve [SCAN_ID]
+network-scope-cli baseline enable
+network-scope-cli baseline set DEVICE [--owner TEXT] [--tag a,b] [--untag a,b] [--criticality low|medium|high|critical|none] [--expected yes|no]
+network-scope-cli baseline show [--format text|json]
+network-scope-cli baseline remove DEVICE
+network-scope-cli baseline clear
+```
+
+A baseline is the list of devices you expect on the network, with an owner, a criticality and tags for each. `baseline approve` takes the devices of a completed scan (the newest one, or `SCAN_ID`) as the expected devices; it records them in the inventory like `monitor` does and only ever adds, so approving again after a scan found a new device approves that one too and keeps what you described for the others. `approve` is also what starts the baseline: until one is approved, nothing is checked. A list of expected devices that was [imported](import-export.md) starts it with `baseline enable` (it needs at least one expected device).
+
+`baseline set` describes one device. `DEVICE` is a device key (as shown by `devices ID`), a MAC address in any notation, an IP address (the device that held it last) or a host name; if a name or MAC matches several devices, use the key. `--tag` adds tags, `--untag` removes them (comma-separated; at most 20 tags, 40 characters each), `--owner ""` clears the owner, `--criticality none` clears the criticality. `--expected no` keeps the description but takes the device off the expected list.
+
+Entries are keyed by the stable [device key](device-identity.md), so a device keeps its place on the baseline when it changes address or randomised MAC address. The baseline is stored in the inventory database (schema version 4).
+
+Once a baseline exists, `monitor` raises an [`unknown-device` alert](monitoring-alerts.md#alert-kinds) (Medium) for every device that is not on the expected list. This does not depend on `--learn` or on the first run, because the baseline is what you declared, not what was seen. `baseline clear` deletes the baseline and with it the alert.
 
 ## Reports
 

@@ -11,9 +11,20 @@ network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
         [--fail-on-findings [--min-severity low]]
+network-scope changes [--since last|7d|2026-11-01] [--format text|json]   New, gone and changed devices, new and resolved risks
+network-scope baseline approve [SCAN_ID]       Approve the devices of a completed scan as the expected devices
+network-scope baseline set DEVICE [--owner TEXT] [--tag a,b] [--untag a,b]
+        [--criticality low|medium|high|critical|none] [--expected yes|no]   Describe one device
+network-scope baseline show [--format text|json]   Expected devices, owners, tags, criticality
+network-scope baseline enable                  Start alerting on unknown devices (baseline from an import)
+network-scope baseline remove DEVICE | clear   Drop one device, or the whole baseline (alerting off)
 network-scope export ID --format json|csv|html|nmap|md|jsonl|compliance-iec62443|compliance-nis2|compliance-cis[-csv] [--baseline ID] [--output FILE]
+network-scope export ID --format netbox|netbox-devices|snipeit|splunk|elastic|servicenow [--output FILE]
+        [--push URL --token-env VAR] [--netbox-site S --netbox-role R --netbox-device-type T] [--index NAME]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
+network-scope import csv|isc-dhcp|dnsmasq|windows-dhcp|ad-csv|ad-ldif|netbox FILE...  [--format json]
+                                               Known devices from a list (offline file); never a scan
 network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]
                                                Weak TLS/SSH, risky services, CVE hints
 network-scope findings ID --top N [--format text|json]   Risk scores and the "fix these first" list

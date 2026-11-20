@@ -15,6 +15,7 @@
 - [Inventory, diffs and reports](inventory-diff-reports.md)
 - [JSON output and schemas](json-output.md)
 - [MCP server for AI assistants](mcp.md)
+- [Import, export and sync](import-export.md)
 - [Monitoring and alerts](monitoring-alerts.md)
 - [Service and scheduling](service-and-scheduling.md)
 - [Scripting](scripting.md)
@@ -23,6 +24,7 @@
 
 - [Scanning engine](scanning-engine.md)
 - [Detection](detection.md)
+- [Device identity](device-identity.md)
 - [Findings and CVE hints](findings-and-cves.md)
   - [Finding reference](findings/index.md)
     - [TLS certificate has expired](findings/tls-cert-expired.md)
