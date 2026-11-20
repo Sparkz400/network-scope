@@ -20,6 +20,7 @@ mod rdp;
 mod smb;
 mod ssh;
 mod unknown;
+pub mod workbench;
 
 pub use http::parse_http;
 pub use lint::{
