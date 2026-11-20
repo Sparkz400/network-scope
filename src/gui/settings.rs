@@ -124,6 +124,14 @@ impl Scanner {
                         ),
                     )
                     .on_disabled_hover_text(tr!("Needs service detection, and not in Safe Mode"));
+                    ui.add_enabled(
+                        !s.safe && s.services,
+                        egui::Checkbox::new(
+                            &mut s.favicon,
+                            tr!("Favicon hash (one GET /favicon.ico per web port; not on industrial hosts)"),
+                        ),
+                    )
+                    .on_disabled_hover_text(tr!("Needs service detection, and not in Safe Mode"));
                     if s.syn || s.arp_sweep {
                         ui.label(tr!("Configure interface, source IPv4 and MAC in Passive / DCP."));
                     }
