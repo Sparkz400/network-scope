@@ -129,8 +129,24 @@ pub(crate) fn open(path: &Path) -> Result<Connection, String> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     if version < SCHEMA_VERSION {
-        c.execute_batch("PRAGMA journal_mode=WAL;")
-            .map_err(|e| e.to_string())?;
+        // Switching to WAL needs the database to itself and does not wait on the busy timeout,
+        // so another program opening the new file at the same moment makes it fail at once:
+        // retry for up to the busy timeout.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match c.execute_batch("PRAGMA journal_mode=WAL;") {
+                Ok(()) => break,
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if matches!(
+                        e.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
         migrate(&c, version).map_err(|e| e.to_string())?;
     }
     Ok(c)
@@ -140,6 +156,18 @@ pub(crate) fn open(path: &Path) -> Result<Connection, String> {
 /// everything back and leaves the version unchanged.
 fn migrate(c: &Connection, from: i64) -> rusqlite::Result<()> {
     c.execute_batch("BEGIN IMMEDIATE")?;
+    // Another process may have migrated while this one waited for the write lock: start from
+    // the version that is now stamped, so no step runs twice.
+    let from = match c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)) {
+        Ok(now) => now.max(from),
+        Err(e) => {
+            let _ = c.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    };
+    if from >= SCHEMA_VERSION {
+        return c.execute_batch("COMMIT");
+    }
     let result = (|| {
         if from < BASE_VERSION {
             c.execute_batch(SCHEMA)?;
@@ -174,7 +202,9 @@ pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, 
     // The research rows (L67) are derived before the transaction opens: the analysis may read
     // feed caches, which must not happen while the write lock is held.
     let findings = crate::risk::analyze_snapshot(snapshot);
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let data = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
     tx.execute(
         "INSERT INTO scans(timestamp,targets,complete,hosts,snapshot) VALUES(?1,?2,?3,?4,?5)",
@@ -282,7 +312,9 @@ pub fn known_devices(path: &Path) -> Result<std::collections::HashMap<String, (i
 }
 pub fn touch_devices(path: &Path, keys: &[String], now: i64) -> Result<(), String> {
     let mut c = open(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     for k in keys {
         tx.execute(
             "INSERT INTO known_devices(key,first_seen,last_seen) VALUES(?1,?2,?2) ON CONFLICT(key) DO UPDATE SET last_seen=?2",
@@ -351,7 +383,9 @@ pub fn record_devices(
     now: i64,
 ) -> Result<Vec<crate::identity::Match>, String> {
     let mut c = open(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let matches = crate::identity::resolve(&registry_of(&tx)?, devices);
     record_matches(&tx, devices, &matches, now)?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -393,7 +427,9 @@ pub fn save_alerts(
     alerts: &[crate::monitor::Alert],
 ) -> Result<(), String> {
     let mut c = open(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     for a in alerts {
         tx.execute(
             "INSERT INTO alerts(timestamp,scan_id,severity,kind,subject,message) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -1465,6 +1501,30 @@ mod tests {
         assert!(diff(&a, &b).is_ok());
         b.targets = "nmap -sV -oX b.xml 127.0.0.2".into();
         assert!(diff(&a, &b).unwrap_err().contains("targets"));
+    }
+
+    #[test]
+    fn concurrent_writers_wait_for_each_other_instead_of_failing() {
+        // The desktop, `monitor` and the CLI may use one inventory at the same time, also while
+        // it is created: every save must wait for the lock (busy timeout) and the schema must
+        // be migrated exactly once.
+        let path = temp_db("concurrent");
+        let threads: Vec<_> = (0..6)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..5 {
+                        save(&path, &snapshot()).unwrap();
+                        list(&path).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(list(&path).unwrap().len(), 30);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

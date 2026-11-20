@@ -212,7 +212,9 @@ pub fn approve(path: &Path, scan: Option<i64>, now: i64) -> Result<Approval, Str
     }
     let devices = crate::devices::merge(&snapshot.hosts, &snapshot.observations);
     let mut c = store::open(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let matches = identity::resolve(&store::registry_of(&tx)?, &devices);
     store::record_matches(&tx, &devices, &matches, now)?;
     let mut added = 0;
@@ -328,7 +330,9 @@ pub fn set(path: &Path, device: &str, update: &Update, now: i64) -> Result<Entry
         .collect::<Result<Vec<_>, _>>()?;
     let key = find_device(path, device)?;
     let mut c = store::open(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let current = load_from(&tx)?;
     let mut entry = current.entry(&key).cloned().unwrap_or_else(|| Entry {
         label: label_for_key(&tx, &key),
@@ -482,7 +486,9 @@ pub fn remove(path: &Path, device: &str) -> Result<bool, String> {
 /// Deletes the whole baseline: no entries and no marker, so no `unknown-device` alerts.
 pub fn clear(path: &Path) -> Result<usize, String> {
     let mut c = store::open(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let n = tx
         .execute("DELETE FROM baseline_devices", [])
         .map_err(|e| e.to_string())?;

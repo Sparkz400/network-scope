@@ -91,7 +91,10 @@ impl ScanWriter {
         if self.pending.is_empty() {
             return Ok(());
         }
-        let tx = self.c.transaction().map_err(|e| e.to_string())?;
+        let tx = self
+            .c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
         {
             let mut insert = tx
                 .prepare_cached("INSERT INTO scan_hosts(scan_id,seq,host) VALUES(?1,?2,?3)")
