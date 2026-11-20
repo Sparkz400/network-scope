@@ -192,7 +192,9 @@ if has smb; then
    read only = yes
 EOF
   testparm -s "$WORK/smb.conf" >"$WORK/testparm.log" 2>&1 || { cat "$WORK/testparm.log"; exit 1; }
-  $SUDO smbd --foreground --no-process-group --debug-stdout -s "$WORK/smb.conf" >"$WORK/smbd.log" 2>&1 &
+  # smbd keeps its own process group: with --no-process-group it shares the CI step's, and the
+  # SIGTERM it sends to its group when it shuts down reached the GitHub runner itself.
+  $SUDO smbd --foreground --debug-stdout -s "$WORK/smb.conf" >"$WORK/smbd.log" 2>&1 &
   pids+=($!)
   wait_port "$SMB_PORT"
   ports+=("$SMB_PORT")

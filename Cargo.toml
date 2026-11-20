@@ -11,6 +11,8 @@ version = "0.5.1"
 edition = "2024"
 # `cargo run` starts the GUI binary; the console twin is `--bin network-scope-cli`.
 default-run = "network-scope"
+# Not published to crates.io; the GUI depends on the core crate by path.
+publish = false
 license = "MIT"
 description = "Network scanner and analysis tool: fast TCP/SYN/UDP scanning, service and TLS inspection, monitoring, reports and passive OT discovery"
 repository = "https://github.com/Sparkz400/network-scope"
