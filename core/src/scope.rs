@@ -128,11 +128,8 @@ impl Scope {
             match ip.parse::<IpAddr>().map_err(|_| bad())? {
                 IpAddr::V4(ip) if prefix <= 32 => v4.push(cidr4(ip.octets(), prefix)),
                 IpAddr::V6(ip) if prefix <= 128 => {
-                    let host = if prefix == 0 {
-                        u128::MAX
-                    } else {
-                        u128::MAX >> prefix
-                    };
+                    // `/128` is one address: no host bits (a shift by 128 would overflow).
+                    let host = u128::MAX.checked_shr(prefix).unwrap_or(0);
                     let start = u128::from(ip);
                     v6.push((start & !host, start | host));
                 }
@@ -451,6 +448,17 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn an_ipv6_host_entry_with_prefix_128_is_one_address() {
+        // Found by the scope_file fuzz target: the shift by 128 overflowed and panicked.
+        let s = Scope::parse("2001:db8::1/128\n::/0\n").unwrap();
+        assert!(s.contains(ip("2001:db8::1")));
+        let one = Scope::parse("2001:db8::1/128").unwrap();
+        assert!(one.contains(ip("2001:db8::1")));
+        assert!(!one.contains(ip("2001:db8::2")));
+        assert!(Scope::parse("2001:db8::1/129").is_err());
     }
 
     #[test]
