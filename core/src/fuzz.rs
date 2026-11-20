@@ -53,6 +53,7 @@ pub const TARGETS: &[Target] = &[
     ("syn_reply", syn_reply),
     ("tcp_options", tcp_options),
     ("icmp_reply", icmp_reply),
+    ("mcp_message", mcp_message),
 ];
 
 /// A pcap or pcapng file, read to the end as the capture-file import does.
@@ -390,6 +391,29 @@ pub fn icmp_reply(data: &[u8]) {
     let dest6 = dest.to_ipv6_mapped();
     for from in [dest6, std::net::Ipv6Addr::LOCALHOST] {
         std::hint::black_box(platform::parse_hop6_reply(packet, from, dest6, id, seq));
+    }
+}
+
+/// A stream of MCP (JSON-RPC) lines as `network-scope mcp` reads them from stdin. The server runs
+/// with the scan tool switched off (a fuzzer must never cause network traffic) and an inventory
+/// that does not exist (it touches no file); every reply must be a JSON-RPC 2.0 object.
+pub fn mcp_message(data: &[u8]) {
+    let cfg = crate::mcp::Config {
+        db: std::path::PathBuf::from("/nonexistent-network-scope-fuzz/inventory.sqlite"),
+        allow_scan: false,
+    };
+    let mut out = Vec::new();
+    let _ = crate::mcp::serve(cfg, std::io::Cursor::new(data), &mut out);
+    for line in out.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let reply: serde_json::Value = serde_json::from_slice(line).expect("replies are JSON");
+        // A batch is answered with an array of replies.
+        let replies = match reply {
+            serde_json::Value::Array(items) => items,
+            single => vec![single],
+        };
+        for reply in replies {
+            assert_eq!(reply["jsonrpc"], "2.0");
+        }
     }
 }
 

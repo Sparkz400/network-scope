@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 24] = [
+pub(super) const FLAGS: [&str; 26] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -31,8 +31,10 @@ pub(super) const FLAGS: [&str; 24] = [
     "learn",
     "dhcp-discover",
     "report-missing",
+    "dry-run",
+    "no-scan",
 ];
-pub(super) const VALUES: [&str; 44] = [
+pub(super) const VALUES: [&str; 48] = [
     "feeds",
     "top",
     "nvd",
@@ -77,6 +79,10 @@ pub(super) const VALUES: [&str; 44] = [
     "unit",
     "rack",
     "slot",
+    "json-schema",
+    "on-alert",
+    "on-alert-dir",
+    "service-name",
 ];
 pub(super) fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);

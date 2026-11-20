@@ -473,6 +473,7 @@ pub fn import(
 /// `feeds status`: what the cache holds.
 pub fn status(feeds: &Feeds, path: &Path) -> serde_json::Value {
     serde_json::json!({
+        "schema": crate::schema::id("feeds-status"),
         "cache": path.display().to_string(),
         "imported_at": feeds.imported_at,
         "kev": feeds.kev.as_ref().map(|k| serde_json::json!({

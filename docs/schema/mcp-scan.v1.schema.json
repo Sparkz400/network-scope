@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:mcp-scan:v1",
+  "title": "Scan summary (MCP scan)",
+  "description": "Result of the MCP tool scan: a Safe Mode scan of a private range, saved to the inventory.",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "scan_id",
+    "targets",
+    "complete",
+    "safe_mode",
+    "addresses",
+    "ports",
+    "responding",
+    "open_ports",
+    "duration_seconds",
+    "findings",
+    "top_findings",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/mcp-scan/v1"
+    },
+    "scan_id": {
+      "type": "integer"
+    },
+    "targets": {
+      "type": "string"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "safe_mode": {
+      "const": true
+    },
+    "addresses": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ports": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "responding": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "open_ports": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "duration_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "findings": {
+      "type": "object",
+      "required": [
+        "total",
+        "by_severity"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "by_severity": {
+          "type": "object"
+        }
+      }
+    },
+    "top_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ip",
+          "port",
+          "severity",
+          "id",
+          "title"
+        ],
+        "properties": {
+          "ip": {
+            "type": "string",
+            "description": "IPv4 or IPv6 address in text form"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "severity": {
+            "$ref": "#/$defs/severity"
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

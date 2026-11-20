@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:alert:v1",
+  "title": "Alert (JSON Lines and webhook body)",
+  "description": "One alert as printed by `monitor` on stdout and in `--alerts FILE`, and as the body posted to a webhook.",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "timestamp",
+    "severity",
+    "kind",
+    "subject",
+    "message"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/alert/v1"
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Unix seconds"
+    },
+    "severity": {
+      "$ref": "#/$defs/severity"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    }
+  }
+}

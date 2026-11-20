@@ -1,7 +1,7 @@
 //! `devices ID` (active and passive results merged, one record per device), `devices --history`
 //! and `topology ID` (network path map from traceroute data).
 use crate::{
-    devices, store, topology,
+    devices, schema, store, topology,
     ui::{Ctx, output},
 };
 
@@ -17,10 +17,7 @@ pub(super) fn devices(ctx: &mut Ctx) -> Result<(), String> {
     let snapshot = store::load(db, ctx.id(0)?)?;
     let devices = devices::merge(&snapshot.hosts, &snapshot.observations);
     match opts.get("format").map(String::as_str).unwrap_or("json") {
-        "json" => output(
-            &serde_json::to_string_pretty(&devices).map_err(|e| e.to_string())?,
-            opts,
-        ),
+        "json" => output(&schema::list("devices", "devices", &devices)?, opts),
         "csv" => output(&devices::csv(&devices), opts),
         _ => Err("Choose json or csv".into()),
     }

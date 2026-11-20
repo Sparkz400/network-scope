@@ -9,11 +9,15 @@ mod feeds;
 mod findings;
 mod inventory;
 mod listen;
+mod mcp;
 mod monitor;
 mod ot;
 mod probes;
 pub(in crate::ui) mod scan;
 mod scripts;
+mod service;
+#[cfg(windows)]
+mod service_scm;
 mod trace;
 
 use super::Ctx;
@@ -39,6 +43,8 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("monitor", monitor::run),
     ("alerts", inventory::alerts),
     ("scripts", scripts::run),
+    ("service", service::run),
+    ("mcp", mcp::run),
     ("ot-listen", ot::listen),
     ("ot-assets", ot::assets),
     ("devices", devices::devices),

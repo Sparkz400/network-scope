@@ -200,7 +200,9 @@ def run_scan(cli, addresses, ports, timeout_ms, limit_s):
     if proc.returncode != 0 or not os.path.exists(findings_out):
         raise LabError(f"findings failed (exit {proc.returncode}): {proc.stderr.strip()[-500:]}")
     with open(findings_out, encoding="utf-8") as f:
-        scan["findings"] = json.load(f)
+        loaded = json.load(f)
+        # Versioned output (G44): {"schema": ..., "findings": [...]}; older builds wrote a bare list.
+        scan["findings"] = loaded["findings"] if isinstance(loaded, dict) else loaded
     return scan, elapsed, options
 
 

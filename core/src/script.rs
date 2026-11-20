@@ -20,6 +20,81 @@ use std::{
 
 const WALL_LIMIT: Duration = Duration::from_millis(250);
 
+macro_rules! library {
+    ($dir:literal: $($file:literal),* $(,)?) => {
+        &[$(($file, include_str!(concat!("../../scripts/library/", $dir, $file, ".rhai")))),*]
+    };
+}
+/// The shared script library (`scripts/library/*.rhai`, embedded so an installed binary has it):
+/// scripts with `on_host`, for `scan --script library:NAME` (or `library` for all of them).
+pub const LIBRARY: &[(&str, &str)] = library!(
+    "":
+    "cert-expiry-report",
+    "default-credentials-hint",
+    "device-class-tags",
+    "ot-asset-summary",
+    "service-baseline",
+    "smbv1-hosts",
+    "unexpected-admin-ports",
+    "weak-tls-summary",
+);
+/// The library's `on_alert` examples (`scripts/library/on-alert/*.rhai`) for `monitor --on-alert`.
+pub const ALERT_LIBRARY: &[(&str, &str)] = library!("on-alert/": "log-alerts", "new-service-log");
+
+/// What `scripts list` shows about one library script (from its header comment).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryEntry {
+    pub name: String,
+    /// `host` (`on_host`, for `scan --script`) or `alert` (`on_alert`, for `monitor --on-alert`).
+    pub kind: String,
+    pub description: String,
+    pub safety: String,
+    /// File below `scripts/library/`.
+    pub file: String,
+}
+
+/// The value of `// key: value` in the leading comment block of a script.
+fn header(source: &str, key: &str) -> String {
+    source
+        .lines()
+        .take_while(|l| l.trim_start().starts_with("//"))
+        .filter_map(|l| {
+            l.trim_start()
+                .strip_prefix("//")?
+                .trim()
+                .strip_prefix(key)?
+                .strip_prefix(':')
+        })
+        .map(|v| v.trim().to_string())
+        .next()
+        .unwrap_or_default()
+}
+
+/// Every library script, host scripts first, each group by name.
+pub fn library() -> Vec<LibraryEntry> {
+    let entry = |dir: &str, (name, source): &(&str, &str)| LibraryEntry {
+        name: header(source, "name"),
+        kind: header(source, "kind"),
+        description: header(source, "description"),
+        safety: header(source, "safety"),
+        file: format!("{dir}{name}.rhai"),
+    };
+    LIBRARY
+        .iter()
+        .map(|e| entry("", e))
+        .chain(ALERT_LIBRARY.iter().map(|e| entry("on-alert/", e)))
+        .collect()
+}
+
+/// The source of a library script by its name (`smbv1-hosts`).
+pub fn library_source(name: &str) -> Option<&'static str> {
+    LIBRARY
+        .iter()
+        .chain(ALERT_LIBRARY)
+        .find(|(file, _)| *file == name)
+        .map(|(_, source)| *source)
+}
+
 thread_local! {
     static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
 }
@@ -184,8 +259,24 @@ impl Scripts {
         Ok(Self { engine, asts })
     }
 
-    /// A `.rhai` file, or a directory of them (sorted by name).
+    /// A `.rhai` file, a directory of them (sorted by name), `library` (every `on_host` script
+    /// of the shared library) or `library:NAME` (one of them).
     pub fn load(path: &str) -> Result<Self, String> {
+        if path == "library" {
+            let sources: Vec<(String, String)> = LIBRARY
+                .iter()
+                .map(|(name, text)| (format!("{name}.rhai"), (*text).to_string()))
+                .collect();
+            return Self::from_sources(&sources);
+        }
+        if let Some(name) = path.strip_prefix("library:") {
+            let text = LIBRARY
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, t)| *t)
+                .ok_or_else(|| format!("{path}: no such library script; see `scripts list`"))?;
+            return Self::from_sources(&[(format!("{name}.rhai"), text.to_string())]);
+        }
         let p = Path::new(path);
         let mut files = vec![];
         if p.is_dir() {
@@ -529,6 +620,260 @@ mod tests {
         s.run_host(&mut scanned);
         assert_eq!(applied.identity, scanned.identity);
         assert_eq!(applied.errors, scanned.errors);
+    }
+
+    fn lib_host(open: &[u16], udp: &[u16], identity: &[(&str, &str)]) -> Host {
+        let mut h = host();
+        h.open = open.to_vec();
+        h.udp_open = udp.to_vec();
+        h.identity = identity
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        h
+    }
+    /// Runs one library script on a copy of `h`; returns the finding ids (`finding.script.<id>`
+    /// keys), the `script.*` fields and the script errors.
+    fn run_library(name: &str, h: &Host) -> (Vec<String>, BTreeMap<String, String>, Vec<String>) {
+        let s = Scripts::load(&format!("library:{name}")).unwrap();
+        let mut h = h.clone();
+        s.run_host(&mut h);
+        let findings = h
+            .identity
+            .keys()
+            .filter_map(|k| k.strip_prefix("finding.script."))
+            .map(str::to_string)
+            .collect();
+        let fields = h
+            .identity
+            .iter()
+            .filter_map(|(k, v)| Some((k.strip_prefix("script.")?.to_string(), v.clone())))
+            .collect();
+        (findings, fields, h.errors)
+    }
+
+    #[test]
+    fn every_library_script_has_a_header_and_a_test_case() {
+        let entries = library();
+        assert!(entries.len() >= 6 + 2, "{entries:?}");
+        for e in &entries {
+            assert!(!e.name.is_empty() && !e.description.is_empty(), "{e:?}");
+            assert!(
+                e.safety.to_lowercase().contains("no ") || e.safety.contains("only"),
+                "{e:?}"
+            );
+            assert!(e.kind == "host" || e.kind == "alert", "{e:?}");
+            assert!(
+                e.file.starts_with(&e.name) || e.file.ends_with(&format!("{}.rhai", e.name)),
+                "{e:?}"
+            );
+        }
+        // The embedded table is the folder: no script on disk is missing from it, none is stale.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/library");
+        for (sub, table) in [("", LIBRARY), ("on-alert", ALERT_LIBRARY)] {
+            let mut on_disk: Vec<String> = std::fs::read_dir(root.join(sub))
+                .unwrap()
+                .filter_map(|e| {
+                    let name = e.unwrap().file_name().to_string_lossy().into_owned();
+                    name.strip_suffix(".rhai").map(str::to_string)
+                })
+                .collect();
+            on_disk.sort();
+            let listed: Vec<String> = table.iter().map(|(n, _)| n.to_string()).collect();
+            assert_eq!(on_disk, listed, "scripts/library/{sub}");
+        }
+        // Host scripts define on_host, alert scripts on_alert; the kind header says which.
+        for (name, source) in LIBRARY {
+            assert_eq!(header(source, "name"), *name);
+            assert_eq!(header(source, "kind"), "host");
+            assert!(source.contains("fn on_host("));
+        }
+        for (name, source) in ALERT_LIBRARY {
+            assert_eq!(header(source, "name"), *name);
+            assert_eq!(header(source, "kind"), "alert");
+            assert!(source.contains("fn on_alert("));
+        }
+        assert!(library_source("smbv1-hosts").is_some() && library_source("nope").is_none());
+        // `library` loads all host scripts at once and every one compiles.
+        assert_eq!(
+            Scripts::load("library").unwrap().describe().len(),
+            LIBRARY.len()
+        );
+        assert!(
+            Scripts::load("library:nope")
+                .unwrap_err()
+                .contains("scripts list")
+        );
+    }
+
+    #[test]
+    fn library_scripts_fire_on_a_positive_host_and_stay_silent_on_a_clean_one() {
+        // (script, finding ids on the positive host, the same on the clean host)
+        let cases: Vec<(&str, Host, Vec<&str>, Host)> = vec![
+            (
+                "smbv1-hosts",
+                lib_host(&[445], &[], &[("smb.445.smb1", "accepted")]),
+                vec!["smbv1-host"],
+                lib_host(&[445], &[], &[("smb.445.smb1", "refused")]),
+            ),
+            (
+                "cert-expiry-report",
+                lib_host(
+                    &[443],
+                    &[],
+                    &[("tls.443.days_left", "20"), ("tls.443.expired", "false")],
+                ),
+                vec!["cert-expiry-60d"],
+                lib_host(
+                    &[443],
+                    &[],
+                    &[("tls.443.days_left", "300"), ("tls.443.expired", "false")],
+                ),
+            ),
+            (
+                "unexpected-admin-ports",
+                lib_host(&[22, 23, 3389], &[], &[]),
+                vec!["admin-ports-open"],
+                lib_host(&[22, 443], &[], &[]),
+            ),
+            (
+                "ot-asset-summary",
+                lib_host(
+                    &[502],
+                    &[],
+                    &[("Modbus.vendor", "Schneider"), ("S7.name", "CPU 1214C")],
+                ),
+                vec!["ot-asset-summary"],
+                lib_host(&[80], &[], &[("svc.80", "http nginx")]),
+            ),
+            (
+                "service-baseline",
+                lib_host(&[22, 8080], &[], &[]),
+                vec!["service-not-in-baseline"],
+                lib_host(&[22, 443], &[], &[]),
+            ),
+            (
+                "weak-tls-summary",
+                lib_host(&[443], &[], &[("tls.443.weak", "RC4; 3DES (Sweet32)")]),
+                vec!["weak-tls-summary"],
+                lib_host(&[443], &[], &[("tls.443.versions", "TLS1.2")]),
+            ),
+            (
+                "default-credentials-hint",
+                lib_host(&[23], &[], &[]),
+                vec!["default-credentials-hint"],
+                lib_host(&[22], &[], &[("mac.vendor", "Dell Inc.")]),
+            ),
+            (
+                "device-class-tags",
+                lib_host(&[502], &[], &[]),
+                vec![],
+                lib_host(&[], &[], &[]),
+            ),
+        ];
+        let mut tested: Vec<&str> = cases.iter().map(|c| c.0).collect();
+        tested.sort_unstable();
+        let listed: Vec<&str> = LIBRARY.iter().map(|(n, _)| *n).collect();
+        assert_eq!(tested, listed, "every library script needs a test case");
+        for (name, positive, want, clean) in cases {
+            let (ids, _, errors) = run_library(name, &positive);
+            assert_eq!(ids, want, "{name} on the positive host");
+            assert!(errors.is_empty(), "{name}: {errors:?}");
+            let (ids, _, errors) = run_library(name, &clean);
+            assert!(ids.is_empty(), "{name} on the clean host: {ids:?}");
+            assert!(errors.is_empty(), "{name}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn library_scripts_report_what_they_read() {
+        let (_, fields, _) = run_library(
+            "cert-expiry-report",
+            &lib_host(
+                &[443, 8443],
+                &[],
+                &[("tls.443.days_left", "20"), ("tls.8443.days_left", "7")],
+            ),
+        );
+        assert_eq!(fields["cert_days_left"], "7", "the soonest certificate");
+        let (ids, _, _) = run_library(
+            "cert-expiry-report",
+            &lib_host(
+                &[443],
+                &[],
+                &[
+                    ("tls.443.expired", "true"),
+                    ("tls.443.days_left", "garbage"),
+                ],
+            ),
+        );
+        assert_eq!(
+            ids,
+            ["cert-expired-report"],
+            "an unparsable value is skipped"
+        );
+        let h = lib_host(&[22, 23, 3389, 80], &[], &[]);
+        let s = Scripts::load("library:unexpected-admin-ports").unwrap();
+        let outcome = s.dry_run(&h);
+        assert_eq!(outcome.findings[0].severity, "medium");
+        assert_eq!(outcome.findings[0].evidence, "Telnet (23), RDP (3389)");
+        let (ids, _, _) = run_library(
+            "weak-tls-summary",
+            &lib_host(&[443], &[], &[("tls.443.weak", "RC4")]),
+        );
+        assert_eq!(ids, ["weak-tls-summary"]);
+        let outcome = Scripts::load("library:weak-tls-summary")
+            .unwrap()
+            .dry_run(&lib_host(
+                &[443],
+                &[],
+                &[("tls.443.weak", "no forward secrecy")],
+            ));
+        assert_eq!(
+            outcome.findings[0].severity, "medium",
+            "severe only for broken suites"
+        );
+        let (_, fields, _) = run_library(
+            "ot-asset-summary",
+            &lib_host(
+                &[502],
+                &[],
+                &[
+                    ("Modbus.vendor", "Schneider"),
+                    ("S7.name", "CPU"),
+                    ("S7.firmware", "4.2"),
+                ],
+            ),
+        );
+        assert_eq!(fields["ot_protocols"], "Modbus, S7");
+        assert_eq!(
+            fields["ot_summary"],
+            "Modbus: vendor Schneider; S7: name CPU, firmware 4.2"
+        );
+        for (ports, class) in [
+            (vec![502], "ot"),
+            (vec![9100], "printer"),
+            (vec![554], "camera"),
+            (vec![22], "server"),
+            (vec![3389], "workstation"),
+            (vec![], "other"),
+        ] {
+            let (_, fields, _) = run_library("device-class-tags", &lib_host(&ports, &[], &[]));
+            assert_eq!(fields["class"], class, "{ports:?}");
+        }
+        // The hint never claims a weakness: it is an info finding about a kind of device.
+        let outcome = Scripts::load("library:default-credentials-hint")
+            .unwrap()
+            .dry_run(&lib_host(
+                &[80],
+                &[161],
+                &[("mac.vendor", "Hikvision Digital")],
+            ));
+        assert_eq!(outcome.findings[0].severity, "info");
+        assert!(
+            outcome.findings[0].evidence.contains("Hikvision")
+                && outcome.findings[0].evidence.contains("SNMP")
+        );
     }
 
     #[test]

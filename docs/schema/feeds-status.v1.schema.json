@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:feeds-status:v1",
+  "title": "Feeds status",
+  "description": "Output of `feeds status`: what the offline KEV and EPSS cache holds.",
+  "type": "object",
+  "required": [
+    "schema",
+    "cache",
+    "imported_at",
+    "kev",
+    "epss"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/feeds-status/v1"
+    },
+    "cache": {
+      "type": "string"
+    },
+    "imported_at": {
+      "type": "integer"
+    },
+    "kev": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present with entries, catalog_version, date_released when KEV data is imported"
+    },
+    "epss": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present with scores, model_version, score_date when EPSS data is imported"
+    }
+  }
+}

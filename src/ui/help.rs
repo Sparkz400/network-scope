@@ -25,8 +25,13 @@ network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--lear
         [--interface ID --listen-seconds 30] [--alerts FILE]   Repeat scans and alert on changes
         [--webhook http(s)://URL,...] [--syslog [udp://|tcp://]HOST[:PORT],...]
         [--alert-timeout 5] [--no-dedup] [--renotify-hours 24]
+        [--on-alert SCRIPT.rhai|library:NAME [--on-alert-dir DIR]]   Run a script for every alert
 network-scope alerts [--db FILE]               Alerts raised by monitor runs
 network-scope scripts PATH                     Check Rhai scripts (use --script PATH with scan)
+network-scope service install TARGETS [monitor options] [--service-name NAME] [--db FILE] [--dry-run]
+network-scope service uninstall [--service-name NAME]   Windows service for monitor (run as administrator)
+network-scope mcp [--db FILE] [--no-scan]       MCP server on stdin/stdout for AI assistants (read-only queries, Safe Mode scan)
+network-scope scripts list|show NAME           The built-in script library (--script library:NAME)
 network-scope ot-listen --interface ID --seconds N | --pcap FILE [--progress] [--no-reassembly]
                                                Passive OT asset discovery
 network-scope ot-assets ID [--format json|csv]  OT asset inventory from a passive capture
@@ -66,6 +71,7 @@ Scan options:
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
+  --json-schema v1  JSON output version (default and only version for now); any command
   --quiet         No progress messages on stderr (errors still print); any command
   --fail-on-findings  findings/diff only: exit 3 when a finding (diff: a new one) is at or
                   above --min-severity (default info); otherwise the exit status is unchanged

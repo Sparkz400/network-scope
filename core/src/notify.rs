@@ -491,7 +491,7 @@ fn deliver_with(
                         error = Some("time limit for this cycle reached".to_string());
                         break;
                     }
-                    let body = serde_json::to_string(a).unwrap_or_default();
+                    let body = crate::schema::line("alert", a).unwrap_or_default();
                     match post(w, &body, timeout, config.as_ref()) {
                         Ok(()) => sent += 1,
                         Err(e) => {

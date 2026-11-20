@@ -72,10 +72,7 @@ fn ot_assets_output(
 ) -> Result<(), String> {
     let assets = crate::otpassive::assets(&snapshot.observations);
     match opts.get("format").map(String::as_str).unwrap_or("json") {
-        "json" => output(
-            &serde_json::to_string_pretty(&assets).map_err(|e| e.to_string())?,
-            opts,
-        ),
+        "json" => output(&crate::schema::list("ot-assets", "assets", &assets)?, opts),
         "csv" => output(&crate::otpassive::assets_csv(&assets), opts),
         _ => Err("Choose json or csv".into()),
     }

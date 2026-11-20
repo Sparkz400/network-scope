@@ -1,7 +1,7 @@
 //! `findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]` and
 //! `findings ID --top N [--format text|json]` (risk scores and the "fix these first" list).
 use crate::{
-    risk, score, store,
+    risk, schema, score, store,
     ui::{Ctx, args::min_severity, findings_exit, output},
 };
 
@@ -35,10 +35,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         ctx.status = findings_exit(ctx.fail_on_findings(), list.len());
         return Ok(());
     }
-    output(
-        &serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?,
-        opts,
-    )?;
+    output(&schema::list("findings", "findings", &list)?, opts)?;
     ctx.status = findings_exit(ctx.fail_on_findings(), list.len());
     Ok(())
 }

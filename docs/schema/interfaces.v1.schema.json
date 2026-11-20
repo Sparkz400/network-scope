@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:interfaces:v1",
+  "title": "Capture interfaces",
+  "description": "Output of `interfaces`: each interface as [id, description].",
+  "type": "object",
+  "required": [
+    "schema",
+    "interfaces"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/interfaces/v1"
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    }
+  }
+}

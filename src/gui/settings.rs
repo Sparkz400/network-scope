@@ -245,6 +245,13 @@ impl Scanner {
                 if self.run.is_some() {
                     ui.label("Settings can be changed after this scan finishes.");
                 }
+                super::scheduler::schedule_section(
+                    ui,
+                    &mut self.saved,
+                    &self.targets,
+                    &self.schedule_note,
+                    &mut self.schedule_error,
+                );
             });
         if apply_cves {
             self.apply_cves_file();

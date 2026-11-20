@@ -85,7 +85,7 @@ def scan(exe, work, name, *options):
     seconds = time.time() - started
     host = json.load(open(out))["hosts"][0]
     found = subprocess.run([exe, "findings", "1", "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
-    return host, {f["id"] for f in json.loads(found)}, seconds
+    return host, {f["id"] for f in json.loads(found)["findings"]}, seconds
 
 
 def deep_scan(exe, work, name, *extra):

@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_scans","arguments":{"limit":5}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"findings_gained","arguments":{"finding_id":"smb1-enabled","since":"2026-01-01"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"scan","arguments":{"targets":"10.0.0.0/24","ports":"top:100","fast":true}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_inventory","arguments":{"query":"00:0c:29:aa:bb:cc"}}}
