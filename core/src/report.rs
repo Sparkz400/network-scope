@@ -155,6 +155,21 @@ fn topology_svg(hosts: &[Host]) -> String {
             at[a].0, at[a].1, at[b].0, at[b].1
         );
     }
+    // Layer-2 links (LLDP over SNMP): dashed, with the ports in the tooltip.
+    for l in &g.links {
+        let _ = write!(
+            s,
+            "<line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"#975a16\" stroke-dasharray=\"4 3\"><title>{}</title></line>",
+            at[l.a].0,
+            at[l.a].1,
+            at[l.b].0,
+            at[l.b].1,
+            esc(&format!(
+                "LLDP: {} [{}] - {} [{}]",
+                g.nodes[l.a].label, l.a_port, g.nodes[l.b].label, l.b_port
+            ))
+        );
+    }
     for (i, n) in g.nodes.iter().enumerate() {
         let color = match n.kind {
             topology::Kind::Source => "#2b6cb0",
@@ -1103,6 +1118,29 @@ mod tests {
             }],
             notes: [("10.0.0.5".parse().unwrap(), "note \" & <x>".to_string())].into(),
         }
+    }
+
+    #[test]
+    fn lldp_links_are_drawn_in_the_topology_map() {
+        let lldp = [
+            ("snmp.lldp.0.local_port", "1"),
+            ("snmp.lldp.0.local_port_desc", "Gi1/0/1"),
+            ("snmp.lldp.0.sys_name", "dist <sw2>"),
+            ("snmp.lldp.0.port_id", "Gi0/24"),
+            ("snmp.lldp.0.chassis_id", "00:1B:21:77:00:01"),
+        ];
+        let svg = topology_svg(&[host("10.0.0.2", &[], &lldp, &[])]);
+        assert!(svg.contains("stroke-dasharray"), "{svg}");
+        assert!(
+            svg.contains("LLDP: ") && svg.contains("[Gi1/0/1]") && svg.contains("[Gi0/24]"),
+            "{svg}"
+        );
+        assert!(
+            svg.contains("dist &lt;sw2&gt;"),
+            "device text is escaped: {svg}"
+        );
+        // no LLDP data: no dashed link
+        assert!(!topology_svg(&[host("10.0.0.2", &[], &[], &[])]).contains("stroke-dasharray"));
     }
 
     #[test]

@@ -69,8 +69,8 @@ pub fn is_ot_port_candidate(port: u16) -> bool {
 
 /// UDP ports that never receive a probe payload from `probes.json`: the industrial TCP list
 /// plus UDP-only OT services (EtherNet/IP 2221-2223, BACnet/IP alternates 47808-47823,
-/// Foundation Fieldbus HSE 1089-1091, MELSEC 5006/5007, CODESYS 1740-1743, EtherCAT 34980,
-/// VxWorks WDB 17185) and the printer ports that are listen-only on TCP.
+/// Foundation Fieldbus HSE 1089-1091, KNXnet/IP 3671, MELSEC 5006/5007, CODESYS 1740-1743,
+/// EtherCAT 34980, VxWorks WDB 17185) and the printer ports that are listen-only on TCP.
 pub fn is_ot_udp_port(port: u16) -> bool {
     is_ot_port_candidate(port)
         || matches!(
@@ -78,6 +78,7 @@ pub fn is_ot_udp_port(port: u16) -> bool {
             1089..=1091
                 | 1740..=1743
                 | 2221..=2223
+                | 3671
                 | 5006
                 | 5007
                 | 17185

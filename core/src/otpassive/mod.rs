@@ -1,7 +1,8 @@
 //! Strictly passive OT asset discovery. This module only ever reads: frames come from a live
 //! capture handle that exposes no transmit call (`PassiveCapture`) or from a capture file. It
-//! recognises Modbus/TCP, S7comm, DNP3, IEC 60870-5-104, EtherNet/IP, BACnet/IP and OPC UA, and
-//! flags control traffic (writes, program download, stop/restart, commands) without ever
+//! recognises Modbus/TCP, S7comm, IEC 61850 MMS (told from S7comm on port 102 by what the connection
+//! carries), DNP3, IEC 60870-5-104, EtherNet/IP, BACnet/IP, OPC UA, Omron FINS, Niagara Fox, MQTT,
+//! MELSEC, KNXnet/IP and (by port only) CODESYS, and flags control traffic (writes, program download, stop/restart, commands) without ever
 //! generating any. TCP messages of Modbus/TCP, S7comm (TPKT), IEC 104, EtherNet/IP and OPC UA
 //! that span several segments are reassembled in order with bounded memory ("reassembly-lite",
 //! see `Reassembly`); out-of-order or missing segments end the attempt and the buffered prefix
@@ -14,12 +15,19 @@ use std::{
 
 mod asset;
 mod bacnet;
+mod codesys;
 mod control;
 mod dnp3;
 mod enip;
+mod fins;
+mod fox;
 mod iec104;
 mod ingest;
+mod knx;
+mod melsec;
+mod mms;
 mod modbus;
+mod mqtt;
 mod packet;
 mod reassembly;
 mod s7;
@@ -28,12 +36,10 @@ pub use asset::{Asset, assets, assets_csv};
 pub use control::control_findings;
 pub use ingest::{listen_live, read_pcap_file, read_pcap_file_with_progress};
 
-use dnp3::dnp3_function;
 use iec104::iec104_type;
 use modbus::modbus_function;
 use packet::{be16, parse_ip};
 use reassembly::{Pdu, Reassembly, framed_port};
-use s7::s7_request;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Proto {
@@ -44,6 +50,13 @@ enum Proto {
     EtherNetIp,
     Bacnet,
     OpcUa,
+    Mms,
+    Fins,
+    Fox,
+    Mqtt,
+    Melsec,
+    Knx,
+    Codesys,
 }
 impl Proto {
     fn name(self) -> &'static str {
@@ -55,6 +68,13 @@ impl Proto {
             Self::EtherNetIp => "EtherNet/IP",
             Self::Bacnet => "BACnet/IP",
             Self::OpcUa => "OPC UA",
+            Self::Mms => "IEC 61850 MMS",
+            Self::Fins => "Omron FINS",
+            Self::Fox => "Niagara Fox",
+            Self::Mqtt => "MQTT",
+            Self::Melsec => "MELSEC",
+            Self::Knx => "KNXnet/IP",
+            Self::Codesys => "CODESYS",
         }
     }
 }
@@ -123,6 +143,8 @@ pub struct Tracker {
     /// Set per frame: the frame being decoded is addressed to a group (broadcast/multicast).
     dst_group: bool,
     reassembly: Reassembly,
+    /// Which connections on port 102 are S7comm and which are MMS.
+    iso: mms::IsoFlows,
 }
 
 impl Tracker {
@@ -148,6 +170,7 @@ impl Tracker {
         for pdu in self.reassembly.flush() {
             self.decode_pdu(pdu);
         }
+        self.iso_flush();
     }
 
     fn decode_pdu(&mut self, pdu: Pdu) {
@@ -216,8 +239,10 @@ impl Tracker {
         }
     }
     fn response(&mut self, proto: Proto, server: IpAddr, client: IpAddr, ts: i64) {
+        // a reply sent to a broadcast address (MELSOFT does that) names no client
+        let peer = (!self.dst_group).then_some(client);
         if let Some(s) = self.server(proto, server) {
-            s.touch(ts, Some(client));
+            s.touch(ts, peer);
         }
     }
 
@@ -261,6 +286,16 @@ impl Tracker {
                 (_, 44818) => self.enip(src, dst, pl, ts, true),
                 (44818, _) => self.enip(dst, src, pl, ts, false),
                 (47808, _) | (_, 47808) => self.bacnet(src, dst, pl, ts),
+                (_, 9600) => self.fins(src, dst, Some(pl), ts, true),
+                (9600, _) => self.fins(dst, src, Some(pl), ts, false),
+                (_, 3671) => self.knx(src, dst, pl, ts, true),
+                (3671, _) => self.knx(dst, src, pl, ts, false),
+                (_, 5006 | 5007) => self.melsec_mc(src, dst, pl, ts, true),
+                (5006 | 5007, _) => self.melsec_mc(dst, src, pl, ts, false),
+                (_, 5560 | 5561) => self.melsoft(src, dst, pl, ts, true),
+                (5560 | 5561, _) => self.melsoft(dst, src, pl, ts, false),
+                (_, p) if codesys::is_codesys_udp(p) => self.codesys(src, dst, ts, true, p),
+                (p, _) if codesys::is_codesys_udp(p) => self.codesys(dst, src, ts, false, p),
                 _ => {}
             }
         }
@@ -294,28 +329,10 @@ impl Tracker {
                     self.response(Proto::Modbus, src, dst, ts);
                 }
             }
-            (_, 102) => {
-                if let Some(f) = s7_request(pl) {
-                    self.request(Proto::S7, src, dst, ts, Some((f.0.to_string(), f.1)), None);
-                } else if pl.len() >= 7 && pl[0] == 3 && pl[1] == 0 {
-                    self.request(Proto::S7, src, dst, ts, None, None);
-                }
-            }
-            (102, _) => {
-                if pl.len() >= 7 && pl[0] == 3 && pl[1] == 0 {
-                    self.response(Proto::S7, src, dst, ts);
-                }
-            }
-            (_, 20000) => {
-                if pl.len() >= 13 && pl[0] == 5 && pl[1] == 0x64 {
-                    self.request(Proto::Dnp3, src, dst, ts, Some(dnp3_function(pl[12])), None);
-                }
-            }
-            (20000, _) => {
-                if pl.len() >= 10 && pl[0] == 5 && pl[1] == 0x64 {
-                    self.response(Proto::Dnp3, src, dst, ts);
-                }
-            }
+            // S7comm and MMS share port 102: the connection's data says which this is
+            (_, 102) | (102, _) => self.iso_message(src, dst, sport, dport, pl, ts),
+            (_, 20000) => self.dnp3(src, dst, pl, ts, true),
+            (20000, _) => self.dnp3(dst, src, pl, ts, false),
             (_, 2404) => {
                 if pl.len() >= 12 && pl[0] == 0x68 && pl[2] & 1 == 0 {
                     self.request(Proto::Iec104, src, dst, ts, Some(iec104_type(pl[6])), None);
@@ -340,6 +357,16 @@ impl Tracker {
             }
             (_, 44818) => self.enip(src, dst, pl, ts, true),
             (44818, _) => self.enip(dst, src, pl, ts, false),
+            (_, 9600) => self.fins_tcp(src, dst, pl, ts, true),
+            (9600, _) => self.fins_tcp(dst, src, pl, ts, false),
+            (_, 1911) => self.fox(src, dst, pl, ts, true),
+            (1911, _) => self.fox(dst, src, pl, ts, false),
+            (_, 1883) => self.mqtt(src, dst, pl, ts, true),
+            (1883, _) => self.mqtt(dst, src, pl, ts, false),
+            (_, 5006 | 5007) => self.melsec_mc(src, dst, pl, ts, true),
+            (5006 | 5007, _) => self.melsec_mc(dst, src, pl, ts, false),
+            (_, p) if codesys::is_codesys_tcp(p) => self.codesys(src, dst, ts, true, p),
+            (p, _) if codesys::is_codesys_tcp(p) => self.codesys(dst, src, ts, false, p),
             _ => {}
         }
     }
@@ -565,12 +592,19 @@ mod tests {
             ("mod.rs", include_str!("mod.rs")),
             ("asset.rs", include_str!("asset.rs")),
             ("bacnet.rs", include_str!("bacnet.rs")),
+            ("codesys.rs", include_str!("codesys.rs")),
             ("control.rs", include_str!("control.rs")),
             ("dnp3.rs", include_str!("dnp3.rs")),
             ("enip.rs", include_str!("enip.rs")),
+            ("fins.rs", include_str!("fins.rs")),
+            ("fox.rs", include_str!("fox.rs")),
             ("iec104.rs", include_str!("iec104.rs")),
             ("ingest.rs", include_str!("ingest.rs")),
+            ("knx.rs", include_str!("knx.rs")),
+            ("melsec.rs", include_str!("melsec.rs")),
+            ("mms.rs", include_str!("mms.rs")),
             ("modbus.rs", include_str!("modbus.rs")),
+            ("mqtt.rs", include_str!("mqtt.rs")),
             ("packet.rs", include_str!("packet.rs")),
             ("real_traffic.rs", include_str!("real_traffic.rs")),
             ("reassembly.rs", include_str!("reassembly.rs")),

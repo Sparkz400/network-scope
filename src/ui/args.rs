@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 35] = [
+pub(super) const FLAGS: [&str; 36] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -42,8 +42,9 @@ pub(super) const FLAGS: [&str; 35] = [
     "early-stop",
     "no-report",
     "incremental",
+    "ipv6-discover",
 ];
-pub(super) const VALUES: [&str; 73] = [
+pub(super) const VALUES: [&str; 76] = [
     "feeds",
     "top",
     "nvd",
@@ -117,6 +118,9 @@ pub(super) const VALUES: [&str; 73] = [
     "broadcast",
     "targets-file",
     "full-every",
+    "snmp-community",
+    "snmp-version",
+    "snmp-v3",
 ];
 pub(super) fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);
@@ -249,7 +253,7 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     if let Some(p) = opts.get("ports") {
         s.ports = p.clone();
     } else if opts.contains_key("ot") {
-        s.ports = "80,443,102,502,4840,44818".into();
+        s.ports = "80,443,102,502,1883,1911,4840,9600,44818".into();
     }
     s.workers = number(opts, "workers", 1024)?;
     if !(1..=4096).contains(&s.workers) {
@@ -279,6 +283,8 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     // On by default; it only ever slows a host down (see `backoff`).
     s.backoff = !opts.contains_key("no-backoff");
     s.record = opts.contains_key("record");
+    s.snmp = snmp_config(opts)?;
+    s.ipv6_discover = opts.contains_key("ipv6-discover");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
         s.trace = true;
@@ -318,6 +324,28 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     s.early_stop = opts.contains_key("early-stop");
     s.partial_events = opts.contains_key("stream");
     Ok(s)
+}
+/// `--snmp-community` / `--snmp-version` or `--snmp-v3`: the credentials of the SNMP read. The v3
+/// secrets come from the environment variables named in the option, never from the command line.
+pub(super) fn snmp_config(
+    opts: &BTreeMap<String, String>,
+) -> Result<Option<crate::snmp::SnmpConfig>, String> {
+    use crate::snmp::SnmpConfig;
+    let (community, v3) = (opts.get("snmp-community"), opts.get("snmp-v3"));
+    if community.is_some() && v3.is_some() {
+        return Err("Use either --snmp-community or --snmp-v3, not both".into());
+    }
+    if opts.contains_key("snmp-version") && community.is_none() {
+        return Err("--snmp-version needs --snmp-community (SNMPv3 has --snmp-v3)".into());
+    }
+    if let Some(c) = community {
+        let version = opts.get("snmp-version").map_or("2c", String::as_str);
+        return SnmpConfig::community(version, c).map(Some);
+    }
+    match v3 {
+        Some(spec) => SnmpConfig::v3(spec, |name| std::env::var(name).ok()).map(Some),
+        None => Ok(None),
+    }
 }
 pub(super) fn trace_method(text: &str) -> Result<crate::trace::TraceMethod, String> {
     serde_json::from_value(serde_json::Value::String(text.to_lowercase()))
@@ -414,6 +442,42 @@ mod tests {
         for k in FLAGS {
             assert!(!VALUES.contains(&k), "--{k} is both flag and value");
         }
+    }
+
+    #[test]
+    fn snmp_options_build_the_credentials_and_never_take_a_passphrase() {
+        let parse = |list: &[&str]| scan_settings(&options(&args(list)).unwrap().1);
+        // no option, no SNMP (and it is not "public" by default)
+        assert!(parse(&[]).unwrap().snmp.is_none());
+        let c = parse(&["--snmp-community", "s3cret"])
+            .unwrap()
+            .snmp
+            .unwrap();
+        assert_eq!(c.version(), crate::snmp::Version::V2c);
+        assert!(!format!("{c:?}").contains("s3cret"));
+        let c = parse(&["--snmp-community", "x", "--snmp-version", "1"])
+            .unwrap()
+            .snmp
+            .unwrap();
+        assert_eq!(c.version(), crate::snmp::Version::V1);
+        assert!(parse(&["--snmp-community", "x", "--snmp-version", "3"]).is_err());
+        assert!(parse(&["--snmp-version", "2c"]).is_err());
+        assert!(parse(&["--snmp-community", "x", "--snmp-v3", "u"]).is_err());
+        // v3 names an environment variable (PATH exists everywhere and is long enough)
+        let c = parse(&["--snmp-v3", "monitor:sha256:PATH:aes:PATH"])
+            .unwrap()
+            .snmp
+            .unwrap();
+        assert_eq!(c.version(), crate::snmp::Version::V3);
+        assert!(!format!("{c:?}").contains("PATH") || format!("{c:?}").contains("hidden"));
+        let e = parse(&["--snmp-v3", "monitor:sha:NS_TEST_NO_SUCH_VARIABLE"]).unwrap_err();
+        assert!(e.contains("not set"), "{e}");
+        let e = parse(&["--snmp-v3", "monitor:sha:my passphrase here"]).unwrap_err();
+        assert!(e.contains("environment variable"), "{e}");
+        assert!(
+            !e.contains("passphrase here"),
+            "a mistyped passphrase is never echoed: {e}"
+        );
     }
 
     #[test]

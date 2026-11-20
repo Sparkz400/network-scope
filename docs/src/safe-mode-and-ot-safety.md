@@ -14,6 +14,8 @@
 | SMB NTLM SESSION_SETUP | not sent | sent (no AUTHENTICATE) |
 | TLS 1.3 suite enumeration | not sent | sent |
 | JARM fingerprint (`--jarm`, ten ClientHellos per TLS port) | not sent | opt-in |
+| IPv6 discovery (`--ipv6-discover`; opt-in) | allowed: one ICMPv6 echo to `ff02::1` per interface, hop limit 1 | same |
+| SNMP read (`--snmp-community`, `--snmp-v3`; opt-in) | allowed, read-only Get/GetNext/GetBulk with smaller pages, at most 100 requests and 40 s per host | allowed, at most 240 requests and 25 s per host |
 | OT operations | identification only | identification only |
 
 In the desktop the disabled controls are greyed out. Safe Mode is a conservative traffic profile, **not a guarantee** for every PLC.
@@ -23,7 +25,7 @@ In the desktop the disabled controls are greyed out. Safe Mode is a conservative
 These hold with Safe Mode on or off:
 
 - All OT protocol operations are **read-only identification**: no writes, no program or block access, no control commands, no authentication. See [OT / industrial](ot-industrial.md) for exactly what is sent.
-- OT identification runs only on standard ports. TCP probes go only to hosts with that port open; a silent host gets at most one BACnet Who-Is, and only when nonresponders are scanned.
+- OT identification runs only on standard ports. TCP probes go only to hosts with that port open; a silent host gets at most one BACnet Who-Is, and only when nonresponders are scanned (the FINS and KNX requests, also UDP, go only to hosts that answered something else; the MQTT CONNECT is not sent when `--services` has already sent it).
 - Generic service probes never touch industrial ports (102, 502, 4840, 44818, 47808 and similar).
 - Printer ports 9100-9107 and 515 only get a passive banner wait; nothing is ever sent.
 - 2222/tcp is listen-only unless it greets with SSH.
@@ -37,7 +39,7 @@ These hold with Safe Mode on or off:
 
 The active OT code (`core/src/ot.rs`, `core/src/ot/`) cannot send a write or control request, because such a request has no value in the type system:
 
-- Every OT request is built by `ot::readonly` from an **allow-list enum**: `ModbusFunction`, `S7Szl`, `EnipCommand`, `BacnetService`, `OpcUaMessage`, `DcpService`. The request types (`ModbusRequest`, `S7Request`, `EnipRequest`, `BacnetRequest`, `OpcUaRequest`, `DcpRequest`) have private fields, so the enums are the only way in.
+- Every OT request is built by `ot::readonly` from an **allow-list enum**: `ModbusFunction`, `S7Szl`, `EnipCommand`, `BacnetService`, `OpcUaMessage`, `DcpService`, `FinsCommand`, `FoxMessage`, `MqttPacket`, `KnxService`. The request types (`ModbusRequest`, `S7Request`, `EnipRequest`, `BacnetRequest`, `OpcUaRequest`, `DcpRequest`, `FinsRequest`, `FoxRequest`, `MqttRequest`, `KnxRequest`) have private fields, so the enums are the only way in.
 - The only functions that put OT bytes on a socket, `OtStream::send` and `OtUdp::send`, accept nothing but a `ReadOnlyRequest`. That trait is sealed (only `ot::readonly` implements it) and is not implemented for `&[u8]`. The rest of the OT code holds sockets only through these wrappers, which can read but not write; a test fails the build if `ot.rs` or `ot/opcua.rs` use a raw socket or `write_all`.
 - The one layer-2 frame, the Profinet DCP Identify request, leaves through `DcpFrameTx::send`, which accepts only a `DcpRequest`; the capture code in `passive.rs` no longer builds or sends raw bytes (a test checks that).
 - Sending anything else needs a **new enum variant**, which is a reviewed code change, and the tests fail until the allow-list in the test is changed deliberately too.
@@ -51,6 +53,10 @@ What the allow-lists contain (exactly what is sent today):
 | EtherNet/IP | encapsulation command 0x0063 (List Identity); no SendRRData, SendUnitData or sessions |
 | BACnet/IP | unicast Who-Is (unconfirmed service 8); no confirmed requests (ReadProperty, WriteProperty, ReinitializeDevice) and no broadcast BVLC function |
 | OPC UA | HEL, OpenSecureChannel (node 446), GetEndpoints (428), FindServers (422), CloseSecureChannel (452), SecurityPolicy None; no CreateSession, Read, Write or Call |
+| Omron FINS/UDP | Controller Data Read (main/sub request code 0x05 0x01), the frame of a real capture; no memory, parameter or program write, no Run or Stop |
+| Niagara Fox | the hello message (`fox a 1 -1 fox hello`); no authentication, no other command |
+| MQTT | CONNECT (clean session, no credentials, no will) and DISCONNECT; no PUBLISH, SUBSCRIBE or UNSUBSCRIBE |
+| KNXnet/IP | unicast DESCRIPTION_REQUEST (0x0203); not the multicast search, no connection, tunnelling or routing frame |
 | Profinet DCP | Identify All (frame ID 0xFEFE, service ID 5, request, option/suboption 0xFF/0xFF) to the DCP multicast address; no Get, no Set (which changes a device's name or IP address), no Hello, no Signal or Reset |
 
 Tests (`cargo test`) check this for every possible byte: all 256 function codes (and all 65,536 MEI/group/subfunction pairs, DCP service ID/type pairs, DCP frame IDs and block options, EtherNet/IP commands and OPC UA node IDs) are accepted by the constructors exactly when they are on the allow-list, every encoded request decodes back to an allow-listed service, changing any discriminator byte of an encoded request to any other value is rejected (for DCP: every byte of the 60-byte frame except the source MAC, transaction ID and response delay), and the encoded bytes equal the literals used before the types existed. `compile_fail` doctests in `ot::readonly` show that a Modbus write, an S7 stop, a DCP Set or Hello and a raw `&[u8]` send do not compile.

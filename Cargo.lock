@@ -2452,6 +2452,7 @@ dependencies = [
  "rcgen",
  "regex",
  "rhai",
+ "ring",
  "roxmltree",
  "rusqlite",
  "rustls",

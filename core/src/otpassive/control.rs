@@ -13,6 +13,9 @@ pub fn control_findings(observations: &[Observation]) -> Vec<(Severity, IpAddr, 
                 || traffic.contains("Download")
                 || traffic.contains("Restart")
                 || traffic.contains("PLC Control")
+                || traffic.contains("Kill")
+                || traffic.contains("Remote Reset")
+                || traffic.contains("Reset Program")
             {
                 Severity::High
             } else {

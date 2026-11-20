@@ -64,12 +64,22 @@ pub(super) fn scan_plan(
     };
     let groups = plan::scan(targets.iter(), ports, s, db.as_ref());
     let (verdict, verdict_json) = scope_verdict(opts, targets)?;
-    let extras = (command == "monitor").then(|| {
+    let mut extras = (command == "monitor").then(|| {
         plan::monitor_extras(
             opts.contains_key("dhcp-discover"),
             opts.contains_key("interface"),
         )
     });
+    // IPv6 discovery runs once per scan, not per host
+    if let Some(v6) = plan::ipv6_discovery(s).filter(|_| command == "scan") {
+        match &mut extras {
+            Some(e) => {
+                e.packets.extend(v6.packets);
+                e.notes.extend(v6.notes);
+            }
+            None => extras = Some(v6),
+        }
+    }
     if wants_json(opts) {
         let doc = json!({
             "dry_run": true,
@@ -85,10 +95,17 @@ pub(super) fn scan_plan(
     }
     let mut text = plan::format_scan(&groups, s);
     if let Some(extra) = extras {
+        let when = if command == "monitor" {
+            "per monitor cycle"
+        } else {
+            "once per scan"
+        };
         for line in extra.lines() {
-            text.push_str(&format!("\nper monitor cycle: {line}"));
+            text.push_str(&format!("\n{when}: {line}"));
         }
-        text.push_str("\neach monitor cycle repeats the scan above");
+        if command == "monitor" {
+            text.push_str("\neach monitor cycle repeats the scan above");
+        }
     }
     text.push_str(&format!("\n\n{verdict}"));
     output(&text, opts)
@@ -240,6 +257,79 @@ mod tests {
             assert!(text.contains(want), "missing {want} in:\n{text}");
         }
         assert!(text.contains("private or in scope"), "{text}");
+    }
+
+    #[test]
+    fn ipv6_discovery_dry_run_lists_the_multicast_echo_once_per_scan() {
+        for safe in [true, false] {
+            let mut a = vec![
+                "scan",
+                "192.168.77.1",
+                "--dry-run",
+                "--ports",
+                "80",
+                "--ipv6-discover",
+            ];
+            if !safe {
+                a.push("--fast");
+            }
+            let (text, status) = run_to_file(&a);
+            assert_eq!(status, crate::ui::ExitCode::Success);
+            for want in [
+                "once per scan:",
+                "ipv6-echo",
+                "echo request to ff02::1 (all nodes)",
+                "hop limit 1",
+                "send nothing",
+            ] {
+                assert!(text.contains(want), "missing {want} in:\n{text}");
+            }
+            assert_eq!(text.contains("also in Safe Mode"), safe, "{text}");
+        }
+        let (text, _) = run_to_file(&["scan", "192.168.77.1", "--dry-run", "--ports", "80"]);
+        assert!(!text.contains("ipv6-echo"), "{text}");
+        // the JSON carries it as the per-scan extras
+        let (json, _) = run_to_file(&[
+            "scan",
+            "192.168.77.1",
+            "--dry-run",
+            "--ports",
+            "80",
+            "--ipv6-discover",
+            "--format",
+            "json",
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["per_cycle"]["packets"][0]["kind"], "ipv6-echo");
+    }
+
+    #[test]
+    fn snmp_dry_run_lists_the_read_only_pdus_and_never_the_secret() {
+        let (text, status) = run_to_file(&[
+            "scan",
+            "192.168.77.1",
+            "--dry-run",
+            "--ports",
+            "80",
+            "--snmp-community",
+            "hunter2-community",
+        ]);
+        assert_eq!(status, crate::ui::ExitCode::Success);
+        for want in [
+            "snmp-request",
+            "SNMPv2c: GetRequest (PDU 0xA0)",
+            "SNMPv2c: GetNextRequest (PDU 0xA1)",
+            "SNMPv2c: GetBulkRequest (PDU 0xA5)",
+            "udp/161",
+            "SNMP never sends a SetRequest",
+        ] {
+            assert!(text.contains(want), "missing {want} in:\n{text}");
+        }
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(!text.contains("0xA3"), "no SetRequest in the plan: {text}");
+        // without the option there is no SNMP line at all
+        let (text, _) = run_to_file(&["scan", "192.168.77.1", "--dry-run", "--ports", "80"]);
+        assert!(!text.contains("snmp-request"), "{text}");
     }
 
     #[test]

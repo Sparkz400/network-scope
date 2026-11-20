@@ -91,7 +91,7 @@ impl Scanner {
                     );
                     if s.ot {
                         if ui.button(tr!("Use industrial ports")).clicked() {
-                            s.ports = "80,443,102,502,4840,44818".into();
+                            s.ports = "80,443,102,502,1883,1911,4840,9600,44818".into();
                             s.scan_nonresponders = true;
                         }
                         ui.horizontal(|ui| {

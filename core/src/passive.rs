@@ -1,4 +1,4 @@
-//! Passive decoding of frames the capture sees anyway: ARP, LLDP, CDP, Profinet DCP replies,
+//! Passive decoding of frames the capture sees anyway: ARP, IPv6 Neighbor Discovery, LLDP, CDP, Profinet DCP replies,
 //! mDNS, NetBIOS, SSDP/UPnP, WS-Discovery and DHCP. [`decode`] never transmits; the only
 //! transmitting code in this file is the opt-in DCP Identify request in [`start`], after the
 //! decoders (a test keeps everything before [`Listening`] send-free).
@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 mod cdp;
 pub(crate) mod hints;
+mod ndp;
 mod wsd;
 use hints::Hint;
 use std::{
@@ -154,6 +155,45 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
                         o.fields.insert("vendor_id".into(), be16(v, 2)?.to_string());
                         o.fields.insert("device_id".into(), be16(v, 4)?.to_string());
                     }
+                    // Device role: a bit set (IO-Device, IO-Controller, IO-Multidevice, IO-Supervisor).
+                    (2, 4) if v.len() >= 4 => {
+                        let roles: Vec<&str> = [
+                            (0x01u8, "IO-Device"),
+                            (0x02, "IO-Controller"),
+                            (0x04, "IO-Multidevice"),
+                            (0x08, "IO-Supervisor"),
+                        ]
+                        .into_iter()
+                        .filter(|(bit, _)| v[2] & bit != 0)
+                        .map(|(_, name)| name)
+                        .collect();
+                        if !roles.is_empty() {
+                            o.fields.insert("role".into(), roles.join(", "));
+                        }
+                    }
+                    // Device options: the (option, suboption) pairs the device supports.
+                    (2, 5) if v.len() >= 4 => {
+                        let pairs: Vec<String> = v[2..]
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .take(32)
+                            .map(|p| format!("{}/{}", p[0], p[1]))
+                            .collect();
+                        o.fields.insert("options".into(), pairs.join(", "));
+                    }
+                    // Device instance: high and low byte.
+                    (2, 7) if v.len() >= 4 => {
+                        o.fields
+                            .insert("instance".into(), format!("{}.{}", v[2], v[3]));
+                    }
+                    // OEM device ID: the vendor and device ID of the OEM that built the product.
+                    (2, 8) if v.len() >= 6 => {
+                        o.fields
+                            .insert("oem_vendor_id".into(), be16(v, 2)?.to_string());
+                        o.fields
+                            .insert("oem_device_id".into(), be16(v, 4)?.to_string());
+                    }
                     _ => {}
                 }
             }
@@ -164,6 +204,8 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
             let llc = b.get(..usize::from(length).min(b.len()))?;
             cdp::decode(llc, &mut o)?;
         }
+        // ICMPv6 Neighbor Discovery: addresses and MACs of hosts and routers on the link
+        0x86dd if b.len() >= 40 && b[6] == 58 => ndp::decode(b, &mut o)?,
         0x0800 | 0x86dd => {
             let udp = if kind == 0x0800 {
                 if b.len() < 20 || b[0] >> 4 != 4 || b[9] != 17 || be16(b, 6)? & 0x3fff != 0 {
@@ -1373,6 +1415,63 @@ pub(crate) mod tests {
         let generic = notify("NT: upnp:rootdevice\r\nSERVER: Linux/5.4 UPnP/1.0 Foo/1\r\n");
         assert_eq!(only_device(generic).device_type, "");
     }
+    /// An Identify response frame (frame ID 0xFEFF) with these blocks (option, suboption, value).
+    fn dcp_response(blocks: &[(u8, u8, &[u8])]) -> Vec<u8> {
+        let mut data = vec![];
+        for (option, suboption, value) in blocks {
+            data.extend([*option, *suboption]);
+            data.extend((value.len() as u16).to_be_bytes());
+            data.extend(*value);
+            if value.len() % 2 == 1 {
+                data.push(0);
+            }
+        }
+        let mut f = vec![0x01, 0x0e, 0xcf, 0, 0, 0];
+        f.extend([0x08, 0, 0x06, 0x93, 0xcf, 0x32]);
+        f.extend([0x88, 0x92, 0xfe, 0xff, 5, 1, 0, 0, 0, 1, 0, 0]);
+        f.extend((data.len() as u16).to_be_bytes());
+        f.extend(data);
+        f
+    }
+
+    #[test]
+    fn profinet_dcp_role_options_instance_and_oem_id() {
+        let f = dcp_response(&[
+            (2, 2, &[0, 0, b'p', b'l', b'c']),
+            (2, 4, &[0, 0, 0x03, 0]),
+            (2, 5, &[0, 0, 1, 2, 2, 5]),
+            (2, 7, &[0, 0, 0, 1]),
+            (2, 8, &[0, 0, 0x01, 0x2a, 0x0a, 0x01]),
+        ]);
+        let o = decode(&f).unwrap();
+        assert_eq!(o.protocol, "Profinet DCP");
+        assert_eq!(o.fields["name"], "plc");
+        assert_eq!(o.fields["role"], "IO-Device, IO-Controller");
+        assert_eq!(o.fields["options"], "1/2, 2/5");
+        assert_eq!(o.fields["instance"], "0.1");
+        assert_eq!(
+            (
+                o.fields["oem_vendor_id"].as_str(),
+                o.fields["oem_device_id"].as_str()
+            ),
+            ("298", "2561")
+        );
+        // a role block without a role bit, and blocks that are too short, add nothing
+        let o = decode(&dcp_response(&[
+            (2, 4, &[0, 0, 0, 0]),
+            (2, 7, &[0, 0]),
+            (2, 8, &[0, 0, 1]),
+        ]))
+        .unwrap();
+        for key in ["role", "instance", "oem_vendor_id"] {
+            assert!(!o.fields.contains_key(key), "{key}");
+        }
+        // cut anywhere: no panic
+        for cut in 0..f.len() {
+            let _ = decode(&f[..cut]);
+        }
+    }
+
     #[test]
     fn decoder_code_cannot_transmit() {
         // Everything before `Listening` (the decoders and the hint modules) must stay
@@ -1383,6 +1482,7 @@ pub(crate) mod tests {
             decoders,
             include_str!("passive/cdp.rs"),
             include_str!("passive/hints.rs"),
+            include_str!("passive/ndp.rs"),
             include_str!("passive/wsd.rs"),
         ];
         for source in sources {
