@@ -11,7 +11,7 @@ Network Scope embeds four data files at build time. Their provenance and licensi
 
 ## Imported feeds
 
-CISA KEV and FIRST EPSS are not embedded. You download them and import them with `feeds import`; the cache is `feeds.json` next to the user `cves.json` (or `--feeds FILE`). See [Findings and CVE hints](findings-and-cves.md#known-exploited-and-epss-offline-feeds) for the download addresses and what changes. The NVD CVE JSON 2.0 feed is imported the same way (`feeds import nvd FILE...`, cache `nvd.json`); see [NVD import](findings-and-cves.md#nvd-import-offline).
+CISA KEV and FIRST EPSS are not embedded. You download them and import them with `feeds import`; the cache is `feeds.json` next to the user `cves.json` (or `--feeds FILE`). See [Findings and CVE hints](findings-and-cves.md#known-exploited-and-epss-offline-feeds) for the download addresses and what changes. The NVD CVE JSON 2.0 feed is imported the same way (`feeds import nvd FILE...`, cache `nvd.json`); see [NVD import](findings-and-cves.md#nvd-import-offline). CISA ICS advisories in CSAF format are imported with `feeds import csaf` (cache `csaf.json`); see [CISA ICS advisories](findings-and-cves.md#cisa-ics-advisories-for-ot-devices-csaf-offline).
 
 ## User overrides
 

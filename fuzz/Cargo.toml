@@ -264,6 +264,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "csaf_import"
+path = "fuzz_targets/csaf_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mcp_message"
 path = "fuzz_targets/mcp_message.rs"
 test = false

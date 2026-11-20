@@ -186,6 +186,12 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     {
         crate::nvd::load_active(std::path::Path::new(file))?;
     }
+    // CISA ICS advisories (`feeds import csaf`) raise CVE findings for industrial devices.
+    if command != "feeds"
+        && let Some(file) = opts.get("csaf")
+    {
+        crate::csaf::load_active(std::path::Path::new(file))?;
+    }
     let handler =
         commands::find(command).ok_or_else(|| format!("Unknown command {command}. Use --help."))?;
     let mut ctx = Ctx {

@@ -97,6 +97,7 @@ pub mod capture;
 pub mod changes;
 pub mod compliance;
 pub mod core;
+pub mod csaf;
 pub mod devices;
 pub mod evidence;
 pub mod feeds;

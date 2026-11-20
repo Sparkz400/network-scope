@@ -30,6 +30,7 @@ network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fa
 network-scope findings ID --top N [--format text|json]   Risk scores and the "fix these first" list
 network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
 network-scope feeds import nvd FILE...   Offline NVD CVE JSON 2.0 feed files (unzip .gz first) for CVE findings
+network-scope feeds import csaf FILE|DIR...   Offline CISA ICS advisories (CSAF 2.0) matched against OT firmware
 network-scope feeds status                     What the feeds cache holds
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
@@ -84,6 +85,7 @@ Scan options:
   --cves FILE     Extra CVE/CPE rules, merged over data/cves.json by id; any command
   --feeds FILE    KEV/EPSS cache (default: feeds.json next to the user cves.json); any command
   --nvd FILE      NVD cache (default: nvd.json next to feeds.json); any command
+  --csaf FILE     CSAF advisory cache (default: csaf.json next to feeds.json); any command
   --script PATH   Rhai script (or folder of .rhai files) run against every host
   --db FILE       Defaults to LOCALAPPDATA/NetworkScope/inventory.sqlite
   --fast          Disable conservative rate limits (read-only OT still applies)
