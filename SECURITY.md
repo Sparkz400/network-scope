@@ -52,9 +52,9 @@ Release files and the container image are built by GitHub Actions from the tagge
 
 - **`network-scope-<version>.intoto.jsonl`** is the same provenance bundle under the in-toto
   file name and verifies the same way (`--bundle network-scope-<version>.intoto.jsonl`).
-  Releases up to v0.5.1 attached SLSA level 3 provenance from
+  Release v0.5.1 attached SLSA level 3 provenance from
   [slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator) under this
-  name instead; verify those with
+  name instead; verify that file with
   [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
 
   ```sh

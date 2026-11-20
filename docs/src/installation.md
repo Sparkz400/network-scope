@@ -95,7 +95,7 @@ gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/n
 
 # The same check offline, with the provenance bundle attached to the release
 gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope \
-  --bundle network-scope-0.5.1.intoto.jsonl
+  --bundle network-scope-0.5.1.sigstore.json
 
 # Container image
 gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
