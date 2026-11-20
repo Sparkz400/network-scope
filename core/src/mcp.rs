@@ -5,10 +5,16 @@
 //!
 //! # Protocol
 //!
-//! `initialize` negotiates the protocol revision: the client's requested version is echoed when it
-//! is one of [`SUPPORTED_PROTOCOLS`], otherwise the server answers with [`LATEST_PROTOCOL`] and
-//! the client decides whether it can continue. The only capability is `tools`
-//! (`tools/list`, `tools/call`); `ping` always works. Notifications get no reply. A line that is
+//! The server is "dual-era" (MCP 2026-07-28, *Versioning*). Legacy clients start with
+//! `initialize`, which negotiates a handshake revision: the client's requested version is echoed
+//! when it is one of [`LEGACY_PROTOCOLS`], otherwise the server answers with
+//! [`LATEST_LEGACY_PROTOCOL`] and the client decides whether it can continue. Modern clients send
+//! no handshake: a request whose `params._meta` names `io.modelcontextprotocol/protocolVersion`
+//! is served statelessly (one of [`MODERN_PROTOCOLS`], or error `-32022` listing the supported
+//! versions), its result carries `resultType` and the server info in `_meta`, and
+//! `server/discover` answers the versions and capabilities. The era is decided per request, so
+//! the handshake state never leaks into a modern request. The only capability is `tools`
+//! (`tools/list`, `tools/call`); `ping` works in the legacy era. Notifications get no reply. A line that is
 //! not JSON gets a `-32700` error with a null id, a malformed message `-32600`, an unknown method
 //! `-32601`, bad parameters `-32602`. A failing tool is a *result* with `isError: true` (the
 //! assistant can read and react to it), not a protocol error. Batches (allowed by the older
@@ -34,10 +40,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The newest protocol revision this server implements.
-pub const LATEST_PROTOCOL: &str = "2025-06-18";
-/// Every revision the server answers to; the first is the newest.
-pub const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+/// The newest revision with the `initialize` handshake (the "legacy" era).
+pub const LATEST_LEGACY_PROTOCOL: &str = "2025-11-25";
+/// Every handshake revision `initialize` accepts; the first is the newest.
+pub const LEGACY_PROTOCOLS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/// Stateless revisions (the "modern" era): no handshake, every request names its version in
+/// `params._meta`.
+pub const MODERN_PROTOCOLS: &[&str] = &["2026-07-28"];
+const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
+const CAPABILITIES_KEY: &str = "io.modelcontextprotocol/clientCapabilities";
+/// How long a modern client may cache `server/discover` and `tools/list`: the tool set never
+/// changes while the process runs.
+const CACHE_TTL_MS: u64 = 3_600_000;
 /// The longest message line accepted; a longer one is refused and skipped.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
 /// Messages in one batch.
@@ -221,16 +235,88 @@ impl Server {
             }
             return None;
         };
+        // The era is chosen per request (2026-07-28 "dual-era" rules): a request that names its
+        // version in `_meta` is served statelessly; anything else, `initialize` above all, follows
+        // the handshake. Legacy clients send `_meta` too (progressToken), so only the version key
+        // counts.
+        let modern_version = params
+            .and_then(|p| p.get("_meta"))
+            .and_then(|m| m.get(VERSION_KEY))
+            .filter(|_| method != "initialize");
+        if let Some(version) = modern_version {
+            return Some(match self.dispatch_modern(method, params, version) {
+                Ok(result) => reply(id, result),
+                Err(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
+            });
+        }
         Some(match self.dispatch(method, params) {
             Ok(result) => reply(id, result),
             Err((code, message)) => failure(id, code, &message),
         })
     }
 
+    /// A modern (stateless) request: never reads or changes the handshake state.
+    fn dispatch_modern(
+        &mut self,
+        method: &str,
+        params: Option<&Value>,
+        version: &Value,
+    ) -> Result<Value, Value> {
+        let error = |code: i64, message: &str| json!({"code": code, "message": message});
+        let version = version
+            .as_str()
+            .ok_or_else(|| error(-32602, "_meta protocolVersion must be a string"))?;
+        if !MODERN_PROTOCOLS.contains(&version) {
+            // Also for the handshake revisions: they need `initialize`.
+            return Err(json!({
+                "code": -32022,
+                "message": "Unsupported protocol version",
+                "data": {"supported": all_protocols(), "requested": version},
+            }));
+        }
+        let declares_capabilities = params
+            .and_then(|p| p.get("_meta"))
+            .and_then(|m| m.get(CAPABILITIES_KEY))
+            .is_some_and(Value::is_object);
+        if !declares_capabilities {
+            return Err(error(
+                -32602,
+                "_meta needs io.modelcontextprotocol/clientCapabilities",
+            ));
+        }
+        let mut result = match method {
+            "server/discover" => json!({
+                "supportedVersions": all_protocols(),
+                "capabilities": {"tools": {}},
+                "instructions": SERVER_INSTRUCTIONS,
+                "ttlMs": CACHE_TTL_MS,
+                "cacheScope": "public",
+            }),
+            "tools/list" => json!({
+                "tools": self.tool_list(),
+                "ttlMs": CACHE_TTL_MS,
+                "cacheScope": "public",
+            }),
+            "tools/call" => self
+                .call_tool(params)
+                .map_err(|(code, message)| error(code, &message))?,
+            other => return Err(error(-32601, &format!("Method not found: {other}"))),
+        };
+        result["resultType"] = json!("complete");
+        result["_meta"] = json!({"io.modelcontextprotocol/serverInfo": server_info()});
+        Ok(result)
+    }
+
     fn dispatch(&mut self, method: &str, params: Option<&Value>) -> Result<Value, (i64, String)> {
         match method {
             "ping" => Ok(json!({})),
             "initialize" => self.initialize(params),
+            "server/discover" => Err((
+                -32602,
+                format!(
+                    "server/discover needs params._meta[\"{VERSION_KEY}\"] (one of {MODERN_PROTOCOLS:?}); legacy clients send initialize"
+                ),
+            )),
             "tools/list" | "tools/call" if !self.initialized => Err((
                 -32002,
                 "Server not initialized: send initialize first".into(),
@@ -249,21 +335,18 @@ impl Server {
                 -32602,
                 "initialize needs params.protocolVersion".to_string(),
             ))?;
-        let version = SUPPORTED_PROTOCOLS
+        // A stateless revision is never the answer to a handshake.
+        let version = LEGACY_PROTOCOLS
             .iter()
             .find(|v| **v == requested)
             .copied()
-            .unwrap_or(LATEST_PROTOCOL);
+            .unwrap_or(LATEST_LEGACY_PROTOCOL);
         // Usable from now on: clients that skip the `initialized` notification still work.
         self.initialized = true;
         Ok(json!({
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": false}},
-            "serverInfo": {
-                "name": "network-scope",
-                "title": "Network Scope",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
+            "serverInfo": server_info(),
             "instructions": SERVER_INSTRUCTIONS,
         }))
     }
@@ -314,6 +397,24 @@ impl Server {
     }
 }
 
+/// Every revision, newest first (the `supported` list of a version error and of
+/// `server/discover`).
+fn all_protocols() -> Vec<&'static str> {
+    MODERN_PROTOCOLS
+        .iter()
+        .chain(LEGACY_PROTOCOLS)
+        .copied()
+        .collect()
+}
+fn server_info() -> Value {
+    json!({
+        "name": "network-scope",
+        "title": "Network Scope",
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": "Network inventory queries and Safe Mode scans of private networks",
+    })
+}
+
 fn tool_result(value: &Value) -> Value {
     let text = serde_json::to_string(value).unwrap_or_default();
     if text.len() > MAX_RESULT_BYTES {
@@ -358,15 +459,21 @@ impl Server {
                 name: "list_scans",
                 title: "List saved scans",
                 description: "The saved scans of the inventory, newest first: ID, time, targets, whether the scan completed and how many hosts it saw.",
-                input_schema: object_schema(json!({"limit": limit_property(50, 500)}), &[]),
+                input_schema: object_schema(json!({"limit": limit_property(20, 500)}), &[]),
                 read_only: true,
             },
             Tool {
                 name: "list_devices",
                 title: "List devices of a scan",
-                description: "One record per device in a scan (active and passive results merged): addresses, vendor, type, OS, open ports and services.",
+                description: "One short record per device in a scan (active and passive results merged): addresses, vendor, type, OS, open ports and services. detail: true returns the full records (evidence, identifiers, passive observations), which are much larger: combine it with ip or a small limit.",
                 input_schema: object_schema(
-                    json!({"scan_id": scan_id_property(), "limit": limit_property(100, 500)}),
+                    json!({
+                        "scan_id": scan_id_property(),
+                        "ip": {"type": "string", "maxLength": 45, "description": "Only the device with this address"},
+                        "detail": {"type": "boolean", "default": false,
+                            "description": "Full device records instead of the short summary"},
+                        "limit": limit_property(50, 500),
+                    }),
                     &[],
                 ),
                 read_only: true,
@@ -376,7 +483,7 @@ impl Server {
                 title: "History of one device",
                 description: "The timeline of one device across all saved scans: first and last seen, addresses, names, open ports and events such as port-opened or ip-changed.",
                 input_schema: object_schema(
-                    json!({"query": {"type": "string", "maxLength": 64,
+                    json!({"query": {"type": "string", "minLength": 1, "maxLength": 64,
                             "description": "A MAC address or an IP address"}}),
                     &["query"],
                 ),
@@ -393,7 +500,7 @@ impl Server {
                         "finding_id": {"type": "string", "maxLength": 64,
                             "description": "Only this finding rule, for example smb1-enabled or telnet-open"},
                         "ip": {"type": "string", "maxLength": 45, "description": "Only findings of this address"},
-                        "limit": limit_property(200, 1000),
+                        "limit": limit_property(50, 1000),
                     }),
                     &[],
                 ),
@@ -422,7 +529,7 @@ impl Server {
                     json!({
                         "query": {"type": "string", "minLength": 1, "maxLength": 100,
                             "description": "An IP address, a MAC address or part of a hostname"},
-                        "limit": limit_property(100, 500),
+                        "limit": limit_property(50, 500),
                     }),
                     &["query"],
                 ),
@@ -506,6 +613,16 @@ fn limit_arg(args: &Value, default: usize, max: usize) -> usize {
         .and_then(|n| usize::try_from(n).ok())
         .map_or(default, |n| n.clamp(1, max))
 }
+/// The optional `ip` filter.
+fn ip_arg(args: &Value) -> Result<Option<IpAddr>, String> {
+    text_arg(args, "ip")
+        .map(|text| {
+            text.trim()
+                .parse::<IpAddr>()
+                .map_err(|_| format!("Invalid IP address: {text}"))
+        })
+        .transpose()
+}
 /// A typed result as a JSON value with its `schema` identifier first.
 fn enveloped<T: serde::Serialize>(kind: &str, value: &T) -> Result<Value, String> {
     serde_json::from_str(&schema::object(kind, value)?).map_err(|e| e.to_string())
@@ -553,24 +670,52 @@ impl Server {
 
     fn list_scans(&self, args: &Value) -> Result<Value, String> {
         let mut scans = self.scans()?;
-        scans.truncate(limit_arg(args, 50, 500));
+        scans.truncate(limit_arg(args, 20, 500));
         enveloped("scans", &json!({"scans": scans}))
     }
 
     fn list_devices(&self, args: &Value) -> Result<Value, String> {
+        let ip = ip_arg(args)?;
         let (_, snapshot) = self.snapshot(args)?;
-        let all = devices::merge(&snapshot.hosts, &snapshot.observations);
-        let limit = limit_arg(args, 100, 500);
+        let all: Vec<devices::Device> = devices::merge(&snapshot.hosts, &snapshot.observations)
+            .into_iter()
+            .filter(|d| ip.is_none_or(|ip| d.ips.contains(&ip)))
+            .collect();
+        let limit = limit_arg(args, 50, 500);
         let total = all.len();
         let shown: Vec<_> = all.into_iter().take(limit).collect();
+        let truncated = total > limit;
+        if args.get("detail").and_then(Value::as_bool) == Some(true) {
+            return enveloped(
+                "devices",
+                &json!({"devices": shown, "total": total, "truncated": truncated}),
+            );
+        }
+        // The full record (evidence, identifiers, passive observations) is about ten times
+        // larger; the summary keeps what an assistant needs to pick a device.
+        let summaries: Vec<Value> = shown
+            .iter()
+            .map(|d| {
+                json!({
+                    "id": d.id, "mac": d.mac, "vendor": d.vendor, "ips": d.ips,
+                    "hostnames": d.hostnames, "device_type": d.device_type, "os": d.os,
+                    "open_tcp": d.open_tcp, "open_udp": d.open_udp, "services": d.services,
+                })
+            })
+            .collect();
         enveloped(
-            "devices",
-            &json!({"devices": shown, "total": total, "truncated": total > limit}),
+            "mcp-devices",
+            &json!({"devices": summaries, "total": total, "truncated": truncated}),
         )
     }
 
     fn device_history(&self, args: &Value) -> Result<Value, String> {
-        let query = text_arg(args, "query").unwrap_or_default();
+        let query = text_arg(args, "query").unwrap_or_default().trim();
+        if query.is_empty() {
+            return Err(
+                "query is empty: give a MAC address (AA:BB:CC:DD:EE:FF) or an IP address".into(),
+            );
+        }
         if !self.cfg.db.exists() {
             return Err("The inventory has no scans yet".into());
         }
@@ -583,21 +728,14 @@ impl Server {
         let min = risk::Severity::parse(text_arg(args, "min_severity").unwrap_or("info"))
             .unwrap_or(risk::Severity::Info);
         let id = text_arg(args, "finding_id").map(str::to_ascii_lowercase);
-        let ip = match text_arg(args, "ip") {
-            Some(text) => Some(
-                text.trim()
-                    .parse::<IpAddr>()
-                    .map_err(|_| format!("Invalid IP address: {text}"))?,
-            ),
-            None => None,
-        };
+        let ip = ip_arg(args)?;
         let matching: Vec<risk::Finding> = risk::analyze_snapshot(&snapshot)
             .into_iter()
             .filter(|f| f.severity >= min)
             .filter(|f| id.as_ref().is_none_or(|id| f.id.eq_ignore_ascii_case(id)))
             .filter(|f| ip.is_none_or(|ip| f.ip == ip))
             .collect();
-        let limit = limit_arg(args, 200, 1000);
+        let limit = limit_arg(args, 50, 1000);
         let total = matching.len();
         let shown: Vec<_> = matching.into_iter().take(limit).collect();
         enveloped(
@@ -641,12 +779,18 @@ impl Server {
             .unwrap_or_default()
             .trim()
             .to_string();
-        let limit = limit_arg(args, 100, 500);
+        if query.is_empty() {
+            return Err(
+                "query is empty: give an IP address, a MAC address or part of a hostname".into(),
+            );
+        }
+        let limit = limit_arg(args, 50, 500);
         let needle = Needle::parse(&query);
         let entries = self.scans()?;
         let scans_total = entries.len();
         let mut matches = vec![];
-        let mut checked = 0;
+        let (mut checked, mut skipped) = (0, 0);
+        let mut first_error = None;
         let mut truncated = scans_total > SEARCH_SCANS;
         // One connection for every scan read, opened only when there is one (asking never
         // creates the inventory).
@@ -654,8 +798,15 @@ impl Server {
             .then(|| store::open_read(&self.cfg.db))
             .transpose()?;
         'scans: for entry in entries.iter().take(SEARCH_SCANS) {
-            let Some(Ok(snapshot)) = conn.as_ref().map(|c| store::load_on(c, entry.id)) else {
-                continue;
+            let snapshot = match conn.as_ref().map(|c| store::load_on(c, entry.id)) {
+                Some(Ok(snapshot)) => snapshot,
+                // A locked or damaged scan must not look like "not found": count and report it.
+                Some(Err(e)) => {
+                    skipped += 1;
+                    first_error.get_or_insert(format!("scan {}: {e}", entry.id));
+                    continue;
+                }
+                None => continue,
             };
             checked += 1;
             let found = |ip: Option<IpAddr>, mac: &str, hostname: &str, source: &str| {
@@ -691,11 +842,19 @@ impl Server {
                 break 'scans;
             }
         }
+        let mut notes = vec![];
+        if let Some(error) = first_error {
+            truncated = true;
+            notes.push(format!(
+                "{skipped} scan(s) could not be read and were not searched, so the result may be incomplete (first error: {error})."
+            ));
+        }
         enveloped(
             "mcp-where-seen",
             &json!({
-                "query": query, "scans_checked": checked, "scans_total": scans_total,
-                "truncated": truncated, "matches": matches,
+                "query": query, "scans_checked": checked, "scans_skipped": skipped,
+                "scans_total": scans_total, "truncated": truncated, "matches": matches,
+                "notes": notes,
             }),
         )
     }
