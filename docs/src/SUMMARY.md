@@ -25,6 +25,7 @@
 
 # How it works
 
+- [Architecture](architecture.md)
 - [Scanning engine](scanning-engine.md)
 - [Detection](detection.md)
 - [SNMP (read-only, with your credentials)](snmp.md)
@@ -81,6 +82,7 @@
 - [Lab and testing](lab-and-testing.md)
 - [Contributing fingerprints](contributing-fingerprints.md)
 - [Supply chain: SBOM and reproducible builds](supply-chain.md)
+- [Assurance case](assurance-case.md)
 - [Data sources](data-sources.md)
 - [FAQ and troubleshooting](faq.md)
 - [Changelog](changelog.md)
