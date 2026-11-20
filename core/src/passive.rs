@@ -1,13 +1,17 @@
-//! Passive decoding of frames the capture sees anyway: ARP, IPv6 Neighbor Discovery, LLDP, CDP, Profinet DCP replies,
-//! mDNS, NetBIOS, SSDP/UPnP, WS-Discovery and DHCP. [`decode`] never transmits; the only
+//! Passive decoding of frames the capture sees anyway: ARP, IPv6 Neighbor Discovery, LLDP (with
+//! LLDP-MED), CDP, Profinet DCP replies, mDNS, NetBIOS name service and browser announcements,
+//! SSDP/UPnP, WS-Discovery, DHCP and DHCPv6. [`decode`] never transmits; the only
 //! transmitting code in this file is the opt-in DCP Identify request in [`start`], after the
 //! decoders (a test keeps everything before [`Listening`] send-free).
 //!
 //! Besides the raw fields, decoders attach device-type hints (`hint.<category>` and
 //! `hint_weak.<category>`, see [`hints`]) that `devices::merge` scores like active evidence.
 use serde::{Deserialize, Serialize};
+mod browser;
 mod cdp;
+mod dhcpv6;
 pub(crate) mod hints;
+mod lldp_med;
 mod ndp;
 mod wsd;
 use hints::Hint;
@@ -112,8 +116,18 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
                         o.fields.insert("description".into(), text(v));
                     }
                     8 if v.len() >= 6 && v[0] == 5 && v[1] == 1 => o.ip = v4(&v[2..6]),
+                    127 if v.len() >= 4 && v[..3] == lldp_med::OUI => {
+                        lldp_med::decode(v[3], &v[4..], &mut o.fields);
+                    }
                     _ => {}
                 }
+            }
+            // An LLDP-MED endpoint (a phone with a PC port) also announces the bridge capability.
+            if o.fields
+                .get("med_device_class")
+                .is_some_and(|c| c.starts_with("endpoint"))
+            {
+                o.fields.remove("hint.network");
             }
         }
         0x8892 => {
@@ -254,6 +268,10 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
                         mdns_details(&records, o.ip, &mut o.fields);
                     }
                 }
+            } else if src == 138 || dst == 138 {
+                browser::decode(payload, &mut o)?;
+            } else if dst == 547 {
+                dhcpv6::decode(payload, &mut o)?;
             } else if src == 3702 || dst == 3702 {
                 wsd::decode(payload, &mut o)?;
             } else if src == 1900 || dst == 1900 {
@@ -588,16 +606,7 @@ fn nbns_announcement(b: &[u8], fields: &mut BTreeMap<String, String>) -> Option<
     if *b.get(12)? != 32 || *b.get(45)? != 0 || be16(b, 46)? != 0x20 {
         return None;
     }
-    let encoded = b.get(13..45)?;
-    let mut decoded = [0u8; 16];
-    for (out, pair) in decoded.iter_mut().zip(encoded.as_chunks::<2>().0) {
-        if !pair.iter().all(|c| (b'A'..=b'P').contains(c)) {
-            return None;
-        }
-        *out = ((pair[0] - b'A') << 4) | (pair[1] - b'A');
-    }
-    let name = text(&decoded[..15]).trim().to_string();
-    let suffix = decoded[15];
+    let (name, suffix) = netbios_name(b.get(13..45)?)?;
     if name.is_empty() || name.starts_with('*') {
         return None;
     }
@@ -629,6 +638,21 @@ fn nbns_announcement(b: &[u8], fields: &mut BTreeMap<String, String>) -> Option<
         [Hint::new("windows", false, "NetBIOS name registration")],
     );
     Some(())
+}
+/// A first-level encoded NetBIOS name (32 characters `A`-`P`, RFC 1001 14.1): the trimmed name
+/// and the suffix byte.
+fn netbios_name(encoded: &[u8]) -> Option<(String, u8)> {
+    let mut decoded = [0u8; 16];
+    if encoded.len() != 32 {
+        return None;
+    }
+    for (out, pair) in decoded.iter_mut().zip(encoded.as_chunks::<2>().0) {
+        if !pair.iter().all(|c| (b'A'..=b'P').contains(c)) {
+            return None;
+        }
+        *out = ((pair[0] - b'A') << 4) | (pair[1] - b'A');
+    }
+    Some((text(&decoded[..15]).trim().to_string(), decoded[15]))
 }
 /// LLDP system capabilities: the enabled bits as names, and the matching hints.
 fn lldp_capabilities(enabled: u16, fields: &mut BTreeMap<String, String>) {
@@ -1328,18 +1352,367 @@ pub(crate) mod tests {
         assert!(f.contains_key("service._ipp._tcp") && f.contains_key("service._airplay._tcp"));
         assert!(f.contains_key("hint.printer") && f.contains_key("hint.media"));
     }
+    /// A first-level encoded NetBIOS name with an empty scope.
+    fn encoded(name: &str, suffix: u8) -> Vec<u8> {
+        let mut raw = format!("{name:<15}").into_bytes();
+        raw.push(suffix);
+        let mut out = vec![32];
+        for b in raw {
+            out.extend([b'A' + (b >> 4), b'A' + (b & 15)]);
+        }
+        out.push(0);
+        out
+    }
+    /// A NetBIOS datagram (RFC 1002 4.4.1) to `destination`, holding an SMB Transaction to
+    /// `mailslot` with `data`, laid out as Windows sends browser announcements.
+    fn netbios_datagram(destination: &[u8], mailslot: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut smb = b"\xffSMB\x25".to_vec();
+        smb.resize(32, 0);
+        let offset = 32 + 1 + 34 + 2 + mailslot.len();
+        smb.push(17);
+        for word in [
+            0,
+            data.len(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            offset,
+            data.len(),
+            offset,
+        ] {
+            smb.extend((word as u16).to_le_bytes());
+        }
+        smb.extend([3, 0, 1, 0, 1, 0, 2, 0]);
+        smb.extend(((mailslot.len() + data.len()) as u16).to_le_bytes());
+        smb.extend(mailslot);
+        smb.extend(data);
+        let mut p = vec![0x11, 0x02, 0x12, 0x34, 192, 168, 1, 80, 0, 138];
+        p.extend(((68 + smb.len()) as u16).to_be_bytes());
+        p.extend([0, 0]);
+        p.extend(encoded("PC-1", 0x00));
+        p.extend(destination);
+        p.extend(smb);
+        p
+    }
+    /// A browser announcement body (MS-BRWS 2.2.1 layout).
+    fn announcement(opcode: u8, name: &str, version: [u8; 2], kind: u32, comment: &str) -> Vec<u8> {
+        let mut d = vec![opcode, 1, 0x60, 0xea, 0, 0];
+        let mut n = name.as_bytes().to_vec();
+        n.resize(16, 0);
+        d.extend(n);
+        d.extend(version);
+        d.extend(kind.to_le_bytes());
+        d.extend([15, 1, 0x55, 0xaa]);
+        d.extend(comment.as_bytes());
+        d.push(0);
+        d
+    }
+    fn browser_frame(destination: &[u8], data: &[u8]) -> Vec<u8> {
+        udp_frame(
+            [192, 168, 1, 80],
+            [192, 168, 1, 255],
+            138,
+            138,
+            &netbios_datagram(destination, b"\\MAILSLOT\\BROWSE\0", data),
+        )
+    }
+    /// Frame 143 of `tests/fixtures/ics/iec104_diverse.pcap` (ITI/ICS-Security-Tools, CC-BY-4.0,
+    /// see `PROVENANCE.md` there): a Local Master Announcement from a Windows XP host.
+    #[test]
+    fn netbios_browser_announcement_from_a_real_capture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/fixtures/ics/iec104_diverse.pcap"
+        );
+        let file = std::fs::File::open(path).unwrap();
+        let mut reader = crate::pcapfile::Reader::new(std::io::BufReader::new(file)).unwrap();
+        let mut found = vec![];
+        while let Some((_, frame)) = reader.next_frame().unwrap() {
+            found.extend(decode(&frame).filter(|o| o.protocol == "NetBIOS"));
+        }
+        assert_eq!(found.len(), 1, "{found:?}");
+        let o = found.remove(0);
+        assert_eq!(o.ip.unwrap().to_string(), "10.0.0.10");
+        assert_eq!(o.mac, "02:00:4C:4F:4F:50");
+        assert_eq!(o.fields["announcement"], "local_master");
+        assert_eq!(o.fields["name"], "EVON", "the garbage after the NUL is cut");
+        assert_eq!(o.fields["workgroup"], "ARBETSGRUPP");
+        assert_eq!(o.fields["os_version"], "5.1");
+        assert_eq!(o.fields["os_hint"], "Windows XP");
+        assert_eq!(
+            o.fields["server_type"],
+            "workstation,server,nt,potential_browser,master_browser"
+        );
+        assert!(o.fields.contains_key("hint_weak.windows"));
+        assert!(!o.fields.contains_key("comment"));
+        let d = only_device(o);
+        assert_eq!(d.hostnames, ["EVON"]);
+        assert!(d.sources.contains(&"passive NetBIOS".to_string()));
+    }
+    #[test]
+    fn netbios_browser_host_domain_and_samba() {
+        let windows = announcement(1, "WS-OFFICE", [10, 0], 0x0001_1003, "Front desk");
+        let o = decode(&browser_frame(&encoded("CORP", 0x1d), &windows)).unwrap();
+        assert_eq!(o.protocol, "NetBIOS");
+        assert_eq!(o.fields["announcement"], "host");
+        assert_eq!(o.fields["name"], "WS-OFFICE");
+        assert_eq!(o.fields["workgroup"], "CORP");
+        assert_eq!(o.fields["comment"], "Front desk");
+        assert_eq!(o.fields["os_hint"], "Windows 10/11 / Server 2016+");
+        // A weak hint alone is not a device type (Samba sets the NT bits too).
+        assert_eq!(only_device(o).device_type, "");
+        // Samba: the Unix bit, its own announce version, no Windows hint.
+        let samba = announcement(1, "NAS", [4, 9], 0x0000_9a03, "Samba 4.19");
+        let o = decode(&browser_frame(&encoded("CORP", 0x1d), &samba)).unwrap();
+        assert!(o.fields["server_type"].contains("unix"));
+        assert!(o.fields.contains_key("hint_weak.linux"));
+        assert!(!o.fields.contains_key("hint_weak.windows") && !o.fields.contains_key("os_hint"));
+        // Domain announcement: the name is the workgroup, the trailing string the master browser;
+        // neither is the sender's host name.
+        let mut msbrowse = vec![32];
+        for b in *b"\x01\x02__MSBROWSE__\x02\x01" {
+            msbrowse.extend([b'A' + (b >> 4), b'A' + (b & 15)]);
+        }
+        msbrowse.push(0);
+        let domain = announcement(0x0c, "CORP", [6, 1], 0x8000_1000, "WS-OFFICE");
+        let o = decode(&browser_frame(&msbrowse, &domain)).unwrap();
+        assert_eq!(o.fields["announcement"], "domain");
+        assert_eq!(o.fields["workgroup"], "CORP");
+        assert_eq!(o.fields["master_browser"], "WS-OFFICE");
+        assert!(!o.fields.contains_key("name"));
+        // Other browser opcodes, other mailslots, fragments and empty names are not decoded.
+        let dest = encoded("CORP", 0x1d);
+        let election = announcement(8, "WS-OFFICE", [10, 0], 1, "");
+        assert!(decode(&browser_frame(&dest, &election)).is_none());
+        let lanman = netbios_datagram(&dest, b"\\MAILSLOT\\LANMAN\0", &windows);
+        assert!(decode(&udp_frame([1; 4], [2; 4], 138, 138, &lanman)).is_none());
+        let mut fragment = netbios_datagram(&dest, b"\\MAILSLOT\\BROWSE\0", &windows);
+        fragment[1] = 0x03;
+        assert!(decode(&udp_frame([1; 4], [2; 4], 138, 138, &fragment)).is_none());
+        let nameless = announcement(1, "", [10, 0], 1, "");
+        assert!(decode(&browser_frame(&dest, &nameless)).is_none());
+        // A data offset or count past the end is rejected, never read.
+        let mut bad = netbios_datagram(&dest, b"\\MAILSLOT\\BROWSE\0", &windows);
+        let words = 14 + 2 * 34 + 33;
+        bad[words + 22] = 0xff;
+        assert!(decode(&udp_frame([1; 4], [2; 4], 138, 138, &bad)).is_none());
+        assert_prefixes_do_not_panic(&browser_frame(&dest, &windows));
+    }
+    /// An LLDP frame: chassis and port ID, then `tlvs` (type, value), then the end TLV.
+    fn lldp_frame(tlvs: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let mut f = vec![
+            0x01, 0x80, 0xc2, 0, 0, 0x0e, 0x00, 0x04, 0x13, 1, 2, 3, 0x88, 0xcc,
+        ];
+        f.extend([2, 7, 4, 0x00, 0x04, 0x13, 1, 2, 3]);
+        f.extend([4, 4, 3, 0x00, 0x04, 0x13]);
+        for (kind, value) in tlvs {
+            f.extend(((u16::from(*kind) << 9) | value.len() as u16).to_be_bytes());
+            f.extend(value);
+        }
+        f.extend([0, 0]);
+        f
+    }
+    fn med(subtype: u8, value: &[u8]) -> (u8, Vec<u8>) {
+        (127, [&[0x00, 0x12, 0xbb, subtype][..], value].concat())
+    }
+    /// Network policy: voice, VLAN 100 tagged, priority 5, DSCP 46.
+    fn voice_policy() -> [u8; 4] {
+        let p = (0x40_0000u32 | (100 << 9) | (5 << 6) | 46).to_be_bytes();
+        [1, p[1], p[2], p[3]]
+    }
+    /// Hand-built from ANSI/TIA-1057 (no licence-clean public LLDP-MED capture was found).
+    #[test]
+    fn lldp_med_phone_inventory_and_policy() {
+        let phone = lldp_frame(&[
+            (5, b"SEP000413010203".to_vec()),
+            (7, vec![0x00, 0x24, 0x00, 0x24]),
+            med(1, &[0x00, 0x23, 3]),
+            med(2, &voice_policy()),
+            med(5, b"11"),
+            med(6, b"1.2.3"),
+            med(7, b"sip88xx.14-1"),
+            med(8, b"FCH1234ABCD"),
+            med(9, b"Acme Phones"),
+            med(10, b"CP-8865"),
+            med(11, b""),
+            med(3, &[2, 0, 0, 0]),
+            (127, vec![0x00, 0x80, 0xc2, 1, 0, 20]),
+        ]);
+        let o = decode(&phone).unwrap();
+        assert_eq!(o.protocol, "LLDP");
+        assert_eq!(
+            o.fields["med_capabilities"],
+            "capabilities,network_policy,inventory"
+        );
+        assert_eq!(
+            o.fields["med_device_class"],
+            "endpoint_class_3_communication"
+        );
+        assert_eq!(
+            o.fields["med_policy.voice"],
+            "vlan 100 tagged, priority 5, dscp 46"
+        );
+        assert_eq!(o.fields["med_hardware_revision"], "11");
+        assert_eq!(o.fields["med_firmware_revision"], "1.2.3");
+        assert_eq!(o.fields["med_software_revision"], "sip88xx.14-1");
+        assert_eq!(o.fields["med_serial_number"], "FCH1234ABCD");
+        assert_eq!(o.fields["med_manufacturer"], "Acme Phones");
+        assert_eq!(o.fields["med_model"], "CP-8865");
+        assert!(!o.fields.contains_key("med_asset_id"), "empty");
+        assert!(o.fields.contains_key("hint.voip"));
+        // The bridge bit is the phone's PC port: no network hint next to the MED endpoint class.
+        assert!(!o.fields.contains_key("hint.network"));
+        assert_eq!(only_device(o).device_type, "VoIP phone");
+        // A switch advertising the voice VLAN: a network device, never a phone.
+        let switch = lldp_frame(&[
+            (7, vec![0x00, 0x04, 0x00, 0x04]),
+            med(1, &[0x00, 0x03, 4]),
+            med(2, &voice_policy()),
+            med(2, &[2, 0x80, 0, 0]),
+            med(2, &[9, 0, 0, 0]),
+        ]);
+        let o = decode(&switch).unwrap();
+        assert_eq!(o.fields["med_device_class"], "network_connectivity");
+        assert_eq!(o.fields["med_policy.voice_signaling"], "unknown");
+        assert!(
+            o.fields
+                .keys()
+                .filter(|k| k.starts_with("med_policy."))
+                .count()
+                == 2
+        );
+        assert!(!o.fields.contains_key("hint.voip"));
+        assert_eq!(
+            only_device(o).device_type,
+            "Network device (router/switch/AP)"
+        );
+        // Short and unknown MED TLVs add nothing.
+        let o = decode(&lldp_frame(&[
+            med(1, &[0]),
+            med(2, &[1, 0]),
+            med(1, &[0, 1, 9]),
+            med(99, b"x"),
+        ]))
+        .unwrap();
+        assert!(
+            o.fields
+                .keys()
+                .all(|k| !k.starts_with("med_") || k == "med_capabilities")
+        );
+        assert_prefixes_do_not_panic(&phone);
+    }
+    /// Ethernet + IPv6 + UDP 546 -> 547 around `payload`, from a link-local address.
+    fn dhcpv6_frame(payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![0x33, 0x33, 0, 1, 0, 2];
+        f.extend(MAC);
+        f.extend([0x86, 0xdd, 0x60, 0, 0, 0]);
+        f.extend(((8 + payload.len()) as u16).to_be_bytes());
+        f.extend([17, 1]);
+        f.extend([
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x22, 0xff, 0xfe, 0x33, 0x44, 0x55,
+        ]);
+        f.extend([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2]);
+        f.extend([2, 0x22, 2, 0x23]);
+        f.extend(((8 + payload.len()) as u16).to_be_bytes());
+        f.extend([0, 0]);
+        f.extend(payload);
+        f
+    }
+    fn dhcpv6(kind: u8, options: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut p = vec![kind, 0xab, 0xcd, 0xef];
+        for (code, value) in options {
+            p.extend(code.to_be_bytes());
+            p.extend((value.len() as u16).to_be_bytes());
+            p.extend(value);
+        }
+        p
+    }
+    /// Hand-built from RFC 8415 and RFC 4704 (no licence-clean public DHCPv6 capture was found).
+    #[test]
+    fn dhcpv6_client_messages() {
+        let duid_llt = [
+            &[0, 1, 0, 1, 0x2c, 0x1d, 0x5e, 0x01][..],
+            &[0xaa, 0xbb, 0xcc, 1, 2, 3][..],
+        ]
+        .concat();
+        let mut vendor = 311u32.to_be_bytes().to_vec();
+        vendor.extend([0, 8]);
+        vendor.extend(b"MSFT 5.0");
+        let mut fqdn = vec![0];
+        fqdn.extend(b"\x0fDESKTOP-AB12CD3\x04corp\x07example\x00");
+        let solicit = dhcpv6_frame(&dhcpv6(
+            1,
+            &[
+                (1, duid_llt.clone()),
+                (8, vec![0, 0]),
+                (39, fqdn),
+                (16, vendor),
+                (6, vec![0, 17, 0, 23, 0, 24, 0, 39]),
+            ],
+        ));
+        let o = decode(&solicit).unwrap();
+        assert_eq!(o.protocol, "DHCPv6");
+        assert_eq!(
+            o.mac, "02:11:22:33:44:55",
+            "the Ethernet source, not the DUID"
+        );
+        assert_eq!(o.ip.unwrap().to_string(), "fe80::11:22ff:fe33:4455");
+        assert_eq!(o.fields["message_type"], "solicit");
+        assert_eq!(
+            o.fields["client_id"],
+            "00:01:00:01:2c:1d:5e:01:aa:bb:cc:01:02:03"
+        );
+        assert_eq!(o.fields["duid_type"], "LLT");
+        assert_eq!(o.fields["duid_mac"], "AA:BB:CC:01:02:03");
+        assert_eq!(o.fields["hostname"], "DESKTOP-AB12CD3");
+        assert_eq!(o.fields["fqdn"], "DESKTOP-AB12CD3.corp.example");
+        assert_eq!(o.fields["vendor_enterprise"], "311");
+        assert_eq!(o.fields["vendor_class"], "MSFT 5.0");
+        assert_eq!(o.fields["oro"], "17,23,24,39");
+        assert_eq!(o.fields["os_hint"], "Windows");
+        let d = only_device(o);
+        assert_eq!(d.device_type, "Windows computer");
+        assert!(d.hostnames.contains(&"DESKTOP-AB12CD3".to_string()));
+        // DUID-LL, DUID-EN, a partial FQDN (no final zero) and an Information-request.
+        let o = decode(&dhcpv6_frame(&dhcpv6(
+            11,
+            &[
+                (1, vec![0, 3, 0, 1, 1, 2, 3, 4, 5, 6]),
+                (39, b"\x01\x05host1".to_vec()),
+            ],
+        )))
+        .unwrap();
+        assert_eq!(o.fields["message_type"], "information_request");
+        assert_eq!(o.fields["duid_type"], "LL");
+        assert_eq!(o.fields["duid_mac"], "01:02:03:04:05:06");
+        assert_eq!(o.fields["fqdn"], "host1");
+        let o = decode(&dhcpv6_frame(&dhcpv6(
+            5,
+            &[(1, vec![0, 2, 0, 0, 0, 9, 1, 2])],
+        )))
+        .unwrap();
+        assert_eq!(o.fields["duid_type"], "EN");
+        assert_eq!(o.fields["duid_enterprise"], "9");
+        assert!(!o.fields.contains_key("duid_mac"));
+        // Server and relay messages are not the client's: Advertise, Reply, Relay-forward.
+        for kind in [2, 7, 12, 13] {
+            assert!(decode(&dhcpv6_frame(&dhcpv6(kind, &[(1, duid_llt.clone())]))).is_none());
+        }
+        // An option running past the end keeps what came before it.
+        let mut cut = dhcpv6(3, &[(1, duid_llt.clone())]);
+        cut.extend([0, 39, 0, 50, 0]);
+        let o = decode(&dhcpv6_frame(&cut)).unwrap();
+        assert_eq!(o.fields["duid_type"], "LLT");
+        assert!(!o.fields.contains_key("fqdn"));
+        assert_prefixes_do_not_panic(&solicit);
+    }
     #[test]
     fn netbios_name_registration() {
-        fn encoded(name: &str, suffix: u8) -> Vec<u8> {
-            let mut raw = format!("{name:<15}").into_bytes();
-            raw.push(suffix);
-            let mut out = vec![32];
-            for b in raw {
-                out.extend([b'A' + (b >> 4), b'A' + (b & 15)]);
-            }
-            out.push(0);
-            out
-        }
         fn registration(name: &str, suffix: u8, flags: u8) -> Vec<u8> {
             let mut p = vec![0x12, 0x34, 0x29, 0x10, 0, 1, 0, 0, 0, 0, 0, 1];
             p.extend(encoded(name, suffix));
@@ -1480,7 +1853,10 @@ pub(crate) mod tests {
         let decoders = main.split("pub struct Listening").next().unwrap();
         let sources = [
             decoders,
+            include_str!("passive/browser.rs"),
             include_str!("passive/cdp.rs"),
+            include_str!("passive/dhcpv6.rs"),
+            include_str!("passive/lldp_med.rs"),
             include_str!("passive/hints.rs"),
             include_str!("passive/ndp.rs"),
             include_str!("passive/wsd.rs"),
