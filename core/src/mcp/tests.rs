@@ -1114,6 +1114,42 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
     remove_db(&db);
 }
 
+/// The scan tool has no IPv6 discovery and no SNMP: neither can be asked for, and the plan of a
+/// scan never lists them (the multicast echo reaches the whole link, not the addresses named).
+#[test]
+fn the_scan_tool_offers_neither_ipv6_discovery_nor_snmp() {
+    let db = temp_db("no-ipv6-snmp");
+    let mut server = session(&db);
+    for extra in [
+        json!({"ipv6_discover": true}),
+        json!({"ipv6-discover": true}),
+        json!({"snmp_community": "public"}),
+        json!({"snmp_v3": "u:sha:ENV"}),
+        json!({"snmp_ref": {"community": {"version": "2c", "env": "X"}}}),
+    ] {
+        let mut arguments = json!({"targets": "127.0.0.1", "dry_run": true});
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let text = failed(&mut server, "scan", arguments);
+        assert!(text.contains("unexpected member"), "{text}");
+    }
+    let plan = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "services": true, "dry_run": true}),
+        "dry-run",
+    );
+    let text = plan.to_string();
+    assert!(
+        !text.contains("ipv6-echo") && !text.contains("snmp-request"),
+        "{text}"
+    );
+    assert!(!db.exists());
+    remove_db(&db);
+}
+
 #[test]
 fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -148,6 +148,14 @@ impl Scanner {
                                 .labelled_by(name.id);
                         });
                     }
+                    ui.checkbox(
+                        &mut s.ipv6_discover,
+                        tr!("Find IPv6 hosts on the local link after the scan (one multicast ping per interface)"),
+                    )
+                    .on_hover_text(tr!(
+                        "Sends one ICMPv6 echo request to ff02::1 per network interface with hop limit 1, also in Safe Mode, then reads the system's IPv6 neighbor list and joins it to the scanned hosts by MAC address."
+                    ));
+                    snmp_section(ui, s);
                     ui.horizontal(|ui| {
                         let label = ui.label(tr!("Script (.rhai file or folder)"));
                         ui.add(egui::TextEdit::singleline(&mut s.scripts).desired_width(220.0))
@@ -393,6 +401,205 @@ impl Scanner {
     }
 }
 use crate::trace::TraceMethod;
+/// Which SNMP setting the form edits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SnmpMode {
+    #[default]
+    Off,
+    Community,
+    V3,
+}
+/// The SNMP form of the settings window: the names of the environment variables that hold the
+/// secrets, never a secret. It becomes the saved `Settings::snmp_ref`, so a scheduled scan keeps
+/// the setting and reads the secrets from the environment each time it starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SnmpForm {
+    mode: SnmpMode,
+    /// `1` or `2c`.
+    version: String,
+    community_env: String,
+    user: String,
+    /// `sha`, `sha256`, `md5`; empty: no authentication.
+    auth: String,
+    auth_env: String,
+    /// `aes`, `des`; empty: no privacy.
+    privacy: String,
+    priv_env: String,
+}
+impl SnmpForm {
+    fn from_ref(saved: Option<&crate::snmp::SnmpRef>) -> Self {
+        use crate::snmp::SnmpRef;
+        match saved {
+            None => Self::default(),
+            Some(SnmpRef::Community { version, env }) => Self {
+                mode: SnmpMode::Community,
+                version: version.clone(),
+                community_env: env.clone(),
+                ..Self::default()
+            },
+            Some(SnmpRef::V3 { spec }) => {
+                let parts: Vec<&str> = spec.split(':').collect();
+                let part = |i: usize| parts.get(i).copied().unwrap_or_default().to_string();
+                Self {
+                    mode: SnmpMode::V3,
+                    user: part(0),
+                    auth: part(1),
+                    auth_env: part(2),
+                    privacy: part(3),
+                    priv_env: part(4),
+                    ..Self::default()
+                }
+            }
+        }
+    }
+    /// The setting this form describes; `Err` says what is missing or wrong.
+    fn to_ref(&self) -> Result<Option<crate::snmp::SnmpRef>, String> {
+        use crate::snmp::SnmpRef;
+        match self.mode {
+            SnmpMode::Off => Ok(None),
+            SnmpMode::Community => {
+                let version = if self.version.is_empty() {
+                    "2c"
+                } else {
+                    &self.version
+                };
+                SnmpRef::community(version, self.community_env.trim()).map(Some)
+            }
+            SnmpMode::V3 => {
+                let mut spec = self.user.trim().to_string();
+                if !self.auth.is_empty() {
+                    spec.push_str(&format!(":{}:{}", self.auth, self.auth_env.trim()));
+                    if !self.privacy.is_empty() {
+                        spec.push_str(&format!(":{}:{}", self.privacy, self.priv_env.trim()));
+                    }
+                }
+                SnmpRef::v3(&spec).map(Some)
+            }
+        }
+    }
+}
+/// The "SNMP" part of the settings: off, a community from an environment variable, or an SNMPv3
+/// user with the names of the variables that hold the passphrases.
+fn snmp_section(ui: &mut egui::Ui, s: &mut scan::Settings) {
+    let id = egui::Id::NULL;
+    // The form remembers what it last wrote into the settings; when the settings changed by
+    // another way (a preset, Restore defaults) the form is read from them again.
+    let mut form = ui
+        .data_mut(|d| d.get_temp::<(SnmpForm, Option<crate::snmp::SnmpRef>)>(id))
+        .filter(|(_, written)| *written == s.snmp_ref)
+        .map(|(form, _)| form)
+        .unwrap_or_else(|| SnmpForm::from_ref(s.snmp_ref.as_ref()));
+    let before = form.clone();
+    ui.horizontal(|ui| {
+        ui.label(tr!("Read devices over SNMP (read-only)"));
+        let shown = match form.mode {
+            SnmpMode::Off => tr!("Off"),
+            SnmpMode::Community => tr!("Community (SNMP v1/v2c)"),
+            SnmpMode::V3 => tr!("SNMPv3 user"),
+        };
+        egui::ComboBox::from_id_salt("snmp_mode")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut form.mode, SnmpMode::Off, tr!("Off"));
+                ui.selectable_value(
+                    &mut form.mode,
+                    SnmpMode::Community,
+                    tr!("Community (SNMP v1/v2c)"),
+                );
+                ui.selectable_value(&mut form.mode, SnmpMode::V3, tr!("SNMPv3 user"));
+            });
+    });
+    let text_field = |ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str| {
+        ui.horizontal(|ui| {
+            let name = ui.label(label);
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .hint_text(hint)
+                    .desired_width(170.0),
+            )
+            .labelled_by(name.id);
+        });
+    };
+    match form.mode {
+        SnmpMode::Off => {}
+        SnmpMode::Community => {
+            ui.horizontal(|ui| {
+                ui.label(tr!("Version"));
+                ui.selectable_value(&mut form.version, "2c".to_string(), "v2c");
+                ui.selectable_value(&mut form.version, "1".to_string(), "v1");
+            });
+            if form.version.is_empty() {
+                form.version = "2c".into();
+            }
+            text_field(
+                ui,
+                tr!("Environment variable with the community"),
+                &mut form.community_env,
+                "SNMP_COMMUNITY",
+            );
+        }
+        SnmpMode::V3 => {
+            text_field(ui, tr!("User name"), &mut form.user, "monitor");
+            ui.horizontal(|ui| {
+                ui.label(tr!("Authentication"));
+                for (value, name) in [
+                    ("", tr!("none")),
+                    ("sha", "SHA-1"),
+                    ("sha256", "SHA-256"),
+                    ("md5", "MD5 (weak)"),
+                ] {
+                    ui.selectable_value(&mut form.auth, value.to_string(), name);
+                }
+            });
+            if !form.auth.is_empty() {
+                text_field(
+                    ui,
+                    tr!("Environment variable with the authentication passphrase"),
+                    &mut form.auth_env,
+                    "SNMP_AUTH",
+                );
+                ui.horizontal(|ui| {
+                    ui.label(tr!("Privacy"));
+                    for (value, name) in
+                        [("", tr!("none")), ("aes", "AES-128"), ("des", "DES (weak)")]
+                    {
+                        ui.selectable_value(&mut form.privacy, value.to_string(), name);
+                    }
+                });
+                if !form.privacy.is_empty() {
+                    text_field(
+                        ui,
+                        tr!("Environment variable with the privacy passphrase"),
+                        &mut form.priv_env,
+                        "SNMP_PRIV",
+                    );
+                }
+            } else {
+                form.privacy.clear();
+            }
+        }
+    }
+    if form != before {
+        // only the names are kept; an incomplete form keeps the previous setting
+        if let Ok(saved) = form.to_ref() {
+            s.snmp_ref = saved;
+        }
+    }
+    if form.mode != SnmpMode::Off {
+        match form.to_ref() {
+            Err(e) => {
+                ui.colored_label(egui::Color32::from_rgb(205, 70, 70), e);
+            }
+            Ok(_) => {
+                ui.label(tr!("Only the names of the variables are saved, never the passphrases. A scheduled scan reads them again each time it starts."));
+            }
+        }
+    } else {
+        s.snmp_ref = None;
+    }
+    let written = s.snmp_ref.clone();
+    ui.data_mut(|d| d.insert_temp(id, (form, written)));
+}
 /// A settings grid row: the label and the field, the label naming the field for screen readers.
 fn labelled_row(ui: &mut egui::Ui, label: &str, field: impl egui::Widget) {
     let name = ui.label(label);
@@ -420,4 +627,96 @@ fn trace_method_combo(ui: &mut egui::Ui, safe: bool, method: &mut TraceMethod) {
                 });
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::snmp::SnmpRef;
+
+    #[test]
+    fn the_snmp_form_builds_and_reads_back_the_saved_setting() {
+        // off is no setting
+        assert_eq!(SnmpForm::default().to_ref(), Ok(None));
+        assert_eq!(SnmpForm::from_ref(None), SnmpForm::default());
+        // a community from a variable
+        let form = SnmpForm {
+            mode: SnmpMode::Community,
+            version: "1".into(),
+            community_env: " NS_COMMUNITY ".into(),
+            ..SnmpForm::default()
+        };
+        let saved = form.to_ref().unwrap().unwrap();
+        assert_eq!(
+            saved,
+            SnmpRef::Community {
+                version: "1".into(),
+                env: "NS_COMMUNITY".into()
+            }
+        );
+        assert_eq!(
+            SnmpForm::from_ref(Some(&saved)).community_env,
+            "NS_COMMUNITY"
+        );
+        // every SNMPv3 level reads back as it was entered
+        for (auth, privacy, spec) in [
+            ("", "", "monitor"),
+            ("sha", "", "monitor:sha:A"),
+            ("sha256", "aes", "monitor:sha256:A:aes:P"),
+            ("md5", "des", "monitor:md5:A:des:P"),
+        ] {
+            let form = SnmpForm {
+                mode: SnmpMode::V3,
+                user: "monitor".into(),
+                auth: auth.into(),
+                auth_env: "A".into(),
+                privacy: privacy.into(),
+                priv_env: "P".into(),
+                ..SnmpForm::default()
+            };
+            let saved = form.to_ref().unwrap().unwrap();
+            assert_eq!(saved, SnmpRef::V3 { spec: spec.into() });
+            let back = SnmpForm::from_ref(Some(&saved));
+            assert_eq!(back.to_ref().unwrap(), Some(saved));
+        }
+        // a passphrase typed where a variable name belongs is refused, and never shown back
+        let typed = SnmpForm {
+            mode: SnmpMode::V3,
+            user: "monitor".into(),
+            auth: "sha".into(),
+            auth_env: "my secret passphrase".into(),
+            ..SnmpForm::default()
+        };
+        let e = typed.to_ref().unwrap_err();
+        assert!(
+            e.contains("environment variable") && !e.contains("secret passphrase"),
+            "{e}"
+        );
+        // missing parts are errors, not settings
+        let community = SnmpForm {
+            mode: SnmpMode::Community,
+            ..SnmpForm::default()
+        };
+        assert!(community.to_ref().is_err());
+        let v3 = SnmpForm {
+            mode: SnmpMode::V3,
+            ..SnmpForm::default()
+        };
+        assert!(v3.to_ref().is_err());
+    }
+
+    /// The saved settings of the desktop (and so a scheduled scan) keep the names and nothing
+    /// else: no secret exists on this path.
+    #[test]
+    fn the_saved_setting_survives_a_json_round_trip_as_names() {
+        let s = scan::Settings {
+            snmp_ref: Some(SnmpRef::v3("monitor:sha256:SNMP_AUTH:aes:SNMP_PRIV").unwrap()),
+            ..scan::Settings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("SNMP_AUTH") && json.contains("SNMP_PRIV"));
+        let back: scan::Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.snmp_ref, s.snmp_ref);
+        assert!(back.snmp.is_none(), "the resolved secrets are never saved");
+    }
 }

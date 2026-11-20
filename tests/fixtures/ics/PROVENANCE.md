@@ -46,3 +46,6 @@ Files below `fuzz/corpus/` whose name starts with `ics_` (all captures under 64 
 - `otpassive_feed/ics_omron_test`, `ics_fox_info`, `ics_mms_read_request`, `ics_mms_stop_request`, `ics_profinet_dcp_change_ip` and `ics_melsec_melsoft_udp_head` (the first 60 frames): the frames in the same record layout.
 - `fins_reply/ics_omron_udp_reply`, `fox_hello/ics_fox_station_hello` and `ics_fox_client_hello`: the payloads of the Omron UDP reply and of the two Fox hellos.
 - `enip_list_identity/ics_1756_enbt`: the List Identity reply of `enip_test.pcap` without its encapsulation header.
+- `fins_tcp_reply/ics_omron_tcp_*`: the server's two FINS/TCP frames of `omron_test.pcap` (the node address reply and the Controller Data Read reply), as they are on the wire.
+- `dnp3_reply/ics_dnp3_*`: the outstation's two frames of `dnp3_read_and_response.pcap` (the 292-byte response and the 35-byte tail), unchanged.
+- Not from a capture, built from a specification or description and named `built_*`: `mc_reply/built_*` (MELSEC MC 3E responses, from the protocol reference) and `otpassive_feed/built_codesys_v2_handshake` (a CODESYS V2 handshake and reply, from a public description, see `data/README.md`).

@@ -45,11 +45,14 @@ pub fn probes_ports(responding: bool, s: &Settings) -> bool {
 }
 /// Open TCP ports that get service identification: everything except industrial ports, which
 /// only the dedicated read-only OT identification touches.
-pub fn service_ports(ports: &[u16]) -> Vec<u16> {
+/// A port the user named for the MELSEC MC protocol (`--melsec-port`) is industrial too.
+pub fn service_ports(ports: &[u16], s: &Settings) -> Vec<u16> {
     ports
         .iter()
         .copied()
-        .filter(|p| !service::is_ot_port(*p))
+        .filter(|p| {
+            !service::is_ot_port(*p) && !(s.ot && s.melsec_port != 0 && *p == s.melsec_port)
+        })
         .collect()
 }
 /// Splits the UDP port list into ports the generic UDP scan may probe and industrial/printer
@@ -58,8 +61,8 @@ pub fn service_ports(ports: &[u16]) -> Vec<u16> {
 pub fn udp_ports(ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
     ports.iter().partition(|p| !service::is_ot_udp_port(**p))
 }
-/// What the IPv6 discovery (`--ipv6-discover`, `scan` only) sends once per scan: one echo per
-/// interface. `None` when it is off.
+/// What the IPv6 discovery (`--ipv6-discover`, `scan` and `monitor`) sends once per scan (once
+/// per cycle in `monitor`): one echo per interface. `None` when it is off.
 pub fn ipv6_discovery(s: &Settings) -> Option<HostPlan> {
     if !crate::ipv6::enabled(s) {
         return None;
@@ -277,7 +280,7 @@ pub fn host(
 
     // Service identification, per open non-OT port.
     if s.services {
-        let eligible = service_ports(ports);
+        let eligible = service_ports(ports, s);
         let to = format!("each open port among tcp/{}", ports_text(&eligible));
         let open = "per open port";
         plan.push(
@@ -422,8 +425,20 @@ pub fn host(
         }
     }
 
-    // SNMP with user-supplied credentials.
-    if let Some(config) = &s.snmp {
+    // SNMP with user-supplied credentials (or the saved names of the variables that hold them).
+    let saved_snmp = s
+        .snmp
+        .clone()
+        .or_else(|| s.snmp_ref.as_ref()?.resolve(|n| std::env::var(n).ok()).ok());
+    if saved_snmp.is_none()
+        && let Some(r) = &s.snmp_ref
+    {
+        plan.notes.push(format!(
+            "SNMP is configured ({}) but its environment variables are not set here: no SNMP request would be sent",
+            r.summary()
+        ));
+    }
+    if let Some(config) = &saved_snmp {
         let (requests, seconds) = if s.safe {
             (
                 crate::snmp::SAFE_MAX_REQUESTS,
@@ -438,7 +453,7 @@ pub fn host(
                 &label,
                 format!("udp/{}", config.port),
                 &format!(
-                    "only if the host answered; credentials were given ({}); at most {requests} requests and {seconds} s per host, read-only: sysDescr/sysName/sysObjectID/sysUpTime, ifTable, ipAddrTable, LLDP remote table",
+                    "only if the host answered; credentials were given ({}); at most {requests} requests and {seconds} s per host, read-only: sysDescr/sysName/sysObjectID/sysUpTime, ifTable and ifName, ipAddrTable and ipAddressTable, LLDP remote table",
                     config.credentials_summary()
                 ),
             );
@@ -487,6 +502,40 @@ pub fn host(
                     &when,
                 );
             }
+        }
+        // The requests that need a second option: only to the port or address the user named.
+        for e in catalog.iter().filter(|e| e.optin != readonly::Optin::No) {
+            let (port, why) = match e.optin {
+                readonly::Optin::MelsecPort if s.melsec_port != 0 => (
+                    s.melsec_port,
+                    format!(
+                        "only with --melsec-port, only if tcp/{} was found open (the port is never guessed)",
+                        s.melsec_port
+                    ),
+                ),
+                readonly::Optin::Dnp3Address if s.dnp3_address.is_some() => (
+                    e.port,
+                    format!(
+                        "only with --dnp3-address {} (master {}), only if tcp/{} was found open; never a broadcast",
+                        s.dnp3_address.unwrap_or_default(),
+                        s.dnp3_master,
+                        e.port
+                    ),
+                ),
+                _ => continue,
+            };
+            plan.push(
+                PacketKind::TcpConnect,
+                "OT identification",
+                format!("tcp/{port}"),
+                &why,
+            );
+            plan.push(
+                PacketKind::OtRequest,
+                &e.info.label(),
+                format!("tcp/{port}"),
+                &why,
+            );
         }
         plan.notes.push(
             "OT identification is read-only: no write, control, program or authentication request exists in the code"
@@ -819,13 +868,53 @@ mod tests {
             .filter(|p| p.kind == PacketKind::OtRequest)
             .map(|p| p.detail.clone())
             .collect();
+        // the requests that need a second option (--melsec-port, --dnp3-address) are not planned
+        // without it
         let catalog: BTreeSet<String> = readonly::catalog()
             .into_iter()
+            .filter(|e| e.optin == readonly::Optin::No)
             .map(|e| e.info.label())
             .collect();
         assert_eq!(
             labels, catalog,
             "the plan lists exactly the allow-listed requests"
+        );
+        // with the options they are, to the port and the address the user gave
+        let with = Settings {
+            ot: true,
+            melsec_port: 15007,
+            dnp3_address: Some(10),
+            ..Settings::default()
+        };
+        let p = host(ip("10.0.0.5"), &[15007, 20000], &[], &with, None);
+        let all: BTreeSet<String> = readonly::catalog()
+            .into_iter()
+            .map(|e| e.info.label())
+            .collect();
+        let planned: BTreeSet<String> = p
+            .packets
+            .iter()
+            .filter(|p| p.kind == PacketKind::OtRequest)
+            .map(|p| p.detail.clone())
+            .collect();
+        assert_eq!(planned, all);
+        assert!(
+            p.packets.iter().any(|x| x.kind == PacketKind::OtRequest
+                && x.detail.starts_with("MELSEC MC 3E")
+                && x.to == "tcp/15007"),
+            "{p:?}"
+        );
+        assert!(
+            p.packets.iter().any(|x| x.detail.starts_with("DNP3")
+                && x.to == "tcp/20000"
+                && x.when.contains("--dnp3-address 10")),
+            "{p:?}"
+        );
+        // the port the user named for MC is not given to the generic service probes
+        assert_eq!(service_ports(&[80, 15007], &with), [80]);
+        assert_eq!(
+            service_ports(&[80, 15007], &Settings::default()),
+            [80, 15007]
         );
         assert!(
             labels
@@ -836,7 +925,11 @@ mod tests {
         assert!(!kinds(&none).contains(&PacketKind::OtRequest));
         // The OT port table of the sender and the catalog agree.
         let ports: BTreeSet<u16> = crate::ot::TARGETS.iter().map(|t| t.1).collect();
-        let catalog_ports: BTreeSet<u16> = readonly::catalog().iter().map(|e| e.port).collect();
+        let catalog_ports: BTreeSet<u16> = readonly::catalog()
+            .iter()
+            .filter(|e| e.optin == readonly::Optin::No)
+            .map(|e| e.port)
+            .collect();
         assert_eq!(ports, catalog_ports);
     }
 
@@ -1117,6 +1210,14 @@ mod tests",
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
+        // a port the user names for the MELSEC MC protocol: the CPU model request goes there (and
+        // the connection is dropped without an answer)
+        let mc = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            std::thread::spawn(move || for _ in l.incoming().flatten() {});
+            port
+        };
         // an SNMP agent that is not there: the request goes out, nothing answers
         let snmp = {
             let free = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -1132,6 +1233,7 @@ mod tests",
                 os_detect: true,
                 ot: true,
                 jarm: true,
+                melsec_port: mc,
                 snmp: Some(snmp.clone()),
                 favicon: true,
                 trace: false,
@@ -1146,7 +1248,7 @@ mod tests",
                 udp_ports: "53,123".into(),
                 ..Settings::default()
             };
-            let mut ports = vec![open, closed, 502, 102];
+            let mut ports = vec![open, closed, mc, 502, 102];
             ports.sort_unstable();
             ports.dedup();
             let run = crate::scan::start(vec![ip("127.0.0.1")], ports.clone(), s.clone());

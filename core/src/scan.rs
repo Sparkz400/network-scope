@@ -35,6 +35,15 @@ pub struct Settings {
     pub syn: bool,
     pub safe: bool,
     pub ot: bool,
+    /// `--melsec-port PORT` (needs `ot`): read the CPU model over the MELSEC MC protocol on this
+    /// TCP port, if it was found open. 0 (the default): never; the protocol has no standard port
+    /// and none is guessed.
+    pub melsec_port: u16,
+    /// `--dnp3-address N` (needs `ot`): read class 0 from the DNP3 outstation with this data link
+    /// address on tcp/20000, if that port was found open. `None`: never.
+    pub dnp3_address: Option<u16>,
+    /// `--dnp3-master N`: the master address the DNP3 request comes from (default 1).
+    pub dnp3_master: u16,
     pub interface: String,
     pub source_ip: String,
     pub source_mac: String,
@@ -108,6 +117,15 @@ pub struct Settings {
     /// over SNMP (system group, interfaces, LLDP). Never serialised: it holds secrets.
     #[serde(skip)]
     pub snmp: Option<crate::snmp::SnmpConfig>,
+    /// The saved form of the SNMP setting: the names of the environment variables that hold the
+    /// community string or the passphrases, never a secret. A scheduled scan, a service, a
+    /// replayed scan and the desktop keep this; [`Settings::resolve_snmp`] turns it into `snmp`
+    /// when a scan starts.
+    pub snmp_ref: Option<crate::snmp::SnmpRef>,
+    /// Why `snmp_ref` could not be resolved when this run started (a variable is not set): the
+    /// hosts that answered get a note instead of a silent skip. Not saved.
+    #[serde(skip)]
+    pub snmp_unresolved: Option<String>,
     /// IPv6 discovery of the local link (`--ipv6-discover`): one ICMPv6 echo to `ff02::1` per
     /// interface, the OS neighbour cache, joined to hosts by MAC (see `ipv6`).
     pub ipv6_discover: bool,
@@ -132,6 +150,9 @@ impl Default for Settings {
             syn: false,
             safe: true,
             ot: false,
+            melsec_port: 0,
+            dnp3_address: None,
+            dnp3_master: 1,
             interface: String::new(),
             source_ip: String::new(),
             source_mac: String::new(),
@@ -162,7 +183,27 @@ impl Default for Settings {
             early_stop: false,
             partial_events: false,
             snmp: None,
+            snmp_ref: None,
+            snmp_unresolved: None,
             ipv6_discover: false,
+        }
+    }
+}
+
+impl Settings {
+    /// Makes `snmp` ready for a run: when only the saved form (`snmp_ref`) is there, the secrets
+    /// are read from the environment through `env`. A variable that is not set does not stop the
+    /// scan: SNMP is then not read and `snmp_unresolved` says why (noted on the hosts).
+    pub fn resolve_snmp(&mut self, env: impl Fn(&str) -> Option<String>) {
+        self.snmp_unresolved = None;
+        if self.snmp.is_some() {
+            return;
+        }
+        if let Some(saved) = &self.snmp_ref {
+            match saved.resolve(env) {
+                Ok(config) => self.snmp = Some(config),
+                Err(why) => self.snmp_unresolved = Some(why),
+            }
         }
     }
 }
@@ -598,6 +639,9 @@ pub fn start_incremental(
     settings: Settings,
     previous: Option<Arc<crate::incremental::Previous>>,
 ) -> Running {
+    // The saved SNMP setting holds variable names; the secrets are read now, at every start.
+    let mut settings = settings;
+    settings.resolve_snmp(|name| std::env::var(name).ok());
     let (tx, receiver) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
