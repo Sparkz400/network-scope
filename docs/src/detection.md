@@ -34,6 +34,7 @@ Put a `probes.json` in `%LOCALAPPDATA%/NetworkScope` or pass `--probes FILE`. A 
 
 - **Off by default, never in Safe Mode.** The option is ignored in Safe Mode and without `--services` (the GUI checkbox is greyed out), because it adds ten connections per TLS port. Each connection goes through the rate gate; ports are probed one after the other; industrial and printer ports are never contacted. Each probe reads at most 1484 bytes and closes.
 - **Not verified against the reference implementation.** The probe parameters follow the public description, but the cipher table, ALPN lists and extension bodies were written without the reference source at hand, so the hash has the JARM format and is stable for a given server (use it to spot servers with the same TLS stack inside one scan or between scans) but **must not be compared with hashes from public JARM databases** until the tables have been compared with `jarm.py`. The tests use synthetic server replies and check the format and the composition, not published hashes. Not tested against real servers beyond a local test server.
+- Every JARM hello takes a token from the scan's rate gate and is counted in the sent log as `tls-client-hello` / `JARM fingerprint hello`; `--dry-run` lists it (and says when it would not be sent: Safe Mode, or without `--services`). A host that the back-off paused gets no JARM hellos.
 - The reply parser is fuzzed (`jarm_response`). The key is a volatile-free identity key like `ja4s` and is not used as evidence for the device type or OS.
 
 ## SSH

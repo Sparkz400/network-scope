@@ -304,6 +304,19 @@ pub fn host(
                 "ports that completed a TLS handshake; not in Safe Mode",
             );
         }
+        if crate::jarm::enabled(s) {
+            plan.push(
+                PacketKind::TlsClientHello,
+                "JARM fingerprint hello",
+                &to,
+                "ten ClientHellos per port that spoke TLS, one connection each; --jarm only, never in Safe Mode, never on industrial or printer ports",
+            );
+        } else if s.jarm {
+            plan.notes.push(
+                "JARM fingerprinting (--jarm) needs --services and leaving Safe Mode, so no JARM hellos are sent"
+                    .into(),
+            );
+        }
         if eligible.contains(&445) {
             plan.push(PacketKind::SmbNegotiate, "SMB2 negotiate", "tcp/445", open);
             plan.push(PacketKind::SmbNegotiate, "SMB1 negotiate", "tcp/445", open);
@@ -626,6 +639,7 @@ mod tests {
             dns: true,
             syn: true,
             arp_sweep: true,
+            jarm: true,
             scan_nonresponders: true,
             ..Settings::default()
         }
@@ -914,6 +928,7 @@ mod tests {
         let senders = [
             ("arp.rs", include_str!("arp.rs")),
             ("core.rs", include_str!("core.rs")),
+            ("jarm.rs", include_str!("jarm.rs")),
             ("ot.rs", include_str!("ot.rs")),
             ("syn.rs", include_str!("syn.rs")),
             ("tls.rs", include_str!("tls.rs")),
@@ -1003,6 +1018,7 @@ mod tests",
                 udp: true,
                 os_detect: true,
                 ot: true,
+                jarm: true,
                 trace: false,
                 dns: false,
                 tcp_only: false,

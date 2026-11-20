@@ -781,7 +781,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     // JARM: ten extra hellos per port that service detection found to speak TLS. Opt-in, never
     // in Safe Mode, one port at a time, every connection through the rate gate, and never on
     // industrial or printer ports.
-    if crate::jarm::enabled(&s) {
+    if crate::jarm::enabled(&s) && !gov.paused() {
         let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
         let tls_ports: Vec<u16> = h
             .open
@@ -1182,6 +1182,7 @@ mod tests {
     fn senders_do_not_take_unrecorded_tokens() {
         let sources = [
             ("arp.rs", include_str!("arp.rs")),
+            ("jarm.rs", include_str!("jarm.rs")),
             ("syn.rs", include_str!("syn.rs")),
             ("tls.rs", include_str!("tls.rs")),
             ("trace.rs", include_str!("trace.rs")),

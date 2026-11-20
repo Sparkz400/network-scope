@@ -19,7 +19,7 @@
 //! Sending: ten short connections per port, each through the scan's rate gate, only to ports
 //! that already identified as TLS and are neither industrial nor printer ports. The scanner
 //! only enables it outside Safe Mode and with `--jarm`.
-use crate::{core::Gate, fingerprint, tls};
+use crate::{core::Gate, fingerprint, sendlog::PacketKind, tls};
 use std::{net::IpAddr, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -463,6 +463,10 @@ pub fn enabled(s: &crate::scan::Settings) -> bool {
     s.jarm && s.services && !s.safe
 }
 
+/// The detail the ten hellos are recorded under in the sent log, and listed under in the dry
+/// run (`plan::host`).
+pub const DETAIL: &str = "JARM fingerprint hello";
+
 /// Ports JARM never touches: industrial and printer ports (the generic probes' deny list).
 pub fn allowed_port(port: u16) -> bool {
     !crate::service::is_ot_udp_port(port)
@@ -477,7 +481,7 @@ pub async fn fingerprint(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) ->
     let host = ip.to_string();
     let mut lines = vec![];
     for p in &PROBES {
-        gate.wait().await;
+        gate.wait_for(PacketKind::TlsClientHello, DETAIL).await;
         let reply = send(ip, port, &client_hello(p, &host, random(), random()), limit).await;
         lines.push(response_line(
             reply.as_deref().and_then(parse_response).as_ref(),
@@ -718,6 +722,32 @@ mod tests {
             .unwrap();
         assert!(is_jarm(&a) && a == b, "{a} {b}");
         assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 20);
+        // Every hello is recorded in the sent log (ten per fingerprint), and the dry run plan
+        // lists what is recorded.
+        let sent = gate.log().snapshot();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(
+            (sent[0].kind, sent[0].detail.as_str(), sent[0].count),
+            (PacketKind::TlsClientHello, DETAIL, 20)
+        );
+        let s = crate::scan::Settings {
+            jarm: true,
+            services: true,
+            safe: false,
+            ..Default::default()
+        };
+        let plan = crate::plan::host(ip, &[443], &[], &s, None);
+        assert!(
+            plan.keys()
+                .contains(&(PacketKind::TlsClientHello, DETAIL.to_string()))
+        );
+        let safe = crate::scan::Settings { safe: true, ..s };
+        let plan = crate::plan::host(ip, &[443], &[], &safe, None);
+        assert!(
+            !plan
+                .keys()
+                .contains(&(PacketKind::TlsClientHello, DETAIL.to_string()))
+        );
         // A port that answers nothing: all probes empty, 62 zeros.
         let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let cport = closed.local_addr().unwrap().port();
