@@ -796,7 +796,11 @@ mod tests {
     /// the scan works on the second one while the first is still running.
     #[test]
     fn two_ranges_are_scanned_concurrently() {
-        let a = std::net::TcpListener::bind("127.0.1.1:0").unwrap();
+        // macOS has only 127.0.0.1 on the loopback interface unless more addresses are added
+        // (`ifconfig lo0 alias`); without them the test has nothing to scan and is skipped.
+        let Ok(a) = std::net::TcpListener::bind("127.0.1.1:0") else {
+            return;
+        };
         let port = a.local_addr().unwrap().port();
         let Ok(b) = std::net::TcpListener::bind(("127.0.2.1", port)) else {
             return;
