@@ -34,6 +34,7 @@ The tool identifies FTP from the server's greeting on a plain connection: a line
 
 ## References
 
+- [CISA AA20-245A, restrict or discontinue use of FTP and Telnet services](https://www.cisa.gov/news-events/cybersecurity-advisories/aa20-245a)
 - [RFC 959, File Transfer Protocol](https://www.rfc-editor.org/rfc/rfc959)
 - [RFC 4217, Securing FTP with TLS](https://www.rfc-editor.org/rfc/rfc4217)
 

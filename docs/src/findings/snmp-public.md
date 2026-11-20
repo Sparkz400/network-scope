@@ -32,6 +32,7 @@ On UDP 161 the tool sends an SNMP GET request for the system description (`sysDe
 
 ## References
 
+- [CISA TA17-156A, reducing the risk of SNMP abuse](https://www.cisa.gov/news-events/alerts/2017/06/05/reducing-risk-snmp-abuse)
 - [RFC 3414, User-based Security Model for SNMPv3](https://www.rfc-editor.org/rfc/rfc3414)
 - [Net-SNMP, snmpd.conf manual](https://www.net-snmp.org/docs/man/snmpd.conf.html)
 
