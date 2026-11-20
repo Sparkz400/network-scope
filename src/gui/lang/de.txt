@@ -37,7 +37,35 @@ Results appear as each host finishes. || Ergebnisse erscheinen, sobald ein Host 
 Enter addresses and choose Start to begin. || Adressen eingeben und auf Start klicken.
 Try All hosts or clear the search. || Versuchen Sie „Alle Hosts“ oder leeren Sie die Suche.
 Safe Mode || Sicherer Modus
-At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep and TCP/UDP traceroute are off. Click to open Settings. || Höchstens 8 Hosts gleichzeitig, mindestens 100 ms zwischen den Proben; SYN, ARP-Sweep und TCP/UDP-Traceroute sind aus. Klicken öffnet die Einstellungen.
+At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep and TCP/UDP traceroute are off. || Höchstens 8 Hosts gleichzeitig, mindestens 100 ms zwischen den Proben; SYN, ARP-Sweep und TCP/UDP-Traceroute sind aus.
+Safe Mode off || Sicherer Modus aus
+Up to {} hosts at a time, at most {} packets per second. || Bis zu {} Hosts gleichzeitig, höchstens {} Pakete pro Sekunde.
+Up to {} hosts at a time, no rate cap. || Bis zu {} Hosts gleichzeitig, keine Ratenbegrenzung.
+The Plant preset is passive: Start sends nothing. || Das Anlagen-Preset ist passiv: Start sendet nichts.
+The port list is invalid: {} || Die Portliste ist ungültig: {}
+Per host, as the dry run lists it: || Pro Host, wie der Probelauf es auflistet:
+Click to open Settings. || Klicken öffnet die Einstellungen.
+nothing || nichts
+Sends: {} || Sendet: {}
+ICMP echo (ping) || ICMP-Echo (Ping)
+ARP requests || ARP-Anfragen
+neighbour lookup || Nachbarabfrage
+TCP connect || TCP-Verbindungsaufbau
+TCP SYN || TCP-SYN
+UDP probes || UDP-Proben
+service probes || Dienstproben
+HTTP requests || HTTP-Anfragen
+TLS handshakes || TLS-Handshakes
+SMB negotiation || SMB-Aushandlung
+RDP negotiation || RDP-Aushandlung
+SSH handshakes || SSH-Handshakes
+read-only OT queries || lesende OT-Abfragen
+PROFINET DCP || PROFINET-DCP
+traceroute || Traceroute
+DHCP discover || DHCP-Discover
+IPv6 echo || IPv6-Echo
+SNMP reads || SNMP-Lesezugriffe
+DNS lookups || DNS-Abfragen
 Responding || Antwortet
 Probe error || Probenfehler
 No reply || Keine Antwort
@@ -103,6 +131,7 @@ Findings (weak configuration, risky services, CVE hints) || Befunde (schwache Ko
 Nothing found. Enable service detection in Settings to collect the evidence these checks use. || Nichts gefunden. Aktivieren Sie in den Einstellungen die Diensterkennung, um die Belege für diese Prüfungen zu sammeln.
 All severities || Alle Schweregrade
 Learn more || Mehr erfahren
+Explain this: || Erklärung:
 Known exploited (CISA KEV, added {}); used in ransomware campaigns || Aktiv ausgenutzt (CISA KEV, hinzugefügt {}); in Ransomware-Kampagnen genutzt
 Known exploited (CISA KEV, added {}) || Aktiv ausgenutzt (CISA KEV, hinzugefügt {})
 Known exploited (CISA KEV); used in ransomware campaigns || Aktiv ausgenutzt (CISA KEV); in Ransomware-Kampagnen genutzt

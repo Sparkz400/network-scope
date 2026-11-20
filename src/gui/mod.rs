@@ -377,20 +377,64 @@ enum MainView {
     Home,
     Hosts,
 }
-/// The documentation page of a finding rule id (`telnet-open`). The run-time id families have one
-/// shared page each (`cve-...`, `script-...`); `cve-cve-2020-0796` has its own.
-fn docs_url(id: &str) -> String {
+/// The documentation page name of a finding rule id (`telnet-open`). The run-time id families
+/// have one shared page each (`cve-...`, `script-...`); `cve-cve-2020-0796` has its own.
+fn docs_page(id: &str) -> String {
     let lower = id.to_ascii_lowercase();
-    let page = if lower == "cve-cve-2020-0796" {
-        lower.as_str()
-    } else if lower.starts_with("cve-") {
-        "cve-hints"
+    if lower != "cve-cve-2020-0796" && lower.starts_with("cve-") {
+        "cve-hints".into()
     } else if lower.starts_with("script-") {
-        "script-findings"
+        "script-findings".into()
     } else {
-        lower.as_str()
+        lower
+    }
+}
+fn docs_url(id: &str) -> String {
+    format!(
+        "https://sparkz400.github.io/network-scope/findings/{}.html",
+        docs_page(id)
+    )
+}
+
+const EXPLAIN: &str = include_str!("lang/explain.txt");
+
+/// `page -> (English, German)` from `lang/explain.txt` (ROADMAP F41).
+fn explanations() -> &'static BTreeMap<&'static str, (&'static str, &'static str)> {
+    static TEXTS: std::sync::OnceLock<BTreeMap<&str, (&str, &str)>> = std::sync::OnceLock::new();
+    TEXTS.get_or_init(|| {
+        EXPLAIN
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .filter_map(|l| {
+                let mut parts = l.split(" || ").map(str::trim);
+                Some((parts.next()?, (parts.next()?, parts.next()?)))
+            })
+            .collect()
+    })
+}
+
+/// The plain-language explanation of a finding rule id in the current language.
+fn explanation(id: &str) -> Option<&'static str> {
+    let (en, de) = explanations().get(docs_page(id).as_str())?;
+    Some(match i18n::current() {
+        i18n::Lang::English => en,
+        i18n::Lang::German => de,
+    })
+}
+
+/// A small "?" button that explains a finding in plain language: on hover, while it has keyboard
+/// focus, and as its screen-reader name. Nothing when the rule has no explanation.
+fn explain_button(ui: &mut egui::Ui, id: &str) {
+    let Some(text) = explanation(id) else {
+        return;
     };
-    format!("https://sparkz400.github.io/network-scope/findings/{page}.html")
+    let response = ui.add(egui::Button::new(RichText::new("?").strong()).small());
+    let response = a11y::named(response, &format!("{} {text}", tr!("Explain this:")));
+    if response.has_focus() {
+        response.show_tooltip_text(text);
+    } else {
+        response.on_hover_text(text);
+    }
 }
 struct Scanner {
     saved: Saved,
@@ -1386,23 +1430,17 @@ impl eframe::App for Scanner {
                         )),
                 );
             }
+            // Read from the live settings every frame, so changing Settings, the preset or the
+            // targets changes the indicator at once; a running scan keeps its own snapshot.
+            let badge = cached_badge(
+                &self.saved.settings,
+                &self.targets,
+                self.saved.preset == preset_ui::PLANT,
+            );
+            if safe_mode_indicator(ui, &badge) {
+                self.settings_open = true;
+            }
             ui.horizontal(|ui| {
-                // Read from the live settings every frame, so toggling Safe Mode in Settings
-                // changes the badge at once; a running scan keeps its own snapshot.
-                let badge = safe_badge(&self.saved.settings);
-                let color = badge_color(badge.safe, ui.visuals().dark_mode);
-                if ui
-                    .add(
-                        egui::Label::new(RichText::new(badge.label).strong().color(color))
-                            .sense(egui::Sense::click()),
-                    )
-                    .on_hover_text(badge.tooltip)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    self.settings_open = true;
-                }
-                ui.separator();
                 if let Some(busy) = self.busy.label() {
                     ui.spinner();
                     ui.label(busy);
@@ -1702,58 +1740,168 @@ fn ping_text(ping: Option<u32>) -> String {
     })
     .unwrap_or_else(|| "—".into())
 }
-/// Text of the status bar badge that shows the active traffic profile.
+/// The Safe Mode indicator (ROADMAP F43): the traffic profile and what the next scan is about to
+/// send, taken from the dry-run plan (`plan::scan`, as `scan --dry-run` prints it), so it lists
+/// exactly the packet kinds the scan engine would send with these settings.
+#[derive(Clone)]
 struct SafeBadge {
     safe: bool,
     label: &'static str,
+    /// What is sent, as short translated names (`ICMP echo, TCP connect`).
+    sends: String,
     tooltip: String,
 }
-/// Safe Mode shows the limits the engine enforces (`core::run`: 8 hosts, a gate of at least
-/// 100 ms, SYN and ARP sweep ignored, ICMP traceroute only). Otherwise the tooltip lists the
-/// opt-in transmitting features that the current settings enable.
-fn safe_badge(s: &scan::Settings) -> SafeBadge {
-    if s.safe {
-        return SafeBadge {
-            safe: true,
-            label: tr!("Safe Mode"),
-            tooltip: tr!(
-                "At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep and TCP/UDP traceroute are off. Click to open Settings."
+/// The badge for the current settings. `targets` only decides whether IPv6 hosts are planned
+/// too; `plant` is the passive Plant preset, which sends nothing.
+fn safe_badge(s: &scan::Settings, targets: &str, plant: bool) -> SafeBadge {
+    let (label, protections) = if s.safe {
+        (
+            tr!("Safe Mode"),
+            tr!(
+                "At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep and TCP/UDP traceroute are off."
             )
-            .into(),
-        };
-    }
-    let mut on = vec![format!(
-        "up to {} hosts at a time",
-        s.workers.clamp(1, 4096)
-    )];
-    if s.syn {
-        on.push("SYN scan".into());
-    }
-    if s.arp_sweep {
-        on.push("ARP sweep".into());
-    }
-    if s.trace {
-        match s.trace_method {
-            crate::trace::TraceMethod::Icmp => {}
-            crate::trace::TraceMethod::Tcp => on.push("TCP traceroute".into()),
-            crate::trace::TraceMethod::Udp => on.push("UDP traceroute".into()),
+            .to_string(),
+        )
+    } else {
+        let workers = s.workers.clamp(1, 4096);
+        (
+            tr!("Safe Mode off"),
+            if s.max_rate > 0 {
+                tr!(
+                    "Up to {} hosts at a time, at most {} packets per second.",
+                    workers,
+                    s.max_rate
+                )
+            } else {
+                tr!("Up to {} hosts at a time, no rate cap.", workers)
+            },
+        )
+    };
+    let mut tip = vec![protections];
+    let mut kinds: Vec<crate::sendlog::PacketKind> = vec![];
+    if plant {
+        tip.push(tr!("The Plant preset is passive: Start sends nothing.").into());
+    } else {
+        let ports = scan::parse_ports(&s.ports).unwrap_or_else(|e| {
+            tip.push(tr!("The port list is invalid: {}", e));
+            vec![]
+        });
+        // One documentation address per family stands for every host: the plan of a host depends
+        // on the settings and the address family only.
+        let mut hosts = vec![IpAddr::from([192, 0, 2, 1])];
+        if targets.contains(':') {
+            hosts.push("2001:db8::1".parse().unwrap_or(hosts[0]));
+        }
+        let mut plans: Vec<crate::plan::HostPlan> =
+            crate::plan::scan(hosts.into_iter(), &ports, s, None)
+                .into_iter()
+                .map(|g| g.plan)
+                .collect();
+        plans.extend(crate::plan::ipv6_discovery(s));
+        tip.push(tr!("Per host, as the dry run lists it:").into());
+        for p in &plans {
+            for packet in &p.packets {
+                if !kinds.contains(&packet.kind) {
+                    kinds.push(packet.kind);
+                }
+            }
+            tip.extend(p.lines().into_iter().map(|l| format!("  {l}")));
         }
     }
-    on.push(if s.max_rate > 0 {
-        format!("rate cap {} pps", s.max_rate)
+    tip.push(tr!("Click to open Settings.").into());
+    let sends = if kinds.is_empty() {
+        tr!("nothing").to_string()
     } else {
-        "no rate cap".into()
-    });
+        kinds
+            .into_iter()
+            .map(packet_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     SafeBadge {
-        safe: false,
-        label: "Fast",
-        tooltip: format!(
-            "Safe Mode is off: {}. Click to open Settings.",
-            on.join(", ")
+        safe: s.safe && !plant,
+        label,
+        sends,
+        tooltip: tip.join(
+            "
+",
         ),
     }
 }
-/// Green for Safe Mode, amber for Fast; darker shades on the light theme, lighter on the dark one.
+/// A short name for a kind of packet, for people who are not network specialists.
+fn packet_name(kind: crate::sendlog::PacketKind) -> &'static str {
+    use crate::sendlog::PacketKind as K;
+    match kind {
+        K::IcmpEcho => tr!("ICMP echo (ping)"),
+        K::ArpRequest => tr!("ARP requests"),
+        K::NeighborLookup => tr!("neighbour lookup"),
+        K::TcpConnect => tr!("TCP connect"),
+        K::TcpSyn => tr!("TCP SYN"),
+        K::UdpProbe => tr!("UDP probes"),
+        K::ServiceProbe => tr!("service probes"),
+        K::HttpRequest => tr!("HTTP requests"),
+        K::TlsClientHello => tr!("TLS handshakes"),
+        K::SmbNegotiate => tr!("SMB negotiation"),
+        K::RdpNegotiate => tr!("RDP negotiation"),
+        K::SshBanner => tr!("SSH handshakes"),
+        K::OtRequest => tr!("read-only OT queries"),
+        K::DcpIdentify => tr!("PROFINET DCP"),
+        K::Traceroute => tr!("traceroute"),
+        K::DhcpDiscover => tr!("DHCP discover"),
+        K::Ipv6Echo => tr!("IPv6 echo"),
+        K::SnmpRequest => tr!("SNMP reads"),
+        K::DnsLookup => tr!("DNS lookups"),
+        K::WakeOnLan => tr!("Wake-on-LAN"),
+    }
+}
+/// `safe_badge`, recomputed only when the settings, the target families, the preset or the
+/// language changed (the status bar is drawn every frame while a scan runs).
+fn cached_badge(s: &scan::Settings, targets: &str, plant: bool) -> SafeBadge {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<(String, SafeBadge)>> = const { std::cell::RefCell::new(None) };
+    }
+    let key = format!(
+        "{}|{}|{plant}|{}",
+        serde_json::to_string(s).unwrap_or_default(),
+        targets.contains(':'),
+        i18n::current().code()
+    );
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        match &*c {
+            Some((k, badge)) if *k == key => badge.clone(),
+            _ => {
+                let badge = safe_badge(s, targets, plant);
+                *c = Some((key, badge.clone()));
+                badge
+            }
+        }
+    })
+}
+/// The always visible Safe Mode indicator: a button with the profile (opens Settings) and, next to
+/// it, what the scan is about to send. Wraps on narrow windows; the tooltip has the whole plan.
+/// Returns whether the button was clicked.
+fn safe_mode_indicator(ui: &mut egui::Ui, badge: &SafeBadge) -> bool {
+    let color = badge_color(badge.safe, ui.visuals().dark_mode);
+    let sends = tr!("Sends: {}", badge.sends);
+    ui.horizontal_wrapped(|ui| {
+        let button = ui.add(egui::Button::new(
+            RichText::new(badge.label).strong().color(color),
+        ));
+        let button = a11y::named(button, &format!("{}. {sends}", badge.label));
+        let clicked = button.clicked();
+        // Keyboard users get the plan while the button has focus, mouse users on hover.
+        if button.has_focus() {
+            button.show_tooltip_text(&badge.tooltip);
+        } else {
+            button.on_hover_text(&badge.tooltip);
+        }
+        ui.label(sends).on_hover_text(&badge.tooltip);
+        clicked
+    })
+    .inner
+}
+/// Green for Safe Mode, amber when it is off; darker shades on the light theme, lighter on the dark one.
 fn badge_color(safe: bool, dark: bool) -> Color32 {
     match (safe, dark) {
         (true, false) => Color32::from_rgb(20, 110, 60),
@@ -1819,12 +1967,16 @@ mod tests {
 
     #[test]
     fn safe_badge_describes_the_active_profile() {
-        let safe = safe_badge(&scan::Settings {
-            safe: true,
-            syn: true,
-            max_rate: 500,
-            ..Default::default()
-        });
+        let safe = safe_badge(
+            &scan::Settings {
+                safe: true,
+                syn: true,
+                max_rate: 500,
+                ..Default::default()
+            },
+            "10.0.0.0/24",
+            false,
+        );
         assert!(safe.safe);
         assert_eq!(safe.label, "Safe Mode");
         assert!(
@@ -1832,47 +1984,109 @@ mod tests {
                 .starts_with("At most 8 hosts at a time, at least 100 ms between probes;")
         );
         assert!(
-            safe.tooltip
-                .contains("SYN, ARP sweep and TCP/UDP traceroute are off")
-        );
-        assert!(
             !safe.tooltip.contains("500"),
             "Safe Mode ignores the rate cap"
         );
+        // Safe Mode never uses the SYN engine, whatever the setting says.
+        assert!(safe.sends.contains("TCP connect") && !safe.sends.contains("SYN"));
 
-        let plain = safe_badge(&scan::Settings {
-            safe: false,
-            workers: 1024,
-            ..Default::default()
-        });
+        let plain = safe_badge(
+            &scan::Settings {
+                safe: false,
+                workers: 1024,
+                ..Default::default()
+            },
+            "10.0.0.1",
+            false,
+        );
         assert!(!plain.safe);
-        assert_eq!(plain.label, "Fast");
-        assert!(plain.tooltip.contains("up to 1024 hosts"));
+        assert_eq!(plain.label, "Safe Mode off");
+        assert!(plain.tooltip.contains("Up to 1024 hosts"));
         assert!(plain.tooltip.contains("no rate cap"));
-        assert!(!plain.tooltip.contains("SYN") && !plain.tooltip.contains("ARP"));
 
-        let full = safe_badge(&scan::Settings {
+        let fast = scan::Settings {
+            safe: false,
+            syn: true,
+            max_rate: 500,
+            ..Default::default()
+        };
+        let full = safe_badge(&fast, "10.0.0.1", false);
+        assert!(full.tooltip.contains("at most 500 packets per second"));
+        assert!(full.sends.contains("TCP SYN"), "{}", full.sends);
+
+        let plant = safe_badge(&scan::Settings::default(), "10.0.0.1", true);
+        assert_eq!(plant.sends, "nothing");
+        assert!(!plant.safe);
+        assert_ne!(badge_color(true, false), badge_color(false, false));
+    }
+
+    #[test]
+    fn the_indicator_lists_exactly_what_the_dry_run_plans() {
+        let ot = scan::Settings {
+            ot: true,
+            ports: "80,502".into(),
+            ..Default::default()
+        };
+        let udp = scan::Settings {
+            udp: true,
+            services: true,
+            ..Default::default()
+        };
+        let syn = scan::Settings {
             safe: false,
             syn: true,
             arp_sweep: true,
-            max_rate: 500,
-            trace: true,
-            trace_method: crate::trace::TraceMethod::Tcp,
             ..Default::default()
-        });
-        for part in [
-            "SYN scan",
-            "ARP sweep",
-            "rate cap 500 pps",
-            "TCP traceroute",
-        ] {
-            assert!(
-                full.tooltip.contains(part),
-                "{part} missing: {}",
-                full.tooltip
-            );
+        };
+        for s in [scan::Settings::default(), ot, udp, syn] {
+            let ports = scan::parse_ports(&s.ports).unwrap();
+            let want: BTreeSet<&str> = crate::plan::scan(
+                [IpAddr::from([192, 0, 2, 1]), "2001:db8::1".parse().unwrap()].into_iter(),
+                &ports,
+                &s,
+                None,
+            )
+            .into_iter()
+            .flat_map(|g| g.plan.packets)
+            .chain(
+                crate::plan::ipv6_discovery(&s)
+                    .into_iter()
+                    .flat_map(|p| p.packets),
+            )
+            .map(|p| packet_name(p.kind))
+            .collect();
+            let badge = safe_badge(&s, "10.0.0.1, fd00::1", false);
+            let got: BTreeSet<&str> = badge.sends.split(", ").collect();
+            assert_eq!(got, want, "{}", badge.tooltip);
         }
-        assert_ne!(badge_color(true, false), badge_color(false, false));
+    }
+
+    #[test]
+    fn the_safe_mode_indicator_is_a_named_button() {
+        let badge = safe_badge(&scan::Settings::default(), "10.0.0.1", false);
+        let nodes = a11y::tests::tree(|ui| {
+            safe_mode_indicator(ui, &badge);
+        });
+        let buttons = a11y::tests::names(&nodes, &["Button"]);
+        assert_eq!(buttons.len(), 1, "{nodes:?}");
+        assert!(
+            buttons[0].starts_with("Safe Mode. Sends: ") && buttons[0].contains("TCP connect"),
+            "{buttons:?}"
+        );
+    }
+
+    #[test]
+    fn the_explain_button_is_named_with_its_text() {
+        let nodes = a11y::tests::tree(|ui| {
+            explain_button(ui, "telnet-open");
+            explain_button(ui, "no-such-rule");
+        });
+        let buttons = a11y::tests::names(&nodes, &["Button"]);
+        assert_eq!(buttons.len(), 1, "{nodes:?}");
+        assert!(
+            buttons[0].starts_with("Explain this: The device offers Telnet"),
+            "{buttons:?}"
+        );
     }
 
     #[test]
@@ -2005,6 +2219,59 @@ mod tests {
             .insert("10.0.0.2".parse().unwrap(), "keep".into());
         let disk: Saved = serde_json::from_slice(&saved.to_disk()).unwrap();
         assert_eq!(disk.notes.len(), 1);
+    }
+
+    #[test]
+    fn every_finding_page_has_a_plain_explanation_in_both_languages() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/src/findings");
+        let pages: BTreeSet<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| {
+                let name = e.unwrap().file_name().to_string_lossy().into_owned();
+                name.strip_suffix(".md")
+                    .filter(|s| *s != "index")
+                    .map(str::to_string)
+            })
+            .collect();
+        let texts = explanations();
+        let entries: BTreeSet<String> = texts.keys().map(|k| k.to_string()).collect();
+        assert_eq!(
+            pages, entries,
+            "lang/explain.txt and docs/src/findings differ"
+        );
+        let lines = EXPLAIN
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'));
+        assert_eq!(
+            lines.count(),
+            texts.len(),
+            "an entry is duplicated or malformed"
+        );
+        for (id, (en, de)) in texts {
+            for text in [en, de] {
+                let sentences = text.matches(". ").count() + 1;
+                assert!(
+                    text.ends_with('.') && (1..=3).contains(&sentences),
+                    "{id}: {text}"
+                );
+            }
+            assert_ne!(en, de, "{id}");
+        }
+        // Run-time ids reach their family's text, in the current language.
+        i18n::set(i18n::Lang::German);
+        assert!(
+            explanation("cve-CVE-2021-41773")
+                .unwrap()
+                .starts_with("Die Softwareversion")
+        );
+        i18n::set(i18n::Lang::English);
+        assert!(explanation("Telnet-Open").unwrap().contains("Telnet"));
+        assert!(
+            explanation("script-owner-check")
+                .unwrap()
+                .contains("script")
+        );
+        assert_eq!(explanation("no-such-rule"), None);
     }
 
     #[test]
