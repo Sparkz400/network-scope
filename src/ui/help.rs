@@ -68,7 +68,7 @@ network-scope fingerprints export-unknown [SCAN_ID] [--output FILE]
                                                to review and redact (never uploaded)
 network-scope research query "SELECT ..." [--top N] [--format json|csv|tsv]   Read-only SQL on the research tables
 network-scope research schema | rebuild        Document the tables; fill them for scans saved before they existed
-network-scope research export csv|ndjson --output DIR   One file per table (DuckDB/pandas layout)
+network-scope research export csv|ndjson|parquet --output DIR   One file per table (DuckDB/pandas layout)
 network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bundle or OCSF events of one scan
 network-scope research groups [--top N] [--format text|json]   Devices that share a key, certificate template,
                                                TLS/SSH stack, web interface or OT firmware, across scans and sites

@@ -20,6 +20,7 @@ use std::path::Path;
 
 pub mod export;
 pub mod groups;
+pub mod parquet;
 pub mod uuid;
 
 /// `(name, SQL type and constraints, description)` of a column.

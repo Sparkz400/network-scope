@@ -6,7 +6,7 @@ use crate::{
     ui::{Ctx, args::number, output, progress},
 };
 
-const USAGE: &str = "Use: research query SQL [--top N] [--format json|csv|tsv] | research schema | research rebuild | research export csv|ndjson --output DIR | research export stix|ocsf [SCAN_ID] [--output FILE] | research groups [--top N] [--format text|json]";
+const USAGE: &str = "Use: research query SQL [--top N] [--format json|csv|tsv] | research schema | research rebuild | research export csv|ndjson|parquet --output DIR | research export stix|ocsf [SCAN_ID] [--output FILE] | research groups [--top N] [--format text|json]";
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let (pos, opts, db) = (&ctx.pos, &ctx.opts, &ctx.db);
@@ -81,7 +81,7 @@ fn export(ctx: &mut Ctx) -> Result<(), String> {
     let (pos, opts, db) = (&ctx.pos, &ctx.opts, &ctx.db);
     let format = pos.get(1).map(String::as_str).unwrap_or("");
     match format {
-        "csv" | "ndjson" => {
+        "csv" | "ndjson" | "parquet" => {
             let dir = opts
                 .get("output")
                 .ok_or("Provide --output DIR for the table files")?;
@@ -230,7 +230,21 @@ mod tests {
         ]))
         .unwrap();
         assert!(std::path::Path::new(&tables).join("hosts.ndjson").exists());
+        let parquet = path("parquet");
+        run(&args(&[
+            "research", "export", "parquet", "--db", &db, "--output", &parquet, "--quiet",
+        ]))
+        .unwrap();
+        let file = std::fs::read(std::path::Path::new(&parquet).join("hosts.parquet")).unwrap();
+        assert_eq!(&file[..4], b"PAR1");
+        assert_eq!(&file[file.len() - 4..], b"PAR1");
         assert!(run(&args(&["research", "export", "ndjson", "--db", &db])).is_err());
+        assert!(
+            run(&args(&[
+                "research", "export", "xml", "--db", &db, "--output", &tables
+            ]))
+            .is_err()
+        );
         assert!(run(&args(&["research", "bogus", "--db", &db])).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
