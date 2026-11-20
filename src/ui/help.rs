@@ -46,6 +46,12 @@ network-scope mcp [--db FILE] [--no-scan]       MCP server on stdin/stdout for A
 network-scope scripts list|show NAME           The built-in script library (--script library:NAME)
 network-scope ot-listen --interface ID --seconds N | --pcap FILE [--progress] [--no-reassembly]
                                                Passive OT asset discovery
+network-scope ot-learn --pcap FILE | --interface ID --seconds N [--model FILE] [--no-reassembly]
+                                               Learn normal industrial traffic: who talks to each device, with
+                                               which functions, how often and when (saved as a model file)
+network-scope ot-listen --pcap FILE | --interface ID --model FILE [--maintenance "Sat 02:00-06:00"]
+        [--format json|text] [--fail-on-findings]   Report what the model has not seen: a new station, a first
+                                               write, a Stop outside the window (receive-only)
 network-scope ot-assets ID [--format json|csv]  OT asset inventory from a passive capture
 network-scope devices ID [--format json|csv]   One record per device (active + passive merged)
 network-scope devices --history MAC|IP [--format text|json]   Timeline of one device across saved scans

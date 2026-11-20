@@ -208,6 +208,128 @@ fn the_research_outputs_carry_their_schema_and_match_it() {
 }
 
 #[test]
+fn the_ot_model_and_the_alerts_carry_their_schema_and_match_it() {
+    let f = Fixture::new("otmodel");
+    let pcap = format!(
+        "{}/tests/fixtures/ics/modbus_test_data_part1.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let model = f.dir.join("model.json");
+    let model_arg = model.to_str().unwrap();
+    let (code, text, err) = f.run(&["ot-learn", "--pcap", &pcap, "--model", model_arg, "--quiet"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(text.contains("10.0.0.3: 2 clients"), "{text}");
+    // the model file is a document of the ot-model schema
+    let schema_doc: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("docs/schema")
+                .join(format!("ot-model.{}.schema.json", schema::CURRENT)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let model_doc: Value = serde_json::from_str(&std::fs::read_to_string(&model).unwrap()).unwrap();
+    schema::validate(&schema_doc, &model_doc).unwrap();
+    assert_eq!(model_doc["schema"], schema::id("ot-model"));
+    // the same capture against its own model: nothing new when the Stop-class traffic is a
+    // declared maintenance (the capture ran on a Thursday, 12:01-12:22 UTC) ...
+    let quiet = f.check(
+        "ot-alerts",
+        &[
+            "ot-listen",
+            "--pcap",
+            &pcap,
+            "--model",
+            model_arg,
+            "--maintenance",
+            "Thu 11:00-13:00",
+            "--quiet",
+        ],
+        false,
+    );
+    assert_eq!(quiet[0]["events"], 20);
+    assert!(quiet[0]["alerts"].as_array().unwrap().is_empty());
+    // ... and otherwise it is reported, and --fail-on-findings turns it into exit status 3
+    let loud = f.check(
+        "ot-alerts",
+        &[
+            "ot-listen",
+            "--pcap",
+            &pcap,
+            "--model",
+            model_arg,
+            "--quiet",
+        ],
+        false,
+    );
+    let alerts = loud[0]["alerts"].as_array().unwrap();
+    assert_eq!(alerts.len(), 2);
+    assert!(alerts.iter().all(|a| a["kind"] == "stop-outside-window"));
+    let (code, _, _) = f.run(&[
+        "ot-listen",
+        "--pcap",
+        &pcap,
+        "--model",
+        model_arg,
+        "--quiet",
+        "--fail-on-findings",
+    ]);
+    assert_eq!(code, 3);
+    let (code, text, _) = f.run(&[
+        "ot-listen",
+        "--pcap",
+        &pcap,
+        "--model",
+        model_arg,
+        "--format",
+        "text",
+        "--quiet",
+    ]);
+    assert_eq!(code, 0);
+    assert!(text.contains("[HIGH] stop-outside-window"), "{text}");
+    // misuse is an error, not silence
+    let (code, _, err) = f.run(&[
+        "ot-listen",
+        "--pcap",
+        &pcap,
+        "--maintenance",
+        "Sat 02:00-06:00",
+    ]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--model"), "{err}");
+    let (code, _, _) = f.run(&[
+        "ot-listen",
+        "--pcap",
+        &pcap,
+        "--model",
+        model_arg,
+        "--maintenance",
+        "never",
+    ]);
+    assert_eq!(code, 1);
+    let (code, _, _) = f.run(&["ot-listen", "--pcap", &pcap, "--model", "missing.json"]);
+    assert_eq!(code, 1);
+    // a capture without industrial traffic writes no model
+    let none = f.dir.join("none.pcap");
+    // a classic pcap header and no records
+    let header: [u8; 24] = [
+        0xd4, 0xc3, 0xb2, 0xa1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 0, 1, 0, 0, 0,
+    ];
+    std::fs::write(&none, header).unwrap();
+    let (code, _, err) = f.run(&[
+        "ot-learn",
+        "--pcap",
+        none.to_str().unwrap(),
+        "--model",
+        f.dir.join("x.json").to_str().unwrap(),
+        "--quiet",
+    ]);
+    assert_eq!(code, 1);
+    assert!(err.contains("No industrial traffic"), "{err}");
+}
+
+#[test]
 fn every_dry_run_prints_the_dry_run_schema() {
     let f = Fixture::new("dryrun");
     // A declared scope keeps the result independent of the developer's own scope file.

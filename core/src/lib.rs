@@ -114,6 +114,7 @@ pub mod observations;
 pub(crate) mod osfp;
 pub mod ot;
 pub mod otdevice;
+pub mod otmodel;
 pub mod otpassive;
 pub(crate) mod oui;
 pub mod passive;

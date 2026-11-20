@@ -44,6 +44,36 @@ Passive mode (`ot-listen`) reads traffic and never transmits. A live capture goe
 
 Limits: IPv4 only, standard ports only, decoders validated with **synthetic frames only**, not with real industrial traffic. A SPAN/mirror port or tap is needed to see more than your own segment.
 
+## Learning normal traffic (`ot-learn`, `ot-listen --model`)
+
+Passive discovery says what is there; learning says what is normal. `ot-learn` reads a capture (a pcap or pcapng file, or a live receive-only capture) and records, for every device that answers an industrial protocol, **who talks to it**, **with which functions** (Modbus function codes, S7 job types, CIP services, DNP3 and IEC 104 commands), **how often** (messages per minute) and **when** (messages per hour of the day, UTC). The result is a model file (JSON, `ot-model` schema; `--model FILE`, default `ot-model.json` next to the inventory database):
+
+```sh
+network-scope-cli ot-learn --pcap normal-week.pcapng --model plant.model.json
+network-scope-cli ot-listen --pcap today.pcapng --model plant.model.json --maintenance "Sat 02:00-06:00"
+network-scope-cli ot-listen --interface 3 --seconds 3600 --model plant.model.json --format text
+```
+
+`ot-listen --model` checks the traffic against the model while it does what `ot-listen` always does (the observations are saved as a scan) and prints the alerts (`ot-alerts` schema, or `--format text`) instead of the asset list. `--fail-on-findings` turns "at least one alert" into exit status 3. Both commands are receive-only: the events come from the passive decoders, which have no transmit path.
+
+| Alert | When |
+| --- | --- |
+| `new-asset` | A device that is not in the model receives industrial traffic. |
+| `new-station` | A client that never talked to this device in the learned traffic: a new engineering station, HMI or scanner. |
+| `stop-outside-window` | A Stop, restart or PLC-control function outside the maintenance window. With no window declared, every Stop. |
+| `first-write` | A write or control function this device never received in the learned traffic. |
+| `new-function` | A read-type function this device never received. |
+| `unusual-hour` | A write or control function at an hour of the day with no learned control traffic. Only judged when at least 24 hours were learned. |
+| `rate-anomaly` | A minute with more than three times the messages of the busiest learned minute (and at least 30 more). |
+
+One message gives one alert that lists all of its reasons (`kinds`): a write from a new station is one `new-station` alert that also names the first write. Repeats of the same message are counted in `occurrences`. The severity is high for writes and Stops, medium for a new station or device, low for a new read function.
+
+**Maintenance window.** `--maintenance "Sat 02:00-06:00"` declares when Stops are expected. Several windows are separated by `;`; a window is `DAYS HH:MM-HH:MM [UTC+H[:MM]]` with `DAYS` a day (`Sat`), a range (`Mon-Fri`), a list (`Sat,Sun`) or `daily`. A window whose end is before its start runs over midnight (`Sat 22:00-02:00` ends on Sunday at 02:00). Without a zone the times are **UTC**, which is also what the model uses for the hour of the day.
+
+**Limits.** The model is only as good as the capture it came from: rare traffic (a yearly maintenance job) is new the first time it appears after learning, so learn over a representative period and re-learn after planned changes. Peers are IP addresses, so a station that gets a new DHCP lease looks new. Only protocols the passive decoders understand are learned; OPC UA and BACnet requests carry no function name there, so only peers and rates are learned for them. Time stamps come from the capture, so a capture with scrambled times gives scrambled rates and hours. Capture-based learning was tested on the public captures in `tests/fixtures/ics/` and on synthetic events; it has not been run on a long recording of a real plant.
+
+The lab replay test of this feature learns `modbus_test_data_part1.pcap`, injects one Modbus write from a new address (a copy of a real read request with the function code changed), replays the result and expects exactly one alert; see `core/src/otmodel_tests.rs`.
+
 ## General passive discovery
 
 `listen --interface ID --seconds N` (and the desktop's Passive section) decodes mDNS, SSDP/UPnP, LLDP, CDP, NetBIOS, WS-Discovery, DHCP and ARP without sending discovery packets. MAC-keyed observations retain devices that advertise no IP. What each protocol contributes to device identification is in [Detection](detection.md#passive-evidence-listen). Switch and PLC neighbours that announce themselves with LLDP or CDP (name, port, platform, software, management address) appear as observations with those fields.

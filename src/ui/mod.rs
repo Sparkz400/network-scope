@@ -143,8 +143,13 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     }
     let command = &args[0];
     let (pos, mut opts) = args::options(&args[1..])?;
-    if opts.contains_key("fail-on-findings") && !matches!(command.as_str(), "findings" | "diff") {
-        return Err("--fail-on-findings applies to the findings and diff commands only".into());
+    if opts.contains_key("fail-on-findings")
+        && !matches!(command.as_str(), "findings" | "diff" | "ot-listen")
+    {
+        return Err(
+            "--fail-on-findings applies to the findings and diff commands (and ot-listen --model) only"
+                .into(),
+        );
     }
     if let Some(version) = opts.get("json-schema") {
         crate::schema::check_version(version)?;

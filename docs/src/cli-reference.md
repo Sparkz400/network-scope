@@ -67,6 +67,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `alerts [--db FILE]` | Alerts raised by monitor runs |
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
 | `ot-listen --interface ID --seconds N` or `ot-listen --pcap FILE [--progress] [--no-reassembly]` | Passive OT asset discovery |
+| `ot-learn --pcap FILE` or `ot-learn --interface ID --seconds N` `[--model FILE] [--no-reassembly]` | Learn normal industrial traffic (peers, functions, rates, hours) from a capture and save the model; receive-only. See [Learning normal traffic](ot-industrial.md#learning-normal-traffic-ot-learn-ot-listen---model) |
+| `ot-listen ... --model FILE [--maintenance SPEC] [--format json\|text] [--fail-on-findings]` | Check the traffic against a learned model and print alerts (new station, first write, Stop outside the window, ...) instead of the asset list |
 | `ot-assets ID [--format json\|csv]` | OT asset inventory from a passive capture |
 | `devices ID [--format json\|csv]` | One record per device (active and passive merged), with its stable device key |
 | `devices --history MAC\|IP [--format text\|json]` | Timeline of one device across saved scans |
@@ -246,6 +248,8 @@ See [Monitoring and alerts](monitoring-alerts.md).
 | `--pcap FILE` | | Read a pcap/pcapng file instead of an interface (`ot-listen`) |
 | `--progress` | off | Print percent, frames and frames/s on stderr while reading a file |
 | `--no-reassembly` | off | Disable OT TCP reassembly |
+| `--model FILE` | `ot-model.json` next to the database (`ot-learn`) | The learned traffic model: written by `ot-learn`, read by `ot-listen` |
+| `--maintenance SPEC` | none | `ot-listen --model`: when Stops are expected, `"Sat 02:00-06:00"` (UTC unless `UTC+H`), several windows separated by `;` |
 
 ## trace options
 
