@@ -44,7 +44,7 @@ pub(super) const FLAGS: [&str; 36] = [
     "incremental",
     "ipv6-discover",
 ];
-pub(super) const VALUES: [&str; 77] = [
+pub(super) const VALUES: [&str; 80] = [
     "feeds",
     "top",
     "nvd",
@@ -118,6 +118,9 @@ pub(super) const VALUES: [&str; 77] = [
     "broadcast",
     "targets-file",
     "full-every",
+    "melsec-port",
+    "dnp3-address",
+    "dnp3-master",
     "snmp-community",
     "snmp-community-env",
     "snmp-version",
@@ -323,8 +326,67 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     s.s7_slot = number(opts, "slot", 2)?;
     s.scripts = opts.get("script").cloned().unwrap_or_default();
     s.early_stop = opts.contains_key("early-stop");
+    ot_opt_ins(opts, &mut s)?;
     s.partial_events = opts.contains_key("stream");
     Ok(s)
+}
+/// `--melsec-port`, `--dnp3-address` and `--dnp3-master`: the two OT requests that have no safe
+/// default and so need an address the user gives. They are read-only identification like the rest
+/// of `--ot` and need it. A port or address that could do harm is refused here, not clamped.
+fn ot_opt_ins(opts: &BTreeMap<String, String>, s: &mut scan::Settings) -> Result<(), String> {
+    let wants = |key: &str| opts.contains_key(key);
+    if (wants("melsec-port") || wants("dnp3-address") || wants("dnp3-master")) && !s.ot {
+        return Err("--melsec-port, --dnp3-address and --dnp3-master need --ot".into());
+    }
+    if wants("melsec-port") {
+        let port: u16 = number(opts, "melsec-port", 0)?;
+        if port < 1024 || crate::service::is_ot_port_candidate(port) {
+            return Err(format!(
+                "--melsec-port {port}: the MC protocol is read only on a port above 1023 that has no protocol of its own here (the usual ones are 5006, 5007 or the one set in the PLC's Ethernet parameters)"
+            ));
+        }
+        s.melsec_port = port;
+    }
+    // The request goes only to a port that was found open, so the port must be among those scanned
+    // (a scan never adds a port by itself).
+    let scanned = scan::parse_ports(&s.ports).unwrap_or_default();
+    if s.melsec_port != 0 && !scanned.contains(&s.melsec_port) {
+        return Err(format!(
+            "--melsec-port {0} must also be in --ports (the MC request goes only to a port found open); add --ports ...,{0}",
+            s.melsec_port
+        ));
+    }
+    if wants("dnp3-master") && !wants("dnp3-address") {
+        return Err("--dnp3-master needs --dnp3-address".into());
+    }
+    if wants("dnp3-address") {
+        let address: u32 = number(opts, "dnp3-address", 0)?;
+        let master: u32 = number(opts, "dnp3-master", 1)?;
+        let (address, master) = (
+            u16::try_from(address).map_err(|_| "--dnp3-address is 0 to 65519")?,
+            u16::try_from(master).map_err(|_| "--dnp3-master is 0 to 65519")?,
+        );
+        if crate::ot_readonly::Dnp3Request::new(
+            address,
+            master,
+            crate::ot_readonly::Dnp3Function::ReadClass0,
+        )
+        .is_none()
+        {
+            return Err(format!(
+                "--dnp3-address {address} (master {master}): the address must be a unicast address (0 to 65519, broadcast and reserved addresses are never used) and differ from the master's"
+            ));
+        }
+        if !scanned.contains(&20000) {
+            return Err(
+                "--dnp3-address needs tcp/20000 among the scanned ports (--ports ...,20000): the request goes only to a port found open"
+                    .into(),
+            );
+        }
+        s.dnp3_address = Some(address);
+        s.dnp3_master = master;
+    }
+    Ok(())
 }
 /// `--snmp-community` / `--snmp-community-env` / `--snmp-version` or `--snmp-v3`: the credentials
 /// of the SNMP read, and the form that may be saved with the scan (names of environment
@@ -540,6 +602,103 @@ mod tests {
             .unwrap_err()
             .contains("not set")
         );
+    }
+
+    #[test]
+    fn the_mc_port_and_the_dnp3_address_are_opt_in_and_checked() {
+        let parse = |list: &[&str]| scan_settings(&options(&args(list)).unwrap().1);
+        // off by default
+        let s = parse(&["--ot"]).unwrap();
+        assert_eq!((s.melsec_port, s.dnp3_address, s.dnp3_master), (0, None, 1));
+        // given
+        let s = parse(&["--ot", "--ports", "80,15007", "--melsec-port", "15007"]).unwrap();
+        assert_eq!(s.melsec_port, 15007);
+        let s = parse(&[
+            "--ot",
+            "--ports",
+            "80,20000",
+            "--dnp3-address",
+            "10",
+            "--dnp3-master",
+            "3",
+        ])
+        .unwrap();
+        assert_eq!((s.dnp3_address, s.dnp3_master), (Some(10), 3));
+        // they need --ot and the port among the scanned ones
+        for (list, text) in [
+            (
+                vec!["--ports", "15007", "--melsec-port", "15007"],
+                "need --ot",
+            ),
+            (
+                vec!["--ot", "--ports", "80", "--melsec-port", "15007"],
+                "must also be in --ports",
+            ),
+            (
+                vec!["--ot", "--ports", "80", "--dnp3-address", "10"],
+                "tcp/20000",
+            ),
+            (vec!["--ot", "--dnp3-master", "3"], "needs --dnp3-address"),
+            // an industrial port with a protocol of its own, a well-known low port, port 0
+            (
+                vec!["--ot", "--ports", "502", "--melsec-port", "502"],
+                "above 1023",
+            ),
+            (
+                vec!["--ot", "--ports", "80", "--melsec-port", "80"],
+                "above 1023",
+            ),
+            (
+                vec!["--ot", "--ports", "44818", "--melsec-port", "44818"],
+                "above 1023",
+            ),
+            (
+                vec!["--ot", "--ports", "20000", "--melsec-port", "20000"],
+                "above 1023",
+            ),
+            (
+                vec!["--ot", "--ports", "80", "--melsec-port", "0"],
+                "above 1023",
+            ),
+            // DNP3 broadcast and reserved addresses, the master's own address, out of range
+            (
+                vec!["--ot", "--ports", "20000", "--dnp3-address", "65535"],
+                "unicast",
+            ),
+            (
+                vec!["--ot", "--ports", "20000", "--dnp3-address", "65532"],
+                "unicast",
+            ),
+            (
+                vec!["--ot", "--ports", "20000", "--dnp3-address", "65520"],
+                "unicast",
+            ),
+            (
+                vec!["--ot", "--ports", "20000", "--dnp3-address", "1"],
+                "differ",
+            ),
+            (
+                vec![
+                    "--ot",
+                    "--ports",
+                    "20000",
+                    "--dnp3-address",
+                    "10",
+                    "--dnp3-master",
+                    "65535",
+                ],
+                "unicast",
+            ),
+            (
+                vec!["--ot", "--ports", "20000", "--dnp3-address", "70000"],
+                "0 to 65519",
+            ),
+        ] {
+            let e = parse(&list).unwrap_err();
+            assert!(e.contains(text), "{list:?}: {e}");
+        }
+        assert!(parse(&["--ot", "--ports", "20000", "--dnp3-address", "65519"]).is_ok());
+        assert!(parse(&["--ot", "--ports", "20000", "--dnp3-address", "0"]).is_ok());
     }
 
     #[test]

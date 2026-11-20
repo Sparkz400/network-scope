@@ -39,6 +39,9 @@ pub const TARGETS: &[Target] = &[
     ("s7_szl", s7_szl),
     ("opcua_reply", opcua_reply),
     ("fins_reply", fins_reply),
+    ("fins_tcp_reply", fins_tcp_reply),
+    ("mc_reply", mc_reply),
+    ("dnp3_reply", dnp3_reply),
     ("ndp_message", ndp_message),
     ("neighbor_cache", neighbor_cache),
     ("fox_hello", fox_hello),
@@ -456,6 +459,25 @@ pub fn neighbor_cache(data: &[u8]) {
 /// The reply to the Omron FINS Controller Data Read request (a FINS frame, from the ICF byte).
 pub fn fins_reply(data: &[u8]) {
     let _ = std::hint::black_box(ot::extra::parse_fins_controller_data(data));
+}
+
+/// The replies to the FINS/TCP exchange: the node address reply and the framed Controller Data
+/// Read reply.
+pub fn fins_tcp_reply(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_fins_tcp_frame(data));
+    let _ = std::hint::black_box(ot::extra::parse_fins_node_address(data));
+    let _ = std::hint::black_box(ot::extra::parse_fins_tcp_controller_data(data));
+}
+
+/// The response to the MELSEC MC protocol Read CPU Model Name request (a 3E binary frame).
+pub fn mc_reply(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_mc_cpu_model(data));
+}
+
+/// An outstation's answer to the DNP3 Read class 0 request (data link frames with CRCs).
+pub fn dnp3_reply(data: &[u8]) {
+    std::hint::black_box(ot::extra::dnp3_frame_len(data));
+    let _ = std::hint::black_box(ot::extra::parse_dnp3_response(data));
 }
 
 /// A Niagara Fox hello (the station's answer to the hello request).

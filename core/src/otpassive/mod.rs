@@ -2,7 +2,7 @@
 //! capture handle that exposes no transmit call (`PassiveCapture`) or from a capture file. It
 //! recognises Modbus/TCP, S7comm, IEC 61850 MMS (told from S7comm on port 102 by what the connection
 //! carries), DNP3, IEC 60870-5-104, EtherNet/IP, BACnet/IP, OPC UA, Omron FINS, Niagara Fox, MQTT,
-//! MELSEC, KNXnet/IP and (by port only) CODESYS, and flags control traffic (writes, program download, stop/restart, commands) without ever
+//! MELSEC, KNXnet/IP and CODESYS (the V2 identification handshake is decoded, the rest by port only), and flags control traffic (writes, program download, stop/restart, commands) without ever
 //! generating any. TCP messages of Modbus/TCP, S7comm (TPKT), IEC 104, EtherNet/IP and OPC UA
 //! that span several segments are reassembled in order with bounded memory ("reassembly-lite",
 //! see `Reassembly`); out-of-order or missing segments end the attempt and the buffered prefix
@@ -17,7 +17,7 @@ mod asset;
 mod bacnet;
 mod codesys;
 mod control;
-mod dnp3;
+pub(crate) mod dnp3;
 mod enip;
 mod fins;
 mod fox;
@@ -294,8 +294,8 @@ impl Tracker {
                 (5006 | 5007, _) => self.melsec_mc(dst, src, pl, ts, false),
                 (_, 5560 | 5561) => self.melsoft(src, dst, pl, ts, true),
                 (5560 | 5561, _) => self.melsoft(dst, src, pl, ts, false),
-                (_, p) if codesys::is_codesys_udp(p) => self.codesys(src, dst, ts, true, p),
-                (p, _) if codesys::is_codesys_udp(p) => self.codesys(dst, src, ts, false, p),
+                (_, p) if codesys::is_codesys_udp(p) => self.codesys(src, dst, ts, true, p, pl),
+                (p, _) if codesys::is_codesys_udp(p) => self.codesys(dst, src, ts, false, p, pl),
                 _ => {}
             }
         }
@@ -365,8 +365,8 @@ impl Tracker {
             (1883, _) => self.mqtt(dst, src, pl, ts, false),
             (_, 5006 | 5007) => self.melsec_mc(src, dst, pl, ts, true),
             (5006 | 5007, _) => self.melsec_mc(dst, src, pl, ts, false),
-            (_, p) if codesys::is_codesys_tcp(p) => self.codesys(src, dst, ts, true, p),
-            (p, _) if codesys::is_codesys_tcp(p) => self.codesys(dst, src, ts, false, p),
+            (_, p) if codesys::is_codesys_tcp(p) => self.codesys(src, dst, ts, true, p, pl),
+            (p, _) if codesys::is_codesys_tcp(p) => self.codesys(dst, src, ts, false, p, pl),
             _ => {}
         }
     }

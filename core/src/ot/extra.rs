@@ -5,8 +5,9 @@
 use super::{
     Fields, clean, no_listener,
     readonly::{
-        FinsCommand, FinsRequest, FoxMessage, FoxRequest, KnxRequest, KnxService, MqttPacket,
-        MqttRequest, OtStream, OtUdp,
+        Dnp3Function, Dnp3Request, FinsCommand, FinsRequest, FinsTcpRequest, FoxMessage,
+        FoxRequest, KnxRequest, KnxService, McCommand, McRequest, MqttPacket, MqttRequest,
+        OtStream, OtUdp, dnp3_crc,
     },
 };
 use crate::sendlog::SentLog;
@@ -375,6 +376,270 @@ pub(super) async fn knx(target: SocketAddr, log: &Arc<SentLog>) -> Result<Option
     }
 }
 
+// ---- Omron FINS/TCP ------------------------------------------------------------------------
+
+/// Largest FINS/TCP frame read (the Controller Data Read reply of a CP1L-EL is 122 bytes).
+const MAX_FINS_TCP: usize = 2048;
+
+/// One FINS/TCP frame: `FINS`, the length of what follows the length field, the FINS/TCP command
+/// and error code (four bytes each) and the data. Returns (command, error code, data).
+pub(crate) fn parse_fins_tcp_frame(b: &[u8]) -> Result<(u32, u32, &[u8]), String> {
+    if b.len() < 16 || b[..4] != *b"FINS" {
+        return Err("Not a FINS/TCP frame".into());
+    }
+    let length = u32::from_be_bytes([b[4], b[5], b[6], b[7]]) as usize;
+    if !(8..=MAX_FINS_TCP).contains(&length) || b.len() < 8 + length {
+        return Err("Truncated FINS/TCP frame".into());
+    }
+    let command = u32::from_be_bytes([b[8], b[9], b[10], b[11]]);
+    let error = u32::from_be_bytes([b[12], b[13], b[14], b[15]]);
+    Ok((command, error, &b[16..8 + length]))
+}
+
+/// The reply to the node address data command (FINS/TCP command 1): the node address the server
+/// gave the client and the server's own node address, one byte each in four-byte fields.
+pub(crate) fn parse_fins_node_address(b: &[u8]) -> Result<(u8, u8), String> {
+    let (command, error, data) = parse_fins_tcp_frame(b)?;
+    if error != 0 {
+        return Err(format!("FINS/TCP error code {error:#010X}"));
+    }
+    if command != 1 || data.len() != 8 {
+        return Err("Not a node address data reply".into());
+    }
+    let node = |i: usize| {
+        (data[i..i + 3] == [0, 0, 0])
+            .then_some(data[i + 3])
+            .ok_or("FINS node address out of range".to_string())
+    };
+    Ok((node(0)?, node(4)?))
+}
+
+/// The reply to the FINS frame send command (FINS/TCP command 2): a Controller Data Read response.
+pub(crate) fn parse_fins_tcp_controller_data(b: &[u8]) -> Result<Fields, String> {
+    let (command, error, data) = parse_fins_tcp_frame(b)?;
+    if error != 0 {
+        return Err(format!("FINS/TCP error code {error:#010X}"));
+    }
+    if command != 2 {
+        return Err("Not a FINS frame send reply".into());
+    }
+    parse_fins_controller_data(data)
+}
+
+/// Reads one FINS/TCP frame: the 8 bytes that give its length, then the rest.
+async fn read_fins_tcp_frame(socket: &mut OtStream) -> Result<Vec<u8>, String> {
+    let mut frame = vec![0u8; 8];
+    socket
+        .read_exact(&mut frame)
+        .await
+        .map_err(|e| e.to_string())?;
+    if frame[..4] != *b"FINS" {
+        return Err("Not a FINS/TCP frame".into());
+    }
+    let length = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]) as usize;
+    if !(8..=MAX_FINS_TCP).contains(&length) {
+        return Err("Invalid FINS/TCP length".into());
+    }
+    frame.resize(8 + length, 0);
+    socket
+        .read_exact(&mut frame[8..])
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(frame)
+}
+
+/// FINS over TCP: the node address exchange, then one Controller Data Read to the node the
+/// server named. The connection is closed (dropped) as soon as the reply is read, so the
+/// controller's limited FINS/TCP connections are not held.
+pub(super) async fn fins_tcp(target: SocketAddr, log: &Arc<SentLog>) -> Result<Fields, String> {
+    let mut socket = OtStream::connect(target)
+        .await
+        .map_err(super::connect_error)?
+        .with_log(log.clone());
+    socket
+        .send(&FinsTcpRequest::node_address())
+        .await
+        .map_err(|e| e.to_string())?;
+    let reply = read_fins_tcp_frame(&mut socket).await?;
+    let (_client, server) = parse_fins_node_address(&reply)?;
+    socket
+        .send(&FinsTcpRequest::controller_data_read(server))
+        .await
+        .map_err(|e| e.to_string())?;
+    let reply = read_fins_tcp_frame(&mut socket).await?;
+    parse_fins_tcp_controller_data(&reply)
+}
+
+// ---- MELSEC MC protocol --------------------------------------------------------------------
+
+/// The response to Read CPU Model Name in a 3E binary frame: subheader `D0 00`, network, PC,
+/// module I/O (2), station, the data length (2, counts the end code and the data), the end code
+/// (2) and the data: the model name (16 ASCII bytes, space padded) and the model code (2 bytes).
+pub(crate) fn parse_mc_cpu_model(b: &[u8]) -> Result<Fields, String> {
+    if b.len() < 11 || b[..2] != [0xd0, 0x00] {
+        return Err("Not an MC protocol 3E response".into());
+    }
+    let length = usize::from(u16::from_le_bytes([b[7], b[8]]));
+    if length < 2 || b.len() < 9 + length {
+        return Err("Truncated MC protocol response".into());
+    }
+    let end_code = u16::from_le_bytes([b[9], b[10]]);
+    if end_code != 0 {
+        return Err(format!("MC protocol end code {end_code:#06X}"));
+    }
+    let data = &b[11..9 + length];
+    if data.len() < 16 {
+        return Err("Truncated CPU model name".into());
+    }
+    let model = clean_ascii(&data[..16]);
+    if model.is_empty() {
+        return Err("No CPU model name".into());
+    }
+    let mut f = Fields::new();
+    f.insert("model".into(), model);
+    if data.len() >= 18 {
+        f.insert(
+            "model_code".into(),
+            format!("{:04X}", u16::from_le_bytes([data[16], data[17]])),
+        );
+    }
+    f.insert("protocol".into(), "MC protocol 3E".into());
+    Ok(f)
+}
+
+/// Reads the CPU model over the MC protocol, on the port the user named (`--melsec-port`).
+pub(super) async fn melsec(target: SocketAddr, log: &Arc<SentLog>) -> Result<Fields, String> {
+    let mut socket = OtStream::connect(target)
+        .await
+        .map_err(super::connect_error)?
+        .with_log(log.clone());
+    socket
+        .send(&McRequest::new(McCommand::CpuModelRead))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut head = [0u8; 9];
+    socket
+        .read_exact(&mut head)
+        .await
+        .map_err(|e| e.to_string())?;
+    let length = usize::from(u16::from_le_bytes([head[7], head[8]]));
+    if head[..2] != [0xd0, 0x00] || !(2..=512).contains(&length) {
+        return Err("Not an MC protocol 3E response".into());
+    }
+    let mut frame = head.to_vec();
+    frame.resize(9 + length, 0);
+    socket
+        .read_exact(&mut frame[9..])
+        .await
+        .map_err(|e| e.to_string())?;
+    parse_mc_cpu_model(&frame)
+}
+
+// ---- DNP3 ----------------------------------------------------------------------------------
+
+/// Largest response read (a few data link frames).
+const MAX_DNP3: usize = 4096;
+
+/// The length of the first data link frame in `b` (header, user data, block CRCs), when its header
+/// is there and valid.
+pub(crate) fn dnp3_frame_len(b: &[u8]) -> Option<usize> {
+    if b.len() < 10 || b[..2] != [0x05, 0x64] || dnp3_crc(&b[..8]).to_le_bytes() != b[8..10] {
+        return None;
+    }
+    let length = usize::from(b[2]);
+    if length < 5 {
+        return None;
+    }
+    let data = length - 5;
+    Some(10 + data + 2 * data.div_ceil(16))
+}
+
+/// The first data link frame of an outstation's response: its CRCs are checked (a frame with a
+/// wrong CRC is refused), the user data is joined from its blocks. Returns (control, destination,
+/// source, user data).
+fn dnp3_frame(b: &[u8]) -> Result<(u8, u16, u16, Vec<u8>), String> {
+    let total = dnp3_frame_len(b).ok_or("Not a DNP3 data link frame")?;
+    if b.len() < total {
+        return Err("Truncated DNP3 frame".into());
+    }
+    let mut data = vec![];
+    for block in b[10..total].chunks(18) {
+        let (payload, crc) = block.split_at(block.len().saturating_sub(2));
+        if block.len() < 3 || dnp3_crc(payload).to_le_bytes() != *crc {
+            return Err("DNP3 data block with a wrong CRC".into());
+        }
+        data.extend_from_slice(payload);
+    }
+    Ok((
+        b[3],
+        u16::from_le_bytes([b[4], b[5]]),
+        u16::from_le_bytes([b[6], b[7]]),
+        data,
+    ))
+}
+
+/// The outstation's answer to Read class 0: the data link address it answers from, its internal
+/// indications and how much data it sent. Only a Response (function 129) or an Unsolicited
+/// Response (130) in the first frame counts; the outstation's data objects are not decoded.
+pub(crate) fn parse_dnp3_response(b: &[u8]) -> Result<Fields, String> {
+    let (control, _destination, source, data) = dnp3_frame(b)?;
+    // from an outstation: DIR clear, PRM set
+    if control & 0xc0 != 0x40 {
+        return Err("Not a frame from an outstation".into());
+    }
+    // transport header, application control, function, IIN1, IIN2
+    if data.len() < 5 || data[0] & 0x40 == 0 {
+        return Err("DNP3 response without an application header".into());
+    }
+    if !matches!(data[2], 0x81 | 0x82) {
+        return Err(format!(
+            "DNP3 application function {} is not a response",
+            data[2]
+        ));
+    }
+    let mut f = Fields::new();
+    f.insert("link_address".into(), source.to_string());
+    let flags = crate::otpassive::dnp3::iin_flags(data[3], data[4]);
+    f.insert("iin".into(), flags.join(", "));
+    f.insert("iin_raw".into(), format!("{:02X}{:02X}", data[3], data[4]));
+    f.insert(
+        "response_bytes".into(),
+        data.len().saturating_sub(5).to_string(),
+    );
+    Ok(f)
+}
+
+/// Reads the first response frame from the outstation at `address`: Read class 0 only. Nothing is
+/// confirmed and nothing else is sent; the connection is closed after the reply.
+pub(super) async fn dnp3(
+    target: SocketAddr,
+    address: u16,
+    master: u16,
+    log: &Arc<SentLog>,
+) -> Result<Fields, String> {
+    let request = Dnp3Request::new(address, master, Dnp3Function::ReadClass0).ok_or(
+        "the DNP3 outstation address must be a unicast address different from the master's",
+    )?;
+    let mut socket = OtStream::connect(target)
+        .await
+        .map_err(super::connect_error)?
+        .with_log(log.clone());
+    socket.send(&request).await.map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let n = socket.read(&mut chunk).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if dnp3_frame_len(&buf).is_some_and(|total| buf.len() >= total) || buf.len() >= MAX_DNP3 {
+            break;
+        }
+    }
+    parse_dnp3_response(&buf)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -546,6 +811,269 @@ pub(crate) mod tests {
         assert_eq!(
             sent[0].detail,
             "Omron FINS/UDP: Controller Data Read (command 0x0501)"
+        );
+    }
+
+    /// The server's two replies of the FINS/TCP exchange in `omron_test.pcap` (packets 6 and 8).
+    const FINS_TCP_NODE_REPLY: &str = "46494e53000000100000000100000000000000fb000000c8";
+    fn fins_tcp_read_reply() -> Vec<u8> {
+        let mut frame = hex("46494e53000000720000000200000000");
+        frame.extend(hex(FINS_REPLY_TCP_BODY));
+        frame
+    }
+    /// The FINS frame inside packet 8: the reply to the TCP request (source node 0xc8, SID 5).
+    const FINS_REPLY_TCP_BODY: &str = "c0000200fbef00c80005050100004350314c2d454c323044522d440000002020202030312e3030000000000030312e3036000000000000000000000000000000000000000000000000010000000000000000000000000000000000010003000a172a1008000000000000";
+
+    #[test]
+    fn fins_tcp_replies_of_the_capture_decode_and_every_truncation_fails_cleanly() {
+        let node = hex(FINS_TCP_NODE_REPLY);
+        assert_eq!(parse_fins_node_address(&node), Ok((0xfb, 0xc8)));
+        let read = fins_tcp_read_reply();
+        assert_eq!(read.len(), 122, "packet 8 of the capture");
+        let f = parse_fins_tcp_controller_data(&read).unwrap();
+        assert_eq!(f["model"], "CP1L-EL20DR-D");
+        assert_eq!(f["firmware"], "01.00");
+        for cut in 0..node.len() {
+            assert!(parse_fins_node_address(&node[..cut]).is_err(), "{cut}");
+        }
+        for cut in 0..read.len() {
+            assert!(
+                parse_fins_tcp_controller_data(&read[..cut]).is_err(),
+                "{cut}"
+            );
+        }
+        // a reply of the other kind, an error code, another magic, a node above 255, a huge length
+        assert!(parse_fins_node_address(&read).is_err());
+        assert!(parse_fins_tcp_controller_data(&node).is_err());
+        let mut m = node.clone();
+        m[15] = 3;
+        assert!(
+            parse_fins_node_address(&m)
+                .unwrap_err()
+                .contains("0x00000003")
+        );
+        let mut m = node.clone();
+        m[0] = b'X';
+        assert!(parse_fins_node_address(&m).is_err());
+        let mut m = node.clone();
+        m[17] = 1;
+        assert!(parse_fins_node_address(&m).unwrap_err().contains("range"));
+        let mut m = node.clone();
+        m[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(parse_fins_node_address(&m).is_err());
+    }
+
+    /// FINS over TCP against a loopback device that replays the captured replies: the device sees
+    /// the two captured frames and nothing else, the node it named is used, and the client closes
+    /// the connection when it has the answer.
+    #[tokio::test]
+    async fn fins_tcp_sends_the_two_captured_frames_and_closes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut c, _) = listener.accept().await.unwrap();
+            let mut first = [0u8; 20];
+            c.read_exact(&mut first).await.unwrap();
+            assert_eq!(
+                crate::ot::readonly::FinsTcpMessage::of_frame(&first),
+                Some(crate::ot::readonly::FinsTcpMessage::NodeAddress)
+            );
+            c.write_all(&hex(FINS_TCP_NODE_REPLY)).await.unwrap();
+            let mut second = [0u8; 29];
+            c.read_exact(&mut second).await.unwrap();
+            assert_eq!(
+                crate::ot::readonly::FinsTcpMessage::of_frame(&second),
+                Some(crate::ot::readonly::FinsTcpMessage::ControllerDataRead)
+            );
+            assert_eq!(
+                second[20], 0xc8,
+                "the server node of the reply is the destination"
+            );
+            // the reply in two pieces
+            let reply = fins_tcp_read_reply();
+            c.write_all(&reply[..50]).await.unwrap();
+            c.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            c.write_all(&reply[50..]).await.unwrap();
+            // nothing more arrives, and the client closes
+            let mut rest = [0u8; 8];
+            assert_eq!(c.read(&mut rest).await.unwrap(), 0);
+        });
+        let log = Arc::new(SentLog::new());
+        let f = fins_tcp(address, &log).await.unwrap();
+        assert_eq!(f["model"], "CP1L-EL20DR-D");
+        server.await.unwrap();
+        let labels: Vec<String> = log.snapshot().into_iter().map(|e| e.detail).collect();
+        assert_eq!(
+            labels,
+            [
+                "Omron FINS/TCP: Controller Data Read (command 0x0501)",
+                "Omron FINS/TCP: node address data (FINS/TCP command 0)"
+            ]
+        );
+    }
+
+    /// The first response frame of `dnp3_read_and_response.pcap` (packet 5, 292 bytes: a Response
+    /// from outstation 10 to master 1 with the IIN bytes 0000), the frame the decoder was
+    /// written against.
+    fn dnp3_captured_response() -> Vec<u8> {
+        hex(
+            "0564ff4401000a005aeb53c081000001020000090202020202022d3a0202020203020000090202020202020270da02020214010000090200000000020000e30b000002000000000200000000020000004dba000200000000020000000002000000007eae02000000000200000000150100000902d3420000000002000000000200000000020069ce00000002000000000200000000020000dd5e000002000000000200000000020000004dba001e0100000902000000000200000000cd6302000000000200000000020000000002f0030000000002000000000200000000020069ce00000002000000000a0200000902020217100202020202020228010000090200000058e4000200000000020000000002000000007eae020000000002000000004e72",
+        )
+    }
+
+    #[test]
+    fn a_dnp3_response_of_the_capture_decodes_with_its_crcs_checked() {
+        let frame = dnp3_captured_response();
+        assert_eq!(frame.len(), 292, "10 + 250 + 16 block CRCs x 2");
+        assert_eq!(dnp3_frame_len(&frame), Some(292));
+        let f = parse_dnp3_response(&frame).unwrap();
+        assert_eq!(f["link_address"], "10");
+        assert_eq!(f["iin"], "", "no internal indication of interest is set");
+        assert_eq!(f["iin_raw"], "0000");
+        assert_eq!(f["response_bytes"], "245");
+        // a flipped byte anywhere in the frame is a CRC error, never a value
+        for i in 0..frame.len() {
+            let mut m = frame.clone();
+            m[i] ^= 0x01;
+            assert!(parse_dnp3_response(&m).is_err(), "byte {i}");
+        }
+        // every truncation
+        for cut in 0..frame.len() {
+            assert!(parse_dnp3_response(&frame[..cut]).is_err(), "{cut}");
+        }
+        // IIN bits come out by name (device restart + need time; parameter error)
+        let mut m = frame.clone();
+        m[13] = 0x90;
+        m[14] = 0x04;
+        // the first block's CRC covers the user data: recompute it
+        let crc = dnp3_crc(&m[10..26]).to_le_bytes();
+        m[26..28].copy_from_slice(&crc);
+        let f = parse_dnp3_response(&m).unwrap();
+        assert_eq!(f["iin"], "device restart, need time, parameter error");
+        assert_eq!(f["iin_raw"], "9004");
+        // a request from a master is not a response
+        let request = crate::ot::readonly::Dnp3Request::new(
+            10,
+            1,
+            crate::ot::readonly::Dnp3Function::ReadClass0,
+        )
+        .unwrap();
+        use crate::ot::readonly::ReadOnlyRequest;
+        assert!(parse_dnp3_response(&request.encode()).is_err());
+    }
+
+    /// DNP3 against a loopback outstation: the frame it receives is the one allowed request, its
+    /// answer is the captured response (in pieces), nothing is confirmed and the client closes.
+    #[tokio::test]
+    async fn dnp3_sends_read_class_0_only_and_closes_without_confirming() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut c, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 18];
+            c.read_exact(&mut request).await.unwrap();
+            assert_eq!(
+                crate::ot::readonly::Dnp3Function::of_frame(&request),
+                Some(crate::ot::readonly::Dnp3Function::ReadClass0)
+            );
+            assert_eq!(u16::from_le_bytes([request[4], request[5]]), 10);
+            assert_eq!(u16::from_le_bytes([request[6], request[7]]), 3);
+            let reply = dnp3_captured_response();
+            for piece in reply.chunks(100) {
+                c.write_all(piece).await.unwrap();
+                c.flush().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            // no confirm, no second request: the stream just ends
+            let mut rest = [0u8; 32];
+            assert_eq!(c.read(&mut rest).await.unwrap(), 0);
+        });
+        let log = Arc::new(SentLog::new());
+        let f = dnp3(address, 10, 3, &log).await.unwrap();
+        assert_eq!(f["link_address"], "10");
+        server.await.unwrap();
+        let sent = log.snapshot();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].detail,
+            "DNP3: Read class 0 data (function 0x01, object group 60 variation 1)"
+        );
+        // a broadcast address never leaves this function, not even a connection is made
+        for broadcast in [0xffffu16, 0xfffc, 0xfff0] {
+            let e = dnp3(address, broadcast, 3, &log).await.unwrap_err();
+            assert!(e.contains("unicast"), "{e}");
+        }
+        assert!(dnp3(address, 3, 3, &log).await.is_err());
+        assert_eq!(log.snapshot().len(), 1);
+    }
+
+    /// A response written from the MC protocol reference (no capture of an MC 3E exchange is
+    /// among the fixtures): D000, network 0, PC 0xFF, module I/O 0x03FF, station 0, length 20 (end
+    /// code 2 + model 16 + model code 2), end code 0, "Q03UDECPU" space padded, model code 0x0268.
+    fn mc_response() -> Vec<u8> {
+        let mut frame = vec![0xd0, 0, 0, 0xff, 0xff, 3, 0, 20, 0, 0, 0];
+        frame.extend(b"Q03UDECPU       ");
+        frame.extend([0x68, 0x02]);
+        frame
+    }
+
+    #[test]
+    fn an_mc_cpu_model_response_decodes_and_every_truncation_fails_cleanly() {
+        let frame = mc_response();
+        assert_eq!(frame.len(), 29);
+        let f = parse_mc_cpu_model(&frame).unwrap();
+        assert_eq!(f["model"], "Q03UDECPU");
+        assert_eq!(f["model_code"], "0268");
+        assert_eq!(f["protocol"], "MC protocol 3E");
+        for cut in 0..frame.len() {
+            assert!(parse_mc_cpu_model(&frame[..cut]).is_err(), "{cut}");
+        }
+        // an error end code (0xC059: the command is not supported), a request, an empty name
+        let mut m = frame.clone();
+        m[9..11].copy_from_slice(&0xc059u16.to_le_bytes());
+        assert!(parse_mc_cpu_model(&m).unwrap_err().contains("0xC059"));
+        let mut m = frame.clone();
+        m[0] = 0x50;
+        assert!(parse_mc_cpu_model(&m).is_err());
+        let mut m = frame.clone();
+        m[11..27].fill(b' ');
+        assert!(parse_mc_cpu_model(&m).is_err());
+        // control characters in a name from the network are not kept
+        let mut m = frame.clone();
+        m[11] = 0x1b;
+        assert!(!parse_mc_cpu_model(&m).unwrap()["model"].contains('\x1b'));
+    }
+
+    #[tokio::test]
+    async fn mc_sends_the_cpu_model_read_only_on_the_given_port() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut c, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 15];
+            c.read_exact(&mut request).await.unwrap();
+            assert_eq!(
+                crate::ot::readonly::McCommand::of_frame(&request),
+                Some(crate::ot::readonly::McCommand::CpuModelRead)
+            );
+            c.write_all(&mc_response()).await.unwrap();
+            let mut rest = [0u8; 16];
+            assert_eq!(
+                c.read(&mut rest).await.unwrap(),
+                0,
+                "one request, then closed"
+            );
+        });
+        let log = Arc::new(SentLog::new());
+        let f = melsec(address, &log).await.unwrap();
+        assert_eq!(f["model"], "Q03UDECPU");
+        server.await.unwrap();
+        let sent = log.snapshot();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].detail,
+            "MELSEC MC 3E: Read CPU Model Name (command 0x0101, subcommand 0x0000)"
         );
     }
 

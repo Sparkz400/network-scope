@@ -784,8 +784,12 @@ def snmp_agent(bind, port, stats_path=None):
 # Read, MQTT CONNECT, KNX DESCRIPTION_REQUEST, the Fox hello) and counts what it receives, so
 # lab/verify.py can show that nothing else arrives (`--ot-stats FILE`). Anything else is counted
 # under "other" and ignored.
-OT_STATS = {"fins": {}, "mqtt": {}, "knx": {}, "fox": {}}
+OT_STATS = {"fins": {}, "mqtt": {}, "knx": {}, "fox": {}, "fins_tcp": {}, "mc": {}, "dnp3": {}}
 OT_STATS_PATH = None
+# the MELSEC MC protocol has no standard port: the lab device listens on one that only the
+# command line of the test gives (`--melsec-port 15007`), and a scan without it must never send there
+MC_PORT = 15007
+DNP3_OUTSTATION = 10
 
 
 def ot_count(protocol, key):
@@ -818,6 +822,110 @@ def fins_agent(bind, port):
                 sock.sendto(fins_reply(data), addr)
         else:
             ot_count("fins", "other")
+
+
+FINS_TCP_NODE_REQUEST = b"FINS" + bytes([0, 0, 0, 12]) + bytes(12)
+FINS_SERVER_NODE = 0xC8
+FINS_CLIENT_NODE = 0xFB
+
+
+def fins_tcp(conn):
+    """FINS/TCP: the node address exchange, then one Controller Data Read (the frames of
+    omron_test.pcap). Anything else is counted as "other" and ends the connection."""
+    first = read_exact(conn, 20)
+    if not first:
+        return  # the port check opened and closed a connection without a byte: not a request
+    if first != FINS_TCP_NODE_REQUEST:
+        ot_count("fins_tcp", "other")
+        return
+    ot_count("fins_tcp", "node-address")
+    conn.sendall(b"FINS" + bytes([0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 0]) + bytes([0, 0, 0, FINS_CLIENT_NODE, 0, 0, 0, FINS_SERVER_NODE]))
+    second = read_exact(conn, 29)
+    # command 2 (FINS frame send), a command frame to our node asking for 0x0501
+    if (second is None or second[:12] != b"FINS" + bytes([0, 0, 0, 21, 0, 0, 0, 2]) or second[12:16] != bytes(4)
+            or second[16] != 0x80 or second[20] != FINS_SERVER_NODE or second[26:28] != b"\x05\x01"):
+        ot_count("fins_tcp", "other")
+        return
+    ot_count("fins_tcp", "0501")
+    inner = second[16:29]
+    header = bytes([0xC0, 0, 2, 0, FINS_CLIENT_NODE, inner[8], 0, FINS_SERVER_NODE, 0, inner[9], 5, 1, 0, 0])
+    data = b"LabPLC-FINS".ljust(20, b" ") + b"01.00".ljust(20, b"\x00") + bytes(40) + bytes(12)
+    body = header + data
+    conn.sendall(b"FINS" + struct.pack(">I", 8 + len(body)) + bytes([0, 0, 0, 2, 0, 0, 0, 0]) + body)
+    # the client closes; anything more is counted
+    more = read_some(conn)
+    if more:
+        ot_count("fins_tcp", "other")
+
+
+def mc(conn):
+    """MELSEC MC protocol 3E, binary: answers Read CPU Model Name (0x0101) with a model name
+    and counts every request by its command; anything else is "other"."""
+    request = read_exact(conn, 15)
+    if not request:
+        return  # the port check opened and closed a connection without a byte: not a request
+    expected = bytes([0x50, 0, 0, 0xFF, 0xFF, 3, 0, 6, 0, 0x10, 0, 1, 1, 0, 0])
+    if request != expected:
+        ot_count("mc", "other")
+        return
+    ot_count("mc", "0101")
+    data = b"LabQ03UDE".ljust(16, b" ") + bytes([0x68, 0x02])
+    conn.sendall(bytes([0xD0, 0, 0, 0xFF, 0xFF, 3, 0]) + struct.pack("<H", 2 + len(data)) + bytes([0, 0]) + data)
+    more = read_some(conn)
+    if more:
+        ot_count("mc", "other")
+
+
+def dnp3_crc(data):
+    """CRC-16/DNP (IEEE 1815): written here from the standard's polynomial, independently of the Rust code."""
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA6BC if crc & 1 else crc >> 1
+    return (~crc) & 0xFFFF
+
+
+def dnp3_frame(control, destination, source, user_data):
+    header = bytes([0x05, 0x64, 5 + len(user_data), control]) + struct.pack("<HH", destination, source)
+    out = header + struct.pack("<H", dnp3_crc(header))
+    for i in range(0, len(user_data), 16):
+        block = user_data[i:i + 16]
+        out += block + struct.pack("<H", dnp3_crc(block))
+    return out
+
+
+def dnp3(conn):
+    """A DNP3 outstation (address 10): answers only a link frame whose two CRCs verify, that is
+    unconfirmed user data to its address with Read (function 1) of class 0 (g60 v1). Anything
+    else is counted and ignored; a broadcast address would be counted as "broadcast"."""
+    data = read_exact(conn, 18)
+    if not data:
+        return  # the port check opened and closed a connection without a byte: not a request
+    if data[:2] != b"\x05\x64":
+        ot_count("dnp3", "other")
+        return
+    header_ok = dnp3_crc(data[:8]) == struct.unpack("<H", data[8:10])[0]
+    block_ok = dnp3_crc(data[10:16]) == struct.unpack("<H", data[16:18])[0]
+    destination, source = struct.unpack("<HH", data[4:8])
+    if destination >= 0xFFFC:
+        ot_count("dnp3", "broadcast")
+        return
+    if not (header_ok and block_ok):
+        ot_count("dnp3", "bad-crc")
+        return
+    # control 0xC4 = primary, from the master, unconfirmed user data; transport and application
+    # headers FIR+FIN, function 1 (Read), object g60 v1 qualifier 6 (class 0)
+    if data[3] == 0xC4 and data[10:16] == bytes([0xC0, 0xC0, 0x01, 0x3C, 0x01, 0x06]) and destination == DNP3_OUTSTATION:
+        ot_count("dnp3", "read-class0")
+        # Response (129), IIN 0000, no objects
+        conn.sendall(dnp3_frame(0x44, source, DNP3_OUTSTATION, bytes([0xC0, 0xC0, 0x81, 0x00, 0x00])))
+    else:
+        ot_count("dnp3", "other")
+        return
+    more = read_some(conn)
+    if more:
+        ot_count("dnp3", "other")
 
 
 def mqtt(conn):
@@ -891,13 +999,16 @@ def main():
     ap.add_argument("--conn-limit", type=int, default=4, help="fragile-ot: new connections per second that crash a device")
     ap.add_argument("--stats", help="fragile-ot: JSON file for the device counters")
     ap.add_argument("--snmp-stats", help="JSON file for the SNMP agent's counters (the PDU tags it received)")
-    ap.add_argument("--ot-stats", help="JSON file for the counters of the FINS, MQTT, KNX and Fox devices (what they received)")
+    ap.add_argument("--ot-stats", help="JSON file for the counters of the FINS (UDP and TCP), MQTT, KNX, Fox, MELSEC MC and DNP3 devices (what they received)")
     args = ap.parse_args()
     SCENARIO = Scenario(args.scenario, args.seed, args.loss, (args.delay_min_ms / 1000, args.delay_max_ms / 1000))
 
     tcp = {port: (handler, None) for port, handler in TCP.items()}
     tcp[1883] = (mqtt, None)
     tcp[1911] = (fox, None)
+    tcp[9600] = (fins_tcp, None)
+    tcp[20000] = (dnp3, None)
+    tcp[MC_PORT] = (mc, None)
     if args.scenario == "fragile-ot":
         stats = Stats(args.stats)
         for port, (name, handler) in FRAGILE.items():

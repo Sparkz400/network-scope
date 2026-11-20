@@ -374,3 +374,24 @@ path = "fuzz_targets/neighbor_cache.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fins_tcp_reply"
+path = "fuzz_targets/fins_tcp_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mc_reply"
+path = "fuzz_targets/mc_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnp3_reply"
+path = "fuzz_targets/dnp3_reply.rs"
+test = false
+doc = false
+bench = false

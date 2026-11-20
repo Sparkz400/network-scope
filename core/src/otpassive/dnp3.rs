@@ -91,7 +91,7 @@ fn frames(mut b: &[u8]) -> Vec<Frame> {
 }
 
 /// IIN bits (IEEE 1815 table 4-1) that say something about the outstation, by name.
-fn iin_flags(iin1: u8, iin2: u8) -> Vec<&'static str> {
+pub(crate) fn iin_flags(iin1: u8, iin2: u8) -> Vec<&'static str> {
     let mut out = vec![];
     for (bit, name) in [
         (0x20u8, "local control"),
