@@ -1621,6 +1621,40 @@ mod tests {
         assert_eq!(db.cpe("OpenSSH", "x:y*"), None, "untrusted banner text");
         assert_eq!(db.cpe("unknown", "1.0"), None);
     }
+
+    // The vendor:product pairs of the table are compared with the NVD CPE dictionary by
+    // `lab/check_cpe.py` (CI, job real-servers); this is its format check, and it pins the
+    // vendor that the dictionary check found wrong (`beasts` is not a vendor of vsftpd there).
+    #[test]
+    fn builtin_cpe_templates_are_well_formed_names() {
+        let db = CveDb::builtin();
+        let mut pairs = std::collections::BTreeSet::new();
+        for rule in &db.cpe {
+            let fields: Vec<&str> = rule.template.split(':').collect();
+            assert_eq!(fields.len(), 13, "{}", rule.id);
+            assert_eq!(&fields[..3], ["cpe", "2.3", "a"], "{}", rule.id);
+            for name in &fields[3..5] {
+                assert!(
+                    name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                        && name.bytes().all(|b| matches!(b,
+                            b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'-' | b'~')),
+                    "{}: {name:?}",
+                    rule.id
+                );
+            }
+            assert!(
+                pairs.insert((fields[3], fields[4])),
+                "{} repeats a pair",
+                rule.id
+            );
+        }
+        assert!(pairs.contains(&("vsftpd_project", "vsftpd")));
+        assert!(!pairs.contains(&("beasts", "vsftpd")));
+        assert_eq!(
+            db.cpe("vsftpd", "3.0.5").unwrap(),
+            "cpe:2.3:a:vsftpd_project:vsftpd:3.0.5:*:*:*:*:*:*:*"
+        );
+    }
     #[test]
     fn smb_encryption_and_smbghost_hints() {
         let smb = |extra: &[(&str, &str)]| {
