@@ -154,7 +154,7 @@ Export {} || {} exportieren
 DCP Identify running || DCP-Identify läuft
 Listening — no packets sent || Lauscht — es werden keine Pakete gesendet
 Passive discovery / Profinet DCP / OT || Passive Erkennung / Profinet DCP / OT
-Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP || Passiv: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP
+Passive: mDNS · SSDP · LLDP · CDP · NetBIOS · WS-Discovery · DHCP · DHCPv6 · ARP || Passiv: mDNS · SSDP · LLDP · CDP · NetBIOS · WS-Discovery · DHCP · DHCPv6 · ARP
 Requires Npcap and permission to capture on the selected Ethernet interface. || Benötigt Npcap und die Berechtigung zum Mitschneiden auf der gewählten Ethernet-Schnittstelle.
 Refresh interfaces || Schnittstellen aktualisieren
 Interface || Schnittstelle

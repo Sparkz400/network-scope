@@ -402,3 +402,24 @@ path = "fuzz_targets/dnp3_reply.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "nbt_datagram"
+path = "fuzz_targets/nbt_datagram.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lldp_tlvs"
+path = "fuzz_targets/lldp_tlvs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dhcpv6_message"
+path = "fuzz_targets/dhcpv6_message.rs"
+test = false
+doc = false
+bench = false

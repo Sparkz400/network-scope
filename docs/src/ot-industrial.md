@@ -125,7 +125,7 @@ The lab replay test of this feature learns `modbus_test_data_part1.pcap`, inject
 
 ## General passive discovery
 
-`listen --interface ID --seconds N` (and the desktop's Passive section) decodes mDNS, SSDP/UPnP, LLDP, CDP, NetBIOS, WS-Discovery, DHCP, ARP and IPv6 Neighbor Discovery (see [IPv6 discovery](ipv6-discovery.md)) without sending discovery packets. MAC-keyed observations retain devices that advertise no IP. What each protocol contributes to device identification is in [Detection](detection.md#passive-evidence-listen). Switch and PLC neighbours that announce themselves with LLDP or CDP (name, port, platform, software, management address) appear as observations with those fields.
+`listen --interface ID --seconds N` (and the desktop's Passive section) decodes mDNS, SSDP/UPnP, LLDP (with LLDP-MED), CDP, NetBIOS (name service and browser announcements), WS-Discovery, DHCP, DHCPv6, ARP and IPv6 Neighbor Discovery (see [IPv6 discovery](ipv6-discovery.md)) without sending discovery packets. MAC-keyed observations retain devices that advertise no IP. What each protocol contributes to device identification is in [Detection](detection.md#passive-evidence-listen). Switch and PLC neighbours that announce themselves with LLDP or CDP (name, port, platform, software, management address) appear as observations with those fields.
 
 - Passive IPv4/IPv6 UDP decoding supports ordinary unfragmented packets; IPv6 extension headers and reassembly are not implemented. Ethernet VLAN tags are supported.
 - Requests to broadcast or multicast destinations record only the client.
