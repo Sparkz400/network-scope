@@ -722,6 +722,7 @@ fn socket_echo(index: u32, wait: Duration) -> Result<Vec<Ipv6Addr>, String> {
 
 // ---- Windows ---------------------------------------------------------------------------------
 
+#[cfg_attr(not(windows), allow(dead_code, unused_imports))]
 mod win {
     use super::{ALL_NODES, Interface, Neighbor, State, normalize_mac};
     use std::{net::Ipv6Addr, time::Duration};
