@@ -38,6 +38,12 @@ Ports that stay silent are retried (`--retries`, default 1). Each retry doubles 
 - The SYN engine ignores it (use `--adaptive-syn`); when SYN falls back to TCP connect it applies.
 - Trade-off: a closed port that answers later than the measured RTT is reported as unanswered, not closed. Windows reports a refused connect only after about 2 s (it retransmits the SYN), so with this flag closed ports on a host that also has open ports usually show as unanswered there; open ports are unaffected. Use it on Linux/macOS scanners, or where distinguishing closed from filtered does not matter.
 
+## Probe order and early stop
+
+A host's ports are probed likeliest first, not in numeric order: first the order of the built-in top-100 frequency list, then the rest by number. As evidence for a device class arrives (the MAC vendor from the ARP answer, the initial TTL from the ping, and the ports found open so far), the class's priority ports move to the front: printers 9100, 631, 515; controllers 502, 102, 44818; Windows 445, 135, 3389; and so on (`data/port_classes.json`). The scan only reorders the ports you asked for, never adds one, and the result of a host is sorted by port at the end, so the order never changes what is reported; a test scans the same host with two different orders and compares the results. The order matters when probes are paced (Safe Mode, `--rate`) or capped (`--parallel`): the answers that identify a host arrive first.
+
+`--early-stop` (off by default) uses that: once a host's class is certain (two signature ports open, or one plus a vendor match, the device classifier agrees, and the class's priority ports have been probed), its remaining ports are skipped. With the flag the number of probes in flight per host is capped at 16, so answers arrive while ports are left to skip. A host that stopped early has `ports_checked: false` and a note ("early stop: identified as Printer / MFP ... N port(s) were not probed"), so `diff` and `monitor` treat its unprobed ports as unknown, not closed. Use it for a quick inventory; do not use it where a complete port list matters.
+
 ## Automatic back-off
 
 A scan must never harm a device, so each host has its own pacing controller (on by default; `--no-backoff` or the Settings checkbox turns it off). It only ever slows a host down: it never raises a limit above what Safe Mode, `--parallel` or `--rate` allow.

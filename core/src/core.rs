@@ -246,6 +246,8 @@ struct Ctx {
     probes: Option<ProbeDb>,
     udp_ports: Vec<u16>,
     scripts: Option<crate::script::Scripts>,
+    /// Device classes for the probe order and the early stop.
+    classes: &'static crate::portorder::ClassTable,
     /// Where `Event::Partial` goes (the scan's event channel); `None` in unit tests.
     partial: Option<Sender<Event>>,
 }
@@ -335,6 +337,7 @@ pub async fn execute(
         probes,
         udp_ports,
         scripts,
+        classes: crate::portorder::ClassTable::builtin(),
         partial: s.partial_events.then(|| tx.clone()),
     });
     let limit = if s.safe {
@@ -443,6 +446,45 @@ async fn probe_port(
         note,
         fp: None,
     }
+}
+
+/// Longest window of probes in flight per host with `--early-stop`: a smaller window means the
+/// first answers arrive while ports are still left to skip.
+const EARLY_WINDOW: usize = 16;
+
+/// Why the rest of the host's ports may be skipped (`--early-stop`), or `None`: the class is
+/// certain (`HostOrder::identified`) and the device classifier agrees on the ports found so far.
+fn early_stop_reason(
+    order: &crate::portorder::HostOrder,
+    h: &Host,
+    vendor: &str,
+) -> Option<String> {
+    let class = order.identified()?;
+    let open = order.open();
+    let identity = BTreeMap::new();
+    let facts = crate::devices::Facts {
+        mac: &h.mac,
+        vendor,
+        tcp: &open,
+        udp: &[],
+        identity: &identity,
+        hostnames: &[],
+        os: "",
+        ttl: h.ttl,
+        protocols: &[],
+    };
+    let (kind, evidence) = crate::devices::classify_detailed(&facts)?;
+    (evidence.confidence >= 40).then(|| {
+        format!(
+            "identified as {} ({kind}, {} %) from ports {}",
+            class.label,
+            evidence.confidence,
+            open.iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    })
 }
 
 /// Sends a provisional host (`Event::Partial`); a closed channel is not an error here.
@@ -675,6 +717,11 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     } else {
         s.port_parallel.clamp(1, 1024)
     };
+    let parallel = if s.early_stop {
+        parallel.min(EARLY_WINDOW)
+    } else {
+        parallel
+    };
     // Per-host pacing: the device-type limits and the back-off (see `backoff`). It replaces the
     // plain per-host semaphore; without a back-off it behaves exactly like one.
     let gov = HostGovernor::new(parallel, s.backoff);
@@ -682,18 +729,48 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
         let mut unprobed = 0;
-        let mut probes = JoinSet::new();
+        let mut early: Option<String> = None;
+        let mut probes: JoinSet<(u16, PortProbe)> = JoinSet::new();
         // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
         let host_rtt = (s.tcp_adaptive && ctx.syn.is_none()).then(|| Arc::new(HostRtt::default()));
-        for (index, &port) in ports.iter().enumerate() {
-            if index == PILOT_PORTS
+        // The likeliest ports first, and the order follows what the host turns out to be.
+        let vendor = if h.mac.is_empty() || crate::oui::locally_administered(&h.mac) {
+            ""
+        } else {
+            crate::oui::vendor(&h.mac).unwrap_or("")
+        };
+        let mut order = crate::portorder::HostOrder::new(
+            ctx.classes,
+            &ports,
+            crate::portorder::Hints { vendor, ttl: h.ttl },
+        );
+        let mut results = vec![];
+        let mut launched = 0usize;
+        while let Some(port) = order.next_port() {
+            // Probes that finished since the last launch: their open ports steer the order, and
+            // with --early-stop they can end the scan of this host.
+            while let Some(done) = probes.try_join_next() {
+                if let Ok(item) = done {
+                    order.observe(item.0, item.1.state == PortState::Open);
+                    results.push(item);
+                }
+            }
+            if s.early_stop
+                && let Some(why) = early_stop_reason(&order, &h, vendor)
+            {
+                // `port` was taken from the order but not probed.
+                unprobed = order.remaining() + 1;
+                early = Some(why);
+                break;
+            }
+            if launched == PILOT_PORTS
                 && let Some(r) = &host_rtt
             {
                 r.wait_for_sample(timeout.min(PILOT_WAIT)).await;
             }
             let Some(permit) = gov.admit().await else {
                 // The host is paused: it gets no further probes in this scan.
-                unprobed = ports.len() - index;
+                unprobed = order.remaining() + 1;
                 break;
             };
             // Global in-flight bound taken before spawning: with many workers and a
@@ -701,6 +778,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             let Ok(socket) = ctx.sockets.clone().acquire_owned().await else {
                 break;
             };
+            launched += 1;
             let (s, ctx, rtt, gov) = (s.clone(), ctx.clone(), host_rtt.clone(), gov.clone());
             let (live, announced) = (live.clone(), announced.clone());
             probes.spawn(async move {
@@ -716,7 +794,6 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 (port, result)
             });
         }
-        let mut results = vec![];
         while let Some(result) = probes.join_next().await {
             if let Ok(item) = result {
                 results.push(item);
@@ -756,7 +833,15 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         if unprobed > 0 {
             // The unprobed ports are unknown, not closed: monitor and diff must not report them.
             h.ports_checked = false;
-            gov.note_unprobed(unprobed);
+            match early {
+                Some(why) => note(
+                    &mut h,
+                    format!(
+                        "early stop: {why}; {unprobed} port(s) were not probed in this scan; their state is unknown, not closed"
+                    ),
+                ),
+                None => gov.note_unprobed(unprobed),
+            }
         }
     }
     flush_backoff_notes(&gov, &mut h);
@@ -1474,8 +1559,120 @@ mod tests",
             probes: None,
             udp_ports: vec![],
             scripts: None,
+            classes: crate::portorder::ClassTable::builtin(),
             partial: None,
         }
+    }
+
+    /// Scans 127.0.0.1 through `scan_host` with the given class table.
+    async fn scan_with(
+        ports: Vec<u16>,
+        table: Option<&str>,
+        early_stop: bool,
+        parallel: usize,
+    ) -> Host {
+        let mut ctx = test_ctx();
+        ctx.sockets = Arc::new(Semaphore::new(64));
+        if let Some(json) = table {
+            ctx.classes = Box::leak(Box::new(crate::portorder::ClassTable::parse(json).unwrap()));
+        }
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            retries: 0,
+            port_timeout: 1500,
+            early_stop,
+            port_parallel: parallel,
+            ..Settings::default()
+        };
+        scan_host(
+            "127.0.0.1".parse().unwrap(),
+            Arc::new(ports),
+            Arc::new(s),
+            Arc::new(ctx),
+        )
+        .await
+    }
+
+    /// The order in which ports are probed never changes the result (ROADMAP B13): the same
+    /// host scanned with the frequency order and with a class that reverses it is identical.
+    #[tokio::test]
+    async fn the_probe_order_never_changes_the_result() {
+        let listeners: Vec<std::net::TcpListener> = (0..3)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let mut open: Vec<u16> = listeners
+            .iter()
+            .map(|l| l.local_addr().unwrap().port())
+            .collect();
+        open.sort_unstable();
+        let closed: Vec<u16> = (0..6)
+            .map(|_| {
+                std::net::TcpListener::bind("127.0.0.1:0")
+                    .unwrap()
+                    .local_addr()
+                    .unwrap()
+                    .port()
+            })
+            .collect();
+        let mut ports = [open.clone(), closed.clone()].concat();
+        ports.sort_unstable();
+        ports.dedup();
+        let reversed: Vec<u16> = ports.iter().rev().copied().collect();
+        let table = format!(
+            r#"{{"classes":[{{"id":"x","label":"X","ports":{reversed:?},"signature":{open:?},"vendors":[],"ttl":[]}}]}}"#
+        );
+        let default = scan_with(ports.clone(), None, false, 64).await;
+        // Sequential probes, so the class order really is the launch order.
+        let forced = scan_with(ports.clone(), Some(&table), false, 1).await;
+        for h in [&default, &forced] {
+            assert_eq!(h.open, open);
+            assert!(h.ports_checked, "every port was probed");
+            assert_eq!(h.open.len() + h.closed + h.unanswered, ports.len());
+        }
+        assert_eq!(
+            (
+                default.open,
+                default.closed,
+                default.unanswered,
+                default.errors
+            ),
+            (forced.open, forced.closed, forced.unanswered, forced.errors)
+        );
+    }
+
+    /// `--early-stop`: a host that is certainly a printer (two print ports open, the class's
+    /// priority ports probed) is not probed further, and says so; without the flag the same host
+    /// is scanned completely. The print ports are fixed numbers, so the test skips when this
+    /// machine already uses one of them.
+    #[tokio::test]
+    async fn early_stop_skips_the_rest_once_the_class_is_certain_and_says_so() {
+        let (Ok(_a), Ok(_b)) = (
+            std::net::TcpListener::bind("127.0.0.1:9100"),
+            std::net::TcpListener::bind("127.0.0.1:515"),
+        ) else {
+            return;
+        };
+        let mut ports = vec![9100, 515, 631];
+        ports.extend(40000..40040);
+        let full = scan_with(ports.clone(), None, false, 1).await;
+        assert!(full.ports_checked && full.open == [515, 9100], "{full:?}");
+        let stopped = scan_with(ports.clone(), None, true, 1).await;
+        assert_eq!(stopped.open, [515, 9100], "what was found is kept");
+        assert!(
+            !stopped.ports_checked,
+            "unprobed ports are unknown, not closed"
+        );
+        assert!(
+            stopped
+                .errors
+                .iter()
+                .any(|e| e.starts_with("early stop: identified as Printer")
+                    && e.contains("not probed")),
+            "{:?}",
+            stopped.errors
+        );
+        assert!(stopped.closed + stopped.unanswered < full.closed + full.unanswered);
     }
 
     #[test]

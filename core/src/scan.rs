@@ -83,6 +83,11 @@ pub struct Settings {
     /// a host, and a slower pace (or a pause for the rest of the scan) when the host starts
     /// resetting connections. It only ever slows a host down; `--no-backoff` turns it off.
     pub backoff: bool,
+    /// Stop probing a host's remaining ports once its device class is certain
+    /// (`portorder`: two signature ports open, or one plus the MAC vendor, and the class's
+    /// priority ports probed). Opt-in: it trades completeness for speed, and such a host is
+    /// marked `ports_checked = false` with a note.
+    pub early_stop: bool,
     /// Send [`Event::Partial`] while hosts are still being scanned (live views). Off by default,
     /// so a consumer that only reads final results never sees one; not saved with a scan.
     #[serde(skip)]
@@ -132,6 +137,7 @@ impl Default for Settings {
             trace_port: 0,
             jarm: false,
             backoff: true,
+            early_stop: false,
             partial_events: false,
         }
     }
