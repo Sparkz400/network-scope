@@ -59,7 +59,7 @@ Data crosses the boundary in only a few places: the parsers, the import function
 
 | Weakness (CWE) | Countermeasure | Evidence |
 | --- | --- | --- |
-| Memory-safety bugs (CWE-119, -416, -787) | Written in Rust. `unsafe` is limited to OS and FFI calls in a few platform modules. | [Architecture: Platforms](architecture.md#platforms) |
+| Memory-safety bugs (CWE-119, -416, -787) | Written in Rust. `unsafe` is used only for OS and capture-library calls and for setting environment variables in tests. | [Architecture: Platforms](architecture.md#platforms) |
 | Panics and crashes on malformed input (CWE-20, -248) | Parsers bound lengths, counts and recursion and return errors. | 55 fuzz targets run in CI (ClusterFuzzLite) with a committed seed corpus; tests with truncated and oversized input |
 | Resource exhaustion (CWE-400, -770) | Read limits and timeouts on every reply. Bounded in-flight probes. Script operation limits. | Unit tests; `lab/` scenarios `slow-wan` and `lossy` |
 | Cross-site scripting in reports (CWE-79) | HTML escaping, plus a Content-Security-Policy of `default-src 'none'` in every report. | Tests in `core/src/report.rs` |

@@ -38,7 +38,7 @@ The repository is a Cargo workspace with two crates.
 5. **Results.** Each host produces one `scan::Event`. `risk` turns it into findings, `devices` and `identity` merge active and passive observations into one record per device, and `score` ranks hosts.
 6. **Store.** `store` saves snapshots to an SQLite inventory. `report` (HTML, Markdown, CSV, JSON), `store::diff_report`, and `monitor` with `notify` (webhooks, syslog) work from the stored snapshots.
 
-Passive modes (`capture`, `pcapfile`, `otpassive`, `passive`) only receive. They contain no send code, and the test `this_module_cannot_transmit` enforces that. Imports (`nmap`, `import/`) convert other tools' files into the same snapshot type.
+The passive modes only receive. `pcapfile`, `otpassive` and the `PassiveCapture` wrapper in `capture` contain no send code, and the test `this_module_cannot_transmit` enforces that. The `passive` listener is receive-only by convention. Imports (`nmap`, `import/`) convert other tools' files into the same snapshot type.
 
 ## Extension points
 
@@ -49,7 +49,10 @@ Passive modes (`capture`, `pcapfile`, `otpassive`, `passive`) only receive. They
 
 ## Platforms
 
-The same code builds for Windows, Linux and macOS. Platform-specific code sits in a few modules: `platform`, `capture` (Npcap or libpcap, loaded at run time), `ipv6` and `interfaces`. Most of the `unsafe` code in the project is in these modules, where it calls operating-system APIs.
+The same code builds for Windows, Linux and macOS. Platform-specific code sits mainly in `platform`, `capture` (Npcap or libpcap, loaded at run time), `ipv6` and `interfaces`. The project's `unsafe` blocks are used for two things only:
+
+- **Operating-system and capture-library calls.** Most are in `platform`, `capture` and `ipv6`. A few Windows API calls are elsewhere: socket ioctls in `probes`, the user locale in the GUI, service control, and attaching to the console.
+- **Setting environment variables in tests.** Recent Rust editions require `unsafe` for this.
 
 ## Where to read more
 
