@@ -26,6 +26,8 @@ Enter an IP, an IPv4 range, a CIDR block, or comma/space-separated addresses, th
 
 A larger private network (a /16 has 65,534 hosts) is listed in a dialog and scanned only after you tick it. The networks left out are listed under **Left out** with the reason. The scan then starts through the normal Start path, so the scope guard applies; the Safe Mode setting is switched on for it, all other settings stay as they are.
 
+On a Windows 11 machine with a wired adapter, two VMware adapters, Tailscale and several unconnected Wi-Fi adapters, the detection chose only the wired /24 and listed the VMware networks (virtual), the Tailscale /32 (point-to-point), 169.254/16 (link-local) and loopback as left out (2026-11-20; the detection and decision were checked, not a click on the button).
+
 ### Presets
 
 The **Preset** picker next to the TCP ports field applies a named bundle of settings; the CLI has the same bundles as `--preset` (see [Presets](cli-reference.md#presets)). Hover a preset to see what it turns on.

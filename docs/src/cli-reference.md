@@ -148,7 +148,7 @@ These apply to `scan` and `monitor`.
 | `--no-backoff` | off | Turn off the [automatic back-off](scanning-engine.md#automatic-back-off) (on by default; it only ever slows a host down) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
-| `--interface ID,ID` | | `scan`: several interfaces for the raw features (SYN, ARP sweep, TCP trace), with `--source-ip A,B` and `--source-mac M1,M2` paired by position. Each target goes out through the interface the routing table picks for it (an interface on the target's subnet first). Not tested against two real interfaces |
+| `--interface ID,ID` | | `scan`: several interfaces for the raw features (SYN, ARP sweep, TCP trace), with `--source-ip A,B` and `--source-mac M1,M2` paired by position. Each target goes out through the interface the routing table picks for it (an interface on the target's subnet first). Run against two real interfaces on Windows (Npcap) |
 | `--source-ip IPV4` / `--source-mac MAC` | | Source addresses of that interface |
 | `--tui` | off | Live terminal view |
 | `--format FMT` / `--output FILE` | json | Also write an export of the finished scan |

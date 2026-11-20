@@ -65,6 +65,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             }
         ),
     );
+    if opts.contains_key("sent-log") {
+        eprintln!("{}", crate::sendlog::format_table(&snapshot.sent));
+    }
     output(
         &store::export_at(
             &snapshot,
