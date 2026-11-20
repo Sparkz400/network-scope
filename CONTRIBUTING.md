@@ -80,7 +80,7 @@ These rules are mandatory for every pull request. Reviews check them, and a pull
 - **New functionality comes with automated tests** in the same pull request: unit tests next to the code, and for scanning or detection features a lab case (`lab/`) where one is possible. A feature that cannot be tested automatically, for example one that needs real hardware, says so in the pull request and in its documentation.
 - **Bug fixes come with a regression test** that fails before the fix and passes after it, unless that is impractical (say why in the pull request).
 - **Parsers of untrusted input** also get truncated and oversized test input and a fuzz target (see [Fuzzing](#fuzzing)).
-- **Coverage must not drop.** The `coverage` job fails when a gated file falls below its threshold in `scripts/coverage_targets.json`. The workspace as a whole stays above 80% line coverage.
+- **Coverage must not drop.** The `coverage` job fails when a gated file falls below its threshold in `scripts/coverage_targets.json`. The target for the workspace as a whole is at least 80% line coverage (86% in November 2026); the job's report shows the total.
 - **All tests run in CI** on Windows, Linux and macOS on every push and pull request. A red CI blocks the merge.
 
 The project's governance, roles and decision-making are described in [GOVERNANCE.md](GOVERNANCE.md).

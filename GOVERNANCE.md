@@ -42,7 +42,8 @@ The project must be able to keep going if one person is no longer able or willin
 
 Status (November 2026): **the project has a single maintainer, so its bus factor is 1.** The plan to change that, in order:
 
-1. **Account successor.** The maintainer designates a GitHub [account successor](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-access-to-your-personal-repositories/maintaining-ownership-continuity-of-your-personal-accounts-repositories), who can take over the repository if the maintainer's account becomes inactive. This file will name the successor once designated.
-2. **Second maintainer.** The project wants a second maintainer with admin rights, so releases and security fixes do not depend on one person. If you are interested, open a discussion.
+1. **A trusted collaborator with write access.** Write access is enough to triage issues, merge pull requests and push a `v*` tag, which starts the release workflow. This covers the case where the maintainer is unable *or unwilling* to continue, and works within a week. This file will name that person once they are added.
+2. **Account successor.** The maintainer designates a GitHub [account successor](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-access-to-your-personal-repositories/maintaining-ownership-continuity-of-your-personal-accounts-repositories), so ownership of the repository can be transferred if the maintainer dies. This is a backstop only: GitHub's process needs proof and a waiting period.
+3. **Second maintainer.** The project wants a second maintainer, so reviews, releases and security fixes do not depend on one person. If you are interested, open a discussion.
 
 Nothing except the repository itself is needed to continue the project: the website is GitHub Pages built from `docs/`, releases are built and signed by GitHub Actions with keyless (Sigstore) signing, and there are no private signing keys, domains or servers to hand over.
