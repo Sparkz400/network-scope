@@ -111,6 +111,7 @@ def check_normal(exe, work, failures):
         check_dry_run_and_sent_log(exe, work, host, failures)
         check_snmp(exe, work, snmp_stats, failures)
         check_ot_extra(exe, work, ot_stats, failures)
+        check_ot_tcp(exe, work, ot_stats, failures)
     for key, want in missing_identity(host).items():
         failures.append(f"identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
     for want in sorted(EXPECT_FINDINGS - ids):
@@ -241,6 +242,79 @@ def check_ot_extra(exe, work, stats_file, failures):
     connects = delta(counted(), before).get("mqtt", {}).get("1", 0)
     if connects != 1:
         failures.append(f"ot extra: --ot --services sent {connects} MQTT CONNECTs, expected one (the service probe's)")
+
+
+def check_ot_tcp(exe, work, stats_file, failures):
+    """C23: FINS over TCP (9600, `--ot`), the MELSEC MC protocol (only on `--melsec-port`) and DNP3
+    (only to `--dnp3-address`). The lab devices count what they receive: FINS/TCP gets its two
+    captured frames, MC the one CPU model read, DNP3 one Read of class 0 whose CRCs the Python
+    code (written independently) verifies; a scan without the two options sends nothing to their
+    ports, and a broadcast address is refused before anything is sent."""
+    def counted():
+        time.sleep(0.3)
+        return read_stats(stats_file)
+
+    def delta(after, before, proto):
+        a, b = after.get(proto, {}), before.get(proto, {})
+        return {k: n - b.get(k, 0) for k, n in a.items() if n != b.get(k, 0)}
+
+    # FINS over TCP: --ot and tcp/9600 found open
+    before = counted()
+    host, _, _ = scan(exe, work, "ot-fins-tcp", "--ot", "--ports", "9600", "--timeout", "1500", "--tcp-only")
+    sent = {e["detail"] for e in host.get("sent_in_output") or [] if e["kind"] == "ot-request"}
+    for want in ("Omron FINS/TCP: node address data (FINS/TCP command 0)", "Omron FINS/TCP: Controller Data Read (command 0x0501)"):
+        if want not in sent:
+            failures.append(f"ot tcp: {want!r} missing from the sent log: {sorted(sent)}")
+    if host["identity"].get("Omron FINS/TCP.model") != "LabPLC-FINS":
+        failures.append(f"ot tcp: FINS/TCP model: {host['identity'].get('Omron FINS/TCP.model')!r}")
+    got = delta(counted(), before, "fins_tcp")
+    if got != {"node-address": 1, "0501": 1}:
+        failures.append(f"ot tcp: the FINS/TCP device received {got}, expected the node address request and one 0x0501")
+    # MC and DNP3 need their options: without them nothing goes to those ports
+    before = counted()
+    host, _, _ = scan(exe, work, "ot-no-optin", "--ot", "--ports", "15007,20000", "--timeout", "1500", "--tcp-only")
+    # (--ot always sends its BACnet, FINS and KNX requests; none of them is an MC or DNP3 request)
+    optin_sent = [e for e in host.get("sent_in_output") or [] if e["kind"] == "ot-request" and e["detail"].startswith(("MELSEC", "DNP3"))]
+    if optin_sent:
+        failures.append(f"ot tcp: --ot alone sent MC or DNP3 requests: {optin_sent}")
+    after = counted()
+    if delta(after, before, "mc") or delta(after, before, "dnp3"):
+        failures.append(f"ot tcp: the MC/DNP3 devices received something without their options: {delta(after, before, 'mc')} {delta(after, before, 'dnp3')}")
+    # with the options: one CPU model read, one Read class 0
+    before = counted()
+    host, _, _ = scan(exe, work, "ot-optin", "--ot", "--ports", "15007,20000", "--melsec-port", "15007", "--dnp3-address", "10",
+                      "--timeout", "1500", "--tcp-only")
+    for key, want in {"MELSEC.model": "LabQ03UDE", "MELSEC.model_code": "0268", "DNP3.link_address": "10", "DNP3.iin_raw": "0000"}.items():
+        if host["identity"].get(key) != want:
+            failures.append(f"ot tcp: {key}: expected {want!r}, got {host['identity'].get(key)!r}")
+    sent = {e["detail"] for e in host.get("sent_in_output") or [] if e["kind"] == "ot-request"}
+    for want in ("MELSEC MC 3E: Read CPU Model Name (command 0x0101, subcommand 0x0000)",
+                 "DNP3: Read class 0 data (function 0x01, object group 60 variation 1)"):
+        if want not in sent:
+            failures.append(f"ot tcp: {want!r} missing from the sent log: {sorted(sent)}")
+    after = counted()
+    if delta(after, before, "mc") != {"0101": 1}:
+        failures.append(f"ot tcp: the MC device received {delta(after, before, 'mc')}, expected one 0x0101")
+    if delta(after, before, "dnp3") != {"read-class0": 1}:
+        failures.append(f"ot tcp: the DNP3 outstation received {delta(after, before, 'dnp3')}, expected one Read of class 0 with valid CRCs")
+    # a broadcast address and an MC port that is another protocol's are refused up front
+    for bad, text in ((("--dnp3-address", "65535"), "unicast"), (("--melsec-port", "502"), "above 1023")):
+        run = subprocess.run([exe, "scan", "127.0.0.1", "--ot", "--ports", "20000,502", *bad, "--db", os.path.join(work, "refused.sqlite")],
+                             capture_output=True, text=True, timeout=60)
+        if run.returncode == 0 or text not in run.stderr:
+            failures.append(f"ot tcp: {bad} was not refused ({run.returncode}): {run.stderr.strip()[:200]}")
+    if delta(counted(), after, "dnp3") or delta(counted(), after, "mc"):
+        failures.append("ot tcp: a refused option still sent something")
+    # the dry run lists them, and only with the options
+    plan = subprocess.run([exe, "scan", "127.0.0.1", "--ot", "--ports", "15007,20000", "--melsec-port", "15007", "--dnp3-address", "10", "--dry-run"],
+                          capture_output=True, text=True, timeout=60).stdout
+    for want in ("MELSEC MC 3E: Read CPU Model Name", "DNP3: Read class 0 data", "tcp/15007", "Omron FINS/TCP"):
+        if want not in plan:
+            failures.append(f"ot tcp: the dry run does not list {want!r}")
+    plain = subprocess.run([exe, "scan", "127.0.0.1", "--ot", "--ports", "15007,20000", "--dry-run"], capture_output=True, text=True, timeout=60).stdout
+    if "MELSEC MC 3E" in plain or "DNP3: Read" in plain:
+        failures.append("ot tcp: the dry run lists MC or DNP3 requests without their options")
+    print(f"ot tcp: FINS/TCP, MC (port 15007) and DNP3 (outstation 10) devices received exactly the allowed requests")
 
 
 def banner_wait(port):

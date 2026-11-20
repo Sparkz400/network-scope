@@ -35,6 +35,15 @@ pub struct Settings {
     pub syn: bool,
     pub safe: bool,
     pub ot: bool,
+    /// `--melsec-port PORT` (needs `ot`): read the CPU model over the MELSEC MC protocol on this
+    /// TCP port, if it was found open. 0 (the default): never; the protocol has no standard port
+    /// and none is guessed.
+    pub melsec_port: u16,
+    /// `--dnp3-address N` (needs `ot`): read class 0 from the DNP3 outstation with this data link
+    /// address on tcp/20000, if that port was found open. `None`: never.
+    pub dnp3_address: Option<u16>,
+    /// `--dnp3-master N`: the master address the DNP3 request comes from (default 1).
+    pub dnp3_master: u16,
     pub interface: String,
     pub source_ip: String,
     pub source_mac: String,
@@ -137,6 +146,9 @@ impl Default for Settings {
             syn: false,
             safe: true,
             ot: false,
+            melsec_port: 0,
+            dnp3_address: None,
+            dnp3_master: 1,
             interface: String::new(),
             source_ip: String::new(),
             source_mac: String::new(),

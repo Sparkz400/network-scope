@@ -979,12 +979,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             (if s.safe { 1 } else { 8 }).min(gov.limit()),
         ));
         let mut tasks = JoinSet::new();
-        let ports: Vec<u16> = h
-            .open
-            .iter()
-            .copied()
-            .filter(|p| !crate::service::is_ot_port(*p))
-            .collect();
+        let ports = crate::plan::service_ports(&h.open, &s);
         for port in ports {
             if gov.paused() {
                 break;
@@ -2123,6 +2118,17 @@ mod tests",
         other.identity.insert("Modbus.vendor".into(), "x".into());
         merge_ot_udp(&mut other);
         assert!(other.udp_open.is_empty());
+        // FINS answered over TCP is not a UDP answer
+        other
+            .identity
+            .insert("Omron FINS/TCP.model".into(), "CP1L".into());
+        merge_ot_udp(&mut other);
+        assert!(other.udp_open.is_empty(), "{:?}", other.udp_open);
+        other
+            .identity
+            .insert("Omron FINS.model".into(), "CP1L".into());
+        merge_ot_udp(&mut other);
+        assert_eq!(other.udp_open, [9600]);
     }
 
     #[test]

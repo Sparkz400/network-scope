@@ -125,6 +125,69 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
             }
         }
     }
+    unreachable.extend(identify_tcp_more(h, s, gate).await);
+    unreachable
+}
+
+/// The TCP requests that sit beside the table above: FINS over TCP (`--ot`, tcp/9600 found open),
+/// and the two that need a second option, because they have no safe default: the MELSEC MC
+/// protocol on the port the user names (`--melsec-port`) and DNP3 on tcp/20000 to the outstation
+/// address the user names (`--dnp3-address`). Each goes only to a port that was found open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TcpMore {
+    FinsTcp,
+    Melsec,
+    Dnp3(u16),
+}
+/// What [`identify_tcp_more`] would do for these settings: (protocol, port, request).
+pub(crate) fn tcp_more_targets(s: &Settings) -> Vec<(&'static str, u16, TcpMore)> {
+    let mut out = vec![("Omron FINS/TCP", 9600, TcpMore::FinsTcp)];
+    // the MC protocol has no standard port: never guessed, never an industrial port that has a
+    // protocol of its own (a misdirected request), never a well-known low port
+    if s.melsec_port >= 1024 && !crate::service::is_ot_port_candidate(s.melsec_port) {
+        out.push(("MELSEC", s.melsec_port, TcpMore::Melsec));
+    }
+    if let Some(address) = s.dnp3_address {
+        out.push(("DNP3", 20000, TcpMore::Dnp3(address)));
+    }
+    out
+}
+async fn identify_tcp_more(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
+    let mut unreachable = vec![];
+    for (protocol, port, request) in tcp_more_targets(s) {
+        if !h.open.contains(&port) {
+            continue;
+        }
+        gate.wait_for(PacketKind::TcpConnect, "OT identification")
+            .await;
+        let log = gate.log();
+        let task = async {
+            match request {
+                TcpMore::FinsTcp => extra::fins_tcp(SocketAddr::new(h.ip, 9600), log).await,
+                TcpMore::Melsec => extra::melsec(SocketAddr::new(h.ip, port), log).await,
+                TcpMore::Dnp3(address) => {
+                    extra::dnp3(SocketAddr::new(h.ip, 20000), address, s.dnp3_master, log).await
+                }
+            }
+        };
+        match tokio::time::timeout(identify_timeout(port, s.port_timeout), task).await {
+            Ok(Ok(fields)) => {
+                h.responding = true;
+                for (key, value) in fields {
+                    h.identity.insert(format!("{protocol}.{key}"), value);
+                }
+            }
+            Ok(Err(e)) => {
+                if e.starts_with(CONNECT_FAILED) {
+                    unreachable.push(port);
+                }
+                h.errors.push(format!("{protocol}: {e}"));
+            }
+            Err(_) => h
+                .errors
+                .push(format!("{protocol}: identification timed out")),
+        }
+    }
     unreachable
 }
 /// How long one identification exchange may take. The BACnet Who-Is is sent to every host,

@@ -119,7 +119,9 @@ These apply to `scan` and `monitor`.
 | `--tcp-only` | off | Skip ICMP ping |
 | `--arp` | off | ARP discovery on the local IPv4 network |
 | `--dns` | off | Resolve host names (system DNS) |
-| `--ot` | off | Read-only industrial identification (Modbus, S7, EtherNet/IP, BACnet, OPC UA) |
+| `--ot` | off | Read-only industrial identification (Modbus, S7, EtherNet/IP, BACnet, OPC UA, FINS UDP and TCP, Fox, MQTT, KNX); see [OT / industrial](ot-industrial.md) |
+| `--melsec-port PORT` | off | With `--ot`: read the CPU model over the MELSEC MC protocol (one 3E Read CPU Model Name request) on this TCP port, if it is in `--ports` and found open. The MC protocol has no standard port, so none is ever tried by default; ports below 1024 and industrial ports with a protocol of their own are refused |
+| `--dnp3-address N` / `--dnp3-master M` | off / 1 | With `--ot`: read class 0 from the DNP3 outstation with data link address `N` on tcp/20000 (must be in `--ports`, found open); the request comes from master address `M`. Addresses 0xFFF0 (65520) and above (broadcast, reserved) and `N` equal to `M` are refused; nothing is confirmed |
 | `--unit N` | 1 | Modbus unit ID |
 | `--rack N` / `--slot N` | 0 / 2 | S7 rack and slot |
 | `--services` | off | Identify services: banners, HTTP, TLS, SMB, RDP, databases… |

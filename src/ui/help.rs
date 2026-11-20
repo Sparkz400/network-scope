@@ -148,6 +148,9 @@ Scan options:
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
                   scan: --interface A,B --source-ip X,Y --source-mac M1,M2 uses several interfaces (paired by position)
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
+  --melsec-port PORT  With --ot: MELSEC MC protocol CPU model read on this TCP port (in --ports; never a default)
+  --dnp3-address N [--dnp3-master M]  With --ot: DNP3 read of class 0 from outstation N on tcp/20000 (in --ports);
+                  never a broadcast or reserved address
   --json-schema v1  JSON output version (default and only version for now); any command
   --scope CIDR[,CIDR]  Declared scope (also --scope-file FILE; default scope.txt in the config folder)
   --yes-public    Allow public (non-private) addresses; without it scan/monitor/trace ask on a
