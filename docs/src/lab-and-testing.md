@@ -278,11 +278,29 @@ The JA4+ fingerprints are not implemented; see `data/README.md`.
 
 Verified on real hardware (2026-11-18, one Windows 11 machine with Npcap, Wi-Fi adapter): a Safe Mode scan of a real /24 (78 responding hosts, 187 s), an on-link SYN scan through Npcap (open and closed ports correct, no fallback), a passive `listen` (ARP and LLDP decoded), and `network-scope-cli` in `cmd.exe` and PowerShell (both wait; exit code 0 on success, 1 on a bad option).
 
+Verified on a real home network (2026-11-20, Windows 11, Npcap, wired 5 GbE adapter, a /24 behind a consumer router, plus a VMware NAT network on the same machine; **not elevated**: Npcap was installed without the administrator-only option, and none of the features below needed administrator rights). Every run used `--scope` with exactly the scanned ranges.
+
+| Feature | Command (shape) | Result |
+| --- | --- | --- |
+| Connect baseline | `scan /24` (Safe Mode, default ports) | 11 responding hosts, 1,493 connects, 3 min 31 s. The OS ARP cache held 15 addresses; the 5 not found answer neither ping nor the default ports (one was gone: "unreachable" in the cache) |
+| SYN, on-link | `--fast --syn --interface ID --source-ip --source-mac` | The same 11 hosts and identical open ports in 17 s. Only the hosts whose MAC the OS could resolve get SYNs (60 SYNs to about 10 hosts); every address with no ARP answer falls back to TCP connect with a note (1,434 connects). **Found a defect**: SYNs to this computer's own address went out on the wire and never came back (every port "unanswered"); fixed, see below |
+| ARP sweep | `--fast --arp-sweep ...` | 16 hosts (the 11 plus 5 that answer only ARP) in 12 s, MAC for 15. One device answered the sweep in 1 of 3 runs (100-300 ms window): it is still found by ping/TCP, only without a MAC |
+| TCP traceroute | `trace IP --fast --trace-method tcp --trace-port N ...` | Gateway (port 443) and a LAN host (port 80): hop 1 = target, 3 SYNs per trace, each SYN-ACK closed with an RST. 11 more runs returned in 0-3 s; one earlier run printed nothing for more than 5 minutes and was not reproduced (it coincided with the test session being torn down) |
+| Passive `listen` | 180 s | 39 observations: mDNS 16, NDP 9, ARP 7, SSDP 4, LLDP 2, DHCP 1 |
+| Live OT capture | `ot-listen --interface ID --seconds 120` | 21,650 frames read, 0 OT assets (none on this network), nothing sent |
+| DCP Identify | `dcp --interface ID --source-mac MAC --seconds 10` | Exactly one Identify All frame sent (sent log), no reply, clean exit (no Profinet device on this network) |
+| Two interfaces | `--syn --arp-sweep --interface ETH,VMNET8 --source-ip A,B --source-mac M1,M2`, two /24 | One scan, 22 s: each target went out through its own interface (16 LAN hosts as above; on the VMware network the DHCP service, a VM with ports 80/443 and this computer's own address) |
+| IPv6 discovery | `--ipv6-discover --interface Ethernet` | One echo to `ff02::1`; 3 neighbours counted as answering (a reply or a cache entry new after the echo), 8 cache entries read (the OS cache afterwards: 8 entries, 6 MACs), 4 IPv6 hosts added. With `--arp` (Safe Mode, MACs for all 15 IPv4 hosts) the IPv6 addresses joined 7 IPv4 hosts by MAC and no separate IPv6 host was left; see [IPv6 discovery](ipv6-discovery.md) |
+| MCP `scan` | `mcp` over pipes: `scan` 192.168.x.0/24, then `list_devices`, `list_findings`, `device_history` | Safe Mode, 5 ports, 336 s, 12 responding hosts, 9 open ports; 12 devices, 0 findings, the gateway's history (first seen). With the default `timeout_seconds` (50) the same call stopped at 50 s: `complete: false`, the note "Stopped after the 50 s time limit; the result is partial.", 4 responding hosts, `isError` false, and the query tools answered afterwards |
+| "Scan my network" | the detection and decision the button uses (`localnets::detect` + `classify`, printed by `cargo test -p network-scope-core detect_returns -- --nocapture`); the button itself was not clicked | Picks the wired /24 only; the two VMware networks are left out as virtual, the Tailscale /32 as point-to-point, the 169.254/16 of six Wi-Fi, Bluetooth and VPN adapters as link-local (listed once), loopback as loopback |
+
+Defects found and fixed in that run: SYN and TCP traceroute to an address of this computer (the source address, or another adapter's address reached through the first adapter's engine) now fall back to TCP connect (scan) or say why (`trace`) instead of reporting every port unanswered; `dcp --sent-log` now prints the sent log like `scan` and `trace`.
+
 ## What has not been tested
 
 Be aware of these gaps before relying on a feature:
 
-- Npcap/libpcap features not yet run on a real interface: SYN to routed targets, the ARP sweep, TCP traceroute, live OT capture, DCP; and everything with libpcap on Linux/macOS.
+- Npcap/libpcap features not yet run on a real network: SYN and TCP traceroute to routed targets (via the gateway MAC), DCP and live OT capture with real industrial devices answering; and everything with libpcap on Linux/macOS.
 - UDP traceroute with administrator/root rights; ICMPv6 hop-limit expiry from a real router on Windows.
 - Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine (CI is the first compile) and not exercised on a real network.
 - The GUI binary's console attach when started from a shell (use `network-scope-cli` for scripting).
