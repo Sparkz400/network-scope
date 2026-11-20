@@ -22,7 +22,7 @@ and compare the hash with the line in `SHA256SUMS`.
 
 The installer installs per user by default (no administrator rights needed; the setup dialog lets you choose an all-users install). Optional tasks: a desktop shortcut and adding the install folder to your user `PATH` so `network-scope-cli` works from any shell. It installs `network-scope.exe`, `network-scope-cli.exe`, the README, third-party notices, the example scripts and the lab files.
 
-The installer and binaries are **not code-signed**; Windows SmartScreen will warn. The installer script has not been compiled with `iscc` yet; the first release build is its first compile.
+The installer and binaries are **not code-signed** yet, so Windows SmartScreen will warn: the release workflow signs them once the maintainer has set up a signing account ([Code signing](supply-chain.md#code-signing)). CI compiles the installer on every change and installs it silently, runs both installed binaries and uninstalls it again (`scripts/installer_smoke.ps1`); release builds run the same test.
 
 ### Portable
 
@@ -84,6 +84,18 @@ docker run --rm ghcr.io/sparkz400/network-scope:latest scan 192.168.1.0/24 --tcp
 - The runtime image contains libpcap (`libpcap0.8t64`) for capture features and CA certificates for HTTPS webhooks; the GUI libraries are not included and the desktop app does not run in the container.
 
 Build the image yourself with `docker build -t network-scope .` from the repository root.
+
+## Package managers and cargo
+
+Manifests for winget, Scoop, Chocolatey, Homebrew and the AUR are prepared in [`packaging/`](https://github.com/Sparkz400/network-scope/tree/main/packaging) and attached to each release as `network-scope-<version>-packaging.tar.gz`, but **none of them has been submitted yet**, so `winget install` and the others do not find Network Scope today.
+
+With a Rust toolchain you can build and install both binaries from source:
+
+```sh
+cargo install --locked --git https://github.com/Sparkz400/network-scope network-scope
+```
+
+(on Linux with the development packages listed under [Build from source](#build-from-source)). The crate is not published on crates.io.
 
 ## Verifying downloads and the image
 
