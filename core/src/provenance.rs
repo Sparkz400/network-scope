@@ -167,10 +167,9 @@ pub fn replay_check(
             (d.is_empty() && x.combined == y.combined, d)
         }
         (None, _) => {
-            notes.push(
-                "The original scan has no provenance stamp (it was saved before stamps existed, or it is an import): which rules it ran with is not known."
-                    .into(),
-            );
+            notes.push(format!(
+                "Scan #{original_id} has no provenance stamp (it was saved by a version before stamps existed, or it is an import), so the tool version and the rules and feeds it ran with are not known, and it can never be called reproduced, whatever the result. The re-run, scan #{replay_id}, is stamped: compare later scans with it, and re-run (and so stamp) the scans you want to cite with the current version."
+            ));
             (false, vec![])
         }
         (Some(_), None) => (false, vec![]),
@@ -238,6 +237,8 @@ impl ReplayCheck {
             self.replay_scan,
             if self.reproducible {
                 "reproduced (same result, same rules)"
+            } else if self.original_provenance.is_none() {
+                "cannot be called reproduced: the original has no provenance stamp (see the note)"
             } else {
                 "NOT reproduced"
             }
@@ -462,6 +463,21 @@ mod tests {
         let r = replay_check(&scan_with(None, &[22]), 1, &scan_with(Some(p), &[22]), 2);
         assert!(r.same_result && !r.same_rules && !r.reproducible);
         assert!(r.notes[0].contains("no provenance stamp"), "{:?}", r.notes);
+        assert!(
+            r.notes[0].contains("Scan #1 has") && r.notes[0].contains("never be called reproduced"),
+            "{:?}",
+            r.notes
+        );
+        assert!(
+            r.notes[0].contains("re-run (and so stamp) the scans you want to cite"),
+            "{:?}",
+            r.notes
+        );
+        let text = r.text();
+        assert!(
+            text.contains("cannot be called reproduced") && !text.contains("NOT reproduced"),
+            "{text}"
+        );
         // two partial scans cannot be compared and the note says so
         let mut partial = scan_with(None, &[22]);
         partial.complete = false;

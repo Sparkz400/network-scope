@@ -6,13 +6,15 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 36] = [
+pub(super) const FLAGS: [&str; 38] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
     "adaptive-syn",
     "adaptive-tcp",
     "jarm",
+    "favicon",
+    "record-wire",
     "no-dedup",
     "progress",
     "no-reassembly",
@@ -181,6 +183,7 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
         ("adaptive-syn", &mut s.syn_adaptive),
         ("adaptive-tcp", &mut s.tcp_adaptive),
         ("jarm", &mut s.jarm),
+        ("favicon", &mut s.favicon),
         ("trace", &mut s.trace),
         ("services", &mut s.services),
         ("udp", &mut s.udp),
@@ -280,6 +283,7 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     s.syn_adaptive = opts.contains_key("adaptive-syn");
     s.tcp_adaptive = opts.contains_key("adaptive-tcp");
     s.jarm = opts.contains_key("jarm");
+    s.favicon = opts.contains_key("favicon");
     // On by default; it only ever slows a host down (see `backoff`).
     s.backoff = !opts.contains_key("no-backoff");
     s.record = opts.contains_key("record");
@@ -487,6 +491,7 @@ mod tests {
             "--adaptive-syn",
             "--adaptive-tcp",
             "--jarm",
+            "--favicon",
             "--trace-method",
             "TCP",
             "--trace-port",
@@ -494,7 +499,15 @@ mod tests {
         ]))
         .unwrap();
         let s = scan_settings(&opts).unwrap();
-        assert!(s.arp_sweep && s.syn_adaptive && s.tcp_adaptive && s.jarm && s.trace && s.safe);
+        assert!(
+            s.arp_sweep
+                && s.syn_adaptive
+                && s.tcp_adaptive
+                && s.jarm
+                && s.favicon
+                && s.trace
+                && s.safe
+        );
         assert!(s.backoff, "the back-off is on unless --no-backoff is given");
         let (_, opts) = options(&args(&["--no-backoff"])).unwrap();
         assert!(!scan_settings(&opts).unwrap().backoff);

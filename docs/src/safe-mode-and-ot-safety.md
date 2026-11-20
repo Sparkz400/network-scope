@@ -16,6 +16,7 @@
 | JARM fingerprint (`--jarm`, ten ClientHellos per TLS port) | not sent | opt-in |
 | IPv6 discovery (`--ipv6-discover`; opt-in) | allowed: one ICMPv6 echo to `ff02::1` per interface, hop limit 1 | same |
 | SNMP read (`--snmp-community`, `--snmp-v3`; opt-in) | allowed, read-only Get/GetNext/GetBulk with smaller pages, at most 100 requests and 40 s per host | allowed, at most 240 requests and 25 s per host |
+| Favicon hash (`--favicon`, one `GET /favicon.ico` per web port; not on hosts the scan found to be industrial) | not sent | opt-in |
 | OT operations | identification only | identification only |
 
 In the desktop the disabled controls are greyed out. Safe Mode is a conservative traffic profile, **not a guarantee** for every PLC.

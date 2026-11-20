@@ -28,9 +28,23 @@
 //! `vulnerabilities` (CVE, title, CVSS scores per product, `product_status.known_affected`,
 //! remediations). Version ranges may be written as `vers:` strings (`vers:intdot/>=2.0|<2.7.1`,
 //! `vers:all/*`) or in the plain forms CISA uses (`<V4.5.1`, `>=V2.0|<V2.7.1`, `V4.5.1`,
-//! `All versions`). `relationships` are not followed (an advisory that expresses affected
-//! versions only that way yields nothing, and is counted as skipped). Products without any
-//! version information are skipped: matching them would flag every firmware.
+//! `All versions`). Products without any version information are skipped: matching them would
+//! flag every firmware.
+//!
+//! # Relationships
+//!
+//! CSAF 2.0 lets an advisory name a product that exists only as a pair: `product_tree.relationships`
+//! entries say that `product_reference` is a `default_component_of`, `installed_on`,
+//! `installed_with`, `optional_component_of` or `external_component_of` the product
+//! `relates_to_product_reference`, and give the pair its own `full_product_name.product_id`, which
+//! is what `product_status` then lists (typically "firmware below V4.5.1" `installed_on`
+//! "SIMATIC S7-1200 CPU"). Each such pair becomes one product that has the **vendor** of the
+//! platform (else of the component), the **names, model numbers and SKUs of both** (so a device
+//! is found by its hardware name or by the firmware's), and the **version of the component**
+//! (the `product_reference`; when it has none, the one of the platform). A pair may itself be
+//! part of another pair (chains are resolved, up to 8 levels); a pair whose parts are not
+//! defined in the tree, or that has no version at all, is counted as skipped like any other
+//! product. Relationship categories other than the five above are ignored.
 //!
 //! # Matching, and its limits
 //!
@@ -294,6 +308,12 @@ fn add_unique(list: &mut Vec<String>, value: String) {
 /// A leaf `product` object: a name such as `Siemens SIMATIC S7-1200 CPU: <V4.5.1` splits at the
 /// last `:` into a product name and a version text.
 fn leaf(product: &Value, path: &Trail, out: &mut BTreeMap<String, Product>) {
+    leaf_with(product, path, out, true);
+}
+
+/// [`leaf`]; `add_name` false leaves the product's own name out of the names (a relationship's
+/// name is a sentence about two products that already contribute their names).
+fn leaf_with(product: &Value, path: &Trail, out: &mut BTreeMap<String, Product>, add_name: bool) {
     let id = text(product, "product_id");
     if id.is_empty() {
         return;
@@ -310,7 +330,9 @@ fn leaf(product: &Value, path: &Trail, out: &mut BTreeMap<String, Product>) {
         }
         _ => (full.clone(), None),
     };
-    add_unique(&mut p.names, name_part);
+    if add_name {
+        add_unique(&mut p.names, name_part);
+    }
     if p.version.is_none() {
         p.version = version_part;
     }
@@ -351,6 +373,7 @@ fn leaf(product: &Value, path: &Trail, out: &mut BTreeMap<String, Product>) {
         }
     }
     if p.vendor.is_empty()
+        && add_name
         && let Some(first) = full.split_whitespace().next()
     {
         p.vendor = first.to_string();
@@ -386,6 +409,74 @@ fn walk(
         .flatten()
     {
         walk(child, path.clone(), depth + 1, nodes, out);
+    }
+}
+
+/// The relationship categories whose `full_product_name` is a product made of two others.
+const RELATIONSHIPS: [&str; 5] = [
+    "default_component_of",
+    "installed_on",
+    "installed_with",
+    "optional_component_of",
+    "external_component_of",
+];
+const MAX_RELATIONSHIPS: usize = 100_000;
+/// Passes over the relationships: a pair can be part of another pair, one level per pass.
+const MAX_RELATIONSHIP_PASSES: usize = 8;
+
+/// Adds the products that `product_tree.relationships` define (see the module documentation).
+fn relationships(tree: &Value, out: &mut BTreeMap<String, Product>) {
+    let list: Vec<&Value> = tree
+        .get("relationships")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(MAX_RELATIONSHIPS)
+        .filter(|r| {
+            RELATIONSHIPS.contains(&r.get("category").and_then(Value::as_str).unwrap_or(""))
+        })
+        .collect();
+    let mut done = vec![false; list.len()];
+    for _ in 0..MAX_RELATIONSHIP_PASSES {
+        let mut progress = false;
+        for (i, r) in list.iter().enumerate() {
+            let Some(fpn) = r.get("full_product_name") else {
+                done[i] = true;
+                continue;
+            };
+            if done[i] {
+                continue;
+            }
+            let (component, platform) = (
+                out.get(&text(r, "product_reference")),
+                out.get(&text(r, "relates_to_product_reference")),
+            );
+            let (Some(component), Some(platform)) = (component, platform) else {
+                continue;
+            };
+            let mut trail = Trail {
+                vendor: if platform.vendor.is_empty() {
+                    component.vendor.clone()
+                } else {
+                    platform.vendor.clone()
+                },
+                names: platform.names.clone(),
+                version: component
+                    .version
+                    .clone()
+                    .or_else(|| platform.version.clone()),
+            };
+            for n in component.names.clone() {
+                add_unique(&mut trail.names, n);
+            }
+            done[i] = true;
+            progress = true;
+            let add_name = trail.names.is_empty();
+            leaf_with(fpn, &trail, out, add_name);
+        }
+        if !progress {
+            break;
+        }
     }
 }
 
@@ -464,6 +555,7 @@ pub fn parse_csaf(bytes: &[u8]) -> Result<Parsed, String> {
         {
             leaf(p, &Trail::default(), &mut products);
         }
+        relationships(tree, &mut products);
     }
 
     let mut parsed = Parsed {
@@ -1104,6 +1196,185 @@ mod tests {
                 .is_empty(),
             "another product"
         );
+    }
+
+    const RELATIONSHIPS_FIXTURE: &str =
+        include_str!("../../tests/fixtures/csaf/icsa-test-0004-relationships.json");
+
+    fn relationship_cache() -> Csaf {
+        let mut c = Csaf::default();
+        c.merge(
+            parse_csaf(RELATIONSHIPS_FIXTURE.as_bytes()).unwrap(),
+            "relationships",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn a_product_defined_by_a_relationship_becomes_an_entry() {
+        let p = parse_csaf(RELATIONSHIPS_FIXTURE.as_bytes()).unwrap();
+        assert_eq!(p.advisory, "ICSA-TEST-0004");
+        let find =
+            |cve: &str| -> Vec<&Entry> { p.entries.iter().filter(|e| e.cve == cve).collect() };
+        // firmware (the component) "installed on" nothing but its hardware: vendor and hardware
+        // name come from the platform, the range from the component
+        let reboot = find("CVE-2099-4001");
+        assert_eq!(reboot.len(), 1, "{reboot:?}");
+        assert_eq!(reboot[0].range, "<2.8.0");
+        assert_eq!(reboot[0].vendor, "Examplon Controls");
+        assert!(
+            reboot[0]
+                .products
+                .iter()
+                .any(|n| n == "Examplon EX-500 PLC")
+        );
+        assert!(
+            reboot[0]
+                .products
+                .iter()
+                .any(|n| n == "Examplon EX-500 firmware")
+        );
+        assert_eq!(reboot[0].cvss, Some(75));
+        assert!(reboot[0].fix.contains("2.8.0"));
+        // model numbers of the platform carry over, and a chain (agent installed on a pair that
+        // is itself runtime installed on hardware) inherits the range of the pair
+        let disclosure = find("CVE-2099-4002");
+        assert_eq!(disclosure.len(), 2, "{disclosure:?}");
+        assert!(disclosure.iter().all(|e| e.range == ">=1.0|<1.4"));
+        assert!(
+            disclosure
+                .iter()
+                .all(|e| e.products.iter().any(|n| n == "EX-700-A"))
+        );
+        assert!(
+            disclosure
+                .iter()
+                .any(|e| e.products.iter().any(|n| n == "Examplon Cloud Agent"))
+        );
+        // an all-versions component
+        assert_eq!(find("CVE-2099-4003")[0].range, "*");
+        // known_not_affected is not an entry; the product ids no tree part defines, the pair with
+        // undefined parts and the pair without any version are skipped and counted
+        assert_eq!(p.entries.len(), 4, "{:#?}", p.entries);
+        assert_eq!(p.skipped, 3, "4031, 4099 and 4032");
+    }
+
+    #[test]
+    fn a_device_matches_a_relationship_product_by_hardware_name_and_firmware() {
+        let c = relationship_cache();
+        let ex500 = |version: &str| {
+            c.lookup(&device(
+                "Modbus",
+                "Examplon Controls",
+                &["Examplon EX-500 PLC"],
+                version,
+            ))
+        };
+        let hits = ex500("2.7.1");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].cve, "CVE-2099-4001");
+        assert_eq!(hits[0].advisories, ["ICSA-TEST-0004"]);
+        assert_eq!(hits[0].severity, Severity::High);
+        assert!(ex500("2.8.0").is_empty(), "the fixed version");
+        assert!(ex500("3.0").is_empty());
+        assert!(
+            ex500("").is_empty(),
+            "no firmware: only all-versions ranges"
+        );
+        // the vendor must agree
+        assert!(
+            c.lookup(&device(
+                "Modbus",
+                "Other Vendor",
+                &["Examplon EX-500 PLC"],
+                "2.7.1"
+            ))
+            .is_empty()
+        );
+        // found by the model number of the platform; the runtime range decides
+        let ex700 = |version: &str| {
+            c.lookup(&device(
+                "Modbus",
+                "Examplon Controls",
+                &["EX-700-A"],
+                version,
+            ))
+        };
+        assert_eq!(ex700("1.2").len(), 1);
+        assert!(ex700("1.4").is_empty() && ex700("0.9").is_empty());
+    }
+
+    #[test]
+    fn a_device_without_firmware_matches_only_all_versions_relationship_products() {
+        let c = relationship_cache();
+        let hits = c.lookup(&device(
+            "Modbus",
+            "Examplon Controls",
+            &["Examplon EX-900 PLC"],
+            "",
+        ));
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].cve, "CVE-2099-4003");
+        assert_eq!(hits[0].range, "*");
+        // the same device with a firmware matches too: every version is affected
+        assert_eq!(
+            c.lookup(&device(
+                "Modbus",
+                "Examplon Controls",
+                &["Examplon EX-900 PLC"],
+                "9.9"
+            ))
+            .len(),
+            1
+        );
+        // the EX-500 has a bounded range, so without firmware nothing is reported
+        assert!(
+            c.lookup(&device(
+                "Modbus",
+                "Examplon Controls",
+                &["Examplon EX-500 PLC"],
+                ""
+            ))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn relationship_chains_and_cycles_are_bounded() {
+        // A is installed on B and B on A: neither is defined first, so neither resolves, and
+        // nothing loops
+        let cyclic = r#"{"document":{"category":"csaf_security_advisory","csaf_version":"2.0","tracking":{"id":"C-1"}},
+          "product_tree":{"branches":[{"category":"vendor","name":"Examplon Controls","branches":[
+            {"category":"product_name","name":"Alpha Controller","product":{"product_id":"A","name":"Alpha Controller"}},
+            {"category":"product_version","name":"<1.0","product":{"product_id":"B","name":"Beta firmware <1.0"}}]}],
+           "relationships":[
+            {"category":"installed_on","product_reference":"P2","relates_to_product_reference":"P1","full_product_name":{"product_id":"P1","name":"p1"}},
+            {"category":"installed_on","product_reference":"P1","relates_to_product_reference":"P2","full_product_name":{"product_id":"P2","name":"p2"}},
+            {"category":"installed_on","product_reference":"B","relates_to_product_reference":"A","full_product_name":{"product_id":"AB","name":"Beta on Alpha"}},
+            {"category":"not_a_relationship","product_reference":"B","relates_to_product_reference":"A","full_product_name":{"product_id":"XX","name":"ignored"}}]},
+          "vulnerabilities":[{"cve":"CVE-2099-0010","product_status":{"known_affected":["P1","P2","AB","XX"]}}]}"#;
+        let p = parse_csaf(cyclic.as_bytes()).unwrap();
+        assert_eq!(p.entries.len(), 1, "{:?}", p.entries);
+        assert_eq!(p.entries[0].range, "<1.0");
+        assert_eq!(p.skipped, 3, "P1, P2 and XX are not products");
+        // a long chain resolves a bounded number of levels
+        let mut chain = String::from(
+            r#"{"document":{"category":"csaf_security_advisory","csaf_version":"2.0","tracking":{"id":"L-1"}},"product_tree":{"branches":[{"category":"vendor","name":"Examplon Controls","branches":[{"category":"product_version","name":"<1.0","product":{"product_id":"N0","name":"Gamma firmware"}}]}],"relationships":["#,
+        );
+        for i in (1..=20).rev() {
+            chain.push_str(&format!(
+                r#"{{"category":"installed_on","product_reference":"N0","relates_to_product_reference":"N{}","full_product_name":{{"product_id":"N{i}","name":"n{i}"}}}},"#,
+                i - 1
+            ));
+        }
+        chain.pop();
+        chain.push_str(r#"]},"vulnerabilities":[{"cve":"CVE-2099-0011","product_status":{"known_affected":["N1","N8","N9","N20"]}}]}"#);
+        let p = parse_csaf(chain.as_bytes()).unwrap();
+        // listed in reverse order, so each pass resolves one level: N1..N8 resolve (N1 and N8
+        // are the same product to the matcher, one entry), N9 and above do not
+        assert_eq!(p.entries.len(), 1, "{:?}", p.entries);
+        assert_eq!(p.skipped, 2, "N9 and N20");
     }
 
     #[test]

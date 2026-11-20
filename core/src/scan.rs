@@ -79,6 +79,10 @@ pub struct Settings {
     /// JARM-style TLS fingerprint (ten extra ClientHellos per TLS port). Opt-in, and ignored in
     /// Safe Mode like the other transmitting extras.
     pub jarm: bool,
+    /// One `GET /favicon.ico` per web port that answered as HTTP(S), hashed into
+    /// `http.<port>.favicon_mmh3` (see `favicon`). Opt-in, needs services, ignored in Safe Mode,
+    /// not on hosts the scan found to be industrial.
+    pub favicon: bool,
     /// Automatic back-off (`backoff` module): per-device-type limits on the parallel probes to
     /// a host, and a slower pace (or a pause for the rest of the scan) when the host starts
     /// resetting connections. It only ever slows a host down; `--no-backoff` turns it off.
@@ -151,6 +155,7 @@ impl Default for Settings {
             trace_method: crate::trace::TraceMethod::Icmp,
             trace_port: 0,
             jarm: false,
+            favicon: false,
             backoff: true,
             provenance: None,
             record: false,

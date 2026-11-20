@@ -234,8 +234,17 @@ def telnet(conn):
     read_some(conn)
 
 
+# A made-up icon (an ICO header and filler): the lab web server answers GET /favicon.ico with it,
+# so that `scan --favicon` has something to hash (lab/verify.py computes the Shodan hash itself).
+FAVICON = b"\x00\x00\x01\x00\x01\x00\x10\x10\x00\x00\x01\x00\x20\x00" + bytes(range(1, 97))
+
+
 def http(conn):
-    read_some(conn)
+    request = read_some(conn)
+    if request.startswith(b"GET /favicon.ico "):
+        conn.sendall(b"HTTP/1.1 200 OK\r\nServer: Apache/2.4.49 (Unix)\r\nContent-Type: image/x-icon\r\n"
+                     b"Content-Length: " + str(len(FAVICON)).encode() + b"\r\nConnection: close\r\n\r\n" + FAVICON)
+        return
     body = b"<html><title>Lab admin</title></html>"
     head = (b"HTTP/1.1 401 Unauthorized\r\nServer: Apache/2.4.49 (Unix)\r\n"
             b"WWW-Authenticate: Basic realm=\"lab\"\r\nContent-Type: text/html\r\n"

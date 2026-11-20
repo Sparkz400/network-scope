@@ -68,7 +68,7 @@ network-scope fingerprints export-unknown [SCAN_ID] [--output FILE]
                                                to review and redact (never uploaded)
 network-scope research query "SELECT ..." [--top N] [--format json|csv|tsv]   Read-only SQL on the research tables
 network-scope research schema | rebuild        Document the tables; fill them for scans saved before they existed
-network-scope research export csv|ndjson --output DIR   One file per table (DuckDB/pandas layout)
+network-scope research export csv|ndjson|parquet --output DIR   One file per table (DuckDB/pandas layout)
 network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bundle or OCSF events of one scan
 network-scope research groups [--top N] [--format text|json]   Devices that share a key, certificate template,
                                                TLS/SSH stack, web interface or OT firmware, across scans and sites
@@ -124,10 +124,14 @@ Scan options:
   --ipv6-discover Find hosts on the local link over IPv6 (scan only): one ICMPv6 echo to ff02::1 per
                   interface (--interface picks one by index or name), then the OS neighbour cache;
                   joined to scanned hosts by MAC. One datagram per interface, also in Safe Mode
+  --favicon       one GET /favicon.ico per web port, hashed (Shodan-compatible) into http.PORT.favicon_mmh3
+                  (with --services --fast; not on hosts the scan found industrial)
   --dry-run       scan, monitor, trace, dcp, wol: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
   --record FILE.pcapng  scan: keep the payloads the scan sent and received (OT requests and replies, service
                   probes, HTTP) as pcapng. An application-level record, not a wire capture
+  --record-wire   with --record: capture the real frames of the scan instead (Npcap/libpcap; --interface, or the
+                  loopback interface for loopback targets); falls back to the application-level record
   --replay-check ID  scan: run stored scan ID again with its own targets and settings and compare the result
                   and the version/rules stamp (--fail-on-findings: exit 3 when it is not reproduced)
   --incremental   scan, monitor: a repeat scan of the same targets: known open ports plus a sample are probed again,

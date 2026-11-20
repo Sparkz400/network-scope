@@ -100,6 +100,7 @@ pub mod core;
 pub mod csaf;
 pub mod devices;
 pub mod evidence;
+pub mod favicon;
 pub mod feeds;
 pub(crate) mod fingerprint;
 pub mod identity;
@@ -157,6 +158,7 @@ pub mod topology;
 pub mod trace;
 pub(crate) mod udp;
 pub mod update;
+pub mod wirecap;
 pub mod wol;
 
 #[doc(hidden)]

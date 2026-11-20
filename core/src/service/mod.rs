@@ -32,7 +32,7 @@ pub use smb::{parse_ntlm_challenge, parse_smb, parse_smb2_negotiate, smb1_accept
 pub use ssh::parse_kexinit;
 pub use unknown::{UnknownExport, unknown_banners};
 
-pub(crate) use http::http_outcome;
+pub(crate) use http::{http_outcome, http_request_for};
 pub(crate) use ssh::kexinit_fields;
 
 use http::http_get;

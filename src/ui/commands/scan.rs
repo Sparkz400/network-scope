@@ -68,6 +68,11 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             (targets, scan_settings(opts)?)
         }
     };
+    if opts.contains_key("record-wire") && !opts.contains_key("record") {
+        return Err(
+            "--record-wire needs --record FILE.pcapng (the file the capture is written to)".into(),
+        );
+    }
     let format = opts
         .get("format")
         .map(String::as_str)
@@ -92,6 +97,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         return Ok(());
     }
     let total = hosts.count() as usize;
+    // --record-wire: capture the real frames of the scan while it runs, when the driver allows it.
+    let wire = start_wire(opts, &s.interface, &hosts, total);
     let stream = opts.contains_key("stream");
     let tui_view = opts.contains_key("tui");
     if stream && tui_view {
@@ -218,7 +225,13 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         eprintln!("{}", crate::sendlog::format_table(&sent));
     }
     if let Some(file) = opts.get("record") {
-        write_record(&run, file, &sent, opts)?;
+        let wire_written = match wire {
+            Some(capture) => write_wire(capture, file, opts),
+            None => false,
+        };
+        if !wire_written {
+            write_record(&run, file, &sent, opts)?;
+        }
     }
     if let (Some(original), Some(original_id)) = (&original, replay_of) {
         let snapshot = match snapshot {
@@ -267,6 +280,118 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     ctx.status = saved_exit(complete);
     Ok(())
 }
+/// `--record-wire`: starts the capture of the scan's real frames. `None` when it was not asked
+/// for, and, with the reason on stderr, when it cannot be done (no driver, no permission, no
+/// interface for these targets, too many targets): the application-level record follows then.
+fn start_wire(
+    opts: &BTreeMap<String, String>,
+    interface: &str,
+    hosts: &scan::Targets,
+    total: usize,
+) -> Option<network_scope_core::wirecap::WireCapture> {
+    use network_scope_core::wirecap;
+    if !opts.contains_key("record-wire") {
+        return None;
+    }
+    let started = (|| {
+        if total > wirecap::MAX_FILTER_HOSTS {
+            return Err(format!(
+                "{total} targets are too many for a capture filter (at most {})",
+                wirecap::MAX_FILTER_HOSTS
+            ));
+        }
+        let targets: Vec<std::net::IpAddr> = hosts.iter().collect();
+        wirecap::WireCapture::start(wirecap::plan(interface, &targets)?)
+    })();
+    match started {
+        Ok(capture) => {
+            progress(
+                opts,
+                format_args!(
+                    "Capturing the wire traffic of the targets on {} (filter: {})",
+                    capture.plan().interface,
+                    capture.plan().filter
+                ),
+            );
+            Some(capture)
+        }
+        Err(e) => {
+            progress(
+                opts,
+                format_args!(
+                    "Wire capture not possible: {e}. Writing the application-level record instead."
+                ),
+            );
+            None
+        }
+    }
+}
+
+/// Ends the capture and writes it to `file` as pcapng. `false` (with the reason) when nothing was
+/// captured or the file could not be written, so that the caller writes the application-level
+/// record instead.
+fn write_wire(
+    capture: network_scope_core::wirecap::WireCapture,
+    file: &str,
+    opts: &BTreeMap<String, String>,
+) -> bool {
+    let plan = capture.plan().clone();
+    let captured = capture.finish();
+    if captured.frames.is_empty() {
+        let why = captured.error.as_deref().unwrap_or(
+            "no frame matched the filter; the targets may be reached through another interface, or are this computer's own addresses",
+        );
+        progress(
+            opts,
+            format_args!(
+                "Wire capture on {} saw no frames ({why}). Writing the application-level record instead.",
+                plan.interface
+            ),
+        );
+        return false;
+    }
+    if let Err(e) = network_scope_core::record::write_wire_pcapng(
+        std::path::Path::new(file),
+        captured.link_type,
+        &plan.interface,
+        &plan.filter,
+        &captured.frames,
+    ) {
+        progress(
+            opts,
+            format_args!("{e}. Writing the application-level record instead."),
+        );
+        return false;
+    }
+    progress(
+        opts,
+        format_args!(
+            "Recorded {} frames from the wire ({}, filter: {}) to {file}. This is a wire capture: the frames are the real ones, with their own headers, addresses, sequence numbers and times. TLS and SSH payloads are encrypted as they were on the wire, and other traffic of the same hosts during the scan is included.",
+            captured.frames.len(),
+            plan.interface,
+            plan.filter
+        ),
+    );
+    if captured.dropped > 0 {
+        progress(
+            opts,
+            format_args!(
+                "{} frames did not fit the bounds of the capture and are not in it.",
+                captured.dropped
+            ),
+        );
+    }
+    if let Some(e) = captured.error {
+        progress(
+            opts,
+            format_args!(
+                "The capture ended early ({e}); the file holds what was captured until then."
+            ),
+        );
+    }
+    true
+}
+
 /// Writes the payload record of the scan (`--record FILE`) and says what it is and what it covers.
 fn write_record(
     run: &scan::Running,
@@ -515,6 +640,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `--record-wire` needs `--record`, and without a usable capture (here an interface that does
+    /// not exist, so also without a driver) the scan falls back to the application-level record,
+    /// labelled as such.
+    #[test]
+    fn record_wire_falls_back_to_the_application_level_record() {
+        let (_listener, port) = http_listener();
+        let dir = std::env::temp_dir().join(format!("ns-record-wire-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (db, rec) = (dir.join("w.sqlite"), dir.join("scan.pcapng"));
+        let out = dir.join("o.json");
+        let scan = |extra: &[&str]| {
+            let mut a = vec![
+                "scan",
+                "127.0.0.1",
+                "--scope",
+                "127.0.0.0/8",
+                "--tcp-only",
+                "--fast",
+                "--services",
+                "--ports",
+                &port,
+                "--db",
+                db.to_str().unwrap(),
+                "--output",
+                out.to_str().unwrap(),
+                "--quiet",
+            ];
+            a.extend(extra);
+            run(&args(&a))
+        };
+        // --record-wire alone has nothing to write to
+        let e = scan(&["--record-wire"]).unwrap_err();
+        assert!(e.contains("--record-wire needs --record"), "{e}");
+        assert!(!rec.exists());
+        // a capture that cannot be opened: the application-level record is written
+        scan(&[
+            "--record",
+            rec.to_str().unwrap(),
+            "--record-wire",
+            "--interface",
+            "no-such-interface-0",
+        ])
+        .unwrap();
+        let text = String::from_utf8_lossy(&std::fs::read(&rec).unwrap()).into_owned();
+        assert!(text.contains("APPLICATION-LEVEL RECORD, NOT A WIRE CAPTURE"));
+        assert!(!text.contains("WIRE CAPTURE of a Network Scope scan"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `--replay-check` runs the stored scan again and compares the results and the stamps.
     #[test]
     fn replay_check_reproduces_a_scan_and_reports_changed_rules() {
@@ -612,6 +786,33 @@ mod tests {
         assert_eq!(json["same_result"], true);
         assert_eq!(json["same_rules"], false);
         assert_eq!(json["rule_differences"][0], "rules cves.json: changed");
+        // an old scan without a stamp can never be reproduced, and the output says why
+        let mut old = stored.clone();
+        old.settings.provenance = None;
+        let id = store::save(std::path::Path::new(&db), &old).unwrap();
+        run(&args(&[
+            "scan",
+            "--replay-check",
+            &id.to_string(),
+            "--scope",
+            "127.0.0.0/8",
+            "--db",
+            &db,
+            "--output",
+            &out,
+            "--quiet",
+        ]))
+        .unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            text.contains("cannot be called reproduced") && !text.contains("NOT reproduced"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("Scan #{id} has no provenance stamp"))
+                && text.contains("re-run (and so stamp) the scans you want to cite"),
+            "{text}"
+        );
         // the listener going away changes the result
         drop(listener);
         // (the listener thread keeps the socket open; closing is not guaranteed, so only check errors)

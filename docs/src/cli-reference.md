@@ -86,7 +86,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `fingerprints groups [SCAN_ID]`, `fingerprints compare GROUP [SCAN_ID]` | The workbench for unidentified banners: group similar ones, compare the variants of a group across firmware versions (`--format text\|json`). See [Contributing fingerprints](contributing-fingerprints.md#the-workbench-group-compare-draft) |
 | `fingerprints draft GROUP [SCAN_ID] [--output FILE]` | A draft rule for the `banner` probe that passes `probes lint` (`FILE`) and a pull request checklist (`FILE.checklist.md`); sends nothing |
 | `fingerprints favicon FILE` | Shodan-compatible favicon hash (`http.favicon.hash:N`) of a local file; nothing is fetched |
-| `research export csv\|ndjson --output DIR` | One file per table (DuckDB layout) and a manifest |
+| `research export csv\|ndjson\|parquet --output DIR` | One file per table (DuckDB layout) and a manifest |
 | `research export stix\|ocsf [SCAN_ID] [--output FILE]` | STIX 2.1 bundle or OCSF events of one scan |
 | `fingerprints export-unknown [SCAN_ID] [--output FILE]` | Banners of unidentified services from the local store as JSON, without host addresses, to review and redact before sharing; sends nothing. See [Contributing fingerprints](contributing-fingerprints.md) |
 | `update check` | Ask GitHub whether a newer release exists; prints the release page and the verification commands. Notify only: it never downloads or installs anything. See [Checking for updates](installation.md#checking-for-updates) |
@@ -141,6 +141,7 @@ These apply to `scan` and `monitor`.
 | `--snmp-community STRING` / `--snmp-version 2c\|1` | off / 2c | Read every responding host over [SNMP](snmp.md) with this community (system group, interfaces, addresses, LLDP neighbours): read-only requests, the community is never guessed and never `public` unless you type it; allowed in Safe Mode (with tighter limits) |
 | `--snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]` | off | SNMPv3 (USM): `AUTH` is `sha` or `sha256`, `PRIV` is `aes`; `AUTH_ENV` and `PRIV_ENV` are the **names of environment variables** holding the passphrases (at least 8 characters), never the passphrases themselves |
 | `--ipv6-discover` | off | Find hosts on the local link over IPv6: one ICMPv6 echo to `ff02::1` per interface (`--interface` picks one by index or name), the OS neighbour cache, joined to scanned hosts by MAC; one datagram per interface, also in Safe Mode; see [IPv6 discovery](ipv6-discovery.md) |
+| `--favicon` | off | One `GET /favicon.ico` per web port that answered as HTTP(S), hashed with the Shodan-compatible MurmurHash3 into `http.PORT.favicon_mmh3` (needs `--services` and `--fast`; ignored in Safe Mode; not on a host the scan found to be industrial (an industrial port open or identified); see [Detection](detection.md#favicon-hash---favicon)) |
 | `--no-backoff` | off | Turn off the [automatic back-off](scanning-engine.md#automatic-back-off) (on by default; it only ever slows a host down) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
@@ -296,6 +297,7 @@ See [Monitoring and alerts](monitoring-alerts.md).
 | `--no-reassembly` | off | Disable OT TCP reassembly |
 | `--model FILE` | `ot-model.json` next to the database (`ot-learn`) | The learned traffic model: written by `ot-learn`, read by `ot-listen` |
 | `--record FILE.pcapng` | | `scan`: keep the payloads of the scan as pcapng; see [Reproducible scans](reproducible-scans.md) |
+| `--record-wire` | off | `scan --record FILE`: capture the real frames of the scan instead of the application-level record (needs Npcap/libpcap and `--interface`, or loopback targets); falls back to the application-level record with the reason; see [Reproducible scans](reproducible-scans.md#scan---record-filepcapng---record-wire) |
 | `--replay-check ID` | | `scan`: run stored scan ID again with its own targets and settings and compare; `--format text\|json`, `--fail-on-findings` |
 | `--zones FILE` | | `segmentation check`: the zones and conduits file |
 | `--from ZONE` | | `segmentation check`: the zone the scan was run from |
