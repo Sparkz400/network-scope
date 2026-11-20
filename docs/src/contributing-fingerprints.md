@@ -51,6 +51,8 @@ network-scope-cli probes validate acme.json
 
 `fingerprints draft GROUP [SCAN_ID] --output FILE` writes a draft rule and a checklist: `FILE` is a complete probe file with one rule for the `banner` probe (the probe that only listens; `probes validate FILE` takes it) and `FILE.checklist.md` is the pull request checklist (read the banners and redact them, confirm the product and version names, capture a raw reply, run the validator and the linter, add a test, open the pull request with the fingerprint template). Without `--output` the same is printed (`--format json` gives the `fingerprint-draft` schema). When all banners of a group have one shape, the rule is that shape as a regular expression with a capture group around the first version-like number (`$1` is the version); when the shapes differ the rule only anchors on their common start and says so, and when that start is shorter than 5 characters the draft is refused, because such a rule would claim unrelated services. The draft always passes `probes lint` and matches every banner of its group (both are checked when it is made). **`service` and `product` are guesses** from the banner text; the number the rule captures may be a model number rather than a version. Check them before you share anything.
 
+The desktop app has the same workbench under **Devices → Unknown devices…** (see the [GUI guide](gui-guide.md#unknown-devices)); it calls the same functions and writes the same two files.
+
 Limits: only TCP banners are grouped (the same input as `export-unknown`), the store keeps them with control characters removed and cut at 120 characters, at most the 1,500 commonest distinct banners are looked at, and the workbench has no idea what a device really is: it sorts text.
 
 ## 2. Write the rule
