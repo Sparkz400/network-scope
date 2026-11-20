@@ -1,0 +1,24 @@
+pkgbase = network-scope-bin
+	pkgdesc = Network scanner and analysis tool with service, TLS and passive OT discovery
+	pkgver = @VERSION@
+	pkgrel = 1
+	url = https://sparkz400.github.io/network-scope/
+	arch = x86_64
+	license = MIT
+	depends = glibc
+	depends = gcc-libs
+	optdepends = libpcap: SYN scan, ARP sweep and passive capture
+	optdepends = libxkbcommon: desktop GUI
+	optdepends = libxkbcommon-x11: desktop GUI on X11
+	optdepends = libx11: desktop GUI on X11
+	optdepends = libxcursor: desktop GUI on X11
+	optdepends = libxrandr: desktop GUI on X11
+	optdepends = libxi: desktop GUI on X11
+	optdepends = wayland: desktop GUI on Wayland
+	optdepends = libglvnd: desktop GUI (OpenGL)
+	provides = network-scope
+	conflicts = network-scope
+	source = https://github.com/Sparkz400/network-scope/releases/download/v@VERSION@/network-scope-@VERSION@-linux-x86_64.tar.gz
+	sha256sums = @SHA256_LINUX@
+
+pkgname = network-scope-bin

@@ -313,7 +313,8 @@ jobs:
           if-no-files-found: warn
 
   # Runs next to the test jobs, not after them: it needs only the binaries, which it builds itself,
-  # and waiting added ~7 minutes to every run.
+  # and waiting added ~7 minutes to every run. Compiles installer/network-scope.iss and tests the
+  # result with scripts/installer_smoke.ps1 (roadmap I58).
   installer:
     name: windows installer
     runs-on: windows-latest
@@ -324,12 +325,21 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --release --locked
       - name: Build installer
+        id: iscc
         shell: pwsh
         run: |
           if (-not (Test-Path target\release\network-scope-cli.exe)) { throw "network-scope-cli.exe was not built" }
           choco install innosetup -y --no-progress
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" installer\network-scope.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      # Silent per-user install, both installed binaries run `--version`, silent uninstall.
+      - name: Install, run and uninstall
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.iscc.outputs.version }}
+        run: ./scripts/installer_smoke.ps1 "dist\NetworkScope-$env:VERSION-setup.exe" $env:VERSION
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: installer
