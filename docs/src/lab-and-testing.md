@@ -282,3 +282,20 @@ Measured on Windows 11, 22 logical cores, release build, 2026-11-20 (the CI limi
 | GUI frame, 65,536 rows | idle frame 0.40 ms median (the rows are virtual: only the visible ones are laid out); a frame with sort, filter and draw 10.95 ms median, worst of 30 frames 18.9 ms. The median meets 60 fps; one frame in 30 can miss it while a scan feeds the table |
 
 The GUI test cannot drive the real window (that needs a display): it draws the same `TableBuilder` columns and cells as the results table and repeats the sort and the row filter, so a change to the table code itself (not these helpers) is not covered.
+
+## Performance tests
+
+`core/benches/hot_paths.rs` holds [criterion](https://criterion-rs.github.io/book/) benchmarks of the hot paths: parsing a 2,000-frame pcap, decoding 2,000 passive frames, the risk analysis of a 1,000-host snapshot, the diff of two 1,000-host snapshots, expanding and parsing targets, and matching banners against every service probe. They touch no network.
+
+```sh
+cargo bench -p network-scope-core                                  # run them
+cargo bench -p network-scope-core -- --save-baseline before        # keep the numbers
+cargo bench -p network-scope-core -- --baseline before             # compare with them
+python -I scripts/bench_compare.py target/criterion --threshold 15 # exit 1 on a regression
+```
+
+The workflow `bench.yml` runs on every pull request: one job builds the base branch and saves its numbers as the baseline, runs the same benchmarks on the change on the same runner, and `scripts/bench_compare.py` fails the job when a benchmark's mean got more than 15 percent slower and criterion's confidence interval for the change excludes zero. A base branch without benchmarks (the pull request that adds them) has nothing to compare with and passes with a notice.
+
+Runner noise is real. On a shared workstation with other builds running, two runs of identical code differed by up to +25 % in the pcap and diff benchmarks (measured 2026-11-20, Windows 11, release build), so the comparison on a hosted runner can fail without a real slowdown: re-run the job once before believing a failure, and look at the interval in the job summary. Numbers on that workstation (middle value): pcap parse 82 microseconds, passive decode 1.17 ms (2,000 frames), risk analysis 2.8 ms, diff 8.3 ms, expanding a /16 138 microseconds, parsing mixed ranges 0.46 microseconds, probe matching 16 microseconds.
+
+`criterion` is a dev-dependency of the core crate only (version 0.8.2, no default features: no plotting, no rayon); `cargo deny check` reports no new advisory, licence or source problem (a pre-existing `wildcard` error for the path dependency `network-scope-core` shows with cargo-deny 0.21 with or without it).
