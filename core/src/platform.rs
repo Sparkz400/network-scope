@@ -154,6 +154,10 @@ pub fn parse_route_get(text: &str, interface: &str) -> RouteResult {
     )
 }
 
+fn own_address(dest: std::net::Ipv4Addr) -> String {
+    format!("{dest} is this computer's own address; raw frames to it are not looped back")
+}
+
 /// Next hop toward `dest` from the OS routing table: GetBestRoute on Windows,
 /// `/proc/net/route` on Linux, `route -n get` on macOS/BSD. `source` and `interface`
 /// describe the capture interface; a route through another interface is an error.
@@ -162,6 +166,11 @@ pub fn next_hop(
     source: std::net::Ipv4Addr,
     interface: &str,
 ) -> RouteResult {
+    // A frame to our own address goes out on the wire and never comes back to the capture
+    // (seen on a real LAN: every port "unanswered"); the caller falls back to TCP connect.
+    if dest == source {
+        return Err(own_address(dest));
+    }
     #[cfg(windows)]
     {
         let _ = interface;
@@ -323,6 +332,12 @@ mod win {
     }
 
     pub fn next_hop(dest: std::net::Ipv4Addr, source: std::net::Ipv4Addr) -> RouteResult {
+        // Our address on another adapter (seen: a VMnet8 address via the Ethernet engine):
+        // GetBestRoute answers, but the frame is lost like one to the source address.
+        // shortcut: Windows only; Linux/macOS still catch just the source address.
+        if !dest.is_loopback() && interface_of(dest).is_some() {
+            return Err(own_address(dest));
+        }
         let mut row = ForwardRow::default();
         let code = unsafe {
             GetBestRoute(
@@ -1576,6 +1591,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn own_address_has_no_raw_next_hop() {
+        let me = std::net::Ipv4Addr::new(192, 168, 178, 111);
+        let e = next_hop(me, me, "eth0").unwrap_err();
+        assert!(e.contains("own address"), "{e}");
+    }
+
     #[cfg(windows)]
     #[test]
     fn native_route_lookup() {
@@ -1603,6 +1625,9 @@ mod tests {
             );
             // A source address on another interface (loopback) is refused.
             assert!(next_hop("8.8.8.8".parse().unwrap(), lo, "").is_err());
+            // This computer's own address has no raw next hop, whatever the source.
+            let own = next_hop(*local.ip(), std::net::Ipv4Addr::UNSPECIFIED, "").unwrap_err();
+            assert!(own.contains("own address"), "{own}");
         }
         if let Ok(hop) = internet {
             match hop {
