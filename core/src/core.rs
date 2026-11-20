@@ -972,9 +972,8 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
     }
     flush_backoff_notes(&gov, &mut h);
-    #[cfg(test)]
-    tests::stop_flaky_devices(&h.open);
     if s.services && !h.open.is_empty() && !gov.paused() {
+        before_identification(&h.open);
         let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
         let rounds = if s.safe { 6 } else { 12 };
         let slots = Arc::new(Semaphore::new(
@@ -1329,6 +1328,14 @@ fn analyze(h: &mut Host, fp: Option<&TcpFp>) {
 #[cfg(test)]
 pub(crate) static BACNET_PORT: Mutex<()> = Mutex::new(());
 
+/// Runs between the port probes and service identification. Empty outside tests, where it
+/// stops the fake devices that must refuse identification (`tests::flaky_device`). Defined
+/// here, not in `scan_host`: the drift guards read the code above the first `cfg(test)`.
+fn before_identification(_open: &[u16]) {
+    #[cfg(test)]
+    tests::stop_flaky_devices(_open);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1673,35 +1680,26 @@ mod tests",
         assert_eq!(plain.state, PortState::Closed);
     }
 
-    /// The threads of the [`flaky_device`]s, by port.
-    static FLAKY: Mutex<BTreeMap<u16, std::thread::JoinHandle<()>>> = Mutex::new(BTreeMap::new());
+    /// The listeners of the [`flaky_device`]s, by port.
+    static FLAKY: Mutex<BTreeMap<u16, std::net::TcpListener>> = Mutex::new(BTreeMap::new());
 
-    /// A "device" that accepts one connection and then stops listening: every later connect is
-    /// refused (or silently dropped, depending on the OS).
+    /// A "device" that answers the port probe and then stops listening: the identification
+    /// connect that follows is refused (or silently dropped, depending on the OS).
     fn flaky_device() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let thread = std::thread::spawn(move || {
-            if let Ok((connection, _)) = listener.accept() {
-                drop(connection);
-            }
-            drop(listener);
-        });
-        FLAKY.lock().unwrap().insert(port, thread);
+        FLAKY.lock().unwrap().insert(port, listener);
         port
     }
 
-    /// Called by the scan between the port probes and service identification: a flaky device
-    /// whose port was found open has accepted that probe, so joining its thread waits only until
-    /// its listener is closed. Without this, the identification connect can reach the listener's
-    /// backlog first and succeed (the race that made these tests flaky on CI).
+    /// Called by the scan after the port probes and before service identification: closes the
+    /// listeners of the flaky devices found open. Closing them anywhere else races with the
+    /// scan: an identification connect that reaches a listener's backlog first succeeds, which
+    /// made these tests flaky on CI.
     pub(super) fn stop_flaky_devices(open: &[u16]) {
-        let threads: Vec<_> = {
-            let mut flaky = FLAKY.lock().unwrap_or_else(|e| e.into_inner());
-            open.iter().filter_map(|p| flaky.remove(p)).collect()
-        };
-        for thread in threads {
-            let _ = thread.join();
+        let mut flaky = FLAKY.lock().unwrap_or_else(|e| e.into_inner());
+        for port in open {
+            flaky.remove(port);
         }
     }
 
