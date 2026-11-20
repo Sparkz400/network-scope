@@ -323,9 +323,18 @@ def compare(truth, scan):
         "os_accuracy": ratio(os_ok, os_n),
         "finding_recall": ratio(allowed_hit, allowed_n),
     }
+    # A healthy lab never trips the back-off (H52): a "backed off:" note on a lab host means the
+    # scan was slowed down by a strike (reset connection, or a port that stopped answering), the
+    # cause of long wall times that are not noise. It is a count, lower is better, like false_alarms.
+    backoff = sorted(f"{h['ip']}: {e}" for h in scan["hosts"] for e in h.get("errors", [])
+                     if e.startswith("backed off:"))
     count = sum(len(v) for v in false_alarms.values())
     metrics["false_alarms"] = {"value": count, "num": count, "den": reported_n,
                                "by_rule": {k: sorted(v) for k, v in sorted(false_alarms.items())}}
+    metrics["backoff_notes"] = {"value": len(backoff), "num": len(backoff), "den": len(scan["hosts"]),
+                                "notes": backoff}
+    for note in backoff:
+        misses.append(f"back-off during the scan: {note}")
     return metrics, misses
 
 
@@ -350,6 +359,9 @@ def check(metrics, platform, baseline_path):
     allowed = base.get("false_alarms", 0)
     if metrics["false_alarms"]["value"] > allowed:
         regressions.append(f"false_alarms: {metrics['false_alarms']['value']} is above the baseline {allowed}")
+    allowed = base.get("backoff_notes", 0)
+    if metrics["backoff_notes"]["value"] > allowed:
+        regressions.append(f"backoff_notes: {metrics['backoff_notes']['value']} is above the baseline {allowed}")
     return base, regressions, ""
 
 
@@ -373,6 +385,11 @@ def markdown(result, baseline, regressions, note):
     allowed = baseline.get("false_alarms", 0)
     mark = "" if not baseline else ("REGRESSION" if fa["value"] > allowed else "ok")
     lines.append(f"| False alarms (lower is better) | {fa['value']} | {fa['num']}/{fa['den']} findings | "
+                 f"{allowed if baseline else '-'} | {mark} |")
+    bn = result["metrics"]["backoff_notes"]
+    allowed = baseline.get("backoff_notes", 0)
+    mark = "" if not baseline else ("REGRESSION" if bn["value"] > allowed else "ok")
+    lines.append(f"| Back-off notes (lower is better) | {bn['value']} | {bn['num']}/{bn['den']} hosts | "
                  f"{allowed if baseline else '-'} | {mark} |")
     t = result["timing"]
     lines += ["", f"Scan wall time {t['scan_seconds']:.1f} s for {result['lab']['addresses']} addresses "
@@ -398,6 +415,7 @@ def update_baseline(path, platform, metrics):
     data.setdefault("platforms", {})[platform] = {k: metrics[k]["value"] for k, _, _ in METRICS
                                                   if metrics[k]["value"] is not None}
     data["platforms"][platform]["false_alarms"] = metrics["false_alarms"]["value"]
+    data["platforms"][platform]["backoff_notes"] = metrics["backoff_notes"]["value"]
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2, sort_keys=True)
         f.write("\n")
@@ -413,6 +431,9 @@ def main():
     ap.add_argument("--update-baseline", action="store_true",
                     help="record this run as the baseline of this platform (review the diff!)")
     ap.add_argument("--timeout", type=int, default=1500, help="port timeout in ms passed to the CLI")
+    ap.add_argument("--max-scan-seconds", type=float, default=None,
+                    help="with --check: fail when the scan takes longer (a sanity bound for gross slowdowns; "
+                         "wall time is otherwise reported only, because shared machines are noisy)")
     args = ap.parse_args()
     # The scope guard reads a default scope file from the config folder; a developer's own file
     # must not change the result of the lab (it only knows loopback addresses).
@@ -465,8 +486,10 @@ def main():
             f.write(text + "\n")
     if note and args.check:
         print("::warning::" + note if os.environ.get("GITHUB_ACTIONS") else note)
+    if args.check and args.max_scan_seconds is not None and elapsed > args.max_scan_seconds:
+        regressions.append(f"scan wall time {elapsed:.1f} s is above the bound of {args.max_scan_seconds:.0f} s")
     if regressions:
-        print("benchmark FAILED: accuracy fell below the baseline", file=sys.stderr)
+        print("benchmark FAILED: a metric fell below the baseline or the scan was too slow", file=sys.stderr)
         return 1
     return 0
 

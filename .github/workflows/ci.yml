@@ -66,7 +66,7 @@ jobs:
       # above, so it runs on Linux only. Timing is reported, not gated (runners are noisy).
       - name: Accuracy benchmark (Linux)
         if: runner.os == 'Linux'
-        run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --out-dir benchmark-results
+        run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --max-scan-seconds 60 --out-dir benchmark-results
       - name: Upload the benchmark result
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

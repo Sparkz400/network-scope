@@ -1,6 +1,7 @@
 {
   "platforms": {
     "windows": {
+      "backoff_notes": 0,
       "device_type_accuracy": 1.0,
       "false_alarms": 0,
       "finding_recall": 1.0,
