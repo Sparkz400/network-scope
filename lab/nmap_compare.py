@@ -297,6 +297,9 @@ def main():
                          "version detection; score every configuration against the ground truth")
     ap.add_argument("--repeat", type=int, default=1, help="repeat every scan this many times (median wall time)")
     args = ap.parse_args()
+    # The scope guard reads a default scope file from the config folder; a developer's own file
+    # must not change the result of the lab (it only knows loopback addresses).
+    os.environ["LOCALAPPDATA"] = os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="ns-config-")
     sys.stdout.reconfigure(encoding="utf-8")
     bench = load_benchmark()
     work = tempfile.mkdtemp(prefix="ns-nmap-")

@@ -130,6 +130,8 @@ mod tests {
         let status = run(&args(&[
             "scan",
             "127.0.0.1",
+            "--scope",
+            "127.0.0.0/8",
             "--tcp-only",
             "--fast",
             "--sent-log",

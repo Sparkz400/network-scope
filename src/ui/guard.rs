@@ -115,24 +115,46 @@ mod tests {
         assert!(declared(&opts(&["--scope", "banana"])).is_err());
     }
 
+    /// [`check`] with no declared scope (the real one would read the default scope file).
+    fn check_undeclared<'a>(
+        opts: &BTreeMap<String, String>,
+        addresses: impl Into<Addresses<'a>>,
+        confirm: Option<&mut dyn FnMut(&str) -> bool>,
+    ) -> Result<Result<Assessment, Refusal>, String> {
+        Ok(scope::enforce(addresses, None, consent(opts), confirm))
+    }
+
     #[test]
     fn public_targets_are_refused_without_a_flag_or_an_answer() {
+        // No declared scope, whatever the developer's own scope file says.
         let public = targets("8.8.8.8");
         let o = BTreeMap::new();
-        let refusal = check(&o, &public, None).unwrap().unwrap_err();
+        let refusal = check_undeclared(&o, &public, None).unwrap().unwrap_err();
         assert!(refusal.0.contains("--yes-public"), "{refusal}");
         // An interactive "no" refuses, "yes" goes ahead.
         let mut no = |_: &str| false;
-        assert!(check(&o, &public, Some(&mut no)).unwrap().is_err());
+        assert!(
+            check_undeclared(&o, &public, Some(&mut no))
+                .unwrap()
+                .is_err()
+        );
         let mut yes = |_: &str| true;
-        assert!(check(&o, &public, Some(&mut yes)).unwrap().is_ok());
+        assert!(
+            check_undeclared(&o, &public, Some(&mut yes))
+                .unwrap()
+                .is_ok()
+        );
         // The flag goes ahead without asking.
         let flagged = opts(&["--yes-public"]);
         let mut never = |_: &str| panic!("flags make a prompt unnecessary");
-        assert!(check(&flagged, &public, Some(&mut never)).unwrap().is_ok());
+        assert!(
+            check_undeclared(&flagged, &public, Some(&mut never))
+                .unwrap()
+                .is_ok()
+        );
         // Private targets never ask.
         assert!(
-            check(&o, &targets("192.168.0.0/24"), Some(&mut never))
+            check_undeclared(&o, &targets("192.168.0.0/24"), Some(&mut never))
                 .unwrap()
                 .is_ok()
         );
