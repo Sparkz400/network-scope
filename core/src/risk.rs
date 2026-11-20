@@ -297,6 +297,33 @@ fn valid_cve(s: &str) -> bool {
 }
 
 impl CveDb {
+    /// A SHA-256 of every CVE and CPE rule of this database in a canonical text form: what the
+    /// provenance stamp of a scan records (built-in rules and the user file merged).
+    pub fn fingerprint(&self) -> String {
+        let mut text = String::new();
+        for r in &self.rules {
+            text.push_str(&format!(
+                "rule|{}|{}|{}|{}|{}|{}|{}|{}\n",
+                r.id,
+                r.product,
+                r.exclude.join(","),
+                r.min.as_deref().unwrap_or(""),
+                r.max.as_deref().unwrap_or(""),
+                r.severity.name(),
+                r.cve.join(","),
+                r.title
+            ));
+        }
+        for c in &self.cpe {
+            text.push_str(&format!(
+                "cpe|{}|{}|{}\n",
+                c.id,
+                c.products.join(","),
+                c.template
+            ));
+        }
+        crate::provenance::hash(text.as_bytes())
+    }
     fn parse(json: &str, origin: &str) -> Result<Self, String> {
         let raw: RawCveDb = serde_json::from_str(json).map_err(|e| format!("{origin}: {e}"))?;
         let mut rules = vec![];

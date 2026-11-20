@@ -61,6 +61,7 @@ pub const KINDS: &[&str] = &[
     "segmentation-report",
     "banner-groups",
     "fingerprint-draft",
+    "replay-check",
 ];
 
 /// The `schema` value of a kind at the current version.

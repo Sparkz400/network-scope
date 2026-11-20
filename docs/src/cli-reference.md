@@ -254,6 +254,8 @@ See [Monitoring and alerts](monitoring-alerts.md).
 | `--progress` | off | Print percent, frames and frames/s on stderr while reading a file |
 | `--no-reassembly` | off | Disable OT TCP reassembly |
 | `--model FILE` | `ot-model.json` next to the database (`ot-learn`) | The learned traffic model: written by `ot-learn`, read by `ot-listen` |
+| `--record FILE.pcapng` | | `scan`: keep the payloads of the scan as pcapng; see [Reproducible scans](reproducible-scans.md) |
+| `--replay-check ID` | | `scan`: run stored scan ID again with its own targets and settings and compare; `--format text\|json`, `--fail-on-findings` |
 | `--zones FILE` | | `segmentation check`: the zones and conduits file |
 | `--from ZONE` | | `segmentation check`: the zone the scan was run from |
 | `--maintenance SPEC` | none | `ot-listen --model`: when Stops are expected, `"Sat 02:00-06:00"` (UTC unless `UTC+H`), several windows separated by `;` |

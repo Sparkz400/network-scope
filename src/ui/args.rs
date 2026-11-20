@@ -38,7 +38,7 @@ pub(super) const FLAGS: [&str; 30] = [
     "no-backoff",
     "sent-log",
 ];
-pub(super) const VALUES: [&str; 67] = [
+pub(super) const VALUES: [&str; 69] = [
     "feeds",
     "top",
     "nvd",
@@ -47,6 +47,8 @@ pub(super) const VALUES: [&str; 67] = [
     "maintenance",
     "zones",
     "from",
+    "record",
+    "replay-check",
     "kev",
     "epss",
     "sort",
@@ -183,6 +185,7 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     s.jarm = opts.contains_key("jarm");
     // On by default; it only ever slows a host down (see `backoff`).
     s.backoff = !opts.contains_key("no-backoff");
+    s.record = opts.contains_key("record");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
         s.trace = true;

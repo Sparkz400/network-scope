@@ -175,6 +175,39 @@ impl ProbeDb {
             rules,
         })
     }
+    /// The probes a scan with this `--probes` value (empty: the default user file, if any) uses:
+    /// the built-in ones merged with the user file. Unlike [`ProbeDb::load`] it does not touch
+    /// the UDP probe slot.
+    pub fn effective(explicit: &str) -> Result<Self, String> {
+        Self::load_files(explicit)
+    }
+    /// A SHA-256 of every probe and rule in this database, in a canonical text form: what the
+    /// provenance stamp of a scan records.
+    pub fn fingerprint(&self) -> String {
+        let mut text = String::new();
+        for (proto, list) in [("tcp", &self.probes), ("udp", &self.udp)] {
+            for p in list {
+                text.push_str(&format!(
+                    "probe|{proto}|{}|{:?}|{}|{}\n",
+                    p.name,
+                    p.ports,
+                    crate::fingerprint::hex(&p.payload),
+                    p.wait.as_millis()
+                ));
+                for r in &p.rules {
+                    text.push_str(&format!(
+                        "rule|{}|{}|{}|{}|{}\n",
+                        r.re.as_str(),
+                        r.service,
+                        r.product,
+                        r.version,
+                        r.info
+                    ));
+                }
+            }
+        }
+        crate::provenance::hash(text.as_bytes())
+    }
     /// The text of the built-in `data/probes.json` (what `probes lint` checks when no file is given).
     pub fn builtin_json() -> &'static str {
         BUILTIN

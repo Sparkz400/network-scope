@@ -91,6 +91,11 @@ struct Table {
     groups: Vec<Group>,
 }
 
+/// The embedded `data/compliance.json` (what the provenance stamp of a scan hashes).
+pub fn data_text() -> &'static str {
+    DATA
+}
+
 fn table() -> &'static Table {
     static T: OnceLock<Table> = OnceLock::new();
     T.get_or_init(|| serde_json::from_str(DATA).expect("data/compliance.json is valid"))

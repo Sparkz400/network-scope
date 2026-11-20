@@ -123,6 +123,8 @@ pub mod pivot;
 pub mod plan;
 pub(crate) mod platform;
 pub(crate) mod probes;
+pub mod provenance;
+pub mod record;
 pub mod report;
 pub mod research;
 pub mod risk;

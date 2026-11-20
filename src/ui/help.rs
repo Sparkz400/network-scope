@@ -111,6 +111,10 @@ Scan options:
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
   --dry-run       scan, monitor, trace, dcp: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
+  --record FILE.pcapng  scan: keep the payloads the scan sent and received (OT requests and replies, service
+                  probes, HTTP) as pcapng. An application-level record, not a wire capture
+  --replay-check ID  scan: run stored scan ID again with its own targets and settings and compare the result
+                  and the version/rules stamp (--fail-on-findings: exit 3 when it is not reproduced)
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)
   --no-backoff    Turn off the automatic back-off (per-device-type parallel limits and slowing or
                   pausing a host that resets connections; on by default, it only ever slows down)
