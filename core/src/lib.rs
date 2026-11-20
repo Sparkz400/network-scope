@@ -49,11 +49,28 @@
 //! let findings = risk::analyze_snapshot(&snapshot);
 //! assert!(findings.iter().any(|f| f.port == Some(23)));
 //!
-//! let db = std::env::temp_dir().join(format!("ns-core-doc-{}.sqlite", std::process::id()));
+//! # // A folder of its own that nobody else uses and that is removed on every way out: a file
+//! # // named only after the process id can be left behind (SQLite's -wal and -shm files, or a
+//! # // delete that fails while a virus scanner holds the file), and the next process with the
+//! # // same id then finds a database that already holds scans.
+//! # struct Folder(std::path::PathBuf);
+//! # impl Drop for Folder {
+//! #     fn drop(&mut self) {
+//! #         let _ = std::fs::remove_dir_all(&self.0);
+//! #     }
+//! # }
+//! # let nanos = std::time::SystemTime::now()
+//! #     .duration_since(std::time::UNIX_EPOCH)
+//! #     .map_or(0, |d| d.as_nanos());
+//! # let folder = Folder(std::env::temp_dir().join(format!(
+//! #     "ns-core-doc-{}-{nanos}",
+//! #     std::process::id()
+//! # )));
+//! # std::fs::create_dir(&folder.0).map_err(|e| e.to_string())?;
+//! let db = folder.0.join("inventory.sqlite");
 //! let id = store::save(&db, &snapshot)?;
 //! assert_eq!(store::load(&db, id)?.hosts[0].open, [23]);
 //! assert_eq!(store::list(&db)?.len(), 1);
-//! # let _ = std::fs::remove_file(&db);
 //! # Ok::<(), String>(())
 //! ```
 //!
