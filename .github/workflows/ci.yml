@@ -67,6 +67,13 @@ jobs:
       - name: Accuracy benchmark (Linux)
         if: runner.os == 'Linux'
         run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --out-dir benchmark-results
+      # Test plant (roadmap L74): the planted weaknesses of lab/plant_truth.json and the traffic replay
+      # of L69. It fails when a write reaches a plant device or the replay reports the wrong alerts;
+      # recall is gated only where lab/plant_baseline.json has a value (Windows, measured locally).
+      # Not yet run on a CI runner.
+      - name: Test plant (Linux)
+        if: runner.os == 'Linux'
+        run: python -I lab/plant_benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --out-dir plant-results
       - name: Upload the benchmark result
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
