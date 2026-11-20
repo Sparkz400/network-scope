@@ -206,6 +206,19 @@ fn values_are_normalised_or_refused() {
     assert_eq!(cn_of("CN=Ada Lovelace,OU=Staff,DC=corp"), "Ada Lovelace");
     assert_eq!(cn_of("CN=Doe\\, Jane,OU=Staff"), "Doe, Jane");
     assert_eq!(cn_of("plain text"), "plain text");
+    // A multi-byte character across byte 3 used to panic on a string slice (found by the
+    // import_inventory fuzz target).
+    assert_eq!(cn_of("cnäb"), "cnäb");
+    assert_eq!(cn_of("C\u{fe0f}N=x"), "C\u{fe0f}N=x");
+}
+
+#[test]
+fn ldif_manager_with_a_multibyte_value_does_not_panic() {
+    // Reduced from the fuzz input: the base64 manager value decodes to a name whose third byte
+    // is inside a multi-byte character.
+    let ldif = "dn: CN=PC-01,OU=W,DC=corp\nobjectClass: computer\ncn: PC-01\n\
+                dNSHostName: pc-01.corp.local\nmanagedBy:: Q576QWRh\n\n";
+    let _ = parse(Kind::ALL[5 % Kind::ALL.len()], ldif.as_bytes());
 }
 
 #[test]

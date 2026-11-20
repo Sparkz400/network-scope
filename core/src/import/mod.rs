@@ -276,7 +276,7 @@ pub(crate) fn tag_with(prefix: &str, value: &str) -> Option<String> {
 /// other text is returned as it is.
 pub(crate) fn cn_of(dn: &str) -> String {
     let t = dn.trim();
-    let name = if t.len() > 3 && t[..3].eq_ignore_ascii_case("cn=") {
+    let name = if t.len() > 3 && t.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("cn=")) {
         let mut end = t.len();
         let mut escaped = false;
         for (i, c) in t.char_indices().skip(3) {

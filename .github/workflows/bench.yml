@@ -48,7 +48,7 @@ jobs:
           git worktree add "$RUNNER_TEMP/base" "$BASE"
           if [ -f "$RUNNER_TEMP/base/core/benches/hot_paths.rs" ]; then
             (cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
-              cargo bench --locked -p network-scope-core -- --save-baseline base)
+              cargo bench --locked -p network-scope-core --bench hot_paths -- --save-baseline base)
             echo "saved=true" >> "$GITHUB_OUTPUT"
           else
             echo "The base branch has no benchmarks yet; nothing to compare with."
@@ -56,9 +56,9 @@ jobs:
       - name: Benchmarks of the change
         run: |
           if [ "${{ steps.base.outputs.saved }}" = "true" ]; then
-            cargo bench --locked -p network-scope-core -- --baseline base
+            cargo bench --locked -p network-scope-core --bench hot_paths -- --baseline base
           else
-            cargo bench --locked -p network-scope-core
+            cargo bench --locked -p network-scope-core --bench hot_paths
           fi
       - name: Fail on a regression above 15 percent
         run: python -I scripts/bench_compare.py "$CRITERION_HOME" --threshold 15
