@@ -488,7 +488,7 @@ impl Scanner {
             ));
         }
         if !self.ot.error.is_empty() {
-            ui.colored_label(egui::Color32::DARK_RED, &self.ot.error);
+            ui.colored_label(egui::Color32::from_rgb(205, 70, 70), &self.ot.error);
         }
         if self.ot.assets.is_empty() {
             return;

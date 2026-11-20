@@ -659,6 +659,15 @@ mod tests {
         if let Ok(nets) = detect() {
             assert!(!nets.is_empty());
             assert!(nets.iter().all(|n| n.prefix <= 32));
+            // Shown with --nocapture: what this machine reports and what would be scanned.
+            for c in classify(&nets) {
+                eprintln!(
+                    "{} on {:?}: {:?}",
+                    c.net.cidr(),
+                    c.net.interface,
+                    c.decision
+                );
+            }
         }
     }
 }
