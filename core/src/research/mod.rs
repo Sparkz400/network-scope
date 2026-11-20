@@ -549,7 +549,9 @@ pub fn rebuild(path: &Path) -> Result<RebuildReport, String> {
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     for t in TABLES {
         tx.execute(&format!("DELETE FROM {}", t.name), [])
             .map_err(|e| e.to_string())?;
