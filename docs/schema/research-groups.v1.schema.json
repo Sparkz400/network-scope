@@ -28,7 +28,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "description": "spki_sha256, ja4x, jarm, ja4s, hassh, favicon_mmh3 or ot_firmware"
+            "description": "spki_sha256, jarm, ja3s, hassh, favicon_mmh3 or ot_firmware"
           },
           "value": {
             "type": "string"

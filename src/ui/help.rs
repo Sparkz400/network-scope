@@ -70,8 +70,8 @@ network-scope research query "SELECT ..." [--top N] [--format json|csv|tsv]   Re
 network-scope research schema | rebuild        Document the tables; fill them for scans saved before they existed
 network-scope research export csv|ndjson|parquet --output DIR   One file per table (DuckDB/pandas layout)
 network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bundle or OCSF events of one scan
-network-scope research groups [--top N] [--format text|json]   Devices that share a key, certificate template,
-                                               TLS/SSH stack, web interface or OT firmware, across scans and sites
+network-scope research groups [--top N] [--format text|json]   Devices that share a key, a TLS/SSH stack,
+                                               web interface or OT firmware, across scans and sites
 network-scope fingerprints groups [SCAN_ID]    The unidentified banners, grouped by similarity (the workbench queue)
 network-scope fingerprints compare GROUP [SCAN_ID]   One group side by side: what differs between firmware versions
 network-scope fingerprints draft GROUP [SCAN_ID] [--output FILE]   A draft probes.json rule (passes probes lint)

@@ -28,8 +28,8 @@ A few more questions in the same style:
 -- every S7 answer that reported this firmware version
 SELECT ip, product, version FROM services WHERE name = 'S7' AND version = '4.2.3';
 
--- how often each JA4S fingerprint occurs, and on how many hosts
-SELECT value, count(*) AS rows, count(DISTINCT ip) AS hosts FROM fingerprints WHERE kind = 'ja4s' GROUP BY value ORDER BY hosts DESC;
+-- how often each JA3S fingerprint occurs, and on how many hosts
+SELECT value, count(*) AS rows, count(DISTINCT ip) AS hosts FROM fingerprints WHERE kind = 'ja3s' GROUP BY value ORDER BY hosts DESC;
 
 -- known-exploited findings
 SELECT DISTINCT ip, port, rule_id, cve FROM findings WHERE kev = 1;
@@ -84,11 +84,10 @@ One row per TLS certificate a port presented. `spki_sha256` is the hash of the p
 | `not_before`, `not_after` | Validity, YYYY-MM-DD |
 | `self_signed` | 1, 0 or NULL when unknown |
 | `key`, `signature` | Key type and size, signature algorithm |
-| `ja4x` | JA4X certificate fingerprint, empty when not computed |
 
 ### fingerprints
 
-Fingerprints that identify software, keys or devices across hosts and scans, one row each: `kind` is `spki_sha256`, `ja4s`, `jarm`, `ja4x`, `hassh` or `favicon_mmh3`. New kinds are added without changing the columns.
+Fingerprints that identify software, keys or devices across hosts and scans, one row each: `kind` is `spki_sha256`, `ja3s`, `jarm`, `hassh` or `favicon_mmh3`. New kinds are added without changing the columns.
 
 | Column | Meaning |
 |---|---|
@@ -123,17 +122,14 @@ The `fingerprints` table holds what can link devices across scans and sites:
 | `kind` | What it is | Comes from |
 | --- | --- | --- |
 | `spki_sha256` | SHA-256 of the certificate's public key; the same private key on several devices | every TLS port (`tls.PORT.spki_sha256`) |
-| `ja4x` | JA4X certificate fingerprint: the same issuer and subject fields and extensions, whatever the key | every TLS port (`tls.PORT.ja4x`) |
-| `ja4s`, `jarm` | The TLS stack and its configuration | `--services`; `--jarm` for JARM |
+| `ja3s`, `jarm` | The TLS stack and its configuration | `--services`; `--jarm` for JARM |
 | `hassh` | The SSH stack and its configuration | `--services` |
 | `favicon_mmh3` | Shodan-compatible hash of the web interface's favicon | `http.PORT.favicon_mmh3`, see below |
 | `ot_firmware` | Industrial vendor, product and firmware version (derived from `services` when `research groups` runs) | `--ot` |
 
-**JA4X.** The three parts are the first 12 hex digits of the SHA-256 of the comma-separated hex of the object identifiers of the issuer's name attributes, of the subject's name attributes and of the extensions, in certificate order (`000000000000` for an empty list). It was implemented from the published description, and then compared on 2026-11-20 with the JA4X values in FoxIO's own test data (github.com/FoxIO-LLC/ja4, commit `7388fa0dd43f43ba63eabf36b0867b4920f2ca52`, `wireshark/test/testdata`): the 60 certificates in 11 of its captures, extracted as DER with `tshark` 4.6.10 and run through `pivot::ja4x`, give 60 of 60 equal JA4X values and equal raw OID lists (32 distinct values, none with an empty part). The vectors are not part of this repository: they and the captures come under the FoxIO License 1.1, which allows non-commercial use only, so they are not redistributed here. So a value can be compared with other tools' JA4X; certificates built from one template give the same value. JA4X belongs to the JA4+ methods under the FoxIO License 1.1 (see `data/README.md`).
+**JA3S.** The passive TLS server fingerprint of Salesforce (BSD-3-Clause, `github.com/salesforce/ja3`): the decimal `legacy_version`, the chosen cipher suite and the extension types of the ServerHello in the order the server sent them (`771,4866,43-51`), and the MD5 of that string. It is read from the ServerHello that TLS identification already receives; nothing extra is sent. The hash is stored as `tls.PORT.ja3s` and the string as `tls.PORT.ja3s_string`. A server answers different client hellos differently, so a JA3S is comparable between Network Scope scans (our hello is the same every time) and with other tools only for a similar client hello. It was checked against the reference implementation, see [Detection](detection.md#tls). For certificates, `spki_sha256` is the pivot; the JA4+ methods are not implemented because of their licence (see `data/README.md`).
 
 **Favicon hash.** `fingerprints favicon FILE` prints `http.favicon.hash:N`, the value Shodan indexes: MurmurHash3 (x86, 32 bit, seed 0) of the favicon's base64 text with a line break every 76 characters, as a signed number. The algorithm is checked against published MurmurHash3 test vectors and an independent Python implementation of the two steps; no real favicon with a published Shodan value is in the tests. The scanner fetches favicons only when asked: `scan --services --fast --favicon` sends one `GET /favicon.ico` to every web port that answered as HTTP(S) and stores the hash as `http.PORT.favicon_mmh3` (see [Detection](detection.md#favicon-hash---favicon)); without `--favicon` the `favicon_mmh3` kind is empty unless an import fills the `http.PORT.favicon_mmh3` identity key.
-
-**JA4H** fingerprints the headers of an HTTP *request*, which only a client sends. The scanner is the client, a device's reply has no JA4H, and no server-side variant is defined, so it is not implemented.
 
 ### `research groups`
 
@@ -142,7 +138,7 @@ network-scope-cli research groups                    # text
 network-scope-cli research groups --format json --top 50
 ```
 
-lists the devices that share a fingerprint across scans and sites: a *group* is one fingerprint value with at least two different devices. A device is its MAC address when a scan saw one, else its IP address, so a device that changed address counts once; a *site* is the target list of the scan that saw it. The `strength` says what a group means: `key` (the devices use the same private key: a vendor default key or a cloned image, so whoever holds the key can impersonate all of them), `firmware` (the same industrial vendor, product and firmware version) or `software` (likely the same TLS or SSH stack, certificate template or web interface: evidence, not proof). Keys come first, then groups by size. `--top N` bounds how many fingerprints are examined (default 200); at most 50 members are listed per group, the count is always complete. The same grouping is one SQL query over `fingerprints` and `services`, which you can adapt (see `core/src/research/groups.rs`).
+lists the devices that share a fingerprint across scans and sites: a *group* is one fingerprint value with at least two different devices. A device is its MAC address when a scan saw one, else its IP address, so a device that changed address counts once; a *site* is the target list of the scan that saw it. The `strength` says what a group means: `key` (the devices use the same private key: a vendor default key or a cloned image, so whoever holds the key can impersonate all of them), `firmware` (the same industrial vendor, product and firmware version) or `software` (likely the same TLS or SSH stack or web interface: evidence, not proof). Keys come first, then groups by size. `--top N` bounds how many fingerprints are examined (default 200); at most 50 members are listed per group, the count is always complete. The same grouping is one SQL query over `fingerprints` and `services`, which you can adapt (see `core/src/research/groups.rs`).
 
 ## Existing databases: `research rebuild`
 

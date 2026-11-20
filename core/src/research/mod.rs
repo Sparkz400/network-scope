@@ -193,17 +193,12 @@ pub const TABLES: &[Table] = &[
             ),
             ("key", "TEXT NOT NULL", "Key type and size (`RSA 2048`)."),
             ("signature", "TEXT NOT NULL", "Signature algorithm."),
-            (
-                "ja4x",
-                "TEXT NOT NULL",
-                "JA4X certificate fingerprint, empty when not computed.",
-            ),
         ],
-        indexes: &["spki_sha256", "scan_id", "ip, scan_time", "ja4x"],
+        indexes: &["spki_sha256", "scan_id", "ip, scan_time"],
     },
     Table {
         name: "fingerprints",
-        doc: "Fingerprints that identify software, keys or devices across hosts and scans, one row each. `kind` is one of `spki_sha256`, `ja4s`, `jarm`, `ja4x`, `hassh`, `favicon_mmh3`; new kinds are added without changing the columns.",
+        doc: "Fingerprints that identify software, keys or devices across hosts and scans, one row each. `kind` is one of `spki_sha256`, `ja3s`, `jarm`, `hassh`, `favicon_mmh3`; new kinds are added without changing the columns.",
         columns: &[
             ("ip", "TEXT NOT NULL", "Host address."),
             (
@@ -338,9 +333,8 @@ fn port_of(key: &str, family: &str, field: &str) -> Option<u16> {
 /// Fingerprint kinds taken from identity keys: `(family, field, kind)`.
 const FINGERPRINT_KEYS: &[(&str, &str, &str)] = &[
     ("tls", "spki_sha256", "spki_sha256"),
-    ("tls", "ja4s", "ja4s"),
+    ("tls", "ja3s", "ja3s"),
     ("tls", "jarm", "jarm"),
-    ("tls", "ja4x", "ja4x"),
     ("ssh", "hassh", "hassh"),
     ("http", "favicon_mmh3", "favicon_mmh3"),
 ];
@@ -365,7 +359,7 @@ pub(crate) fn insert_scan(
         "INSERT INTO services(scan_id,scan_time,ip,port,protocol,name,product,version,cpe,banner,http_server,http_title,attributes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
     )?;
     let mut cert = c.prepare_cached(
-        "INSERT INTO certificates(scan_id,scan_time,ip,port,spki_sha256,subject,issuer,san,not_before,not_after,self_signed,key,signature,ja4x) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        "INSERT INTO certificates(scan_id,scan_time,ip,port,spki_sha256,subject,issuer,san,not_before,not_after,self_signed,key,signature) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
     )?;
     let mut fingerprint = c.prepare_cached(
         "INSERT INTO fingerprints(scan_id,scan_time,ip,port,kind,value) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -465,7 +459,6 @@ pub(crate) fn insert_scan(
                 self_signed,
                 t("key"),
                 t("signature"),
-                t("ja4x"),
             ])?;
         }
         for (key, value) in id {
@@ -774,7 +767,7 @@ mod tests {
                 ("svc.443", "https nginx 1.2"),
                 ("tls.443.subject", "CN=plc.local"),
                 ("tls.443.spki_sha256", key),
-                ("tls.443.ja4s", "t130200_1301_abc"),
+                ("tls.443.ja3s", "0123456789abcdef0123456789abcdef"),
                 ("tls.443.self_signed", "true"),
             ],
         )
@@ -890,10 +883,10 @@ mod tests {
             "tcp ports plus the S7 identification"
         );
         assert!(count("findings") >= 1, "telnet is a finding");
-        // fingerprints carry the key, the JA4S and the HASSH of the hosts
+        // fingerprints carry the key, the JA3S and the HASSH of the hosts
         let kinds = query(&path, "SELECT kind FROM fingerprints ORDER BY kind", 10).unwrap();
         let kinds: Vec<&str> = kinds.rows.iter().map(|r| r[0].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["hassh", "ja4s", "spki_sha256"]);
+        assert_eq!(kinds, ["hassh", "ja3s", "spki_sha256"]);
         // the OT identification is a service row with the firmware as its version
         let s7 = query(
             &path,

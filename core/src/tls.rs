@@ -290,8 +290,6 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
         "spki_sha256".into(),
         crate::fingerprint::hex(&crate::fingerprint::sha256(cert.public_key().raw)),
     );
-    // JA4X (see `pivot`: compared with FoxIO test data): groups certificates built from the same template.
-    f.insert("ja4x".into(), crate::pivot::ja4x(&cert));
     Ok(f)
 }
 
@@ -453,8 +451,8 @@ pub enum Reply {
         version: u16,
         cipher: u16,
         cert: Option<Vec<u8>>,
-        /// JA4S of the ServerHello.
-        ja4s: String,
+        /// JA3S string of the ServerHello (see [`crate::fingerprint::ja3s_string`]).
+        ja3s: String,
     },
     Alert(u8),
     Other,
@@ -478,7 +476,7 @@ pub fn parse_flight(data: &[u8]) -> Reply {
         }
         i += 5 + len;
     }
-    let (mut version, mut cipher, mut cert, mut ja4s) = (None, None, None, String::new());
+    let (mut version, mut cipher, mut cert, mut ja3s) = (None, None, None, String::new());
     let mut j = 0;
     while let Some(head) = handshake.get(j..j + 4) {
         let len = (usize::from(head[1]) << 16) | (usize::from(head[2]) << 8) | usize::from(head[3]);
@@ -491,7 +489,7 @@ pub fn parse_flight(data: &[u8]) -> Reply {
                     cipher = Some(u16::from_be_bytes([c[0], c[1]]));
                 }
                 if let Some(h) = crate::fingerprint::parse_server_hello(body) {
-                    ja4s = crate::fingerprint::ja4s(&h);
+                    ja3s = crate::fingerprint::ja3s_string(&h);
                 }
             }
             11 if body.len() >= 6 => {
@@ -509,7 +507,7 @@ pub fn parse_flight(data: &[u8]) -> Reply {
             version,
             cipher,
             cert,
-            ja4s,
+            ja3s,
         },
         _ => Reply::Other,
     }
@@ -738,7 +736,7 @@ async fn hello13(ip: IpAddr, port: u16, suites: &[u16], limit: Duration) -> Firs
 /// Which TLS 1.3 suites does the server accept? One hello per round, each offering the suites
 /// not yet chosen, until the server refuses or `rounds` (at most 6) is spent. A
 /// HelloRetryRequest names the chosen suite as well and counts as acceptance. The first hello
-/// always offers all five suites, so its ServerHello gives a comparable JA4S.
+/// always offers all five suites, so its ServerHello gives a comparable JA3S.
 pub async fn enumerate13(
     ip: IpAddr,
     port: u16,
@@ -748,7 +746,7 @@ pub async fn enumerate13(
 ) -> (Vec<u16>, bool, Option<String>) {
     let mut offered: Vec<u16> = TLS13_SUITES.iter().map(|s| s.0).collect();
     let mut chosen = vec![];
-    let mut ja4s = None;
+    let mut ja3s = None;
     let mut budget = rounds.min(6);
     let mut exhausted = false;
     while budget > 0 && !exhausted {
@@ -760,7 +758,7 @@ pub async fn enumerate13(
                 if h.selected_version == Some(0x0304) && offered.contains(&h.cipher) =>
             {
                 if chosen.is_empty() && !h.retry {
-                    ja4s = Some(crate::fingerprint::ja4s(&h));
+                    ja3s = Some(crate::fingerprint::ja3s_string(&h));
                 }
                 chosen.push(h.cipher);
                 offered.retain(|c| *c != h.cipher);
@@ -769,7 +767,7 @@ pub async fn enumerate13(
             _ => exhausted = true,
         }
     }
-    (chosen, !exhausted, ja4s)
+    (chosen, !exhausted, ja3s)
 }
 
 fn suite13_name(id: u16) -> (&'static str, Option<&'static str>) {
@@ -785,8 +783,8 @@ pub struct Support {
     pub cert: Option<Vec<u8>>,
     /// Versions whose suite list is incomplete because the round budget ran out.
     pub truncated: Vec<u16>,
-    /// JA4S of the first full-offer hello the server accepted (highest version first).
-    pub ja4s: Option<String>,
+    /// JA3S string of the first full-offer hello the server accepted (highest version first).
+    pub ja3s: Option<String>,
     /// TLS 1.3 suites in selection order (filled by `enumerate13`).
     pub tls13: Vec<u16>,
     pub tls13_truncated: bool,
@@ -846,8 +844,8 @@ pub async fn enumerate(
                         version: v,
                         cipher,
                         cert,
-                        ja4s,
-                    }) if v == version && suites.contains(&cipher) => Some((cipher, cert, ja4s)),
+                        ja3s,
+                    }) if v == version && suites.contains(&cipher) => Some((cipher, cert, ja3s)),
                     _ => None,
                 }
             }
@@ -856,11 +854,11 @@ pub async fn enumerate(
             break;
         }
         budget -= 1;
-        let Some((first, cert, ja4s)) = ask(offered.clone()).await else {
+        let Some((first, cert, ja3s)) = ask(offered.clone()).await else {
             continue;
         };
-        if support.ja4s.is_none() && !ja4s.is_empty() {
-            support.ja4s = Some(ja4s);
+        if support.ja3s.is_none() && !ja3s.is_empty() {
+            support.ja3s = Some(ja3s);
         }
         chosen.push(first);
         offered.retain(|c| *c != first);
@@ -982,8 +980,9 @@ pub fn summarize(support: &Support, negotiated: Option<&str>) -> Fields {
         f.insert("suites_truncated".into(), "true".into());
         f.insert("suites_truncated_versions".into(), truncated.join(", "));
     }
-    if let Some(j) = &support.ja4s {
-        f.insert("ja4s".into(), j.clone());
+    if let Some(j) = &support.ja3s {
+        f.insert("ja3s".into(), crate::fingerprint::ja3s_hash(j));
+        f.insert("ja3s_string".into(), j.clone());
     }
     f
 }
@@ -1022,17 +1021,17 @@ pub async fn inspect_after(
 ) -> Result<Fields, String> {
     let mut support = enumerate(ip, port, limit, rounds, gate).await;
     // TLS 1.3 only when the rustls handshake negotiated it: 1.2-only and legacy servers get
-    // no extra connection. Its full-offer ServerHello gives the JA4S (preferred over 1.2's).
+    // no extra connection. Its full-offer ServerHello gives the JA3S (preferred over 1.2's).
     // Safe Mode skips these extra hellos; the negotiated version is still reported.
     let modern = handshake
         .as_ref()
         .is_ok_and(|f| f.get("negotiated").map(String::as_str) == Some("TLS1.3"));
     if modern && !gate.is_safe() {
-        let (suites, truncated, ja4s) = enumerate13(ip, port, limit, rounds, gate).await;
+        let (suites, truncated, ja3s) = enumerate13(ip, port, limit, rounds, gate).await;
         support.tls13 = suites;
         support.tls13_truncated = truncated;
-        if ja4s.is_some() {
-            support.ja4s = ja4s;
+        if ja3s.is_some() {
+            support.ja3s = ja3s;
         }
     }
     let mut fields = match handshake {
@@ -1127,14 +1126,16 @@ mod tests {
             version,
             cipher,
             cert,
-            ja4s,
+            ja3s,
         } = parse_flight(&flight)
         else {
             panic!("not accepted");
         };
         assert_eq!((version, cipher), (0x0303, 0xC02F));
         assert_eq!(cert, Some(vec![1, 2, 3, 4]));
-        assert!(ja4s.starts_with("t120000_c02f_"), "{ja4s}");
+        // legacy_version 771, TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (0xC02F = 49199); the test
+        // flight's ServerHello has no extensions, so the last field is empty.
+        assert_eq!(ja3s, "771,49199,");
         assert!(has_done(&flight));
         // The same flight split mid-message across two records still parses.
         let split = server_flight(0x0301, 0x002F, Some(&[9; 300]), true);
@@ -1230,9 +1231,14 @@ mod tests {
                 .is_some_and(|v| v.contains("TLS1.3")),
             "{fields:?}"
         );
-        // JA4S of the full-offer TLS 1.3 hello: version 13, cipher 1301.
-        assert!(fields["ja4s"].starts_with("t130"), "{fields:?}");
-        assert!(fields["ja4s"].contains("00_1301_"), "{fields:?}");
+        // JA3S of the full-offer TLS 1.3 hello: legacy_version 771, TLS_AES_128_GCM_SHA256
+        // (0x1301 = 4865); the string and its MD5 are both stored.
+        assert!(fields["ja3s_string"].starts_with("771,4865,"), "{fields:?}");
+        assert_eq!(
+            fields["ja3s"],
+            crate::fingerprint::ja3s_hash(&fields["ja3s_string"]),
+            "{fields:?}"
+        );
     }
 
     #[test]
@@ -1414,54 +1420,6 @@ mod tests {
         let params = rcgen::CertificateParams::new(vec!["a.local".to_string()]).unwrap();
         let c = describe_cert(params.self_signed(&other).unwrap().der()).unwrap();
         assert_ne!(a["spki_sha256"], c["spki_sha256"]);
-    }
-
-    /// JA4X (see `pivot`) depends on the shape of the certificate, not on its key, serial or
-    /// validity: two certificates built from one template share it.
-    #[test]
-    fn ja4x_follows_the_certificate_template() {
-        let build = |org: bool, sans: &[&str], ca: bool| {
-            let key = rcgen::KeyPair::generate().unwrap();
-            let mut params = rcgen::CertificateParams::new(
-                sans.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-            )
-            .unwrap();
-            params
-                .distinguished_name
-                .push(rcgen::DnType::CommonName, "plc.local");
-            if org {
-                params
-                    .distinguished_name
-                    .push(rcgen::DnType::OrganizationName, "Acme");
-            }
-            if ca {
-                params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-            }
-            describe_cert(params.self_signed(&key).unwrap().der()).unwrap()["ja4x"].clone()
-        };
-        let base = build(true, &["a.local"], false);
-        let parts: Vec<&str> = base.split('_').collect();
-        assert_eq!(parts.len(), 3);
-        assert!(
-            parts
-                .iter()
-                .all(|p| p.len() == 12 && p.bytes().all(|b| b.is_ascii_hexdigit()))
-        );
-        assert_eq!(
-            parts[0], parts[1],
-            "a self-signed certificate: issuer and subject are alike"
-        );
-        // sha256("550403,55040a")[..12]: common name (2.5.4.3), then organization (2.5.4.10)
-        assert_eq!(parts[0], "711618dec96d");
-        // a new key, name and serial do not change it: the same template
-        assert_eq!(build(true, &["b.local"], false), base);
-        // another set of name fields, or other extensions, do
-        assert_ne!(build(false, &["a.local"], false), base);
-        assert_ne!(build(true, &["a.local"], true), base);
-        assert_ne!(
-            build(true, &[], false).split('_').nth(2),
-            base.split('_').nth(2)
-        );
     }
 
     #[test]
@@ -1690,10 +1648,11 @@ mod tests {
         let limit = Duration::from_secs(2);
         static PREFS: &[u16] = &[0x1302, 0x1303, 0x1301];
         let (port, hellos) = tls13_server(PREFS, false).await;
-        let (suites, truncated, ja4s) = enumerate13(ip, port, limit, 6, &Gate::unlimited()).await;
+        let (suites, truncated, ja3s) = enumerate13(ip, port, limit, 6, &Gate::unlimited()).await;
         assert_eq!(suites, PREFS);
         assert!(!truncated);
-        assert!(ja4s.unwrap().starts_with("t130200_1302_"));
+        // legacy_version 771 and the first chosen suite, 0x1302 = 4866.
+        assert!(ja3s.unwrap().starts_with("771,4866,"));
         assert_eq!(
             hellos.load(std::sync::atomic::Ordering::SeqCst),
             4,
@@ -1704,11 +1663,11 @@ mod tests {
         let (suites, truncated, _) = enumerate13(ip, port, limit, 2, &Gate::unlimited()).await;
         assert_eq!((suites.as_slice(), truncated), (&PREFS[..2], true));
         assert_eq!(hellos.load(std::sync::atomic::Ordering::SeqCst), 2);
-        // HelloRetryRequest still names the suite, but gives no JA4S.
+        // HelloRetryRequest still names the suite, but gives no JA3S.
         let (port, _) = tls13_server(PREFS, true).await;
-        let (suites, _, ja4s) = enumerate13(ip, port, limit, 6, &Gate::unlimited()).await;
+        let (suites, _, ja3s) = enumerate13(ip, port, limit, 6, &Gate::unlimited()).await;
         assert_eq!(suites, PREFS);
-        assert_eq!(ja4s, None);
+        assert_eq!(ja3s, None);
         let s = Support {
             tls13: vec![0x1301, 0x1305],
             tls13_truncated: true,
@@ -1738,7 +1697,7 @@ mod tests {
 
     /// A real Windows Schannel server (.NET `SslStream`, started by `lab/schannel_server.ps1`
     /// without administrator rights and without touching a certificate store) against the TLS
-    /// inspection: the handshake, the TLS 1.3 suite enumeration and the JA4S of a TLS stack that is
+    /// inspection: the handshake, the TLS 1.3 suite enumeration and the JA3S of a TLS stack that is
     /// not rustls or OpenSSL. The expected suites are what the operating system itself lists
     /// (`Get-TlsCipherSuite`), not a list written here, so the test follows the machine's policy.
     ///
@@ -1848,15 +1807,21 @@ mod tests {
         assert_eq!(fields["cn"], "ns-schannel.invalid");
         assert_eq!(fields["self_signed"], "true");
         assert_eq!(fields["key"], "RSA 2048");
-        // The JA4S names the suite Schannel chose for the full offer; it is one of the listed ones.
-        let ja4s = &fields["ja4s"];
-        assert!(ja4s.starts_with("t13"), "{ja4s}");
-        let chosen = u16::from_str_radix(&ja4s[8..12], 16).unwrap();
+        // The JA3S names the suite Schannel chose for the full offer; it is one of the listed ones.
+        let ja3s = &fields["ja3s_string"];
+        let mut parts = ja3s.split(',');
+        assert_eq!(parts.next(), Some("771"), "{ja3s}");
+        let chosen: u16 = parts.next().unwrap().parse().unwrap();
         assert!(
             expected
                 .iter()
                 .any(|n| TLS13_SUITES.iter().any(|s| s.0 == chosen && s.1 == n)),
-            "{ja4s} {expected:?}"
+            "{ja3s} {expected:?}"
+        );
+        assert_eq!(
+            fields["ja3s"],
+            crate::fingerprint::ja3s_hash(ja3s),
+            "{fields:?}"
         );
     }
 }

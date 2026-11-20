@@ -18,7 +18,7 @@ The monitor uses the key: a device that came back with a new address and a new r
 | Randomised (locally administered) MAC | 40 | may change at any time |
 | Host name (mDNS, DHCP, NetBIOS, reverse DNS) | 30 | names get reused; names built from the IP address are ignored |
 | IP address | 15 | addresses get reassigned |
-| HASSH and JA4S of the same host | 10 | identifies the software, not the device |
+| HASSH and JA3S of the same host | 10 | identifies the software, not the device |
 
 Two records are the same device when the points of their **matching** identifiers add up to 100 or more. One strong identifier decides; weak ones only add up. A shared default certificate, a common host name or an identical SSH stack never merge two devices on their own, and a cloned image that shares an SSH key still needs a second matching identifier.
 

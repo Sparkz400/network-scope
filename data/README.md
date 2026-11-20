@@ -31,13 +31,14 @@ Original work of the Network Scope authors, under the project's MIT license. The
 
 Original work of the Network Scope authors, under the project's MIT license. The rules are hand-written version ranges that reference public CVE identifiers. The CPE vendor/product names were written from memory; on 2026-11-19 they were looked up in the NVD CPE API (one was wrong and is fixed, see [Lab and testing](../docs/src/lab-and-testing.md#cpe-names-against-the-nvd-dictionary)), and `lab/check_cpe.py` compares them with the official NVD CPE dictionary in CI. See [Findings and CVE hints](../docs/src/findings-and-cves.md).
 
-## JA4X and JA4H
+## JA4+ is not implemented; JA3S, JARM, HASSH and key hashes are
 
-JA4X (`tls.<port>.ja4x`, `core/src/pivot.rs`) is also part of JA4+ and under the FoxIO License 1.1, like JA4S (see below); the same open question applies. It was implemented from the published description (the SHA-256 of the hex OIDs of the issuer, the subject and the extensions, 12 hex digits each) without FoxIO code or test files. On 2026-11-20 it was compared, once and outside the repository, with the JA4X values and raw OID lists in FoxIO's own test data (github.com/FoxIO-LLC/ja4, commit `7388fa0dd43f43ba63eabf36b0867b4920f2ca52`, `wireshark/test/testdata`; the DER certificates were extracted from the 11 captures with `tshark` 4.6.10): 60 of 60 equal. Those vectors and captures are under the FoxIO License 1.1 (non-commercial use only), so they are **not** part of this repository. JA4H fingerprints an HTTP request, which a scanner sends but a device does not, so it is not implemented. The MurmurHash3 and favicon hash code (`pivot.rs`) is written from the public-domain algorithm and checked with published test vectors.
+The JA4+ fingerprints other than JA4 itself (JA4S, JA4X, JA4H and the rest) are under the **FoxIO License 1.1**, which does not permit monetization, and FoxIO describes them as patent pending. That does not fit the MIT licence of Network Scope, so none of them is implemented, and no FoxIO code, test data or example values are in the repository (an earlier version had JA4S and JA4X; they were removed on 2026-11-20). What is used instead:
 
-## JA4S test values
-
-The tests in `core/src/fingerprint.rs` contain three JA4S example fingerprints (`t120300_c030_5e2616a54c73`, `t130200_1301_a56c5b993250`, `t130200_1302_a56c5b993250`) and one pair from the python test data (`t130200_1301_234ea6891581` for the extensions `0033,002b`), all published by FoxIO in the JA4+ repository (github.com/FoxIO-LLC/ja4, README examples table and `python/test/testdata`). Only these fingerprint strings are used, as published facts for checking our implementation; no code or test files were copied. JA4S is part of JA4+, which FoxIO licenses under the FoxIO License 1.1 (permissive for internal use, not for monetization) and describes as patent pending; Network Scope is MIT-licensed. Whether shipping a JA4S implementation is acceptable is an open question for the maintainers.
+- **TLS server stack:** JA3S (Salesforce, BSD-3-Clause; `tls.<port>.ja3s` and `ja3s_string`, `core/src/fingerprint.rs`), computed passively from the ServerHello, and JARM (Salesforce, BSD-3-Clause; `--jarm`). Only the published algorithm is used; the test vectors in `core/src/fingerprint/ja3s_vectors.rs` are ServerHellos of local servers that were generated for this project and confirmed with the reference `ja3s.py` (see [Lab and testing](../docs/src/lab-and-testing.md#ja3s)).
+- **SSH server stack:** HASSHServer (Salesforce, BSD-3-Clause).
+- **Certificates:** the SHA-256 of the public key (`tls.<port>.spki_sha256`).
+- **Web interface:** the Shodan-compatible favicon hash. The MurmurHash3 and favicon hash code (`core/src/pivot.rs`) is written from the public-domain algorithm and checked with published test vectors.
 
 ## compliance.json
 
