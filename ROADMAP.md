@@ -17,7 +17,7 @@ End goals for Network Scope after 0.5.0. Each goal has a "done when" test where 
 7. Passive mDNS/SSDP/LLDP/DHCP discovery (C19)
 8. CISA KEV/EPSS ranking (D25)
 9. Explain every conclusion (A9)
-10. Library crate and split the largest files (G50, J61) *Status: `lab/speed_compare.py`, the `speed` workflow (nmap 7.94 and RustScan 2.4.1 on Ubuntu) and `docs/src/speed.md`; only Network Scope is measured so far (Windows loopback); the nmap/RustScan table and a real-LAN row are still to come. Advanced IP Scanner has no CLI and is not measured.*
+10. Library crate and split the largest files (G50, J61) *Status: `lab/speed_compare.py`, the `speed` workflow (nmap 7.94 and RustScan 2.4.1 on Ubuntu) and `docs/src/speed.md`; only Network Scope is measured so far (Windows loopback, and a home /24 with the top 100 ports: 28 s median with `--fast`); the nmap/RustScan table comes from the first `speed` run. Advanced IP Scanner has no CLI and is not measured.*
 
 Items 1–4 are what back a claim of "fastest and most accurate". The rest make it the most useful.
 
