@@ -136,7 +136,8 @@ mod tests {
         top(&[]).unwrap();
         let list: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-        assert_eq!(list.as_array().unwrap().len(), 2);
+        assert_eq!(list["schema"], "network-scope/findings/v1");
+        assert_eq!(list["findings"].as_array().unwrap().len(), 2);
         // Errors: a bad count and a bad format.
         for bad in ["0", "x", "5000"] {
             assert!(top(&["--top", bad]).is_err(), "{bad}");
