@@ -478,7 +478,11 @@ mod tests {
     fn install_refuses_public_targets_without_the_consent_flags() {
         let db =
             std::env::temp_dir().join(format!("ns-service-scope-{}.sqlite", std::process::id()));
-        for scope in [vec![], vec!["--scope", "10.0.0.0/8"]] {
+        // Always with an explicit scope: the default scope file of the developer must not matter.
+        for scope in [
+            vec!["--scope", "192.168.0.0/16"],
+            vec!["--scope", "10.0.0.0/8"],
+        ] {
             let mut a = vec![
                 "service",
                 "install",
