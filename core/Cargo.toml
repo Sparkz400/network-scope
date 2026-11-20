@@ -12,6 +12,7 @@ categories = ["network-programming"]
 
 # The engine embeds `../data/*` and the tests use `../tests/fixtures`, so this crate builds from
 # the repository checkout (path or git dependency); it is not published on its own.
+publish = false
 [lib]
 path = "src/lib.rs"
 doctest = true

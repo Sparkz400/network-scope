@@ -30,7 +30,7 @@ Some findings carry an optional `reference`: a link to official documentation on
 
 **CVE entries are version-based hints only.** Distributions backport fixes without changing the version string, so confirm with the vendor advisory or an authenticated check. Network Scope is not a vulnerability scanner.
 
-The rules live in [`data/cves.json`](https://github.com/Sparkz400/network-scope/blob/main/data/cves.json) (built in). A user file merges like `probes.json`: `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`), or `--cves FILE` on any command, or the **CVE rules file** field in the GUI Settings (with a Browse button; the path is kept with the preferences and, like `--cves FILE`, replaces the default user file). A rule or CPE entry with the same `id` replaces the built-in one. In the GUI the file is loaded at start-up and when the field is changed; if it cannot be read or parsed, the error is shown under the field and the previous rules stay active.
+The rules live in [`data/cves.json`](https://github.com/Sparkz400/network-scope/blob/main/data/cves.json) (built in). A user file merges like `probes.json`: `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`, else `~/.config/NetworkScope/cves.json`), or `--cves FILE` on any command, or the **CVE rules file** field in the GUI Settings (with a Browse button; the path is kept with the preferences and, like `--cves FILE`, replaces the default user file). A rule or CPE entry with the same `id` replaces the built-in one. In the GUI the file is loaded at start-up and when the field is changed; if it cannot be read or parsed, the error is shown under the field and the previous rules stay active.
 
 Rule fields:
 
@@ -65,7 +65,7 @@ network-scope-cli feeds status
 
 Either option may be given alone; the part not imported keeps its previous content. Repeat the import to refresh (EPSS changes daily, KEV several times a week). A file that cannot be parsed is rejected and the cache stays as it was. Gzip is not read directly because the project avoids extra dependencies; the importer detects a `.gz` file and says so.
 
-**Cache.** The import writes `feeds.json` next to the user `cves.json`: `%LOCALAPPDATA%/NetworkScope/feeds.json`, or `$XDG_CONFIG_HOME/NetworkScope/feeds.json`; `--feeds FILE` selects another file for any command. It is a global lookup table, not part of a scan, so it is a file and not part of the SQLite inventory (`--db` is per inventory and would otherwise need one copy per database). It holds the KEV entries (date added, ransomware use) and about 300,000 EPSS scores kept with five decimals, roughly 10 MB. Saved scans are not modified: the data is looked up when findings are computed, so older scans also show current feed data.
+**Cache.** The import writes `feeds.json` next to the user `cves.json`: `%LOCALAPPDATA%/NetworkScope/feeds.json`, or `$XDG_CONFIG_HOME/NetworkScope/feeds.json`, else `~/.config/NetworkScope/feeds.json`; `--feeds FILE` selects another file for any command. It is a global lookup table, not part of a scan, so it is a file and not part of the SQLite inventory (`--db` is per inventory and would otherwise need one copy per database). It holds the KEV entries (date added, ransomware use) and about 300,000 EPSS scores kept with five decimals, roughly 10 MB. Saved scans are not modified: the data is looked up when findings are computed, so older scans also show current feed data.
 
 **What changes.**
 

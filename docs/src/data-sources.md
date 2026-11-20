@@ -18,7 +18,7 @@ CISA KEV and FIRST EPSS are not embedded. You download them and import them with
 `probes.json` and `cves.json` can be extended without rebuilding:
 
 - `%LOCALAPPDATA%/NetworkScope/probes.json` or `--probes FILE`: entries with the same `name` replace built-in probes, new names are added. See [Detection](detection.md#extending-the-probe-database).
-- `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`) or `--cves FILE`: entries with the same `id` replace built-in rules. See [Findings and CVE hints](findings-and-cves.md).
+- `%LOCALAPPDATA%/NetworkScope/cves.json` (or `$XDG_CONFIG_HOME/NetworkScope/cves.json`, else `~/.config/NetworkScope/cves.json`) or `--cves FILE`: entries with the same `id` replace built-in rules. See [Findings and CVE hints](findings-and-cves.md).
 
 ## Limits of the data
 

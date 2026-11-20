@@ -258,9 +258,7 @@ impl ProbeDb {
         if !explicit.is_empty() {
             return Self::with_user_file(Path::new(explicit));
         }
-        let default = std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
-            .map(|p| Path::new(&p).join("NetworkScope").join("probes.json"));
+        let default = crate::appdir::file("probes.json");
         match default {
             Some(p) if p.exists() => Self::with_user_file(&p),
             _ => Ok(Self::builtin()),

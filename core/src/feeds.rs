@@ -375,12 +375,10 @@ impl Feeds {
     }
 }
 
-/// `%LOCALAPPDATA%/NetworkScope/feeds.json` (or under `XDG_CONFIG_HOME`), next to the user
+/// `feeds.json` in the per-user configuration folder (see `appdir`), next to the user
 /// `cves.json`.
 pub fn default_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
-        .map(|p| Path::new(&p).join("NetworkScope").join("feeds.json"))
+    crate::appdir::file("feeds.json")
 }
 
 /// Result of an import, for the command's output.

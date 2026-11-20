@@ -190,12 +190,10 @@ fn within<T: Ord + Copy>(ranges: &[(T, T)], v: T) -> bool {
     ranges.get(i).is_some_and(|r| r.0 <= v)
 }
 
-/// `%LOCALAPPDATA%/NetworkScope/scope.txt` (or under `XDG_CONFIG_HOME`), next to the user
+/// `scope.txt` in the per-user configuration folder (see `appdir`), next to the user
 /// `cves.json` and `feeds.json`.
 pub fn default_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
-        .map(|p| Path::new(&p).join("NetworkScope").join("scope.txt"))
+    crate::appdir::file("scope.txt")
 }
 
 /// The declared scope: the explicit text (`--scope`), else the file at `file` when it exists.

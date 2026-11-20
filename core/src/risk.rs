@@ -423,9 +423,7 @@ impl CveDb {
         if let Some(p) = explicit {
             return Self::with_user_file(p);
         }
-        let default = std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
-            .map(|p| Path::new(&p).join("NetworkScope").join("cves.json"));
+        let default = crate::appdir::file("cves.json");
         match default {
             Some(p) if p.exists() => Self::with_user_file(&p),
             _ => Ok(Self::builtin()),

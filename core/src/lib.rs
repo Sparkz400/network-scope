@@ -107,6 +107,7 @@
 //! internal.
 //! Network Scope engine.
 pub mod alertscript;
+pub mod appdir;
 pub(crate) mod arp;
 pub mod backoff;
 pub mod baseline;
