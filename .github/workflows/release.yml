@@ -155,9 +155,6 @@ jobs:
       attestations: write
     outputs:
       version: ${{ steps.checksums.outputs.version }}
-      # base64 of `sha256sum` over the release files (not SHA256SUMS or the .sigstore.json),
-      # the subjects of the SLSA provenance below.
-      hashes: ${{ steps.checksums.outputs.hashes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -174,7 +171,6 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          echo "hashes=$(base64 -w0 SHA256SUMS)" >> "$GITHUB_OUTPUT"
 
       # Signed SLSA build provenance for every release file. Verify a download with:
       #   gh attestation verify network-scope-<version>-windows-x64.zip --repo Sparkz400/network-scope
@@ -197,10 +193,16 @@ jobs:
 
       # The same signed provenance as a release file, for offline verification
       # (`gh attestation verify <file> --bundle <this file> --repo Sparkz400/network-scope`).
+      # Attached under two names with identical content: .sigstore.json (the name the gh CLI
+      # documentation uses) and .intoto.jsonl (the in-toto provenance name that tools such as
+      # OpenSSF Scorecard look for). The bundle is a Sigstore bundle whose DSSE payload is an
+      # in-toto statement with the SLSA provenance predicate.
       - name: Attach the provenance bundle
         env:
           BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
-        run: cp "$BUNDLE" "dist/network-scope-${GITHUB_REF_NAME#v}.sigstore.json"
+        run: |
+          cp "$BUNDLE" "dist/network-scope-${GITHUB_REF_NAME#v}.sigstore.json"
+          cp "$BUNDLE" "dist/network-scope-${GITHUB_REF_NAME#v}.intoto.jsonl"
 
       # The SBOM attestation bundle, for `gh attestation verify ... --bundle <this file>`.
       - name: Attach the SBOM attestation bundle
@@ -229,30 +231,6 @@ jobs:
           generate_release_notes: true
           files: dist/*
           fail_on_unmatched_files: true
-
-  # SLSA level 3 provenance for the release files from slsa-framework's isolated generator,
-  # uploaded to the release published above as network-scope-<version>.intoto.jsonl.
-  # Verify with slsa-verifier (see SECURITY.md). The generator must be referenced by its release
-  # tag (`@vX.Y.Z`), not a commit SHA: it verifies its own builder identity from the ref.
-  # It runs after `release`, so the release (name, notes, files) already exists and the
-  # generator only adds the .intoto.jsonl asset; it leaves the draft state of an existing
-  # release unchanged.
-  provenance:
-    needs: release
-    # Referenced by release tag, not commit hash: slsa-github-generator verifies its builder
-    # identity from the tag and rejects hash refs. This is the one unpinned reference: CodeQL
-    # actions/unpinned-tag is dismissed for this line, and Scorecard Pinned-Dependencies counts it
-    # (9 instead of 10) in exchange for SLSA provenance. Dependabot keeps the tag current.
-    permissions:
-      actions: read # detection of the GitHub Actions environment
-      id-token: write # provenance signing
-      contents: write # upload to the release
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
-    with:
-      base64-subjects: ${{ needs.release.outputs.hashes }}
-      upload-assets: true
-      upload-tag-name: ${{ github.ref_name }}
-      provenance-name: network-scope-${{ needs.release.outputs.version }}.intoto.jsonl
 
   # Container image of the CLI on GitHub Container Registry, pushed only after the release was
   # published (tag/Cargo.toml check and CHANGELOG section passed), so :latest never points at a

@@ -87,16 +87,15 @@ Build the image yourself with `docker build -t network-scope .` from the reposit
 
 ## Verifying downloads and the image
 
-Every release has three independent proofs of origin (details in [SECURITY.md](https://github.com/Sparkz400/network-scope/blob/main/SECURITY.md#verifying-releases)):
+Every release has signed proofs of origin (details in [SECURITY.md](https://github.com/Sparkz400/network-scope/blob/main/SECURITY.md#verifying-releases)):
 
 ```sh
 # GitHub artifact attestation (Sigstore-signed SLSA build provenance) for a release file
 gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope
 
-# SLSA level 3 provenance from slsa-github-generator (network-scope-<version>.intoto.jsonl)
-slsa-verifier verify-artifact network-scope-0.5.1-linux-x86_64.tar.gz \
-  --provenance-path network-scope-0.5.1.intoto.jsonl \
-  --source-uri github.com/Sparkz400/network-scope --source-tag v0.5.1
+# The same check offline, with the provenance bundle attached to the release
+gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope \
+  --bundle network-scope-0.5.1.intoto.jsonl
 
 # Container image
 gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
@@ -112,7 +111,7 @@ Network Scope tells you when a newer release exists; it **never downloads or rep
 network-scope-cli update check
 ```
 
-prints either `Network Scope 0.5.1 is up to date.` or `Version X is available`, followed by the release page and the commands that verify a download (the checksum with `sha256sum`, `gh attestation verify` and `slsa-verifier`, the ones above). You download the file for your platform, verify it and install it yourself.
+prints either `Network Scope 0.5.1 is up to date.` or `Version X is available`, followed by the release page and the commands that verify a download (the checksum with `sha256sum`, `gh attestation verify`, the ones above). You download the file for your platform, verify it and install it yourself.
 
 In the desktop app, **Settings > Check for updates on start** (off by default) does the same once when the program starts and shows a notice in the status bar when a newer release exists. Without that setting, and without running the command, the program never contacts GitHub for this.
 

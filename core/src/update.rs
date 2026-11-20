@@ -1,7 +1,7 @@
 //! Opt-in update check (roadmap I59). It asks GitHub which release is the latest and says whether
 //! that is newer than the running version. **It only notifies.** It never downloads a file, never
 //! replaces the program and never runs anything it read; the user gets the release page and the
-//! commands that verify a download (checksum, `gh attestation verify`, `slsa-verifier`), and does
+//! commands that verify a download (checksum, `gh attestation verify`), and does
 //! the rest by hand.
 //!
 //! - **Nothing runs unless asked**: `network-scope-cli update check`, or the desktop setting
@@ -254,7 +254,6 @@ pub fn compare(current: &str, latest: Release) -> Result<Outcome, String> {
 /// files and commands are the ones of SECURITY.md and docs/src/supply-chain.md.
 pub fn verification_text(release: &Release) -> String {
     let v = release.version_text();
-    let tag = &release.tag;
     format!(
         "Network Scope never downloads or installs updates. To update, download the file for\n\
          your platform and SHA256SUMS from the release page, and verify it before you run it:\n\
@@ -265,10 +264,9 @@ pub fn verification_text(release: &Release) -> String {
          \x20 # signed build provenance (GitHub artifact attestation)\n\
          \x20 gh attestation verify network-scope-{v}-linux-x86_64.tar.gz --repo {REPO}\n\
          \n\
-         \x20 # SLSA level 3 provenance, with network-scope-{v}.intoto.jsonl from the release\n\
-         \x20 slsa-verifier verify-artifact network-scope-{v}-linux-x86_64.tar.gz \\\n\
-         \x20   --provenance-path network-scope-{v}.intoto.jsonl \\\n\
-         \x20   --source-uri github.com/{REPO} --source-tag {tag}\n\
+         \x20 # the same check offline, with network-scope-{v}.intoto.jsonl from the release\n\
+         \x20 gh attestation verify network-scope-{v}-linux-x86_64.tar.gz --repo {REPO} \\\n\
+         \x20   --bundle network-scope-{v}.intoto.jsonl\n\
          \n\
          The files are network-scope-{v}-windows-x64.zip, network-scope-{v}-linux-x86_64.tar.gz\n\
          and network-scope-{v}-macos-arm64.tar.gz; use the name of yours in the commands above.\n\
@@ -669,9 +667,7 @@ mod tests {
             "https://github.com/Sparkz400/network-scope/releases/tag/v0.6.0",
             "sha256sum -c --ignore-missing SHA256SUMS",
             "gh attestation verify network-scope-0.6.0-linux-x86_64.tar.gz --repo Sparkz400/network-scope",
-            "slsa-verifier verify-artifact network-scope-0.6.0-linux-x86_64.tar.gz",
-            "--provenance-path network-scope-0.6.0.intoto.jsonl",
-            "--source-uri github.com/Sparkz400/network-scope --source-tag v0.6.0",
+            "--bundle network-scope-0.6.0.intoto.jsonl",
             "network-scope-0.6.0-windows-x64.zip",
         ] {
             assert!(text.contains(want), "{want} in\n{text}");
