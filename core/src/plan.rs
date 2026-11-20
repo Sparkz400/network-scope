@@ -58,6 +58,34 @@ pub fn service_ports(ports: &[u16]) -> Vec<u16> {
 pub fn udp_ports(ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
     ports.iter().partition(|p| !service::is_ot_udp_port(**p))
 }
+/// What the IPv6 discovery (`--ipv6-discover`, `scan` only) sends once per scan: one echo per
+/// interface. `None` when it is off.
+pub fn ipv6_discovery(s: &Settings) -> Option<HostPlan> {
+    if !crate::ipv6::enabled(s) {
+        return None;
+    }
+    let mut plan = HostPlan {
+        packets: vec![],
+        notes: vec![],
+    };
+    plan.push(
+        PacketKind::Ipv6Echo,
+        crate::ipv6::DETAIL,
+        format!(
+            "ff02::1 on each selected interface (at most {})",
+            crate::ipv6::MAX_INTERFACES
+        ),
+        if s.safe {
+            "once per interface, one datagram, hop limit 1; also in Safe Mode (a single echo request per interface)"
+        } else {
+            "once per interface, one datagram, hop limit 1"
+        },
+    );
+    plan.notes
+        .push("reading the OS neighbour cache and decoding NDP in a capture send nothing".into());
+    Some(plan)
+}
+
 /// The SNMP read (`--snmp-community`, `--snmp-v3`) runs for hosts that answered something when
 /// credentials were given. Safe Mode allows it (every request is a read through the rate gate)
 /// with tighter limits.

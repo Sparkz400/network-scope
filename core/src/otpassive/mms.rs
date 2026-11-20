@@ -34,6 +34,9 @@ pub(super) type FlowKey = (IpAddr, u16, IpAddr);
 #[derive(Default)]
 pub(super) struct Flow {
     kind: Option<Iso>,
+    /// The first data TPDU decided: later data cannot change it (a continuation fragment starts
+    /// with arbitrary bytes, and `2` and `r` are ordinary characters in MMS strings).
+    decided: bool,
     /// (is a request, capture time) of the messages seen before the protocol was known.
     pending: Vec<(bool, i64)>,
 }
@@ -260,8 +263,9 @@ impl Tracker {
         }
         let flow = self.iso.flows.entry(key).or_default();
         // data decides; a connection request that looks like S7 is S7 until data says otherwise
-        if let Some(kind) = data_kind {
+        if let Some(kind) = data_kind.filter(|_| !flow.decided) {
             flow.kind = Some(kind);
+            flow.decided = true;
         } else if let Cotp::Request { s7_like: true } = unit
             && flow.kind.is_none()
         {
@@ -422,6 +426,29 @@ mod tests {
         t.feed(&frame(HMI, PLC, true, 40003, 102, &CR_MMS), 1);
         t.flush();
         assert!(t.observations().is_empty());
+    }
+
+    #[test]
+    fn the_first_data_decides_and_a_later_fragment_cannot_flip_it() {
+        let mut t = Tracker::new();
+        t.feed(&frame(HMI, PLC, true, 40000, 102, &dt(&[0xa8, 0])), 1);
+        // a continuation fragment of a long MMS message that happens to start with '2' and 'r'
+        t.feed(&frame(PLC, HMI, true, 102, 40000, &dt(&[0x32, 1, 2, 3])), 2);
+        t.feed(&frame(PLC, HMI, true, 102, 40000, &dt(&[0x72, 1, 2, 3])), 3);
+        assert!(obs(&t, "S7comm server (observed)").is_empty());
+        assert_eq!(
+            obs(&t, "IEC 61850 MMS server (observed)")[0].fields["packets"],
+            "3"
+        );
+        // and the other way round: S7 stays S7 when a later fragment starts like an MMS PDU
+        let mut t = Tracker::new();
+        t.feed(&frame(HMI, PLC, true, 40001, 102, &s7(0x04, 1)), 1);
+        t.feed(&frame(HMI, PLC, true, 40001, 102, &dt(&[0xa0, 1, 2])), 2);
+        assert!(obs(&t, "IEC 61850 MMS server (observed)").is_empty());
+        assert_eq!(
+            obs(&t, "S7comm server (observed)")[0].fields["packets"],
+            "2"
+        );
     }
 
     #[test]

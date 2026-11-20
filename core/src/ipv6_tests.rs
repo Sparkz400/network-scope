@@ -357,13 +357,16 @@ fn the_run_takes_one_token_per_interface_and_skips_our_own_addresses() {
         (sent[0].kind, sent[0].detail.as_str(), sent[0].count),
         (PacketKind::Ipv6Echo, DETAIL, 2)
     );
-    let planned = plan(&s).unwrap();
+    let planned = crate::plan::ipv6_discovery(&s).unwrap();
     assert!(
         planned
             .keys()
             .contains(&(PacketKind::Ipv6Echo, DETAIL.to_string()))
     );
-    assert!(plan(&Settings::default()).is_none(), "off unless asked for");
+    assert!(
+        crate::plan::ipv6_discovery(&Settings::default()).is_none(),
+        "off unless asked for"
+    );
 }
 
 #[test]
@@ -583,6 +586,55 @@ fn send_the_real_multicast_echo() {
     println!("responders {:?}", found.responders);
     println!("neighbors {}", found.neighbors.len());
     println!("notes {:?}", found.notes);
+}
+
+#[test]
+fn a_cache_entry_that_appears_after_the_echo_is_an_answer() {
+    let s = Settings {
+        ipv6_discover: true,
+        ..Settings::default()
+    };
+    let calls = Mutex::new(0);
+    let os = Os {
+        interfaces: &|| {
+            Ok((
+                vec![Interface {
+                    index: 3,
+                    name: "eth0".into(),
+                }],
+                vec![v6("fe80::aa")],
+            ))
+        },
+        // the ICMP API returned nothing
+        echo: &|_, _| Ok(vec![]),
+        cache: &|| {
+            let mut n = calls.lock().unwrap();
+            *n += 1;
+            let mut list = vec![neighbor("fe80::1", "02:00:00:00:00:01", State::Stale)];
+            if *n > 1 {
+                list.push(neighbor("fe80::20", "02:00:00:00:00:20", State::Stale));
+                list.push(neighbor("fe80::aa", "02:00:00:00:00:aa", State::Stale));
+            }
+            Ok(list)
+        },
+    };
+    let found = discover_with(&s, &Gate::unlimited(), &os);
+    // fe80::1 was there before, fe80::aa is ours: only fe80::20 is new
+    assert_eq!(found.responders, [(v6("fe80::20"), "eth0".to_string())]);
+    let mut hosts = vec![];
+    assert_eq!(merge(&mut hosts, &found), 1);
+    assert_eq!(hosts[0].ip.to_string(), "fe80::20");
+    // nothing was sent without an interface: the cache is not read as answers
+    let none = Os {
+        interfaces: &|| Ok((vec![], vec![])),
+        echo: &|_, _| Ok(vec![]),
+        cache: &|| Ok(vec![neighbor("fe80::1", "02:00:00:00:00:01", State::Stale)]),
+    };
+    assert!(
+        discover_with(&s, &Gate::unlimited(), &none)
+            .responders
+            .is_empty()
+    );
 }
 
 #[test]

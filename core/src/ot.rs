@@ -95,10 +95,10 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
                 102 => s7(h.ip, s.s7_rack, s.s7_slot, gate).await.map(Some),
                 4840 => opcua::discover(h.ip, gate).await.map(Some),
                 44818 => enip(h.ip, log).await.map(Some),
-                9600 => extra::fins(h.ip, log).await,
+                9600 => extra::fins(SocketAddr::new(h.ip, 9600), log).await,
                 1911 => extra::fox(h.ip, log).await.map(Some),
                 1883 => extra::mqtt(h.ip, log).await.map(Some),
-                3671 => extra::knx(h.ip, log).await,
+                3671 => extra::knx(SocketAddr::new(h.ip, 3671), log).await,
                 _ => bacnet(SocketAddr::new(h.ip, 47808), log).await,
             }
         };

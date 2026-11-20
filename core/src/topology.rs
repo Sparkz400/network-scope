@@ -280,6 +280,11 @@ fn add_lldp_links(g: &mut Graph, hosts: &[Host]) {
                     b_port,
                     source: "lldp",
                 });
+                // The same link is an edge too, so anything that draws `edges` (the network
+                // map, the layers of the HTML report) shows it; the ports stay in `links`.
+                if !g.edges.contains(&(a, b)) && !g.edges.contains(&(b, a)) {
+                    g.edges.push((a, b));
+                }
             }
         }
     }
@@ -399,7 +404,13 @@ pub fn dot(g: &Graph) -> String {
             "  n{i} [label=\"{label}\", shape={shape}, color=\"{color}\"];\n"
         ));
     }
-    for (a, b) in &g.edges {
+    // an edge that is an LLDP link is drawn once, as the dashed link below
+    let is_link = |a: usize, b: usize| {
+        g.links
+            .iter()
+            .any(|l| (l.a, l.b) == (a, b) || (l.a, l.b) == (b, a))
+    };
+    for (a, b) in g.edges.iter().filter(|(a, b)| !is_link(*a, *b)) {
         out.push_str(&format!("  n{a} -> n{b};\n"));
     }
     for l in &g.links {
@@ -522,7 +533,7 @@ mod tests {
         );
         let d = dot(&g);
         assert!(d.starts_with("digraph topology {") && d.trim_end().ends_with('}'));
-        assert_eq!(d.matches("->").count(), g.edges.len() + g.links.len());
+        assert_eq!(d.matches("->").count(), g.edges.len());
     }
 
     #[test]
@@ -586,6 +597,15 @@ mod tests {
         let g = build(&[core, dist]);
         // the pair is reported by both ends and kept once; the AP is the second link
         assert_eq!(g.links.len(), 2, "{:?}", g.links);
+        // every link is also an edge (once), for whatever draws the edges
+        for l in &g.links {
+            let n = g
+                .edges
+                .iter()
+                .filter(|e| **e == (l.a, l.b) || **e == (l.b, l.a))
+                .count();
+            assert_eq!(n, 1, "{l:?} in {:?}", g.edges);
+        }
         let label = |i: usize| g.nodes[i].label.as_str();
         let wired: Vec<(String, String, String, String)> = g
             .links
@@ -623,6 +643,11 @@ mod tests {
             "{text}"
         );
         let d = dot(&g);
+        assert_eq!(
+            d.matches("->").count(),
+            g.edges.len(),
+            "a link is drawn once, dashed"
+        );
         assert!(
             d.contains("dir=none") && d.contains("taillabel=\"Gi1/0/1\""),
             "{d}"
