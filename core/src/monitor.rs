@@ -14,7 +14,12 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::IpAddr,
     path::Path,
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, RecvTimeoutError},
+    },
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -508,6 +513,58 @@ pub struct RunConfig {
     /// `--quiet`: no hint, per-cycle summary or capture warnings on stderr (the capture
     /// warning is still raised as a `capture-incomplete` alert; delivery failures still print).
     pub quiet: bool,
+    /// Set from another thread (a service control handler, a signal handler) to end the run
+    /// cleanly: the cycle in progress is cancelled (a partial scan is saved as such), the wait
+    /// between cycles is cut short and [`run`] returns `Ok`. `None`: runs until the process ends.
+    pub stop: Option<Arc<AtomicBool>>,
+}
+impl RunConfig {
+    fn stopped(&self) -> bool {
+        self.stop
+            .as_ref()
+            .is_some_and(|s| s.load(Ordering::Relaxed))
+    }
+}
+
+/// How often a wait or a blocking receive looks at the stop flag.
+const STOP_POLL: Duration = Duration::from_millis(250);
+
+/// Sleeps for `total`, in slices so that a stop request ends it within [`STOP_POLL`]. Returns
+/// true when the run was stopped.
+fn sleep_or_stop(total: Duration, cfg: &RunConfig) -> bool {
+    let end = Instant::now() + total;
+    loop {
+        if cfg.stopped() {
+            return true;
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(left.min(STOP_POLL));
+    }
+}
+
+/// The items of `receiver` until it closes or a stop is requested (then `cancel` is set, so the
+/// producer ends too).
+fn until_stopped<'a, T>(
+    receiver: &'a Receiver<T>,
+    cfg: &'a RunConfig,
+    cancel: &'a AtomicBool,
+) -> impl Iterator<Item = T> + 'a {
+    std::iter::from_fn(move || {
+        loop {
+            if cfg.stopped() {
+                cancel.store(true, Ordering::Relaxed);
+                return None;
+            }
+            match receiver.recv_timeout(STOP_POLL) {
+                Ok(item) => return Some(item),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    })
 }
 
 fn now() -> i64 {
@@ -574,13 +631,17 @@ pub fn run(
     }
     let mut cycle = 0;
     loop {
+        if cfg.stopped() {
+            return Ok(());
+        }
         cycle += 1;
         let mut observations = vec![];
         let mut notices = vec![];
         if !cfg.interface.is_empty() {
             let listening = crate::passive::start(cfg.interface.clone(), cfg.listen_seconds, None);
             // A capture problem never ends monitoring: the cycle continues with what was seen.
-            for warning in collect_observations(&mut observations, &listening.receiver) {
+            let items = until_stopped(&listening.receiver, cfg, &listening.cancel);
+            for warning in collect_observations(&mut observations, items) {
                 if !cfg.quiet {
                     eprintln!("Cycle {cycle}: warning: {warning}");
                 }
@@ -604,7 +665,17 @@ pub fn run(
         let sparse = total > scan::MAX_HOSTS;
         let mut complete = true;
         loop {
-            match run.receiver.recv().map_err(|e| e.to_string())? {
+            let event = match run.receiver.recv_timeout(STOP_POLL) {
+                Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) => {
+                    if cfg.stopped() {
+                        run.cancel.store(true, Ordering::Relaxed);
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e.to_string()),
+            };
+            match event {
                 scan::Event::Host(h) => {
                     if h.responding || !sparse {
                         hosts.push(h)
@@ -617,7 +688,7 @@ pub fn run(
         if run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             complete = false;
         }
-        if cfg.dhcp_discover {
+        if cfg.dhcp_discover && !cfg.stopped() {
             match crate::udp::dhcp_discover(Duration::from_secs(4)) {
                 Ok(offers) => {
                     for o in offers {
@@ -704,7 +775,9 @@ pub fn run(
         if cfg.cycles != 0 && cycle >= cfg.cycles {
             return Ok(());
         }
-        std::thread::sleep(cfg.interval);
+        if sleep_or_stop(cfg.interval, cfg) {
+            return Ok(());
+        }
     }
 }
 
@@ -1510,6 +1583,102 @@ mod tests {
         p.min_severity = Severity::Critical;
         p.report_missing = false;
         assert_eq!(severity_hint(&p), None, "only with --report-missing");
+    }
+
+    fn stop_config(stop: &Arc<AtomicBool>, interval: Duration) -> RunConfig {
+        RunConfig {
+            interval,
+            cycles: 0,
+            policy: Policy::default(),
+            dhcp_discover: false,
+            interface: String::new(),
+            listen_seconds: 1,
+            quiet: true,
+            stop: Some(stop.clone()),
+        }
+    }
+
+    #[test]
+    fn a_stop_request_cuts_the_wait_short_and_a_set_flag_runs_no_cycle() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let cfg = stop_config(&stop, Duration::from_secs(3600));
+        assert!(!cfg.stopped());
+        let setter = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                stop.store(true, Ordering::Relaxed);
+            })
+        };
+        let started = Instant::now();
+        assert!(sleep_or_stop(Duration::from_secs(3600), &cfg), "stopped");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        setter.join().unwrap();
+        // Without a flag (or with it unset) the wait runs its full length.
+        let idle = Arc::new(AtomicBool::new(false));
+        let cfg = stop_config(&idle, Duration::ZERO);
+        let started = Instant::now();
+        assert!(!sleep_or_stop(Duration::from_millis(300), &cfg));
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        let none = RunConfig {
+            stop: None,
+            ..stop_config(&idle, Duration::ZERO)
+        };
+        assert!(!none.stopped());
+        // A flag that is already set: no scan starts and nothing is saved.
+        let db = temp_db("preset-stop");
+        let preset = Arc::new(AtomicBool::new(true));
+        let settings = scan::Settings {
+            ports: "1".into(),
+            tcp_only: true,
+            ..Default::default()
+        };
+        run(
+            "127.0.0.1",
+            settings,
+            &db,
+            &stop_config(&preset, Duration::from_secs(1)),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(store::list(&db).unwrap().is_empty());
+        remove_db(&db);
+    }
+
+    #[test]
+    fn stopping_between_cycles_ends_the_run_cleanly_after_the_saved_scan() {
+        let db = temp_db("stop-between");
+        let stop = Arc::new(AtomicBool::new(false));
+        // A long interval: without the stop flag this would wait for an hour.
+        let cfg = stop_config(&stop, Duration::from_secs(3600));
+        let setter = {
+            let (stop, db) = (stop.clone(), db.clone());
+            std::thread::spawn(move || {
+                // Stop once the first cycle has saved its scan (the monitor is then waiting).
+                for _ in 0..200 {
+                    if store::list(&db).is_ok_and(|l| !l.is_empty()) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                stop.store(true, Ordering::Relaxed);
+            })
+        };
+        let settings = scan::Settings {
+            ports: "1".into(),
+            tcp_only: true,
+            ..Default::default()
+        };
+        let started = Instant::now();
+        run("127.0.0.1", settings, &db, &cfg, &mut |_| {}).unwrap();
+        setter.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(60));
+        assert_eq!(
+            store::list(&db).unwrap().len(),
+            1,
+            "one cycle ran, then it stopped"
+        );
+        remove_db(&db);
     }
 
     #[test]

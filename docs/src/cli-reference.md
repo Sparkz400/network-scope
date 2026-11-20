@@ -10,6 +10,7 @@ General rules:
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
 - `--nvd FILE` selects the NVD cache (default `nvd.json` next to `feeds.json`); see [NVD import](findings-and-cves.md#nvd-import-offline).
 - `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
+- `--json-schema v1` selects the version of the JSON output format (any command). Every JSON document carries a `schema` member; see [JSON output and schemas](json-output.md).
 - `--format` and `--output FILE` select an export where a command produces one. Without `--output` the result is printed to stdout.
 
 ## Exit codes
@@ -55,6 +56,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `feeds import nvd FILE... [--nvd FILE]` | Import NVD CVE JSON 2.0 feed files (unpack `.gz` first) into the NVD cache; CPE matches become `cve` findings. No network access |
 | `feeds status [--feeds FILE] [--nvd FILE]` | Show what the feeds cache and the NVD cache hold (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
+| `service install\|uninstall\|run` | `monitor` as a Windows service, see [Service and scheduling](service-and-scheduling.md) |
+| `mcp [--db FILE] [--no-scan]` | MCP server on stdin/stdout for AI assistants, see [MCP server](mcp.md) |
 | `alerts [--db FILE]` | Alerts raised by monitor runs |
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
 | `ot-listen --interface ID --seconds N` or `ot-listen --pcap FILE [--progress] [--no-reassembly]` | Passive OT asset discovery |
@@ -137,7 +140,7 @@ Exports from `scan`, `listen`, `dcp` and `export` carry the stored scan time. De
 
 | Option | Meaning |
 | --- | --- |
-| `--format lines` (default) | JSON array of change lines |
+| `--format lines` (default) | JSON object with the change lines (`lines`) |
 | `--format json` | Structured report for CI and monitors |
 | `--format text` | Plain lines |
 | `--ignore K,K` | Extra ignored keys: exact keys, globs (`http.*.title`) or suffixes (`.server`) |
@@ -172,6 +175,8 @@ All scan options, plus:
 | `--alert-timeout S` | 5 | Per-operation alert delivery timeout (1-60) |
 | `--no-dedup` | off | Alert every cycle |
 | `--renotify-hours H` | 24 | Re-alert a persisting condition after H hours (0 = only after it resolved) |
+| `--on-alert SCRIPT` | | Run a Rhai script for every alert that fires (a `.rhai` file or `library:NAME`); see [Scripts that run on an alert](scripting.md#scripts-that-run-on-an-alert) |
+| `--on-alert-dir DIR` | `alert-scripts` next to the database | The only directory the on-alert script can write to |
 
 See [Monitoring and alerts](monitoring-alerts.md).
 

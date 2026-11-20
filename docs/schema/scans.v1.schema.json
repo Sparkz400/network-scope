@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:scans:v1",
+  "title": "Saved scans",
+  "description": "Output of `history`: the saved scans, newest first (at most 500).",
+  "type": "object",
+  "required": [
+    "schema",
+    "scans"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/scans/v1"
+    },
+    "scans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "timestamp",
+          "targets",
+          "complete",
+          "hosts"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "timestamp": {
+            "type": "integer"
+          },
+          "targets": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "hosts": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

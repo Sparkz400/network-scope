@@ -2,6 +2,7 @@ mod controls;
 mod demo;
 mod details;
 mod ot;
+mod scheduler;
 mod settings;
 mod tables;
 mod windows;
@@ -26,6 +27,8 @@ struct Saved {
     notes: BTreeMap<IpAddr, String>,
     /// CVE rules file merged over the built-in rules (like `--cves`); empty: the default rules.
     cves_file: String,
+    /// Recurring scans while the window is open (off by default).
+    schedule: crate::schedule::Schedule,
 }
 impl Saved {
     /// What goes to disk: empty notes are dropped.
@@ -196,7 +199,7 @@ fn run_job(job: Job) -> Done {
             let data = if csv {
                 Ok(crate::otpassive::assets_csv(&assets))
             } else {
-                serde_json::to_string_pretty(&assets).map_err(|e| e.to_string())
+                crate::schema::list("ot-assets", "assets", &assets)
             };
             let result = write_file(&file, data);
             Done::Exported(file, result)
@@ -348,6 +351,12 @@ struct Scanner {
     /// Stored time of the inventory snapshot on screen; `None` for live results (exports are
     /// then stamped with the current time).
     opened_stamp: Option<i64>,
+    /// When the schedule was enabled or its last scan started; the interval counts from here.
+    schedule_anchor: Option<Instant>,
+    /// What the scheduler is waiting for, shown in the settings.
+    schedule_note: String,
+    /// Why the scheduled targets cannot be scanned; empty when they parse.
+    schedule_error: String,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -435,6 +444,9 @@ impl Scanner {
             script_tokens: 0,
             ot: ot::OtState::default(),
             opened_stamp: None,
+            schedule_anchor: None,
+            schedule_note: String::new(),
+            schedule_error: String::new(),
         };
         // A broken user CVE file is reported, not silently replaced by the built-in rules.
         if app.screenshot.is_none() {
@@ -850,6 +862,7 @@ impl eframe::App for Scanner {
         self.poll();
         self.poll_capture();
         self.poll_ot();
+        self.poll_schedule(ctx);
         if self.live() || self.ot.running() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
@@ -1383,6 +1396,21 @@ mod tests {
         assert_eq!(disk.cves_file, "C:\\rules\\cves.json");
         let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
         assert!(old.cves_file.is_empty());
+    }
+
+    #[test]
+    fn the_schedule_is_saved_with_the_preferences_and_off_when_absent() {
+        let mut saved = Saved::default();
+        assert!(!saved.schedule.enabled, "off by default");
+        saved.schedule = crate::schedule::Schedule {
+            enabled: true,
+            interval_minutes: 30,
+            targets: "10.0.0.0/24".into(),
+        };
+        let disk: Saved = serde_json::from_slice(&saved.to_disk()).unwrap();
+        assert_eq!(disk.schedule, saved.schedule);
+        let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
+        assert!(!old.schedule.enabled && old.schedule.targets.is_empty());
     }
 
     #[test]

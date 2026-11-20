@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:diff:v1",
+  "title": "Scan comparison",
+  "description": "Output of `diff OLD NEW --format json`: the structured comparison of two completed scans.",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "severity",
+        "id",
+        "title",
+        "ip",
+        "port",
+        "evidence",
+        "cve",
+        "advice"
+      ],
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "ip": {
+          "type": "string",
+          "description": "IPv4 or IPv6 address in text form"
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "cve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "advice": {
+          "type": "string"
+        },
+        "reference": {
+          "type": "string",
+          "description": "HTTPS URL of the documentation page, when the rule has one"
+        },
+        "kev": {
+          "type": "boolean",
+          "description": "Present only with imported feeds"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "summary",
+    "changes",
+    "new_findings",
+    "resolved_findings",
+    "unconfirmed_findings",
+    "ignored_keys"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/diff/v1"
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "hosts_added",
+        "hosts_removed",
+        "hosts_silent",
+        "tcp_opened",
+        "tcp_closed",
+        "udp_opened",
+        "udp_closed",
+        "identity_added",
+        "identity_changed",
+        "identity_removed",
+        "attributes_changed",
+        "observations_new",
+        "observations_changed",
+        "new_findings",
+        "resolved_findings"
+      ],
+      "properties": {
+        "hosts_added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hosts_removed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hosts_silent": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tcp_opened": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tcp_closed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_opened": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_closed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identity_added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identity_changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identity_removed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attributes_changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observations_new": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observations_changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_findings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resolved_findings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "highest_new_severity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "host_added",
+              "host_silent",
+              "host_removed",
+              "port_opened",
+              "port_closed",
+              "identity_added",
+              "identity_changed",
+              "identity_removed",
+              "attribute_changed",
+              "observation_new",
+              "observation_changed"
+            ]
+          }
+        }
+      }
+    },
+    "new_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "resolved_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "unconfirmed_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "ignored_keys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

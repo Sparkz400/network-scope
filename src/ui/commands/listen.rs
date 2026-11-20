@@ -2,14 +2,14 @@
 //! read-only DCP Identify request) and `interfaces` (the capture interfaces).
 use crate::{
     observations::{ObservationIndex, merge_indexed},
-    passive, scan, store,
+    passive, scan, schema, store,
     ui::{Ctx, args::number, output, progress, saved_exit},
 };
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 pub(super) fn interfaces(ctx: &mut Ctx) -> Result<(), String> {
     output(
-        &serde_json::to_string_pretty(&crate::capture::interfaces()?).map_err(|e| e.to_string())?,
+        &schema::list("interfaces", "interfaces", &crate::capture::interfaces()?)?,
         &ctx.opts,
     )
 }

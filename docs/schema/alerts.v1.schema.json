@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:alerts:v1",
+  "title": "Stored alerts",
+  "description": "Output of `alerts`: alerts raised by monitor runs, newest first (at most 500).",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "alert": {
+      "type": "object",
+      "required": [
+        "timestamp",
+        "severity",
+        "kind",
+        "subject",
+        "message"
+      ],
+      "properties": {
+        "timestamp": {
+          "type": "integer",
+          "description": "Unix seconds"
+        },
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "alerts"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/alerts/v1"
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/alert"
+      }
+    }
+  }
+}

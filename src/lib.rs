@@ -8,12 +8,13 @@ pub(crate) mod ui;
 
 // The engine lives in `network-scope-core`; its modules are used here under the same paths
 // (`crate::scan::Host`, `crate::risk::analyze_host`, ...).
-#[cfg(feature = "gui")]
-pub(crate) use network_scope_core::pcapfile;
 pub(crate) use network_scope_core::{
-    capture, core, devices, evidence, feeds, monitor, nmap, notify, nvd, observations, otpassive,
-    passive, report, risk, scan, score, script, service, store, syn, topology, trace,
+    alertscript, capture, core, devices, evidence, feeds, mcp, monitor, nmap, notify, nvd,
+    observations, otpassive, passive, report, risk, scan, schema, score, script, service, store,
+    syn, topology, trace,
 };
+#[cfg(feature = "gui")]
+pub(crate) use network_scope_core::{pcapfile, schedule};
 
 /// The fuzz entry points (`network_scope::fuzz::*`, called by the targets in `fuzz/`).
 #[doc(hidden)]

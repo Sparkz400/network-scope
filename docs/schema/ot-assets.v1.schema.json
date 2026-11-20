@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:ot-assets:v1",
+  "title": "OT assets",
+  "description": "Output of `ot-assets ID --format json` and the GUI export: assets found by passive OT discovery.",
+  "type": "object",
+  "required": [
+    "schema",
+    "assets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/ot-assets/v1"
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "ips",
+          "mac",
+          "vendor",
+          "name",
+          "product",
+          "firmware",
+          "serial",
+          "protocols",
+          "roles",
+          "control_traffic",
+          "first_seen",
+          "last_seen",
+          "packets"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "ips": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "IPv4 or IPv6 address in text form"
+            }
+          },
+          "mac": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "firmware": {
+            "type": "string"
+          },
+          "serial": {
+            "type": "string"
+          },
+          "protocols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "control_traffic": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "first_seen": {
+            "type": "integer"
+          },
+          "last_seen": {
+            "type": "integer"
+          },
+          "packets": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}
