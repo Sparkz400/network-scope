@@ -712,7 +712,7 @@ pub fn run(
         }
         let total = targets.count() as usize;
         let run = scan::start_stream(
-            Box::new(targets.iter()),
+            Box::new(targets.iter_interleaved()),
             total,
             ports.clone(),
             settings.clone(),

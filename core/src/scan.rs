@@ -298,6 +298,34 @@ impl Targets {
             targets: self.clone_without_singles(),
         }
     }
+    /// The same addresses as [`Targets::iter`], but alternating between the ranges (and the
+    /// single addresses as one more part): one address of each in turn. A scan of several
+    /// subnets then works on all of them at once instead of finishing one before it starts the
+    /// next, so a slow or silent subnet cannot hold the others back.
+    pub fn iter_interleaved(&self) -> Interleaved {
+        let part = |singles: Vec<IpAddr>, ranges: Vec<(u32, u32)>| {
+            Targets {
+                singles,
+                ranges,
+                exact: self.exact.clone(),
+                skip_edges: self.skip_edges,
+            }
+            .iter()
+        };
+        let mut parts: Vec<TargetIter> =
+            self.ranges.iter().map(|&r| part(vec![], vec![r])).collect();
+        // A single address inside a range is scanned as part of the range.
+        let singles: Vec<IpAddr> = self
+            .singles
+            .iter()
+            .copied()
+            .filter(|ip| !matches!(ip, IpAddr::V4(v) if contains(&self.ranges, u32::from(*v)) && !self.skipped(u32::from(*v))))
+            .collect();
+        if !singles.is_empty() {
+            parts.push(part(singles, vec![]));
+        }
+        Interleaved { parts, cursor: 0 }
+    }
     fn clone_without_singles(&self) -> Targets {
         Targets {
             singles: vec![],
@@ -305,6 +333,31 @@ impl Targets {
             exact: self.exact.clone(),
             skip_edges: self.skip_edges,
         }
+    }
+}
+/// Targets of several ranges, one address of each in turn ([`Targets::iter_interleaved`]).
+pub struct Interleaved {
+    parts: Vec<TargetIter>,
+    cursor: usize,
+}
+impl Iterator for Interleaved {
+    type Item = IpAddr;
+    fn next(&mut self) -> Option<IpAddr> {
+        while !self.parts.is_empty() {
+            if self.cursor >= self.parts.len() {
+                self.cursor = 0;
+            }
+            match self.parts[self.cursor].next() {
+                Some(ip) => {
+                    self.cursor += 1;
+                    return Some(ip);
+                }
+                None => {
+                    self.parts.remove(self.cursor);
+                }
+            }
+        }
+        None
     }
 }
 pub struct TargetIter {
@@ -622,6 +675,70 @@ mod tests {
         );
         assert_eq!(t.iter().last().unwrap().to_string(), "10.255.255.254");
         assert!(parse_targets("10.0.0.0/7", true, MAX_STREAM).is_err());
+    }
+    #[test]
+    fn several_ranges_are_interleaved_without_losing_or_repeating_an_address() {
+        let t = parse_targets("10.0.1.1-3 10.0.2.1-5 10.0.2.2 ::1", true, 1 << 20).unwrap();
+        let order: Vec<String> = t.iter_interleaved().map(|ip| ip.to_string()).collect();
+        // One address of each range in turn; the ranges that run out drop out.
+        assert_eq!(
+            order[..9],
+            [
+                "10.0.1.1", "10.0.2.1", "::1", "10.0.1.2", "10.0.2.2", "10.0.1.3", "10.0.2.3",
+                "10.0.2.4", "10.0.2.5"
+            ]
+        );
+        let mut a: Vec<_> = t.iter().collect();
+        let mut b: Vec<_> = t.iter_interleaved().collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+        assert_eq!(b.len() as u64, t.count());
+        // One range: the same order as the plain iterator.
+        let one = parse_targets("10.0.0.0/29", true, 1 << 20).unwrap();
+        assert_eq!(
+            one.iter().collect::<Vec<_>>(),
+            one.iter_interleaved().collect::<Vec<_>>()
+        );
+        // The edge rule of CIDR blocks and dash ranges is kept.
+        let edges = parse_targets("10.0.0.250-10.0.1.2 10.0.5.0/30", true, 1 << 20).unwrap();
+        let mut x: Vec<_> = edges.iter().collect();
+        let mut y: Vec<_> = edges.iter_interleaved().collect();
+        x.sort();
+        y.sort();
+        assert_eq!(x, y);
+    }
+    /// Two subnets scanned at the same time (here two loopback ranges): both are found, and
+    /// the scan works on the second one while the first is still running.
+    #[test]
+    fn two_ranges_are_scanned_concurrently() {
+        let a = std::net::TcpListener::bind("127.0.1.1:0").unwrap();
+        let port = a.local_addr().unwrap().port();
+        let Ok(b) = std::net::TcpListener::bind(("127.0.2.1", port)) else {
+            return;
+        };
+        let targets = parse_targets("127.0.1.1-3 127.0.2.1-3", true, 1 << 20).unwrap();
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            retries: 0,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        let total = targets.count() as usize;
+        let run = start_stream(Box::new(targets.iter_interleaved()), total, vec![port], s);
+        let mut open = vec![];
+        loop {
+            match run.receiver.recv_timeout(Duration::from_secs(20)).unwrap() {
+                Event::Host(h) if !h.open.is_empty() => open.push(h.ip.to_string()),
+                Event::Done => break,
+                Event::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        open.sort();
+        assert_eq!(open, ["127.0.1.1", "127.0.2.1"]);
+        drop((a, b));
     }
     #[test]
     fn target_overlaps_merge_and_count_matches_iteration() {

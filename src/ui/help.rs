@@ -99,6 +99,7 @@ Scan options:
                   pausing a host that resets connections; on by default, it only ever slows down)
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
+                  scan: --interface A,B --source-ip X,Y --source-mac M1,M2 uses several interfaces (paired by position)
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
   --json-schema v1  JSON output version (default and only version for now); any command
   --scope CIDR[,CIDR]  Declared scope (also --scope-file FILE; default scope.txt in the config folder)
