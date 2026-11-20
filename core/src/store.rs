@@ -1829,6 +1829,61 @@ mod tests {
     }
 
     #[test]
+    fn device_history_lists_findings_appearing_and_resolved() {
+        let path = temp_db("history-findings");
+        let mac = "aa:bb:cc:00:11:22";
+        let telnet = [("svc.23", "telnet")];
+        let scan = |ip: &str, open: &[u16], identity: &[(&str, &str)]| {
+            let mut s = snapshot();
+            s.targets = "10.0.0.0/24".into();
+            s.settings.ports = "22,23,80".into();
+            s.hosts = vec![host(ip, open, identity)];
+            s.hosts[0].mac = mac.into();
+            s
+        };
+        let s1 = scan("10.0.0.5", &[22], &[]);
+        // Telnet opens (and the device moves) ...
+        let s2 = scan("10.0.0.6", &[22, 23], &telnet);
+        // ... is closed again ...
+        let s3 = scan("10.0.0.6", &[22], &[]);
+        // ... and a scan of other ports says nothing about it.
+        let mut s4 = scan("10.0.0.6", &[22, 23], &telnet);
+        s4.settings.ports = "22,23".into();
+        // A partial scan is ignored altogether.
+        let mut s5 = scan("10.0.0.6", &[22], &[]);
+        s5.complete = false;
+        for s in [&s1, &s2, &s3, &s4, &s5] {
+            save(&path, s).unwrap();
+        }
+        let h = device_history(&path, mac).unwrap();
+        let findings: Vec<(&str, i64)> = h
+            .events
+            .iter()
+            .filter(|e| e.kind.starts_with("finding"))
+            .map(|e| (e.kind, e.scan_id))
+            .collect();
+        assert_eq!(
+            findings,
+            [("finding-appeared", 2), ("finding-resolved", 3)],
+            "{:?}",
+            h.events
+        );
+        let appeared = h
+            .events
+            .iter()
+            .find(|e| e.kind == "finding-appeared")
+            .unwrap();
+        assert!(
+            appeared.detail.contains("telnet-open") && appeared.detail.contains("10.0.0.6:23"),
+            "{}",
+            appeared.detail
+        );
+        let text = crate::devices::history_output(&h, "text").unwrap();
+        assert!(text.contains("finding-resolved"), "{text}");
+        remove_db(&path);
+    }
+
+    #[test]
     fn device_history_follows_a_mac_across_scans() {
         let path = temp_db("history");
         let mac = "aa-bb-cc-00-11-22";

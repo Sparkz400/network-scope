@@ -7,7 +7,7 @@ impl Scanner {
         let Some(host) = self.results.iter().find(|h| h.ip == ip) else {
             return;
         };
-        let (mut test, mut apply, mut discard) = (None, false, false);
+        let (mut test, mut apply, mut discard, mut timeline) = (None, false, false, false);
         let mut open = true;
         egui::Window::new(format!("Host details · {ip}"))
             .open(&mut open)
@@ -112,6 +112,15 @@ impl Scanner {
                     if ui.button("Copy IP address").clicked() {
                         ctx.copy_text(ip.to_string());
                     }
+                    if ui
+                        .button("Timeline…")
+                        .on_hover_text(
+                            "When this device was first seen and what changed: address, MAC, name, ports and findings, from the saved scans.",
+                        )
+                        .clicked()
+                    {
+                        timeline = true;
+                    }
                     ui.add_enabled_ui(!self.busy.testing, |ui| {
                         let menu = egui::containers::menu::MenuButton::new("Test script…")
                             .config(super::controls::menu_config());
@@ -205,6 +214,9 @@ impl Scanner {
                 path,
                 Box::new(host_copy),
             ));
+        }
+        if timeline && let Some(host) = self.results.iter().find(|h| h.ip == ip).cloned() {
+            self.open_timeline(&host);
         }
         if apply {
             self.apply_script_test();
