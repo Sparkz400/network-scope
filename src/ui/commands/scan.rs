@@ -97,6 +97,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     if stream && tui_view {
         return Err("--stream and --tui both take the terminal; choose one".into());
     }
+    // The terminal view shows a host as soon as it answers (provisional rows, like the desktop).
+    let mut s = s;
+    s.partial_events |= tui_view;
     // A scan of more than MAX_HOSTS addresses never collects its hosts in memory: they go to the
     // inventory in batches while the scan runs (ROADMAP B15). The terminal view needs them in
     // memory to draw, so it keeps the old path.
