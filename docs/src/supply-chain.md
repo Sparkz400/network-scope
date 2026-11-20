@@ -14,7 +14,7 @@ Status: the SBOM step, the SBOM attestation and the `reproducible` workflow were
 
 ## Provenance
 
-Every release file carries a signed build provenance. See [Verifying downloads and the image](installation.md#verifying-downloads-and-the-image) for the commands (`gh attestation verify` and `slsa-verifier`).
+Every release file carries a signed build provenance. See [Verifying downloads and the image](installation.md#verifying-downloads-and-the-image) for the commands (`gh attestation verify` and `slsa-verifier`). `network-scope-cli update check` and the opt-in desktop setting tell you when a newer release exists and print these commands for it; they never download or replace the program ([Checking for updates](installation.md#checking-for-updates)).
 
 ## SBOM
 

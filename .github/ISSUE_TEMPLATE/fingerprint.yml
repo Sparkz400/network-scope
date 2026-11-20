@@ -1,0 +1,63 @@
+name: Fingerprint or probe contribution
+description: A service that Network Scope reports as unidentified or identifies wrongly, with a banner or probe rule that would fix it.
+title: "[Fingerprint]: "
+labels: ["protocol", "area:detection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. This form is for **service banners and probe rules** (`data/probes.json`). A pull request is even better: see [Contributing fingerprints](https://sparkz400.github.io/network-scope/contributing-fingerprints.html) and use the fingerprint pull request template.
+
+        Network Scope sends no telemetry and never uploads anything. You collect the data yourself and decide what to share.
+
+        > [!WARNING]
+        > **Read and redact before you post.** A banner can contain host names, user names, serial numbers, site names or internal addresses. Only post data from your own lab or devices you are allowed to share data about. Never post anything from a production network you do not own. This page is public.
+
+        > [!NOTE]
+        > Probes ask, they never change anything. Do not suggest a probe that sends to industrial or printer ports, writes, deletes, logs in or sends mail. `network-scope-cli probes lint` rejects these.
+  - type: input
+    id: product
+    attributes:
+      label: Product, model and firmware
+      description: What the device or software is, as far as you know.
+      placeholder: "e.g. ACME GW-200, firmware 2.1.4"
+    validations:
+      required: true
+  - type: input
+    id: port
+    attributes:
+      label: Port and protocol
+      placeholder: "e.g. 9999/tcp"
+    validations:
+      required: true
+  - type: textarea
+    id: banner
+    attributes:
+      label: Banner or reply (redacted)
+      description: What the service sends when you connect, or the reply to a request. The output of `network-scope-cli fingerprints export-unknown` (after you reviewed it) is ideal. For a binary reply paste the hex.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: rule
+    attributes:
+      label: Proposed rule or probe (optional)
+      description: A `probes.json` entry. Check it first with `network-scope-cli probes validate FILE`.
+      render: json
+  - type: input
+    id: version
+    attributes:
+      label: Network Scope version
+      placeholder: "e.g. 0.5.1"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I read the data above and removed anything that identifies a person, host or organisation.
+          required: true
+        - label: I am allowed to share this data, and it does not come from a production network I do not own.
+          required: true
+        - label: A proposed probe, if any, passes `probes validate`.

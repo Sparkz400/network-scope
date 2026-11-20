@@ -276,3 +276,10 @@ path = "fuzz_targets/scope_file.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "update_response"
+path = "fuzz_targets/update_response.rs"
+test = false
+doc = false
+bench = false

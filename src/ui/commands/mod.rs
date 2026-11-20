@@ -9,6 +9,7 @@ mod diff;
 mod export;
 mod feeds;
 mod findings;
+mod fingerprints;
 mod inventory;
 mod listen;
 mod mcp;
@@ -21,6 +22,7 @@ mod service;
 #[cfg(windows)]
 mod service_scm;
 mod trace;
+mod update;
 
 use super::Ctx;
 
@@ -55,6 +57,8 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("topology", devices::topology),
     ("trace", trace::run),
     ("probes", probes::run),
+    ("fingerprints", fingerprints::run),
+    ("update", update::run),
     ("completions", completions::run),
 ];
 

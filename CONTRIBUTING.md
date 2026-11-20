@@ -49,6 +49,14 @@ Comparison with nmap on the same lab (needs nmap on `PATH`; exit code 1 when a d
 python -I lab/nmap_compare.py --cli /absolute/path/to/target/release/network-scope-cli --explain lab/nmap_differences.json
 ```
 
+Tests of the lab scripts (Python standard library only), and the checks against real servers (Samba, OpenSSH, OpenSSL, nginx, the NVD CPE dictionary), which run in the CI job `real-servers` and are described in [Lab and testing](docs/src/lab-and-testing.md#real-servers):
+
+```sh
+python -I -m unittest discover -s lab -p "test_*.py"
+python -I lab/check_cpe.py                 # format of the CPE table only; --download compares with NVD
+cargo test -p network-scope-core windows_schannel -- --ignored   # Windows with PowerShell 7
+```
+
 Dependency checks (RustSec advisories, licenses, sources), the same ones the `security` workflow runs:
 
 ```sh
@@ -97,7 +105,7 @@ Network Scope is used on industrial networks. Every change that sends traffic mu
 
 ## Adding data
 
-- **Service probes** (`data/probes.json`) and **CVE rules** (`data/cves.json`): add a test that exercises the new rule. CVE rules are version-based hints; cite the CVE ids.
+- **Service probes** (`data/probes.json`) and **CVE rules** (`data/cves.json`): add a test that exercises the new rule. CVE rules are version-based hints; cite the CVE ids. For probes see [Contributing fingerprints](docs/src/contributing-fingerprints.md): collect banners with `network-scope-cli fingerprints export-unknown` (local only, no upload; read and redact the file), check the change with `network-scope-cli probes lint` and `probes validate FILE` (CI runs the lint on `data/probes.json`; it rejects payloads for OT and printer ports, write-like verbs, long payloads and nested regex quantifiers), and open the pull request with `?template=fingerprint.md`. Network Scope has no telemetry and will not get any.
 - **Protocol samples** for new OT decoders are welcome as small, **sanitized** pcap files (no real addresses, names or process data). Use the protocol support issue template.
 - Do not copy code or data from other projects without checking that the license is compatible with MIT, and record the source in `data/README.md` or `THIRD-PARTY-NOTICES.md`.
 

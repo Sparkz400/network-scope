@@ -17,16 +17,16 @@ Every open TCP port gets a banner wait plus data-driven probes from `data/probes
 
 Put a `probes.json` in `%LOCALAPPDATA%/NetworkScope` or pass `--probes FILE`. A probe with the same name replaces the built-in one; new names are added (a name can move between TCP and UDP). The file format and rule syntax are described in the `_comment` field of [`data/probes.json`](https://github.com/Sparkz400/network-scope/blob/main/data/probes.json): fields `name`, `proto` (tcp|udp), `ports`, `send`, `send_hex`, `wait_ms`, `rules[{re, service, product, version, info}]`; rules are regular expressions over the raw reply bytes, `$1..$9` expand capture groups, and the first matching rule wins.
 
-`network-scope probes` lists and validates TCP and UDP probes; a bad regex or hex string stops the scan with an error. `--probes` applies to UDP-only scans too.
+`network-scope probes` lists the TCP and UDP probes; a bad regex or hex string stops the scan with an error. `probes validate FILE` checks a probe file the way a scan would load it, and `probes lint [FILE]` runs the safety linter. `--probes` applies to UDP-only scans too. To contribute a fingerprint, see [Contributing fingerprints](contributing-fingerprints.md).
 
 ## TLS
 
 - Certificate subject, CN, SAN, issuer, validity, days left, key and signature algorithm, and self-signed status (name equality plus AKI == SKI when both are present). A certificate that counts as self-signed has its signature verified with its own key (ring, through x509-parser's `verify` feature): `tls.<port>.self_signature` is `valid`, `invalid` or `unchecked (reason)`; `invalid` raises `tls-self-signed-bad-signature` instead of `tls-self-signed`, and `unchecked` (MD5, RSA below 1024 bits, curves other than P-256/P-384, anything ring does not verify) is never reported as a problem. Certificates are inventory data and are never validated against a trust store.
 - The negotiated version and an enumeration of the accepted versions (SSLv3 to TLS 1.3) and cipher suites by raw ClientHello, so legacy and weak suites that rustls refuses to speak are still found.
 - Per version the budget is one general hello, up to three weakness-class hellos (broken, 3DES, static RSA) and general enumeration with what is left, so weak suites are found first. When the budget runs out the strong-suite list is cut (`tls.<port>.suites_truncated`, `suites_truncated_versions`).
-- **TLS 1.3 suites**: with Safe Mode off, servers that negotiated TLS 1.3 get TLS 1.3-only hellos (x25519 key share with random bytes; nothing is derived, only the ServerHello is read) until all five suites are known or refused, at most `min(rounds, 6)` hellos. Safe Mode sends none and reports only the negotiated version. Keys: `tls.<port>.tls13_suites` and a `TLS1.3:` part in `ciphers`; TLS_AES_128_CCM_8_SHA256 is listed as weak without a finding.
+- **TLS 1.3 suites**: with Safe Mode off, servers that negotiated TLS 1.3 get TLS 1.3-only hellos (the x25519 key share is a fresh, valid public key from the crypto provider, because Windows Schannel rejects random bytes; its private half is dropped at once, nothing is derived, only the ServerHello is read) until all five suites are known or refused, at most `min(rounds, 6)` hellos. Safe Mode sends none and reports only the negotiated version. Keys: `tls.<port>.tls13_suites` and a `TLS1.3:` part in `ciphers`; TLS_AES_128_CCM_8_SHA256 is listed as weak without a finding.
 - `not_yet_valid` (finding `tls-cert-not-yet-valid`, Medium) and `cert_error` (certificate not parseable, handshake facts kept).
-- `tls.<port>.ja4s` is a JA4S-style server fingerprint (FoxIO format, ALPN part `00` because our hellos offer none) of the first full-offer hello the server accepted. It is comparable between Network Scope scans, and comparable with other tools only for a similar client hello; it has not been cross-checked against the reference implementation.
+- `tls.<port>.ja4s` is a JA4S-style server fingerprint (FoxIO format, ALPN part `00` because our hellos offer none) of the first full-offer hello the server accepted. It is comparable between Network Scope scans, and comparable with other tools only for a similar client hello. The algorithm reproduces the JA4S examples published by FoxIO and agrees with an independent computation from OpenSSL's ServerHello; it has not been run against FoxIO's own tool on a capture, and the JA4+ license terms are noted in [Lab and testing](lab-and-testing.md#ja4s).
 
 ### JARM-style TLS fingerprint (`--jarm`)
 
@@ -49,7 +49,7 @@ Put a `probes.json` in `%LOCALAPPDATA%/NetworkScope` or pass `--probes FILE`. A 
 - Identity keys `smb.<port>.`: `dialect`, `guid` (server GUID), `capabilities`, `encryption` (negotiated cipher, `supported`, `not supported`, `not supported (SMB 2.x)`), `compression` (3.1.1), `signing_algorithms`, `preauth_integrity`, `clock_skew` (coarse: `in sync (< 2 min)`, `+5 min`, …), `boot_time` (old Windows), `auth_mechs` (Kerberos/NTLM/NEGOEX), `os_version` (NTLM `major.minor.build`; Samba reports 6.1.0), `netbios_name`, `netbios_domain`, `dns_name`, `dns_domain`, `dns_forest`.
 - Findings `smb-no-encryption` (Info) and `cve-cve-2020-0796` (High, version hint: only for dialect 3.1.1 with compression and NTLM build 18362/18363; the patch level is not visible remotely, so patched hosts are reported too).
 
-Checked once against Windows 11, **not against Samba**.
+Checked against Windows 11; the check against Samba is in the `real-servers` CI job (see [Lab and testing](lab-and-testing.md#real-servers)) and has not run yet.
 
 ## UDP (`--udp`, `--udp-ports`)
 
