@@ -972,6 +972,8 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
     }
     flush_backoff_notes(&gov, &mut h);
+    #[cfg(test)]
+    tests::stop_flaky_devices(&h.open);
     if s.services && !h.open.is_empty() && !gov.paused() {
         let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
         let rounds = if s.safe { 6 } else { 12 };
@@ -1671,18 +1673,36 @@ mod tests",
         assert_eq!(plain.state, PortState::Closed);
     }
 
+    /// The threads of the [`flaky_device`]s, by port.
+    static FLAKY: Mutex<BTreeMap<u16, std::thread::JoinHandle<()>>> = Mutex::new(BTreeMap::new());
+
     /// A "device" that accepts one connection and then stops listening: every later connect is
     /// refused (or silently dropped, depending on the OS).
     fn flaky_device() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             if let Ok((connection, _)) = listener.accept() {
                 drop(connection);
             }
             drop(listener);
         });
+        FLAKY.lock().unwrap().insert(port, thread);
         port
+    }
+
+    /// Called by the scan between the port probes and service identification: a flaky device
+    /// whose port was found open has accepted that probe, so joining its thread waits only until
+    /// its listener is closed. Without this, the identification connect can reach the listener's
+    /// backlog first and succeed (the race that made these tests flaky on CI).
+    pub(super) fn stop_flaky_devices(open: &[u16]) {
+        let threads: Vec<_> = {
+            let mut flaky = FLAKY.lock().unwrap_or_else(|e| e.into_inner());
+            open.iter().filter_map(|p| flaky.remove(p)).collect()
+        };
+        for thread in threads {
+            let _ = thread.join();
+        }
     }
 
     fn scan_loopback(ports: Vec<u16>, backoff: bool, services: bool) -> Host {
@@ -1705,24 +1725,9 @@ mod tests",
 
     #[test]
     fn a_device_that_stops_answering_after_it_was_found_open_gets_a_back_off_note() {
-        // The fake device closes its listener on its own thread. On a slow runner (coverage
-        // instrumentation) the identification connect can reach the backlog before that, and
-        // then the device has not stopped answering yet; such a run proves nothing, so the test
-        // tries a fresh device a few times and needs one run where the device really stopped.
-        let mut seen = vec![];
-        let (port, h) = (0..5)
-            .find_map(|_| {
-                let port = flaky_device();
-                let h = scan_loopback(vec![port], true, true);
-                assert_eq!(h.open, [port]);
-                if h.errors.is_empty() {
-                    seen.push(h.errors.clone());
-                    None
-                } else {
-                    Some((port, h))
-                }
-            })
-            .unwrap_or_else(|| panic!("the device never stopped answering in time: {seen:?}"));
+        let port = flaky_device();
+        let h = scan_loopback(vec![port], true, true);
+        assert_eq!(h.open, [port]);
         let note = h
             .errors
             .iter()
@@ -1748,40 +1753,17 @@ mod tests",
     #[test]
     fn persisting_errors_pause_the_host_for_the_rest_of_the_scan() {
         // Four open ports that each refuse the identification that follows: four strikes pause an
-        // unclassified host. As in the test above, a fake device that has not closed its listener
-        // yet on a slow runner is no strike; such a run proves nothing, so fresh devices are tried
-        // a few times and one run must pause the host.
+        // unclassified host.
         let paused = |h: &Host| {
             h.errors
                 .iter()
                 .any(|e| e.contains("host paused for the rest of this scan"))
         };
-        let mut seen = vec![];
-        let h = (0..5)
-            .find_map(|_| {
-                let ports: Vec<u16> = (0..4).map(|_| flaky_device()).collect();
-                let h = scan_loopback(ports.clone(), true, true);
-                for p in &ports {
-                    assert!(h.open.contains(p), "{p} was found open: {:?}", h.open);
-                }
-                // One strike per port: a failing port also gets a "backed off:" note that says
-                // "stopped answering", so only the service detection lines are counted.
-                let strikes = h
-                    .errors
-                    .iter()
-                    .filter(|e| {
-                        e.starts_with("Service detection:") && e.contains("stopped answering")
-                    })
-                    .count();
-                // A run with all four strikes must have paused the host; fewer is the race.
-                if strikes >= 4 || paused(&h) {
-                    Some(h)
-                } else {
-                    seen.push(h.errors.clone());
-                    None
-                }
-            })
-            .unwrap_or_else(|| panic!("the devices never all stopped answering in time: {seen:?}"));
+        let ports: Vec<u16> = (0..4).map(|_| flaky_device()).collect();
+        let h = scan_loopback(ports.clone(), true, true);
+        for p in &ports {
+            assert!(h.open.contains(p), "{p} was found open: {:?}", h.open);
+        }
         assert!(paused(&h), "{:?}", h.errors);
         // Every port had been probed before the identification started.
         assert!(h.ports_checked);
