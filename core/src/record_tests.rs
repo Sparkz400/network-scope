@@ -239,3 +239,86 @@ fn an_empty_record_is_still_a_valid_file() {
     assert_eq!(frames, 0);
     assert!(read_back(&bytes).is_empty());
 }
+
+/// The blocks of a pcapng file: (type, body).
+fn blocks(bytes: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    let mut out = vec![];
+    let mut at = 0;
+    while at < bytes.len() {
+        let kind = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let total = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+        assert_eq!(
+            total,
+            u32::from_le_bytes(bytes[at + total - 4..at + total].try_into().unwrap()) as usize,
+            "the length is repeated at the end of the block"
+        );
+        out.push((kind, bytes[at + 8..at + total - 4].to_vec()));
+        at += total;
+    }
+    out
+}
+
+#[test]
+fn a_wire_file_carries_the_frames_unchanged_and_says_it_is_a_wire_capture() {
+    let eth = |last: u8, len: usize| -> Vec<u8> {
+        let mut f = vec![
+            0, 1, 2, 3, 4, last, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x08, 0x00,
+        ];
+        f.resize(len, last);
+        f
+    };
+    let frames = vec![
+        WireFrame {
+            micros: 1_700_000_000_123_456,
+            data: eth(1, 60),
+        },
+        WireFrame {
+            micros: 1_700_000_000_123_999,
+            data: eth(2, 61), // odd length: padded in the file, not in the frame
+        },
+    ];
+    let bytes = wire_pcapng(1, "eth0", "host 10.0.0.5", &frames);
+    let all = blocks(&bytes);
+    assert_eq!(
+        all.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        [0x0a0d_0d0a, 1, 6, 6]
+    );
+    // read back with the program's own reader: the frames and the seconds
+    let back = read_back(&bytes);
+    assert_eq!(back.len(), 2);
+    assert_eq!(back[0], (1_700_000_000, frames[0].data.clone()));
+    assert_eq!(back[1], (1_700_000_000, frames[1].data.clone()));
+    // the enhanced packet block holds the exact microseconds and the captured length
+    let epb = &all[3].1;
+    let micros = (u64::from(u32::from_le_bytes(epb[4..8].try_into().unwrap())) << 32)
+        | u64::from(u32::from_le_bytes(epb[8..12].try_into().unwrap()));
+    assert_eq!(micros, frames[1].micros);
+    assert_eq!(u32::from_le_bytes(epb[12..16].try_into().unwrap()), 61);
+    // the labels: a wire capture, with interface and filter, and not the application-level text
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("WIRE CAPTURE") && text.contains("eth0") && text.contains("host 10.0.0.5")
+    );
+    assert!(!text.contains("APPLICATION-LEVEL RECORD"));
+    assert!(!text.contains("synthetic"), "nothing here is made up");
+    // the loopback link type goes into the interface block as it is
+    let loopback = blocks(&wire_pcapng(0, "lo", "host 127.0.0.1", &frames));
+    assert_eq!(
+        u16::from_le_bytes(loopback[1].1[0..2].try_into().unwrap()),
+        0
+    );
+    assert_eq!(u16::from_le_bytes(all[1].1[0..2].try_into().unwrap()), 1);
+    // no frames is still a valid file
+    assert_eq!(
+        blocks(&wire_pcapng(1, "eth0", "host 10.0.0.5", &[])).len(),
+        2
+    );
+}
+
+#[test]
+fn the_application_level_file_still_says_what_it_is() {
+    let (bytes, _) = pcapng(&[]);
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("APPLICATION-LEVEL RECORD, NOT A WIRE CAPTURE"));
+    assert!(!text.contains("WIRE CAPTURE of a Network Scope scan"));
+}

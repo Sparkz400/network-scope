@@ -47,6 +47,8 @@ struct Api {
 pub struct Capture {
     api: Api,
     handle: Handle,
+    /// `pcap_datalink`: 1 Ethernet, 0 BSD loopback (only accepted by [`PassiveCapture::open_wire`]).
+    link: c_int,
     // Keeps the function pointers in `api` valid; dropped after `Drop::drop` closed the handle.
     _lib: Library,
 }
@@ -160,6 +162,16 @@ impl Capture {
     /// Opens an Ethernet capture. `filter` is compiled into a kernel BPF program so
     /// unrelated traffic never reaches user space.
     pub fn open_with(name: &str, promiscuous: bool, filter: Option<&str>) -> Result<Self, String> {
+        Self::open_link(name, promiscuous, filter, false)
+    }
+    /// [`Capture::open_with`]; `loopback` also accepts the BSD loopback link type (Npcap's
+    /// loopback adapter, `lo0`), which has no Ethernet header.
+    fn open_link(
+        name: &str,
+        promiscuous: bool,
+        filter: Option<&str>,
+        loopback: bool,
+    ) -> Result<Self, String> {
         if name.is_empty() {
             return Err("Select a capture interface first.".into());
         }
@@ -200,9 +212,11 @@ impl Capture {
                 return Err(error_text(&error));
             }
             // From here on, Drop closes the handle on every error path.
+            let link = datalink(handle);
             let cap = Self {
                 api,
                 handle,
+                link,
                 _lib: lib,
             };
             let pcap_error = || {
@@ -213,7 +227,7 @@ impl Capture {
                     CStr::from_ptr(text).to_string_lossy().into_owned()
                 }
             };
-            if datalink(handle) != 1 {
+            if link != 1 && !(loopback && link == 0) {
                 return Err("Select an Ethernet interface (unsupported link type).".into());
             }
             if let Some(filter) = filter {
@@ -239,6 +253,11 @@ impl Capture {
     // Not an `Iterator`: `Ok(None)` is a read timeout, not the end, and errors are reported.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.next_timed()?.map(|(_, frame)| frame))
+    }
+    /// The next frame and its capture time in microseconds since the Unix epoch.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next_timed(&mut self) -> Result<Option<(u64, Vec<u8>)>, String> {
         unsafe {
             let mut header = std::ptr::null();
             let mut bytes = std::ptr::null();
@@ -248,7 +267,12 @@ impl Capture {
                     if len > 65536 {
                         return Err("Oversized capture frame".into());
                     }
-                    Ok(Some(std::slice::from_raw_parts(bytes, len).to_vec()))
+                    let micros = ((*header).seconds as i64).max(0) as u64 * 1_000_000
+                        + ((*header).micros as i64).max(0) as u64;
+                    Ok(Some((
+                        micros,
+                        std::slice::from_raw_parts(bytes, len).to_vec(),
+                    )))
                 }
                 0 => Ok(None),
                 _ => Err("Capture ended or driver error".into()),
@@ -282,6 +306,21 @@ impl PassiveCapture {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
         self.0.next()
+    }
+    /// A capture of the traffic to and from some hosts, for `scan --record-wire`: not
+    /// promiscuous (only this computer's own traffic), with a kernel filter, Ethernet or
+    /// loopback link type. Like the rest of this type it has no way to transmit.
+    pub fn open_wire(name: &str, filter: &str) -> Result<Self, String> {
+        Capture::open_link(name, false, Some(filter), true).map(Self)
+    }
+    /// The link type of the capture: 1 Ethernet, 0 loopback (no Ethernet header).
+    pub fn link_type(&self) -> u16 {
+        self.0.link as u16
+    }
+    /// The next frame with its capture time in microseconds since the Unix epoch.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next_timed(&mut self) -> Result<Option<(u64, Vec<u8>)>, String> {
+        self.0.next_timed()
     }
 }
 pub fn mac(text: &str) -> Result<[u8; 6], String> {

@@ -23,6 +23,10 @@
 //! exchanges and traceroute: the sent log (`--sent-log`) still lists them. `scan --record` says how
 //! many packets of the sent log the record covers.
 //!
+//! With the capture driver present, `scan --record-wire` records the real frames instead
+//! ([`crate::wirecap`], written by [`write_wire_pcapng`]); this synthetic file is what the scan
+//! writes without it.
+//!
 //! The recorder is bounded: at most [`MAX_RECORDS`] chunks and [`MAX_BYTES`] of payload are kept,
 //! each cut at [`MAX_PAYLOAD`] bytes; what does not fit is counted and reported, never silently
 //! lost.
@@ -398,6 +402,78 @@ fn pcapng(records: &[Record]) -> (Vec<u8>, usize) {
         }
     }
     (out, frames)
+}
+
+// ---- wire capture --------------------------------------------------------------------------
+
+/// One frame captured from the wire (`scan --record-wire`, see [`crate::wirecap`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireFrame {
+    /// Microseconds since the Unix epoch, as the capture driver stamped it.
+    pub micros: u64,
+    pub data: Vec<u8>,
+}
+
+/// The pcapng bytes of real frames captured on `interface` with the kernel filter `filter`.
+/// `link_type` is the capture's own (1 Ethernet, 0 loopback). Unlike [`Recorder`]'s file nothing
+/// here is made up: the headers, addresses, sequence numbers and times are the ones on the wire,
+/// and the file's header says so.
+pub fn wire_pcapng(link_type: u16, interface: &str, filter: &str, frames: &[WireFrame]) -> Vec<u8> {
+    let mut out = vec![];
+    let mut shb = vec![];
+    shb.extend(0x1a2b_3c4du32.to_le_bytes());
+    shb.extend(1u16.to_le_bytes());
+    shb.extend(0u16.to_le_bytes());
+    shb.extend((-1i64).to_le_bytes());
+    option(
+        &mut shb,
+        1,
+        b"WIRE CAPTURE of a Network Scope scan: the real frames the capture driver saw on the interface named below while the scan ran, filtered to the scan's targets. Headers, addresses, sequence numbers and times are those of the wire. Traffic of other programs to or from the same hosts is included; the payload of TLS and SSH is encrypted as it was on the wire.",
+    );
+    option(
+        &mut shb,
+        4,
+        format!("network-scope {}", env!("CARGO_PKG_VERSION")).as_bytes(),
+    );
+    option(&mut shb, 0, b"");
+    out.extend(block(0x0a0d_0d0a, &shb));
+    let mut idb = vec![];
+    idb.extend(link_type.to_le_bytes());
+    idb.extend(0u16.to_le_bytes());
+    idb.extend(65535u32.to_le_bytes());
+    option(&mut idb, 2, interface.as_bytes());
+    // if_filter: a byte 0 (a libpcap filter string) and the string
+    let mut f = vec![0u8];
+    f.extend(filter.as_bytes());
+    option(&mut idb, 11, &f);
+    option(&mut idb, 9, &[6]);
+    option(&mut idb, 0, b"");
+    out.extend(block(1, &idb));
+    for frame in frames {
+        let mut epb = vec![];
+        epb.extend(0u32.to_le_bytes());
+        epb.extend(((frame.micros >> 32) as u32).to_le_bytes());
+        epb.extend((frame.micros as u32).to_le_bytes());
+        epb.extend((frame.data.len() as u32).to_le_bytes());
+        epb.extend((frame.data.len() as u32).to_le_bytes());
+        epb.extend(&frame.data);
+        pad4(&mut epb);
+        option(&mut epb, 0, b"");
+        out.extend(block(6, &epb));
+    }
+    out
+}
+
+/// Writes [`wire_pcapng`] to `path`.
+pub fn write_wire_pcapng(
+    path: &Path,
+    link_type: u16,
+    interface: &str,
+    filter: &str,
+    frames: &[WireFrame],
+) -> Result<(), String> {
+    std::fs::write(path, wire_pcapng(link_type, interface, filter, frames))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
