@@ -32,6 +32,7 @@ The tool reads the signature algorithm of the certificate the server presents. I
 
 ## References
 
+- [Mozilla, Server Side TLS recommendations](https://wiki.mozilla.org/Security/Server_Side_TLS)
 - [RFC 5280, X.509 certificate profile](https://www.rfc-editor.org/rfc/rfc5280)
 - [CA/Browser Forum Baseline Requirements](https://cabforum.org/working-groups/server/baseline-requirements/documents/)
 
