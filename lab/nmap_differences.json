@@ -33,22 +33,6 @@
       "network_scope": "8.4p1",
       "nmap": "8.4p1 Debian 5+deb11u1",
       "reason": "Naming. The banner is SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u1. nmap puts the distribution's package revision into the version; Network Scope keeps the upstream version (8.4p1, which is what its CPE and CVE matching use) and shows 'Debian-5+deb11u1' in the info part of the summary ('ssh OpenSSH 8.4p1 (protocol 2.0 Debian-5+deb11u1)')."
-    },
-    {
-      "host": "(all)",
-      "port": "*",
-      "field": "closed",
-      "network_scope": "0",
-      "nmap": "88",
-      "reason": "Windows, not the lab. A refused TCP connect to a closed loopback port takes about 2.0 s on this Windows machine (measured with a plain Python socket: 2.01 s; 0.0003 s when SIO_TCP_INITIAL_RTO disables SYN retransmission). That is longer than this run's port timeout of 1500 ms (and the default 2000 ms), so Network Scope's first attempt times out and, because every retry also times out, the port is recorded as unanswered instead of closed. nmap reports all 88 closed ports as closed (conn-refused). Open ports are unaffected. On Linux a refusal is immediate and this row does not appear. This is an open engine issue on Windows (a candidate fix is to disable SYN retransmission for loopback targets), not a lab artefact."
-    },
-    {
-      "host": "(all)",
-      "port": "*",
-      "field": "unanswered",
-      "network_scope": "88",
-      "nmap": "0",
-      "reason": "The other side of the 'closed' row: the 88 closed ports that Network Scope on Windows records as unanswered (no answer within the timeout) because the refusal arrives after about 2.0 s. nmap -sT -Pn reports no filtered port in the lab."
     }
   ]
 }
