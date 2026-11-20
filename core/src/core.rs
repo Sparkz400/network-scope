@@ -1764,10 +1764,14 @@ mod tests",
                 for p in &ports {
                     assert!(h.open.contains(p), "{p} was found open: {:?}", h.open);
                 }
+                // One strike per port: a failing port also gets a "backed off:" note that says
+                // "stopped answering", so only the service detection lines are counted.
                 let strikes = h
                     .errors
                     .iter()
-                    .filter(|e| e.contains("stopped answering"))
+                    .filter(|e| {
+                        e.starts_with("Service detection:") && e.contains("stopped answering")
+                    })
                     .count();
                 // A run with all four strikes must have paused the host; fewer is the race.
                 if strikes >= 4 || paused(&h) {
