@@ -36,6 +36,23 @@ What the file contains and what it does not (an entry also has a `port_hint`, su
 - The store keeps banners as text: control characters are dropped and the text is cut at 120 characters, so a binary reply is not reproduced exactly. For a binary protocol capture the raw reply yourself (for example with `nc` and `xxd`, or Wireshark) and paste the hex.
 - The command only reads the local database. It sends nothing.
 
+### The workbench: group, compare, draft
+
+For more than a handful of banners, the workbench does the sorting. It reads the same unidentified banners from the local store, sends nothing and writes nothing unless you ask:
+
+```sh
+network-scope-cli fingerprints groups                  # the queue: similar banners together
+network-scope-cli fingerprints compare 7ab264f8        # one group side by side, versions that differ
+network-scope-cli fingerprints draft 7ab264f8 --output acme.json
+network-scope-cli probes validate acme.json
+```
+
+`fingerprints groups [SCAN_ID]` lists every group with its id (the first 8 hex digits of the SHA-256 of its template), the number of hosts and distinct banners and the ports. Banners are lower-cased, every digit becomes `#`, and two banners are similar when their three-character shingle sets have a Jaccard index of at least 0.6; groups are the connected components of that relation, so one product in several firmware versions (`ACME-GW 2.1 ready`, `ACME-GW 3.0.4 ready`) lands in one group. `fingerprints compare GROUP [SCAN_ID]` shows the group's variants, which hosts and MAC vendors sent them, and where they differ: the version-like numbers by position (`number 1 varies: 2.0, 2.1, 3.0.4`, in version order), or, when the banners have different shapes, how many. Both take `--format json` (`banner-groups` schema); a group may be named by any prefix of at least 4 characters of its id.
+
+`fingerprints draft GROUP [SCAN_ID] --output FILE` writes a draft rule and a checklist: `FILE` is a complete probe file with one rule for the `banner` probe (the probe that only listens; `probes validate FILE` takes it) and `FILE.checklist.md` is the pull request checklist (read the banners and redact them, confirm the product and version names, capture a raw reply, run the validator and the linter, add a test, open the pull request with the fingerprint template). Without `--output` the same is printed (`--format json` gives the `fingerprint-draft` schema). When all banners of a group have one shape, the rule is that shape as a regular expression with a capture group around the first version-like number (`$1` is the version); when the shapes differ the rule only anchors on their common start and says so, and when that start is shorter than 5 characters the draft is refused, because such a rule would claim unrelated services. The draft always passes `probes lint` and matches every banner of its group (both are checked when it is made). **`service` and `product` are guesses** from the banner text; the number the rule captures may be a model number rather than a version. Check them before you share anything.
+
+Limits: only TCP banners are grouped (the same input as `export-unknown`), the store keeps them with control characters removed and cut at 120 characters, at most the 1,500 commonest distinct banners are looked at, and the workbench has no idea what a device really is: it sorts text.
+
 ## 2. Write the rule
 
 A probe is a small JSON object (the format is described in the `_comment` field of `data/probes.json` and in [Detection](detection.md#extending-the-probe-database)). Most contributions need only a **rule** for the existing `banner` probe, which sends nothing and only listens for the greeting the service sends on its own:

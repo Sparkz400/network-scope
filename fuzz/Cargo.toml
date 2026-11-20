@@ -285,6 +285,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "banner_groups"
+path = "fuzz_targets/banner_groups.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mcp_message"
 path = "fuzz_targets/mcp_message.rs"
 test = false

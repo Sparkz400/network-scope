@@ -52,6 +52,7 @@ pub const TARGETS: &[Target] = &[
     ("csaf_import", csaf_import),
     ("ot_model", ot_model),
     ("zones_file", zones_file),
+    ("banner_groups", banner_groups),
     ("import_inventory", import_inventory),
     ("scope_file", scope_file),
     ("arp_reply", arp_reply),
@@ -130,6 +131,58 @@ pub fn nvd_import(data: &[u8]) {
         std::hint::black_box(nvd::parse_cpe(text));
         std::hint::black_box(nvd::compare_versions(text, "1.0.1e"));
     }
+}
+
+/// Unidentified banners (one per line, as devices send them): the workbench's grouping, the
+/// comparison text and the draft rule for every group, including the check that the draft matches
+/// its banners and passes the probe linter.
+pub fn banner_groups(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let hosts: Vec<crate::scan::Host> = text
+        .lines()
+        .take(64)
+        .enumerate()
+        .map(|(i, line)| {
+            let mut identity = BTreeMap::new();
+            identity.insert(
+                format!("banner.{}", 1000 + i % 3),
+                line.chars().take(120).collect(),
+            );
+            crate::scan::Host {
+                ip: std::net::IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8 + 1]),
+                responding: true,
+                ping: None,
+                ttl: None,
+                hostname: String::new(),
+                mac: String::new(),
+                open: vec![],
+                closed: 0,
+                unanswered: 0,
+                errors: vec![],
+                ports_checked: true,
+                identity,
+                udp_open: vec![],
+                trace: vec![],
+            }
+        })
+        .collect();
+    let snapshot = crate::store::Snapshot {
+        targets: String::new(),
+        complete: true,
+        settings: crate::scan::Settings::default(),
+        hosts,
+        observations: vec![],
+        notes: BTreeMap::new(),
+        sent: vec![],
+    };
+    let groups = service::workbench::groups([&snapshot]);
+    for g in &groups {
+        std::hint::black_box(service::workbench::compare_text(g));
+        if let Ok(d) = service::workbench::draft(g) {
+            std::hint::black_box(service::workbench::checklist_markdown(&d, g));
+        }
+    }
+    std::hint::black_box(service::workbench::groups_text(&groups));
 }
 
 /// A zones and conduits file (`segmentation check --zones`) and a check of a small scan

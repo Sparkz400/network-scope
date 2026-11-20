@@ -70,6 +70,10 @@ network-scope research export csv|ndjson --output DIR   One file per table (Duck
 network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bundle or OCSF events of one scan
 network-scope research groups [--top N] [--format text|json]   Devices that share a key, certificate template,
                                                TLS/SSH stack, web interface or OT firmware, across scans and sites
+network-scope fingerprints groups [SCAN_ID]    The unidentified banners, grouped by similarity (the workbench queue)
+network-scope fingerprints compare GROUP [SCAN_ID]   One group side by side: what differs between firmware versions
+network-scope fingerprints draft GROUP [SCAN_ID] [--output FILE]   A draft probes.json rule (passes probes lint)
+                                               and the pull request checklist
 network-scope fingerprints favicon FILE        Shodan-compatible favicon hash of a local file (nothing is fetched)
 network-scope segmentation check --zones FILE --from ZONE [SCAN_ID] [--format text|json] [--fail-on-findings]
                                                Paths from the scan's zone that the declared IEC 62443 zones and

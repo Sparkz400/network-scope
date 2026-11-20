@@ -367,6 +367,18 @@ fn the_segmentation_report_carries_its_schema_and_matches_it() {
 }
 
 #[test]
+fn the_banner_groups_carry_their_schema() {
+    let f = Fixture::new("banner-groups");
+    // nothing in the imported scans is unidentified: an empty, valid list
+    let groups = f.check(
+        "banner-groups",
+        &["fingerprints", "groups", "--format", "json"],
+        false,
+    );
+    assert!(groups[0]["groups"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn every_dry_run_prints_the_dry_run_schema() {
     let f = Fixture::new("dryrun");
     // A declared scope keeps the result independent of the developer's own scope file.

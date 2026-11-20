@@ -59,6 +59,8 @@ pub const KINDS: &[&str] = &[
     "ot-alerts",
     "research-groups",
     "segmentation-report",
+    "banner-groups",
+    "fingerprint-draft",
 ];
 
 /// The `schema` value of a kind at the current version.

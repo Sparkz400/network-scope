@@ -81,6 +81,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `research schema`, `research rebuild` | Document the tables; derive the rows of scans saved before the tables existed |
 | `segmentation check --zones FILE --from ZONE [SCAN_ID] [--format text\|json] [--fail-on-findings]` | Lists every path from the scan's zone that the declared IEC 62443 zones and conduits do not allow; reads a stored scan, sends nothing. See [Segmentation check](segmentation.md) |
 | `research groups [--top N] [--format text\|json]` | Devices that share a key, certificate template, TLS/SSH stack, web interface or OT firmware across scans and sites; see [Fingerprints you can pivot on](research.md#fingerprints-you-can-pivot-on) |
+| `fingerprints groups [SCAN_ID]`, `fingerprints compare GROUP [SCAN_ID]` | The workbench for unidentified banners: group similar ones, compare the variants of a group across firmware versions (`--format text\|json`). See [Contributing fingerprints](contributing-fingerprints.md#the-workbench-group-compare-draft) |
+| `fingerprints draft GROUP [SCAN_ID] [--output FILE]` | A draft rule for the `banner` probe that passes `probes lint` (`FILE`) and a pull request checklist (`FILE.checklist.md`); sends nothing |
 | `fingerprints favicon FILE` | Shodan-compatible favicon hash (`http.favicon.hash:N`) of a local file; nothing is fetched |
 | `research export csv\|ndjson --output DIR` | One file per table (DuckDB layout) and a manifest |
 | `research export stix\|ocsf [SCAN_ID] [--output FILE]` | STIX 2.1 bundle or OCSF events of one scan |
