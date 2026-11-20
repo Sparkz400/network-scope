@@ -70,8 +70,8 @@ pub(super) fn scan_plan(
             opts.contains_key("interface"),
         )
     });
-    // IPv6 discovery runs once per scan, not per host
-    if let Some(v6) = plan::ipv6_discovery(s).filter(|_| command == "scan") {
+    // IPv6 discovery runs once per scan (once per cycle in `monitor`), not per host
+    if let Some(v6) = plan::ipv6_discovery(s).filter(|_| matches!(command, "scan" | "monitor")) {
         match &mut extras {
             Some(e) => {
                 e.packets.extend(v6.packets);
@@ -301,6 +301,29 @@ mod tests {
         ]);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["per_cycle"]["packets"][0]["kind"], "ipv6-echo");
+    }
+
+    /// `monitor` takes `--ipv6-discover` too: its dry run lists the echo once per cycle.
+    #[test]
+    fn monitor_dry_run_lists_the_ipv6_echo_per_cycle() {
+        let (text, status) = run_to_file(&[
+            "monitor",
+            "192.168.77.1",
+            "--dry-run",
+            "--ports",
+            "80",
+            "--ipv6-discover",
+        ]);
+        assert_eq!(status, crate::ui::ExitCode::Success);
+        for want in [
+            "per monitor cycle:",
+            "ipv6-echo",
+            "echo request to ff02::1 (all nodes)",
+        ] {
+            assert!(text.contains(want), "missing {want} in:\n{text}");
+        }
+        let (text, _) = run_to_file(&["monitor", "192.168.77.1", "--dry-run", "--ports", "80"]);
+        assert!(!text.contains("ipv6-echo"), "{text}");
     }
 
     #[test]

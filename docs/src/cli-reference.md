@@ -119,7 +119,9 @@ These apply to `scan` and `monitor`.
 | `--tcp-only` | off | Skip ICMP ping |
 | `--arp` | off | ARP discovery on the local IPv4 network |
 | `--dns` | off | Resolve host names (system DNS) |
-| `--ot` | off | Read-only industrial identification (Modbus, S7, EtherNet/IP, BACnet, OPC UA) |
+| `--ot` | off | Read-only industrial identification (Modbus, S7, EtherNet/IP, BACnet, OPC UA, FINS UDP and TCP, Fox, MQTT, KNX); see [OT / industrial](ot-industrial.md) |
+| `--melsec-port PORT` | off | With `--ot`: read the CPU model over the MELSEC MC protocol (one 3E Read CPU Model Name request) on this TCP port, if it is in `--ports` and found open. The MC protocol has no standard port, so none is ever tried by default; ports below 1024 and industrial ports with a protocol of their own are refused |
+| `--dnp3-address N` / `--dnp3-master M` | off / 1 | With `--ot`: read class 0 from the DNP3 outstation with data link address `N` on tcp/20000 (must be in `--ports`, found open); the request comes from master address `M`. Addresses 0xFFF0 (65520) and above (broadcast, reserved) and `N` equal to `M` are refused; nothing is confirmed |
 | `--unit N` | 1 | Modbus unit ID |
 | `--rack N` / `--slot N` | 0 / 2 | S7 rack and slot |
 | `--services` | off | Identify services: banners, HTTP, TLS, SMB, RDP, databases… |
@@ -138,9 +140,10 @@ These apply to `scan` and `monitor`.
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
 | `--jarm` | off | JARM TLS fingerprint (the same hash as the reference `jarm.py`, see [Detection](detection.md#jarm-style-tls-fingerprint---jarm)): ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode) |
-| `--snmp-community STRING` / `--snmp-version 2c\|1` | off / 2c | Read every responding host over [SNMP](snmp.md) with this community (system group, interfaces, addresses, LLDP neighbours): read-only requests, the community is never guessed and never `public` unless you type it; allowed in Safe Mode (with tighter limits) |
-| `--snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]` | off | SNMPv3 (USM): `AUTH` is `sha` or `sha256`, `PRIV` is `aes`; `AUTH_ENV` and `PRIV_ENV` are the **names of environment variables** holding the passphrases (at least 8 characters), never the passphrases themselves |
-| `--ipv6-discover` | off | Find hosts on the local link over IPv6: one ICMPv6 echo to `ff02::1` per interface (`--interface` picks one by index or name), the OS neighbour cache, joined to scanned hosts by MAC; one datagram per interface, also in Safe Mode; see [IPv6 discovery](ipv6-discovery.md) |
+| `--snmp-community STRING` / `--snmp-version 2c\|1` | off / 2c | Read every responding host over [SNMP](snmp.md) with this community (system group, interfaces and their names, IPv4 and IPv6 addresses, LLDP neighbours): read-only requests, the community is never guessed and never `public` unless you type it; allowed in Safe Mode (with tighter limits). The string is visible on the command line and is **not saved**: `service install` refuses it; use `--snmp-community-env` |
+| `--snmp-community-env NAME` | off | Like `--snmp-community`, but the community is read from the **environment variable** `NAME` (with `--snmp-version`). Only the name is saved with the scan, so scheduled scans, services and `scan --replay-check` read it again from the environment of the process that runs them |
+| `--snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]` | off | SNMPv3 (USM): `AUTH` is `sha` or `sha256` (or the **weak** `md5`), `PRIV` is `aes` (or the **weak** `des`); `AUTH_ENV` and `PRIV_ENV` are the **names of environment variables** holding the passphrases (at least 8 characters), never the passphrases themselves. Only the names are saved with the scan; a warning is printed when MD5 or DES is used |
+| `--ipv6-discover` | off | `scan` and `monitor`: find hosts on the local link over IPv6: one ICMPv6 echo to `ff02::1` per interface (`--interface` picks one by index or name), the OS neighbour cache, joined to scanned hosts by MAC; one datagram per interface (per cycle in `monitor`), also in Safe Mode; see [IPv6 discovery](ipv6-discovery.md) |
 | `--favicon` | off | One `GET /favicon.ico` per web port that answered as HTTP(S), hashed with the Shodan-compatible MurmurHash3 into `http.PORT.favicon_mmh3` (needs `--services` and `--fast`; ignored in Safe Mode; not on a host the scan found to be industrial (an industrial port open or identified); see [Detection](detection.md#favicon-hash---favicon)) |
 | `--no-backoff` | off | Turn off the [automatic back-off](scanning-engine.md#automatic-back-off) (on by default; it only ever slows a host down) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
@@ -162,7 +165,7 @@ These apply to `scan` and `monitor`.
 | `--yes-public` | off | Confirm that public addresses may be scanned |
 | `--allow-out-of-scope` | off | Confirm that addresses outside the declared scope may be scanned (also covers public ones) |
 
-TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result; Up/Down/PgUp/PgDn/Home/End select a row; Enter shows the host's ports, services, findings and identity fields (Enter or Backspace returns); S cycles the sort order (newest, address, open ports).
+TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result; Up/Down/PgUp/PgDn/Home/End select a row; Enter shows the host's ports, services, findings and identity fields (Enter or Backspace returns); S cycles the sort order (newest, address, open ports). A host appears in the list as soon as it answers (status `Scanning...`) and its open ports are added as they are found, like the rows of the desktop; the final record replaces the provisional row. A provisional row of a host that had not finished when you stopped is not saved: only finished hosts are results.
 
 ## Scope guard
 

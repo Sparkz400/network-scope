@@ -575,3 +575,20 @@ Wrote {} (check it with `probes validate`) and {}. Read both and remove anything
 Minimum severity || Mindest-Schweregrad
 Minimum EPSS || Mindest-EPSS
 S7 slot || S7-Steckplatz
+# SNMP (read-only) in the settings
+Read devices over SNMP (read-only) || Geräte über SNMP lesen (nur lesend)
+Off || Aus
+Community (SNMP v1/v2c) || Community (SNMP v1/v2c)
+SNMPv3 user || SNMPv3-Benutzer
+Version || Version
+Environment variable with the community || Umgebungsvariable mit der Community
+User name || Benutzername
+Authentication || Authentifizierung
+Privacy || Verschlüsselung
+Environment variable with the authentication passphrase || Umgebungsvariable mit dem Authentifizierungs-Kennwort
+Environment variable with the privacy passphrase || Umgebungsvariable mit dem Verschlüsselungs-Kennwort
+Only the names of the variables are saved, never the passphrases. A scheduled scan reads them again each time it starts. || Gespeichert werden nur die Namen der Variablen, nie die Kennwörter. Ein geplanter Scan liest sie bei jedem Start erneut.
+
+# IPv6 discovery in the settings
+Find IPv6 hosts on the local link after the scan (one multicast ping per interface) || IPv6-Geräte im lokalen Netz nach dem Scan suchen (ein Multicast-Ping je Netzwerkschnittstelle)
+Sends one ICMPv6 echo request to ff02::1 per network interface with hop limit 1, also in Safe Mode, then reads the system's IPv6 neighbor list and joins it to the scanned hosts by MAC address. || Sendet je Netzwerkschnittstelle eine ICMPv6-Echo-Anfrage an ff02::1 mit Hop-Limit 1, auch im abgesicherten Modus, und liest danach die IPv6-Nachbarliste des Systems aus und ordnet sie den gescannten Geräten über die MAC-Adresse zu.

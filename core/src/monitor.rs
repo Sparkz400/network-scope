@@ -770,6 +770,25 @@ pub fn run(
         if run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             complete = false;
         }
+        // --ipv6-discover: the local link over IPv6, once per cycle, after the scan (the IPv4
+        // hosts and their MACs are known). One echo per interface through the scan's own pacing
+        // and sent log. Only a neighbour that answered this cycle's echo becomes a host of its
+        // own: one whose cache entry merely flips between reachable and stale would otherwise
+        // appear and vanish from cycle to cycle. The rest stays an observation.
+        if settings.ipv6_discover && complete && !cfg.stopped() {
+            let outcome = crate::ipv6::after_scan(
+                &settings,
+                run.sent.clone(),
+                &mut hosts,
+                crate::ipv6::AddHosts::Answered,
+            );
+            if !cfg.quiet {
+                for note in &outcome.found.notes {
+                    eprintln!("Cycle {cycle}: warning: {note}");
+                }
+            }
+            observations.extend(outcome.observations);
+        }
         let dhcp_log = crate::sendlog::SentLog::new();
         if cfg.dhcp_discover && !cfg.stopped() {
             match crate::udp::dhcp_discover(Duration::from_secs(4), &dhcp_log) {

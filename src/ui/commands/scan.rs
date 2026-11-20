@@ -104,6 +104,10 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     if stream && tui_view {
         return Err("--stream and --tui both take the terminal; choose one".into());
     }
+    snmp_warnings(opts, &s);
+    // The terminal view shows a host as soon as it answers (provisional rows, like the desktop).
+    let mut s = s;
+    s.partial_events |= tui_view;
     // A scan of more than MAX_HOSTS addresses never collects its hosts in memory: they go to the
     // inventory in batches while the scan runs (ROADMAP B15). The terminal view needs them in
     // memory to draw, so it keeps the old path.
@@ -175,22 +179,17 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             "IPv6 discovery skipped: the scan was written in batches (more than 65,536 addresses)",
         );
     } else if s.ipv6_discover && complete {
-        let gate = crate::ipv6::gate(&s, run.sent.clone());
-        let found = crate::ipv6::discover(&s, &gate);
-        for note in &found.notes {
+        let outcome = crate::ipv6::after_scan(
+            &s,
+            run.sent.clone(),
+            &mut results,
+            crate::ipv6::AddHosts::Fresh,
+        );
+        for note in &outcome.found.notes {
             progress(opts, note);
         }
-        observations = crate::ipv6::observations(&found);
-        let added = crate::ipv6::merge(&mut results, &found);
-        progress(
-            opts,
-            format_args!(
-                "IPv6: {} interface(s), {} answered the multicast echo, {} neighbor(s) in the cache, {added} host(s) added",
-                found.interfaces.len(),
-                found.responders.len(),
-                found.neighbors.len()
-            ),
-        );
+        progress(opts, outcome.summary());
+        observations = outcome.observations;
     }
     let found = writer
         .as_ref()
@@ -447,6 +446,15 @@ fn collect_with(run: &scan::Running, stream: bool) -> Collected {
         Ok(())
     });
     (hosts, complete, errors)
+}
+/// A warning before the scan when the SNMP setting uses a weak algorithm (MD5 authentication,
+/// DES privacy): they exist for old devices and must not look like a default.
+pub(in crate::ui) fn snmp_warnings(opts: &BTreeMap<String, String>, s: &scan::Settings) {
+    if let Some(config) = &s.snmp {
+        for weak in config.weak_crypto() {
+            progress(opts, format_args!("SNMP warning: {weak}"));
+        }
+    }
 }
 /// Runs the scan's events to the end: every host worth keeping (responding ones, or all when the
 /// scan is small) goes to `sink`, with `stream` the live events go to stdout. A failing sink

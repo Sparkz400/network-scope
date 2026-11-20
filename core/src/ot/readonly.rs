@@ -22,6 +22,7 @@
 //! | OPC UA | HEL, OpenSecureChannel (446), GetEndpoints (428), FindServers (422), CloseSecureChannel (452), SecurityPolicy None |
 //! | Profinet DCP | Identify All (frame ID 0xFEFE, service ID 5, request, option/suboption 0xFF/0xFF), layer 2 multicast, sent only through [`DcpFrameTx`] |
 //! | Omron FINS/UDP, Niagara Fox, MQTT, KNXnet/IP | Controller Data Read (0x0501), the Fox hello, MQTT CONNECT and DISCONNECT, a unicast KNX DESCRIPTION_REQUEST; see the `more` module |
+//! | Omron FINS/TCP, MELSEC MC 3E, DNP3 | the FINS/TCP node address exchange and Controller Data Read; MC Read CPU Model Name (only on a port the user gives); DNP3 Read of class 0 (only to an outstation address the user gives, never a broadcast); see the `tcp_more` module |
 //!
 //! A Modbus write cannot be constructed; this does not compile:
 //!
@@ -107,6 +108,7 @@
 //! }
 //! ```
 mod more;
+mod tcp_more;
 use crate::sendlog::{PacketKind, SentLog};
 pub use more::{
     FinsCommand, FinsRequest, FoxMessage, FoxRequest, KnxRequest, KnxService, MqttPacket,
@@ -118,6 +120,10 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+};
+pub use tcp_more::{
+    DNP3_FIRST_RESERVED, Dnp3Function, Dnp3Request, FinsTcpMessage, FinsTcpRequest, McCommand,
+    McRequest, crc as dnp3_crc,
 };
 use tokio::{
     io::{AsyncRead, AsyncWriteExt, ReadBuf},
@@ -957,22 +963,42 @@ impl ReadOnlyRequest for OpcUaRequest {
 // ---------------------------------------------------------------------------------------------
 // Catalog
 
+/// Which option a request needs before the scanner sends it. A request that is not opt-in is
+/// sent by `--ot` alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Optin {
+    No,
+    /// `--melsec-port PORT`: the MC protocol has no standard port, so it goes only to the one the
+    /// user names (`port` is 0 in the entry).
+    MelsecPort,
+    /// `--dnp3-address N`: DNP3 is read only from an outstation address the user gives.
+    Dnp3Address,
+}
+
 /// One request the scanner may send to a port, for the dry run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogEntry {
     pub info: RequestInfo,
-    /// The port the request goes to.
+    /// The port the request goes to (0: the user's port, see [`Optin::MelsecPort`]).
     pub port: u16,
     /// TCP or UDP.
     pub tcp: bool,
+    /// The option that has to be given for it to be sent.
+    pub optin: Optin,
 }
 
 /// Every request of every allow-list, built from the allow-list values themselves, with the port
 /// it is sent to. This is exactly the set `ot::identify` can send; the dry run lists it.
 pub fn catalog() -> Vec<CatalogEntry> {
     let mut out = vec![];
-    let mut add =
-        |info: RequestInfo, port: u16, tcp: bool| out.push(CatalogEntry { info, port, tcp });
+    let mut add = |info: RequestInfo, port: u16, tcp: bool| {
+        out.push(CatalogEntry {
+            info,
+            port,
+            tcp,
+            optin: Optin::No,
+        })
+    };
     for f in ModbusFunction::ALLOWED {
         add(ModbusRequest::new(1, f).info(), 502, true);
     }
@@ -1001,6 +1027,14 @@ pub fn catalog() -> Vec<CatalogEntry> {
     }
     for (info, port, tcp) in more::catalog_entries() {
         add(info, port, tcp);
+    }
+    for (info, port, tcp, optin) in tcp_more::catalog_entries() {
+        out.push(CatalogEntry {
+            info,
+            port,
+            tcp,
+            optin,
+        });
     }
     out
 }
@@ -1181,13 +1215,27 @@ mod tests {
             "KNXnet/IP: DESCRIPTION_REQUEST (service type 0x0203, unicast)",
             3671,
         );
-        assert_eq!(labels.len(), 17, "{labels:?}");
-        // BACnet, FINS and KNX are UDP.
-        assert!(
-            labels
-                .iter()
-                .all(|(_, p, tcp)| *tcp == !matches!(*p, 47808 | 9600 | 3671))
+        has(
+            "Omron FINS/TCP: node address data (FINS/TCP command 0)",
+            9600,
         );
+        has(
+            "Omron FINS/TCP: Controller Data Read (command 0x0501)",
+            9600,
+        );
+        has("MELSEC MC 3E: Read CPU Model Name (command 0x0101", 0);
+        has("DNP3: Read class 0 data (function 0x01", 20000);
+        assert_eq!(labels.len(), 21, "{labels:?}");
+        // BACnet, FINS/UDP and KNX are UDP; the FINS/TCP, MC and DNP3 requests are TCP.
+        assert!(labels.iter().all(|(l, p, tcp)| *tcp
+            == (!matches!(*p, 47808 | 3671) && !l.contains("FINS/UDP"))));
+        // exactly the MC and DNP3 requests are opt-in
+        let optin: Vec<String> = catalog()
+            .into_iter()
+            .filter(|e| e.optin != Optin::No)
+            .map(|e| e.info.label())
+            .collect();
+        assert_eq!(optin.len(), 2, "{optin:?}");
         // Labels are unique, so the sent log keys them apart.
         let unique: std::collections::BTreeSet<_> = labels.iter().map(|l| &l.0).collect();
         assert_eq!(unique.len(), labels.len());
