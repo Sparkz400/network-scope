@@ -162,6 +162,21 @@ def segmentation(exe, db, zones, *options):
 
 def check_segmentation(exe, work, failures):
     import contextlib
+    # Five loopback addresses are needed. Linux and Windows route all of 127.0.0.0/8 to the
+    # loopback interface; macOS has 127.0.0.1 only (unless aliases were added to lo0), and the
+    # check says so and skips there instead of failing on a lab limitation.
+    unusable = []
+    for n in range(1, 6):
+        probe = socket.socket()
+        try:
+            probe.bind((f"127.0.0.{n}", 0))
+        except OSError as e:
+            unusable.append(f"127.0.0.{n} ({e})")
+        finally:
+            probe.close()
+    if unusable:
+        print("segmentation: SKIPPED, this machine cannot bind", ", ".join(unusable))
+        return
     with contextlib.ExitStack() as stack:
         for n in range(1, 6):
             skip = ["80"]
