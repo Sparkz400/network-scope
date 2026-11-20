@@ -21,7 +21,9 @@
 //! never touch the network. The `scan` tool is the only one that sends traffic. It **always**
 //! runs in Safe Mode (the settings are built from scratch; no argument can change that), refuses
 //! anything but private addresses ([`scope_check`]), names no hostnames, and is limited in
-//! addresses, ports, total probes and time. It is absent with `--no-scan`. Every tool result
+//! addresses, ports, total probes and time; with `dry_run: true` it returns the plan and sends
+//! nothing. The server has no consent flags: the engine's scope guard ([`crate::scope::enforce`])
+//! runs without a prompt, so a declared scope is binding too. It is absent with `--no-scan`. Every tool result
 //! carries a `schema` identifier (see [`crate::schema`]) in its `structuredContent`.
 use crate::{devices, risk, scan, schema, store};
 use serde_json::{Map, Value, json};
@@ -65,6 +67,10 @@ pub struct Config {
     pub db: PathBuf,
     /// Offer the `scan` tool. Off for a strictly read-only server.
     pub allow_scan: bool,
+    /// The declared scope (`--scope`, `--scope-file` or the default scope file). When there is
+    /// one, the `scan` tool refuses every address outside it. There is no way to override it
+    /// from a tool call: the server has no consent flags.
+    pub scope: Option<crate::scope::Scope>,
 }
 
 /// One MCP session.
@@ -447,6 +453,8 @@ impl Server {
                             "description": "TCP ports, for example 22,80,443 or 1-1024 (default 22,80,443,445,3389)"},
                         "services": {"type": "boolean", "default": false,
                             "description": "Also identify services on open ports (banners, TLS, SMB); more requests per open port"},
+                        "dry_run": {"type": "boolean", "default": false,
+                            "description": "Return the plan (which packet kinds would go to which ports) and send and save nothing. The scope and size limits still apply"},
                         "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": MAX_SCAN_SECONDS,
                             "default": DEFAULT_SCAN_SECONDS,
                             "description": "Cancel the scan (saved as partial) after this long"},
@@ -831,10 +839,16 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 // ---- The scan tool ------------------------------------------------------------------------------
 
 /// Whether an unattended assistant may scan these addresses: private ranges only (RFC 1918,
-/// loopback, IPv6 unique-local; an IPv4-mapped IPv6 address counts as its IPv4 address). Takes
-/// the parsed addresses, never the user's text, so spellings and tricks cannot get past it.
-// TODO(H54): call core scope guard
-pub fn scope_check(addresses: &[IpAddr]) -> Result<(), String> {
+/// loopback, IPv6 unique-local; an IPv4-mapped IPv6 address counts as its IPv4 address) and, when
+/// a scope is declared, inside it. The second part is the engine's scope guard
+/// ([`crate::scope::enforce`]) in its non-interactive form, with no consent flags and no prompt:
+/// an assistant can never confirm anything, so every address the guard would ask about is
+/// refused. Takes the parsed addresses, never the user's text, so spellings and tricks cannot get
+/// past it.
+pub fn scope_check(
+    addresses: &[IpAddr],
+    scope: Option<&crate::scope::Scope>,
+) -> Result<(), String> {
     for address in addresses {
         let address = match address {
             IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(*address, IpAddr::V4),
@@ -850,7 +864,14 @@ pub fn scope_check(addresses: &[IpAddr]) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
+    crate::scope::enforce(addresses, scope, crate::scope::Consent::default(), None)
+        .map(|_| ())
+        .map_err(|_| {
+            format!(
+                "Scope guard: {} The scan tool cannot override this: it scans only addresses inside the declared scope (--scope or the scope file of the server).",
+                crate::scope::assess(addresses, scope).describe()
+            )
+        })
 }
 
 impl Server {
@@ -870,6 +891,10 @@ impl Server {
             .to_string();
         let services = args
             .get("services")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let dry_run = args
+            .get("dry_run")
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let seconds = int_arg(args, "timeout_seconds")
@@ -896,7 +921,7 @@ impl Server {
                 ports.len()
             ));
         }
-        scope_check(&addresses)?;
+        scope_check(&addresses, self.cfg.scope.as_ref())?;
 
         // Built from scratch: nothing the caller sends can switch Safe Mode off or enable SYN,
         // ARP, UDP, OT queries, traceroute or scripts.
@@ -911,6 +936,32 @@ impl Server {
             ..scan::Settings::default()
         };
         debug_assert!(settings.safe && !settings.syn && !settings.ot && !settings.udp);
+        if dry_run {
+            // The same plan the CLI's `scan --dry-run` prints; nothing is sent or saved.
+            let probe_db = if services {
+                Some(crate::service::ProbeDb::load("")?)
+            } else {
+                None
+            };
+            let groups = crate::plan::scan(
+                addresses.iter().copied(),
+                &ports,
+                &settings,
+                probe_db.as_ref(),
+            );
+            return enveloped(
+                "dry-run",
+                &json!({
+                    "dry_run": true,
+                    "command": "scan",
+                    "packets_sent": 0,
+                    "safe_mode": true,
+                    "hosts": addresses.len(),
+                    "scope": {"checked": true, "would_need_confirmation": false},
+                    "groups": groups,
+                }),
+            );
+        }
         let started = Instant::now();
         let total = addresses.len();
         let run = scan::start_stream(
@@ -952,7 +1003,7 @@ impl Server {
             complete = false;
         }
         let snapshot = store::Snapshot {
-            sent: vec![],
+            sent: run.sent.snapshot(),
             targets: targets_text.clone(),
             complete,
             settings,

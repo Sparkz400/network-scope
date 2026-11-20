@@ -16,6 +16,7 @@ All of them run [`monitor`](monitoring-alerts.md) (or, in the GUI, an ordinary s
 
 - A scheduled scan uses your current settings **but always in Safe Mode**, whatever the Safe Mode checkbox says, and is saved to the inventory like any scan, so *History* and *Compare* show it. It replaces the results on screen, as pressing Start does.
 - A scan, a passive capture or an inventory load that is in progress delays the next scheduled scan; scans never overlap.
+- Scheduled scans go through the same [scope guard](safe-mode-and-ot-safety.md) as the Start button, but nobody is there to confirm: public or out-of-scope targets are refused (the reason is shown as the error) instead of asking.
 - The schedule runs only while the window is open (also minimised). Closing it stops it. The settings show the command that keeps `monitor` running without the window.
 
 ## Windows service
@@ -31,6 +32,7 @@ network-scope-cli service uninstall
 `service install TARGETS [monitor options]` takes the same options as `monitor` (checked at install time, so a typo fails there and not inside a stopped service) plus `--service-name NAME` (default `NetworkScopeMonitor`) and `--dry-run`, which only prints the command line the service would get. `--cycles` is refused: a service runs until it is stopped.
 
 - The service runs `"<path>\network-scope-cli.exe" service run ...` with the same arguments. The path is always quoted.
+- The [scope guard](safe-mode-and-ot-safety.md) applies: a service has nobody to ask, so `service install` refuses public or out-of-scope targets unless `--yes-public` / `--allow-out-of-scope` is given (the flags are passed on to the service; without them `service run` stops with the refusal in `service.log`). A scope file in the default place is passed on as `--scope-file` with its absolute path, because the service account has its own config folder; use `--scope CIDR` or `--scope-file FILE` to name one explicitly.
 - The inventory is an explicit absolute file: `--db FILE`, else `%ProgramData%\NetworkScope\inventory.sqlite`. The default location of the other commands (`%LOCALAPPDATA%`) belongs to the installing user, not to the service account. To read the service's inventory use `--db` with the same path. File options (`--alerts`, `--on-alert`, `--script`, `--cves`, ...) are stored as absolute paths.
 - It starts automatically (delayed), is restarted after a failure (three times, 60 s apart) and runs as `LocalSystem`, which can write to `%ProgramData%` and use the capture driver without further setup. To narrow the account: `sc config NetworkScopeMonitor obj= "NT AUTHORITY\LocalService"` and give that account modify rights on the inventory folder.
 - `sc stop` (or a shutdown) ends the loop cleanly: the scan in progress is cancelled and saved as partial, the wait between cycles is cut short. Lifecycle lines and errors go to `service.log` next to the inventory, since a service has no console. Alerts go to the inventory (`alerts`), `--alerts FILE`, the webhook and syslog sinks; nothing is printed on stdout.

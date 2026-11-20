@@ -8,7 +8,7 @@
 //! calls into the Service Control Manager are in `service_scm.rs` (Windows only). On Linux use
 //! the systemd units in `packaging/systemd`.
 use super::monitor;
-use crate::ui::{Ctx, output};
+use crate::ui::{Ctx, ExitCode, guard, output};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -55,10 +55,30 @@ fn install(ctx: &mut Ctx) -> Result<(), String> {
     let exe = exe
         .to_str()
         .ok_or("The program path is not valid Unicode")?;
-    let args = service_args(&name, &db, &targets, &ctx.opts);
+    // The scope guard (ROADMAP H54) runs here too, without a prompt: a service started by the
+    // Service Control Manager has nobody to ask, so what would need a yes must be given as
+    // --yes-public / --allow-out-of-scope now (they are passed on to the service). The declared
+    // scope is fixed at install time: a scope file found in the default place is passed on by
+    // absolute path, because the service account has a different config folder.
+    let mut service_opts = ctx.opts.clone();
+    if !service_opts.contains_key("scope")
+        && !service_opts.contains_key("scope-file")
+        && let Some(file) = crate::scope::default_path().filter(|p| p.is_file())
+    {
+        service_opts.insert("scope-file".into(), file.display().to_string());
+    }
+    let args = service_args(&name, &db, &targets, &service_opts);
     let command_line = command_line(exe, &args);
     if ctx.opts.contains_key("dry-run") {
         return output(&command_line, &ctx.opts);
+    }
+    let hosts = crate::scan::parse_targets(
+        &targets.join(" "),
+        crate::ui::args::scan_settings(&ctx.opts)?.skip_edges,
+        crate::scan::MAX_STREAM,
+    )?;
+    if let Err(refusal) = guard::check(&service_opts, &hosts, None)? {
+        return Err(refusal.to_string());
     }
     scm_install(&name, &db, &command_line)?;
     crate::ui::progress(
@@ -87,7 +107,13 @@ fn run_service(ctx: &mut Ctx) -> Result<(), String> {
         log,
         Box::new(move |stop| {
             monitor::check(&ctx)?;
-            monitor::run_monitor(&mut ctx, Some(stop), false)
+            monitor::run_monitor(&mut ctx, Some(stop), false)?;
+            // The scope guard refused the targets (nobody to ask in a service): the monitor never
+            // started, and the service log must say so.
+            if ctx.status == ExitCode::Refused {
+                return Err("The scope guard refused the monitor targets (public or outside the declared scope); reinstall the service with --yes-public or --allow-out-of-scope, or fix --scope-file".into());
+            }
+            Ok(())
         }),
     )
 }
@@ -202,7 +228,7 @@ fn service_args(
 
 /// Options whose value is a file or folder: a service starts in the system folder, so relative
 /// paths from the installing shell are made absolute.
-const PATH_OPTIONS: [&str; 7] = [
+const PATH_OPTIONS: [&str; 8] = [
     "alerts",
     "on-alert",
     "on-alert-dir",
@@ -210,6 +236,7 @@ const PATH_OPTIONS: [&str; 7] = [
     "cves",
     "feeds",
     "script",
+    "scope-file",
 ];
 fn absolute_value(value: &str) -> String {
     // `library` and `library:NAME` name scripts built into the program, not files.
@@ -442,6 +469,31 @@ mod tests {
         assert_eq!(sopts["on-alert"], "library:log-alerts");
         assert_eq!(absolute_value("library"), "library");
         assert!(!sopts.contains_key("output") && !sopts.contains_key("format"));
+    }
+
+    /// A service has nobody to ask: install refuses what the scope guard would ask about, before
+    /// it touches the Service Control Manager (a refusal is the only outcome this test can reach
+    /// without installing anything).
+    #[test]
+    fn install_refuses_public_targets_without_the_consent_flags() {
+        let db =
+            std::env::temp_dir().join(format!("ns-service-scope-{}.sqlite", std::process::id()));
+        for scope in [vec![], vec!["--scope", "10.0.0.0/8"]] {
+            let mut a = vec![
+                "service",
+                "install",
+                "8.8.8.8",
+                "--db",
+                db.to_str().unwrap(),
+            ];
+            a.extend(scope);
+            let err = run(&args(&a)).unwrap_err();
+            assert!(
+                err.contains("Scope guard") && err.contains("--yes-public"),
+                "{err}"
+            );
+        }
+        assert!(!db.exists());
     }
 
     #[test]

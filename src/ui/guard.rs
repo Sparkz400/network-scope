@@ -186,12 +186,58 @@ mod tests {
             let code = source.split("#[cfg(test)]").next().unwrap();
             assert!(code.contains(call), "{name} must call the scope guard");
         }
+        // `service install` checks the targets (no prompt: nobody can answer in a service), and
+        // `service run` is the monitor loop, which calls the guard itself (checked above).
+        let service = include_str!("commands/service.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(service.contains("guard::check("), "service install");
+        assert!(
+            service.contains("run_monitor("),
+            "service run goes through monitor"
+        );
+        assert!(
+            service.contains("ExitCode::Refused"),
+            "service run reports a refusal"
+        );
+        // The MCP `scan` tool: the engine's guard without consent flags and without a prompt.
+        let mcp = include_str!("../../core/src/mcp.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(mcp.contains("scope::enforce("), "the MCP scan tool");
+        assert!(
+            mcp.contains("scope_check(&addresses"),
+            "the MCP scan tool calls it"
+        );
+        assert!(
+            mcp.contains("Consent::default()") && !mcp.contains("Consent {"),
+            "the MCP server never carries consent flags"
+        );
+        assert!(!mcp.contains("TODO(H54)"));
+        // Nothing that is not a scan target goes through the guard: `sync push` sends the
+        // inventory to a URL the user gave and opens no scan.
+        let sync = include_str!("../../core/src/sync.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(!sync.contains("scan::start") && !sync.contains("Gate"));
         #[cfg(feature = "gui")]
         {
             let gui = include_str!("../gui/mod.rs");
             assert!(
                 gui.contains("scope::enforce("),
                 "the desktop Start must call the scope guard"
+            );
+            // The scheduler starts its scans through the same check, unattended: it neither
+            // opens the dialog nor uses a stored consent.
+            let scheduler = include_str!("../gui/scheduler.rs");
+            assert!(scheduler.contains("start_unattended("));
+            assert!(!scheduler.contains("scope_consent") && !scheduler.contains("scan::start"));
+            assert!(
+                gui.contains("fn start_unattended(") && gui.contains("self.scope_check(&hosts"),
+                "unattended starts must go through scope_check"
             );
         }
         // The CLI helper itself goes through the engine's single function.
