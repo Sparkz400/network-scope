@@ -37,6 +37,7 @@ The number of handshakes per port is limited (fewer in Safe Mode), so a protocol
 
 ## References
 
+- [Mozilla, Server Side TLS recommendations](https://wiki.mozilla.org/Security/Server_Side_TLS)
 - [RFC 7568, Deprecating SSL 3.0](https://www.rfc-editor.org/rfc/rfc7568)
 - [NVD, CVE-2014-3566 (POODLE)](https://nvd.nist.gov/vuln/detail/CVE-2014-3566)
 - [Mozilla SSL Configuration Generator](https://ssl-config.mozilla.org/)

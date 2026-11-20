@@ -31,6 +31,7 @@ The tool offers the server only static-RSA suites (names such as `RSA_AES_128_GC
 
 ## References
 
+- [Mozilla, Server Side TLS recommendations](https://wiki.mozilla.org/Security/Server_Side_TLS)
 - [RFC 9325, Recommendations for secure use of TLS](https://www.rfc-editor.org/rfc/rfc9325)
 - [Mozilla SSL Configuration Generator](https://ssl-config.mozilla.org/)
 

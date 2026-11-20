@@ -35,6 +35,7 @@ If a broken suite is found, the weaker-but-different `tls-3des` finding is not r
 
 ## References
 
+- [Mozilla, Server Side TLS recommendations](https://wiki.mozilla.org/Security/Server_Side_TLS)
 - [RFC 7465, Prohibiting RC4 cipher suites](https://www.rfc-editor.org/rfc/rfc7465)
 - [RFC 9325, Recommendations for secure use of TLS](https://www.rfc-editor.org/rfc/rfc9325)
 - [Mozilla SSL Configuration Generator](https://ssl-config.mozilla.org/)
