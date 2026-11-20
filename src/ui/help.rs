@@ -116,6 +116,8 @@ Scan options:
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
   --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
+  --favicon       one GET /favicon.ico per web port, hashed (Shodan-compatible) into http.PORT.favicon_mmh3
+                  (with --services --fast; not on hosts the scan found industrial)
   --dry-run       scan, monitor, trace, dcp, wol: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
   --record FILE.pcapng  scan: keep the payloads the scan sent and received (OT requests and replies, service

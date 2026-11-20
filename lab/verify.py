@@ -10,6 +10,7 @@ fragile OT devices; their expectations and the numbers they were set from are in
 docs/src/lab-and-testing.md.
 """
 import argparse
+import codecs
 import json
 import os
 import socket
@@ -21,6 +22,8 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import simulators  # noqa: E402  (only for the icon the lab web server serves)
 PORTS = "21,22,23,502,6379,8080,44818"
 OPEN_PORTS = [21, 22, 23, 502, 6379, 8080, 44818]
 OT_PORTS = "102,502,44818"
@@ -36,6 +39,37 @@ EXPECT_IDENTITY = {
     "BACnet.device_id": "1000",
     "device.type": "Industrial controller / OT device",
 }
+
+
+def murmur3_32(data, seed=0):
+    """MurmurHash3 x86 32-bit, written independently of the Rust implementation (reference: SMHasher)."""
+    c1, c2, mask = 0xCC9E2D51, 0x1B873593, 0xFFFFFFFF
+    rotl = lambda x, r: ((x << r) | (x >> (32 - r))) & mask
+    h = seed
+    for i in range(0, len(data) - len(data) % 4, 4):
+        k = int.from_bytes(data[i:i + 4], "little")
+        h ^= rotl(k * c1 & mask, 15) * c2 & mask
+        h = (rotl(h, 13) * 5 + 0xE6546B64) & mask
+    tail = data[len(data) - len(data) % 4:]
+    if tail:
+        k = int.from_bytes(tail, "little")
+        h ^= rotl(k * c1 & mask, 15) * c2 & mask
+    h ^= len(data)
+    h ^= h >> 16
+    h = h * 0x85EBCA6B & mask
+    h ^= h >> 13
+    h = h * 0xC2B2AE35 & mask
+    h ^= h >> 16
+    return h
+
+
+def shodan_favicon_hash(icon):
+    """Shodan's http.favicon.hash: signed mmh3 of base64.encodebytes(icon)."""
+    h = murmur3_32(codecs.encode(icon, "base64"))
+    return h - (1 << 32) if h >= 1 << 31 else h
+
+
+EXPECT_FAVICON = {"http.8080.favicon_mmh3": str(shodan_favicon_hash(simulators.FAVICON))}
 EXPECT_FINDINGS = {
     "cve-cve-2011-2523", "cve-cve-2021-41773", "redis-noauth", "telnet-open",
     "ftp-cleartext", "ssh-weak-algorithms", "http-basic-cleartext", "ot-reachable",
@@ -101,7 +135,7 @@ def missing_identity(host, expect=EXPECT_IDENTITY):
 
 def check_normal(exe, work, failures):
     with Sim():
-        host, ids, _ = deep_scan(exe, work, "normal", "--timeout", "1500")
+        host, ids, _ = deep_scan(exe, work, "normal", "--timeout", "1500", "--favicon")
         slowed = [e for e in host["errors"] if e.startswith("backed off:")]
         if slowed:
             failures.append(f"healthy lab host was backed off: {slowed}")
@@ -109,8 +143,24 @@ def check_normal(exe, work, failures):
         check_dry_run_and_sent_log(exe, work, host, failures)
     for key, want in missing_identity(host).items():
         failures.append(f"identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
+    # --favicon was on, but this host has industrial ports open: it must not be asked for an icon
+    if any(e["detail"] == "GET /favicon.ico" for e in host["sent_in_output"] or []) or "http.8080.favicon_mmh3" in host["identity"]:
+        failures.append("favicon: a host with industrial ports open was asked for /favicon.ico")
+    check_favicon(exe, work, failures)
     for want in sorted(EXPECT_FINDINGS - ids):
         failures.append(f"finding missing: {want}")
+
+
+def check_favicon(exe, work, failures):
+    """`--favicon` on the lab web server alone (the simulators' other ports are not scanned): the hash
+    Shodan would index, computed here independently of the Rust code, must come out."""
+    with Sim():
+        host, _, _ = scan(exe, work, "favicon", "--fast", "--deep", "--favicon", "--ports", "8080", "--timeout", "1500")
+    for key, want in missing_identity(host, EXPECT_FAVICON).items():
+        failures.append(f"favicon hash {key}: expected {want!r} (computed independently in Python), got {host['identity'].get(key)!r}")
+    asked = [e for e in host["sent_in_output"] or [] if e["kind"] == "http-request" and e["detail"] == "GET /favicon.ico"]
+    if [e["count"] for e in asked] != [1]:
+        failures.append(f"sent log: expected one favicon request, got {asked}")
 
 
 def banner_wait(port):
@@ -319,10 +369,12 @@ def check_dry_run_and_sent_log(exe, work, host, failures):
     counter.settimeout(0.5)
     port = counter.getsockname()[1]
     db = os.path.join(work, "dry.sqlite")
-    out = subprocess.run([exe, "scan", "127.0.0.1", "--dry-run", "--fast", "--deep", "--ot", "--ports", str(port),
-                          "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
+    out = subprocess.run([exe, "scan", "127.0.0.1", "--dry-run", "--fast", "--deep", "--ot", "--favicon", "--ports",
+                          str(port), "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
     if "DRY RUN: nothing was sent." not in out or "tcp-connect" not in out:
         failures.append(f"dry run output unexpected: {out[:200]!r}")
+    if "GET /favicon.ico" not in out:
+        failures.append("dry run does not list the favicon request")
     if os.path.exists(db):
         failures.append("dry run saved a scan")
     try:

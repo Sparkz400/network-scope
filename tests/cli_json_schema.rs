@@ -418,6 +418,7 @@ fn every_dry_run_prints_the_dry_run_schema() {
                 "--fast",
                 "--ot",
                 "--jarm",
+                "--favicon",
                 "--services",
             ],
         ),

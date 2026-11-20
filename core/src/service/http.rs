@@ -66,9 +66,13 @@ pub fn parse_http(data: &[u8]) -> Option<Http> {
     Some(h)
 }
 
+fn http_request(ip: IpAddr, port: u16) -> String {
+    http_request_for("/", ip, port)
+}
+
 /// RFC 7230 section 5.4: the Host header carries the port unless it is the scheme default
 /// (80/443), and an IPv6 literal is bracketed (`[fe80::1]:8080`).
-fn http_request(ip: IpAddr, port: u16) -> String {
+pub(crate) fn http_request_for(path: &str, ip: IpAddr, port: u16) -> String {
     let addr = match ip {
         IpAddr::V4(v4) => v4.to_string(),
         IpAddr::V6(v6) => format!("[{v6}]"),
@@ -79,7 +83,7 @@ fn http_request(ip: IpAddr, port: u16) -> String {
         format!("{addr}:{port}")
     };
     format!(
-        "GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: NetworkScope\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: NetworkScope\r\nAccept: */*\r\nConnection: close\r\n\r\n"
     )
 }
 
