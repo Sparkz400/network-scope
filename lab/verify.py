@@ -341,6 +341,9 @@ def main():
     ap.add_argument("--scenario", choices=[*CHECKS, "all"], default="normal")
     ap.add_argument("--seed", type=int, default=LOSSY_SEED, help="seed of the lossy scenario (to try others)")
     args = ap.parse_args()
+    # The scope guard reads a default scope file from the config folder; a developer's own file
+    # must not change the result of the lab (it only knows loopback addresses).
+    os.environ["LOCALAPPDATA"] = os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="ns-config-")
     LOSSY_SEED = args.seed
     exe = os.path.abspath(args.exe)
     work = tempfile.mkdtemp(prefix="ns-lab-")

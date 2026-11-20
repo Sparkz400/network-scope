@@ -406,6 +406,9 @@ def main():
                     help="record this run as the baseline of this platform (review the diff!)")
     ap.add_argument("--timeout", type=int, default=1500, help="port timeout in ms passed to the CLI")
     args = ap.parse_args()
+    # The scope guard reads a default scope file from the config folder; a developer's own file
+    # must not change the result of the lab (it only knows loopback addresses).
+    os.environ["LOCALAPPDATA"] = os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="ns-config-")
     platform = PLATFORMS.get(sys.platform, sys.platform)
     try:
         cli = os.path.abspath(args.cli)
