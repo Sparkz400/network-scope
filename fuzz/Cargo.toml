@@ -215,6 +215,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "import_inventory"
+path = "fuzz_targets/import_inventory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "arp_reply"
 path = "fuzz_targets/arp_reply.rs"
 test = false
@@ -238,6 +245,160 @@ bench = false
 [[bin]]
 name = "icmp_reply"
 path = "fuzz_targets/icmp_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "favicon_response"
+path = "fuzz_targets/favicon_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jarm_response"
+path = "fuzz_targets/jarm_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nvd_import"
+path = "fuzz_targets/nvd_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csaf_import"
+path = "fuzz_targets/csaf_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ot_model"
+path = "fuzz_targets/ot_model.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zones_file"
+path = "fuzz_targets/zones_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "banner_groups"
+path = "fuzz_targets/banner_groups.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_message"
+path = "fuzz_targets/mcp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scope_file"
+path = "fuzz_targets/scope_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "update_response"
+path = "fuzz_targets/update_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "local_networks"
+path = "fuzz_targets/local_networks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snmp_response"
+path = "fuzz_targets/snmp_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "target_list"
+path = "fuzz_targets/target_list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fins_reply"
+path = "fuzz_targets/fins_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fox_hello"
+path = "fuzz_targets/fox_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mqtt_connack"
+path = "fuzz_targets/mqtt_connack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "knx_description"
+path = "fuzz_targets/knx_description.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ndp_message"
+path = "fuzz_targets/ndp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "neighbor_cache"
+path = "fuzz_targets/neighbor_cache.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fins_tcp_reply"
+path = "fuzz_targets/fins_tcp_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mc_reply"
+path = "fuzz_targets/mc_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnp3_reply"
+path = "fuzz_targets/dnp3_reply.rs"
 test = false
 doc = false
 bench = false

@@ -1,0 +1,253 @@
+{
+  "resultsPerPage": 9,
+  "startIndex": 0,
+  "totalResults": 9,
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "timestamp": "2026-11-01T00:00:00.000",
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2024-6387",
+        "sourceIdentifier": "secalert@example.org",
+        "published": "2024-07-01T13:15:06.370",
+        "lastModified": "2025-01-01T00:00:00.000",
+        "vulnStatus": "Analyzed",
+        "descriptions": [
+          { "lang": "en", "value": "A security regression (signal handler race condition) was found in the OpenSSH server. It may allow unauthenticated remote code execution on glibc based systems." },
+          { "lang": "es", "value": "Se encontro una regresion de seguridad en el servidor OpenSSH." }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": { "version": "3.1", "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H", "baseScore": 8.1, "baseSeverity": "HIGH" },
+              "exploitabilityScore": 2.2,
+              "impactScore": 5.9
+            }
+          ]
+        },
+        "weaknesses": [
+          { "source": "nvd@nist.gov", "type": "Primary", "description": [ { "lang": "en", "value": "CWE-364" } ] }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:openbsd:openssh:*:*:*:*:*:*:*:*",
+                    "versionStartIncluding": "8.5",
+                    "versionEndExcluding": "9.8",
+                    "matchCriteriaId": "00000000-0000-4000-8000-000000000001"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [ { "url": "https://example.org/advisory/openssh", "source": "secalert@example.org" } ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2021-41773",
+        "sourceIdentifier": "security@example.org",
+        "published": "2021-10-05T09:15:07.593",
+        "lastModified": "2023-11-07T03:38:00.000",
+        "vulnStatus": "Modified",
+        "descriptions": [
+          { "lang": "en", "value": "A flaw was found in a change made to path normalization in Apache HTTP Server 2.4.49. An attacker could use a path traversal attack to map URLs to files outside the expected document root." }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": { "version": "3.1", "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "baseScore": 9.8, "baseSeverity": "CRITICAL" }
+            }
+          ]
+        },
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  { "vulnerable": true, "criteria": "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*", "matchCriteriaId": "00000000-0000-4000-8000-000000000002" },
+                  { "vulnerable": true, "criteria": "cpe:2.3:a:apache:http_server:2.4.50:*:*:*:*:*:*:*", "matchCriteriaId": "00000000-0000-4000-8000-000000000003" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2014-0160",
+        "published": "2014-04-07T22:55:03.893",
+        "lastModified": "2025-01-01T00:00:00.000",
+        "vulnStatus": "Analyzed",
+        "descriptions": [
+          { "lang": "en", "value": "The TLS and DTLS heartbeat implementation in OpenSSL 1.0.1 before 1.0.1g does not properly handle Heartbeat Extension packets." }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            { "source": "nvd@nist.gov", "type": "Primary", "cvssData": { "version": "3.1", "baseScore": 7.5, "baseSeverity": "HIGH" } }
+          ],
+          "cvssMetricV2": [
+            { "source": "nvd@nist.gov", "type": "Primary", "cvssData": { "version": "2.0", "baseScore": 5.0 }, "baseSeverity": "MEDIUM" }
+          ]
+        },
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:openssl:openssl:*:*:*:*:*:*:*:*",
+                    "versionStartIncluding": "1.0.1",
+                    "versionEndIncluding": "1.0.1f",
+                    "matchCriteriaId": "00000000-0000-4000-8000-000000000004"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0001",
+        "published": "2099-01-01T00:00:00.000",
+        "lastModified": "2099-01-01T00:00:00.000",
+        "vulnStatus": "Analyzed",
+        "descriptions": [ { "lang": "en", "value": "Synthetic record (not a real CVE): start excluded, end included, CVSS 2 only." } ],
+        "metrics": {
+          "cvssMetricV2": [
+            { "source": "nvd@nist.gov", "type": "Primary", "cvssData": { "version": "2.0", "baseScore": 5.0 }, "baseSeverity": "MEDIUM" }
+          ]
+        },
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:example:examplehttpd:*:*:*:*:*:*:*:*",
+                    "versionStartExcluding": "1.0",
+                    "versionEndIncluding": "2.0",
+                    "matchCriteriaId": "00000000-0000-4000-8000-000000000005"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0002",
+        "vulnStatus": "Analyzed",
+        "descriptions": [ { "lang": "en", "value": "Synthetic record: the application is vulnerable only when it runs on a specific operating system (AND), which a scan cannot confirm." } ],
+        "metrics": { "cvssMetricV31": [ { "cvssData": { "version": "3.1", "baseScore": 9.8, "baseSeverity": "CRITICAL" } } ] },
+        "configurations": [
+          {
+            "operator": "AND",
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  { "vulnerable": true, "criteria": "cpe:2.3:a:example:examplehttpd:*:*:*:*:*:*:*:*", "versionEndExcluding": "9.0", "matchCriteriaId": "00000000-0000-4000-8000-000000000006" }
+                ]
+              },
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  { "vulnerable": false, "criteria": "cpe:2.3:o:example:exampleos:-:*:*:*:*:*:*:*", "matchCriteriaId": "00000000-0000-4000-8000-000000000007" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0003",
+        "vulnStatus": "Rejected",
+        "descriptions": [ { "lang": "en", "value": "** REJECT ** Synthetic record: a rejected CVE." } ],
+        "configurations": [
+          { "nodes": [ { "operator": "OR", "negate": false, "cpeMatch": [ { "vulnerable": true, "criteria": "cpe:2.3:a:example:examplehttpd:*:*:*:*:*:*:*:*", "versionEndExcluding": "9.0" } ] } ] }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0004",
+        "vulnStatus": "Analyzed",
+        "descriptions": [ { "lang": "en", "value": "Synthetic record: every version is named (no bound), and one match is not vulnerable." } ],
+        "metrics": { "cvssMetricV31": [ { "cvssData": { "version": "3.1", "baseScore": 7.0, "baseSeverity": "HIGH" } } ] },
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  { "vulnerable": true, "criteria": "cpe:2.3:a:example:examplehttpd:*:*:*:*:*:*:*:*" },
+                  { "vulnerable": true, "criteria": "cpe:2.3:a:example:examplehttpd:-:*:*:*:*:*:*:*" },
+                  { "vulnerable": false, "criteria": "cpe:2.3:a:example:examplehttpd:3.0:*:*:*:*:*:*:*" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0005",
+        "vulnStatus": "Analyzed",
+        "descriptions": [ { "lang": "en", "value": "Synthetic record: an operating system product with a bounded range." } ],
+        "metrics": { "cvssMetricV30": [ { "cvssData": { "version": "3.0", "baseScore": 4.3, "baseSeverity": "MEDIUM" } } ] },
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  { "vulnerable": true, "criteria": "cpe:2.3:o:example:firmwareos:*:*:*:*:*:*:*:*", "versionEndExcluding": "3.2" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0006",
+        "vulnStatus": "Awaiting Analysis",
+        "descriptions": [ { "lang": "en", "value": "Synthetic record: not analysed yet, no configurations and no metrics." } ]
+      }
+    }
+  ]
+}

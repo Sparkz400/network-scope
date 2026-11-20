@@ -1,0 +1,53 @@
+{
+  "description": "Probe order per device class (ROADMAP B13). `ports` are tried first, in this order, once a host looks like the class; `signature` are the ports that identify it (two open ones, or one plus a `vendors` match on the MAC vendor, make the class certain enough for --early-stop). `ttl` lists initial TTLs that weakly suggest the class. The scan only reorders the ports the user asked for: nothing here ever adds a port to a scan.",
+  "classes": [
+    {
+      "id": "printer",
+      "label": "Printer / MFP",
+      "ports": [9100, 631, 515, 80, 443, 161, 9101, 9102],
+      "signature": [9100, 631, 515],
+      "vendors": ["hewlett", "canon", "brother", "seiko epson", "xerox", "lexmark", "ricoh", "kyocera", "konica", "oki data"],
+      "ttl": []
+    },
+    {
+      "id": "plc",
+      "label": "Industrial controller / OT device",
+      "ports": [502, 102, 44818, 4840, 47808, 20000, 2404, 9600, 1911, 34962, 34964, 80, 443],
+      "signature": [502, 102, 44818, 4840, 2404, 9600, 20000, 1911],
+      "vendors": ["siemens", "rockwell", "schneider", "beckhoff", "phoenix contact", "wago", "omron", "mitsubishi electric", "honeywell", "moxa", "hirschmann", "pilz", "festo", "turck", "bosch rexroth", "yokogawa"],
+      "ttl": []
+    },
+    {
+      "id": "windows",
+      "label": "Windows computer",
+      "ports": [445, 135, 3389, 139, 5985, 80, 443],
+      "signature": [445, 135, 3389, 139, 5985],
+      "vendors": [],
+      "ttl": [128]
+    },
+    {
+      "id": "unix",
+      "label": "Linux/Unix host",
+      "ports": [22, 80, 443, 111, 2049, 3306, 5432, 8080],
+      "signature": [22, 111, 2049],
+      "vendors": [],
+      "ttl": [64]
+    },
+    {
+      "id": "camera",
+      "label": "IP camera / recorder",
+      "ports": [554, 80, 443, 8554, 8000, 37777],
+      "signature": [554, 8554, 37777],
+      "vendors": ["hikvision", "dahua", "axis comm", "hanwha", "vivotek", "reolink", "amcrest", "foscam", "uniview"],
+      "ttl": []
+    },
+    {
+      "id": "network",
+      "label": "Network device (router/switch/AP)",
+      "ports": [23, 22, 80, 443, 161, 8080, 8291, 179, 8443],
+      "signature": [8291, 179],
+      "vendors": ["cisco", "juniper", "arista", "mikrotik", "ubiquiti", "aruba", "ruckus", "fortinet", "netgear", "tp-link", "d-link", "zyxel", "huawei", "h3c"],
+      "ttl": [255]
+    }
+  ]
+}

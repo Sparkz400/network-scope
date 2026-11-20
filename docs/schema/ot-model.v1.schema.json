@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:ot-model:v1",
+  "title": "Learned OT traffic model",
+  "description": "The model file written by `ot-learn`: for every industrial device, who talked to it, with which functions, how often and when.",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "source",
+    "first",
+    "last",
+    "events",
+    "assets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/ot-model/v1"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Version of the model layout; ot-listen refuses a newer one."
+    },
+    "source": {
+      "type": "string",
+      "description": "The capture file or interface it was learned from."
+    },
+    "first": {
+      "type": "integer",
+      "description": "Time of the first learned message, Unix seconds."
+    },
+    "last": {
+      "type": "integer",
+      "description": "Time of the last learned message, Unix seconds."
+    },
+    "events": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "assets": {
+      "type": "object",
+      "description": "Device address to its model: protocols, first, last, events, peers (client address to events, first, last and the functions it used), functions (`Protocol: function` to count and control), hours and control_hours (24 values each, UTC), active_minutes and max_per_minute."
+    }
+  }
+}

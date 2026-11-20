@@ -1,0 +1,70 @@
+{
+  "_comment": "Line-coverage targets for parsers and risk rules, checked by scripts/coverage_gate.py. Patterns are regexes on the source path with forward slashes, so they match src/ and core/src/. The first matching target wins. A target with ratchet_to is below its goal: threshold is the floor measured at the time (cargo llvm-cov 0.9.1, rounded down to a whole percent) and 'measured' is the exact value then. Raise a floor when coverage improves, never lower it, never set it above a measured value; remove ratchet_to and use 80 once the file reaches it. On 2026-11-20 (Windows, `cargo llvm-cov --workspace`) every target file reached 80%, so no target ratchets at the moment; the mechanism stays for the next file that falls short. The percentages count the #[cfg(test)] code in the same file, as the gate always has.",
+  "targets": [
+    {
+      "name": "risk",
+      "pattern": "(^|/)src/risk\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "pcapfile",
+      "pattern": "(^|/)src/pcapfile\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "tls",
+      "pattern": "(^|/)src/tls\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "service",
+      "pattern": "(^|/)src/service(\\.rs$|/)",
+      "threshold": 80
+    },
+    {
+      "name": "otpassive",
+      "pattern": "(^|/)src/otpassive(\\.rs$|/)",
+      "threshold": 80
+    },
+    {
+      "name": "ot (active identification)",
+      "pattern": "(^|/)src/ot\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "ot",
+      "pattern": "(^|/)src/ot/",
+      "threshold": 80
+    },
+    {
+      "name": "nmap",
+      "pattern": "(^|/)src/nmap\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "passive",
+      "pattern": "(^|/)src/passive\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "udp",
+      "pattern": "(^|/)src/udp\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "arp",
+      "pattern": "(^|/)src/arp\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "osfp",
+      "pattern": "(^|/)src/osfp\\.rs$",
+      "threshold": 80
+    },
+    {
+      "name": "fingerprint",
+      "pattern": "(^|/)src/fingerprint\\.rs$",
+      "threshold": 80
+    }
+  ]
+}

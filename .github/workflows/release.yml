@@ -50,6 +50,13 @@ jobs:
       - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: rustup toolchain install
 
+      # SOURCE_DATE_EPOCH from the commit time, source/cargo/rustup paths remapped, no incremental
+      # build: the same commit gives the same binary wherever it is built. Linux x86_64 is the
+      # target the `reproducible` workflow checks and docs/src/supply-chain.md explains.
+      - name: Reproducible build environment
+        shell: bash
+        run: sh scripts/repro_env.sh "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+
       - run: cargo build --release --locked
 
       - name: Package (Windows zip and installer)
@@ -106,9 +113,41 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # CycloneDX SBOM of the dependency tree (all targets: Windows, Linux, macOS), as a release file.
+  # It is a file in dist/ like the binaries, so it is in SHA256SUMS, covered by both provenance
+  # attestations and attested as the SBOM of the release files in the `release` job.
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CYCLONEDX_VERSION: "0.5.10"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - run: cargo install cargo-cyclonedx --version "$CARGO_CYCLONEDX_VERSION" --locked
+
+      - name: Generate the SBOM
+        run: |
+          # The BOM timestamp follows SOURCE_DATE_EPOCH (honored by cargo-cyclonedx).
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          version="${GITHUB_REF_NAME#v}"
+          cargo cyclonedx --format json --spec-version 1.5 --target all             --override-filename "network-scope-${version}.cdx"
+          mkdir -p dist
+          cp "network-scope-${version}.cdx.json" dist/
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['bomFormat']=='CycloneDX' and d['components'], 'empty SBOM'; print(len(d['components']), 'components')" "dist/network-scope-${version}.cdx.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-sbom
+          path: dist/*
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: build
+    needs: [build, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,12 +183,30 @@ jobs:
         with:
           subject-path: dist/*
 
+      # Signed SBOM attestation: the CycloneDX SBOM is the bill of materials of every packaged
+      # release file. Verify with
+      #   gh attestation verify <file> --repo Sparkz400/network-scope       #     --predicate-type https://cyclonedx.org/bom
+      - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        id: sbom-attestation
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.exe
+          sbom-path: dist/network-scope-${{ steps.checksums.outputs.version }}.cdx.json
+
       # The same signed provenance as a release file, for offline verification
       # (`gh attestation verify <file> --bundle <this file> --repo Sparkz400/network-scope`).
       - name: Attach the provenance bundle
         env:
           BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
         run: cp "$BUNDLE" "dist/network-scope-${GITHUB_REF_NAME#v}.sigstore.json"
+
+      # The SBOM attestation bundle, for `gh attestation verify ... --bundle <this file>`.
+      - name: Attach the SBOM attestation bundle
+        env:
+          BUNDLE: ${{ steps.sbom-attestation.outputs.bundle-path }}
+        run: cp "$BUNDLE" "dist/network-scope-${GITHUB_REF_NAME#v}.sbom.sigstore.json"
 
       - name: Release notes from CHANGELOG.md
         run: |

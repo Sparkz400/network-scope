@@ -16,11 +16,11 @@ SSH protocol 1 is open to attacks that allow session hijacking and data injectio
 
 ## How it is detected
 
-The first line the server sends (its banner, for example `SSH-1.5-...`) names the protocol version. The tool stores it as "protocol 1.5" or similar and raises the finding when the service description contains `protocol 1.` but not `protocol 1.99`. The value 1.99 means "supports both 1 and 2" and is not flagged. The evidence is the service description.
+The first line the server sends (its banner, for example `SSH-1.5-...`) names the protocol version. The tool stores it as "protocol 1.5" or similar and raises the finding when the service is identified as SSH and its description contains `protocol 1.` but not `protocol 1.99`. The value 1.99 means "supports both 1 and 2" and is not flagged. The evidence is the service description.
 
 ## Possible false positives
 
-- The rule matches the text of the service description and does not check that the service is SSH. A banner of another service that contains `protocol 1.` could in theory trigger it.
+- Only services identified as SSH count; another service whose banner says `protocol 1.x` for its own protocol does not trigger the rule (the false-alarm budget test covers this).
 - A server announcing 1.99 can still allow version 1; it is not reported.
 
 ## How to fix

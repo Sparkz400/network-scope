@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:research-rebuild:v1",
+  "title": "Research rebuild report",
+  "description": "Output of `research rebuild`: how many stored scans were indexed again and what the tables hold now.",
+  "type": "object",
+  "required": [
+    "schema",
+    "scans",
+    "skipped",
+    "rows"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/research-rebuild/v1"
+    },
+    "scans": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Scans read and indexed."
+    },
+    "skipped": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Scans whose stored snapshot could not be read; they have no rows."
+    },
+    "rows": {
+      "type": "object",
+      "description": "Row count per table."
+    }
+  }
+}

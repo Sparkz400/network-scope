@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:research-export:v1",
+  "title": "Research export manifest",
+  "description": "Output of `research export csv|ndjson|parquet` and the manifest.json written next to the table files.",
+  "type": "object",
+  "required": [
+    "schema",
+    "directory",
+    "format",
+    "tables"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/research-export/v1"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "format": {
+      "type": "string",
+      "enum": [
+        "csv",
+        "ndjson",
+        "parquet"
+      ]
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "table",
+          "file",
+          "rows",
+          "columns"
+        ],
+        "properties": {
+          "table": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

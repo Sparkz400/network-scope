@@ -48,6 +48,9 @@ confidence-threshold = 0.9
 # Duplicate versions are common in GUI dependency trees; report them without failing.
 multiple-versions = "warn"
 wildcards = "deny"
+# The path dependency on the workspace's own core crate has no version; allowed because
+# neither crate is published (`publish = false`).
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]

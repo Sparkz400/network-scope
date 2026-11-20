@@ -1,0 +1,46 @@
+# Reproducible scans
+
+A finding you cite in a report should be possible to check later. Network Scope stamps every scan it runs with the version of the tool and a SHA-256 of the rules and feeds that shaped the result, can keep the payloads the scan sent, and can run a stored scan again and say what differs.
+
+## The stamp
+
+Scans started by `scan`, `monitor`, the MCP `scan` tool and the desktop app carry `settings.provenance`, so it is in the stored snapshot and in every JSON export:
+
+```json
+"provenance": {
+  "tool": "network-scope 0.5.1",
+  "rules": { "probes.json": "sha256:...", "cves.json": "sha256:...", "compliance.json": "sha256:..." },
+  "feeds": { "nvd": "sha256:..." },
+  "combined": "sha256:..."
+}
+```
+
+What is hashed is the rule set *in effect*: the built-in service probes merged with the user file, the built-in CVE rules merged with the user's `--cves` file, the embedded compliance table, and, when imported, the KEV/EPSS data, the NVD cache and the CSAF advisories (`feeds`; absent when not in use). The NVD hash covers the import time, the source files and every CVE with its rating, not the CPE ranges (the cache can be a gigabyte). `combined` is one hash over the tool string and all entries: the value to cite. Imports (nmap XML, device lists) and scans saved by older versions have no stamp. In the desktop app the stamp is taken when a scan starts (scheduled scans included) and shown in the *Scan details* section of the Inventory window, with a button that copies the tool and the combined hash to cite; a scan opened from the inventory shows the stamp it was saved with, or says it has none, and is never stamped again.
+
+## `scan --replay-check ID`
+
+```sh
+network-scope-cli scan --replay-check 12 [--format text|json] [--fail-on-findings]
+```
+
+runs stored scan 12 again with **its own targets and settings** (scan options on the command line are refused; only the scope and consent options, `--dry-run`, `--record` and `--db` apply), saves the new scan, and compares the two: the results (hosts, ports, identity, findings), the provenance stamps and the sent logs. It is a normal scan: it sends the same traffic, goes through the scope guard, and `--dry-run` shows what it would send. The output says whether the scan was **reproduced** (same result and same rules) or not and lists the differences: changed rules or feeds (by name), changes in the result, and packets sent a different number of times. A difference in the result can be a real change in the network, a changed rule, or timing (slow hosts, packet loss); the report does not decide which. With `--fail-on-findings` the exit status is 3 when the scan was not reproduced. A scan without a stamp (saved by a version before stamps existed, or an import) can be re-run, but is never "reproduced", whatever the result: the tool version and the rules and feeds it ran with are not known and cannot be recovered. The output then says "cannot be called reproduced" and why, and suggests what to do: the re-run is stamped, so compare later scans with it, and re-run the scans you want to cite with the current version so that they carry a stamp. That is the intended final behaviour, not a gap.
+
+## `scan --record FILE.pcapng`
+
+Keeps the bytes the scan handed to its sockets and received, with time, peer and direction, and writes them as pcapng. **This is an application-level record, not a wire capture.** The scanner uses ordinary sockets and never sees the headers it sends, so the file puts each payload into a *synthetic* Ethernet/IP/TCP or UDP frame: the MAC addresses, the scanner's address (a documentation address) and port and all sequence numbers are made up, there are no handshake, acknowledgement or closing frames, long payloads are split at 1,400 bytes, and the time stamps are the moments the scan handed the bytes over or received them. The file header and a comment on every packet say so. Wireshark, `tshark` and `ot-listen --pcap` read it; the passive decoders find the Modbus request of a recorded scan.
+
+Recorded: the read-only OT requests and their replies (Modbus, S7, EtherNet/IP, OPC UA, BACnet) and the payloads of service identification (probes, the HTTP request and reply, the SMB and RDP negotiate requests; HTTP inside TLS is recorded decrypted and labelled so). **Not recorded:** the TCP connects, ICMP, ARP, the UDP scan's probes, DNS lookups, the TLS handshake, SSH and traceroute; the sent log (`--sent-log`) still counts them, and `scan --record` prints how many packets the sent log lists. The record is bounded (500,000 payloads, 128 MB, 4 KB per payload); what does not fit is counted and reported.
+
+## `scan --record FILE.pcapng --record-wire`
+
+With the capture driver (Npcap on Windows, libpcap elsewhere, loaded at run time; no new dependency) the scan can keep what really crossed the interface instead: a **wire capture**. Before the scan starts a read-only capture is opened (it has no way to transmit, so it adds nothing to the sent log or the dry run) with a kernel filter that lets through only the traffic to and from the scan's targets (`host A or host B ...`); it ends a moment after the scan. The file holds the real frames with their own headers, addresses, sequence numbers and time stamps, including the TCP handshakes, the connects, ICMP, ARP and the UDP probes that the application-level record cannot see; TLS and SSH payloads are encrypted as on the wire, so the decrypted HTTP-in-TLS of the application-level record is not in it. The file header says "WIRE CAPTURE", names the interface and the filter, and Wireshark shows them.
+
+What it needs: the driver and permission to capture (on Windows Npcap may be restricted to administrators; libpcap normally needs root or a capability); an interface (`--interface`, or, when every target is a loopback address, the loopback interface: `\Device\NPF_Loopback` with Npcap, `lo` on Linux, `lo0` on macOS); Ethernet or loopback link type; and at most 256 targets (the filter lists every address). Limits: a computer cannot see traffic to its own addresses on a physical interface (use the loopback interface for the loopback addresses; a scan of this computer's own LAN address never reaches the network interface), traffic that takes another route than the chosen interface is missing, and other programs' traffic to the same hosts during the scan is included. The capture is bounded (2,000,000 frames, 256 MB).
+
+**Fallback.** When any of that is missing (no driver, no permission, no interface for these targets, too many targets) or the capture saw no frame, the scan says why on stderr and writes the application-level record to the same file, labelled as such. Without `--record-wire` nothing changes. `--record-wire` without `--record` is refused.
+
+## Tested and not tested
+
+Tested with real scans of a loopback listener (the record reads back as frames holding the request and its reply and the passive decoders decode a recorded Modbus request; a replay is reproduced, a stamp of other rules is reported, an unstamped scan is reported as one that cannot be reproduced) and with synthetic scans. The desktop app's stamp is covered by unit tests (the stamp equals the CLI's, survives the inventory, the preferences never hold it) and was looked at in screenshots, but a scan started by clicking Start in the window was not run in this check. The wire capture has unit tests for the filter, the interface choice and the file, a test that needs the driver (`cargo test -p network-scope-core wire_capture -- --ignored`, run with Npcap and its loopback adapter on Windows), and the fallback is tested without a driver.
+
+Opened with `tshark` and `capinfos` 4.6.10 (Wireshark Portable, 2026-11-20) on a scan of the lab simulators (`lab/simulators.py`, `scan 127.0.0.1 --fast --deep --ot`, Windows, Npcap loopback adapter, not an administrator): the wire capture (138 frames, 6.7 s, encapsulation NULL/Loopback, the interface name and the filter `host 127.0.0.1` in the file, strict time order) is read without a malformed frame, and the protocol hierarchy shows TCP with FTP, SSH, Telnet, HTTP, RESP, Modbus/TCP and EtherNet/IP, UDP with DHCP, DNS, NTP, SNMP and SSDP, and ICMP; its first connection SYNs are there, and the expert information lists the resets of the closed lab ports and the closing of the connections. `ot-listen --pcap` on the same file reads the 138 frames and reports 7 observations (BACnet/IP, EtherNet/IP and Modbus/TCP of the lab device); the reader translates the BSD loopback link type of Npcap's loopback adapter into Ethernet-style frames, as it does for Linux cooked and raw IP captures. The application-level record of the same scan (12 frames, Ethernet) is also read without a malformed frame (HTTP, RESP, Modbus/TCP, EtherNet/IP and BACnet are decoded) and its header comment is shown as the capture comment. CI runs the driver test and a `scan --record-wire` of a loopback web server with libpcap on Linux (as root). The desktop app records with **Record the scan's traffic** in Settings (see the [GUI guide](gui-guide.md)); its fallback path has a unit test, a recording started from the window was not run in this check. Not tested: a wire capture on a physical interface of a real network, libpcap on macOS, and a replay against a changing real network.

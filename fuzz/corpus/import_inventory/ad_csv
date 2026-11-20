@@ -1,0 +1,2 @@
+"Name","DNSHostName","Enabled","IPv4Address","OperatingSystem","ManagedBy"
+"PC-01","pc-01.corp.local","True","10.1.0.20","Windows 11","CN=Ada,OU=Staff"

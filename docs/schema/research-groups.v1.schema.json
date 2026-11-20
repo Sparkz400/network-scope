@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:research-groups:v1",
+  "title": "Fingerprint groups",
+  "description": "Output of `research groups --format json`: devices that share a certificate key, a certificate template, a TLS or SSH stack, a web interface or an industrial firmware.",
+  "type": "object",
+  "required": [
+    "schema",
+    "groups"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/research-groups/v1"
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "value",
+          "strength",
+          "meaning",
+          "devices",
+          "sites",
+          "members"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "spki_sha256, jarm, ja3s, hassh, favicon_mmh3 or ot_firmware"
+          },
+          "value": {
+            "type": "string"
+          },
+          "strength": {
+            "type": "string",
+            "enum": [
+              "key",
+              "firmware",
+              "software"
+            ]
+          },
+          "meaning": {
+            "type": "string"
+          },
+          "devices": {
+            "type": "integer",
+            "minimum": 2,
+            "description": "How many different devices (MAC address, else IP address) share the value."
+          },
+          "sites": {
+            "type": "array",
+            "description": "Target lists of the scans that saw it.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "members": {
+            "type": "array",
+            "description": "At most 50 devices, most recently seen first.",
+            "items": {
+              "type": "object",
+              "required": [
+                "device",
+                "ips",
+                "hostnames",
+                "first_seen",
+                "last_seen",
+                "scans"
+              ],
+              "properties": {
+                "device": {
+                  "type": "string"
+                },
+                "ips": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "hostnames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "first_seen": {
+                  "type": "integer"
+                },
+                "last_seen": {
+                  "type": "integer"
+                },
+                "scans": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

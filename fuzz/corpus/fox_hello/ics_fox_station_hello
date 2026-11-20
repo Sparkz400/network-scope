@@ -1,0 +1,23 @@
+fox a 0 -1 fox hello
+{
+fox.version=s:1.0
+id=i:2
+hostName=s:192.168.2.15
+hostAddress=s:192.168.2.15
+app.name=s:Station
+app.version=s:3.5.41.1
+vm.name=s:J9
+vm.version=s:2.3
+os.name=s:QNX
+os.version=s:6.3.2
+station.name=s:Legion_HQ_V4
+lang=s:en
+timeZone=s:Australia/Perth;28800000;0;null;null
+hostId=s:Qnx-NPM6-0000-1490-C30C
+vmUuid=s:11e4d864-cd0e-664a-0000-00000000b83b
+brandId=s:vykon
+sysInfo=o:bog 61[<bog version="1.0">
+<p m="b=baja" t="b:Facets" v=""/>
+</bog>
+]
+};;

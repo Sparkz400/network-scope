@@ -1,0 +1,812 @@
+//! Entry points for the cargo-fuzz targets in `fuzz/` (one per parser of untrusted bytes).
+//!
+//! Each function feeds arbitrary bytes to the real parser, the same way the scanner or the
+//! capture reader does, and follows the result through the code that consumes it. Nothing
+//! here sends traffic or touches the file system. The targets in `fuzz/fuzz_targets` are
+//! one-liners calling these, so the logic is built, linted and tested with the crate, and the
+//! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
+use crate::{
+    arp, csaf, favicon, fingerprint, import, ipv6, jarm, nmap, nvd, osfp, ot, otpassive, passive,
+    pcapfile, platform, risk, service, syn, tls, udp, update,
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::Ipv4Addr,
+};
+
+/// A fuzz target: its name (the file `fuzz/fuzz_targets/<name>.rs`) and entry point.
+pub type Target = (&'static str, fn(&[u8]));
+
+/// All fuzz targets.
+pub const TARGETS: &[Target] = &[
+    ("pcapfile", pcapfile),
+    ("passive_decode", passive_decode),
+    ("otpassive_feed", otpassive_feed),
+    ("tls_flight", tls_flight),
+    ("tls13_server_hello", tls13_server_hello),
+    ("jarm_response", jarm_response),
+    ("tls_certificate", tls_certificate),
+    ("fingerprint_server_hello", fingerprint_server_hello),
+    ("smb_negotiate", smb_negotiate),
+    ("ntlm_challenge", ntlm_challenge),
+    ("ssh_kexinit", ssh_kexinit),
+    ("http_response", http_response),
+    ("favicon_response", favicon_response),
+    ("rdp_reply", rdp_reply),
+    ("service_banner", service_banner),
+    ("modbus_device_id", modbus_device_id),
+    ("enip_list_identity", enip_list_identity),
+    ("bacnet_iam", bacnet_iam),
+    ("s7_szl", s7_szl),
+    ("opcua_reply", opcua_reply),
+    ("fins_reply", fins_reply),
+    ("fins_tcp_reply", fins_tcp_reply),
+    ("mc_reply", mc_reply),
+    ("dnp3_reply", dnp3_reply),
+    ("ndp_message", ndp_message),
+    ("neighbor_cache", neighbor_cache),
+    ("fox_hello", fox_hello),
+    ("mqtt_connack", mqtt_connack),
+    ("knx_description", knx_description),
+    ("udp_dns", udp_dns),
+    ("udp_ntp", udp_ntp),
+    ("udp_ssdp", udp_ssdp),
+    ("udp_snmp", udp_snmp),
+    ("snmp_response", snmp_response),
+    ("udp_netbios", udp_netbios),
+    ("udp_dhcp", udp_dhcp),
+    ("nmap_import", nmap_import),
+    ("probes_json", probes_json),
+    ("cves_json", cves_json),
+    ("feeds_import", feeds_import),
+    ("nvd_import", nvd_import),
+    ("csaf_import", csaf_import),
+    ("ot_model", ot_model),
+    ("zones_file", zones_file),
+    ("banner_groups", banner_groups),
+    ("import_inventory", import_inventory),
+    ("scope_file", scope_file),
+    ("arp_reply", arp_reply),
+    ("syn_reply", syn_reply),
+    ("tcp_options", tcp_options),
+    ("icmp_reply", icmp_reply),
+    ("mcp_message", mcp_message),
+    ("update_response", update_response),
+    ("local_networks", local_networks),
+    ("target_list", target_list),
+];
+
+/// A pcap or pcapng file, read to the end as the capture-file import does.
+pub fn pcapfile(data: &[u8]) {
+    let Ok(mut reader) = pcapfile::Reader::new(std::io::Cursor::new(data)) else {
+        return;
+    };
+    while let Ok(Some((_ts, frame))) = reader.next_frame() {
+        std::hint::black_box(frame);
+    }
+    std::hint::black_box((reader.frames(), reader.bytes_read()));
+}
+
+/// One Ethernet frame for the passive listener (ARP, LLDP, CDP, DHCP, mDNS, ...).
+pub fn passive_decode(data: &[u8]) {
+    std::hint::black_box(passive::decode(data));
+}
+
+/// A sequence of frames for the passive OT tracker, including TCP reassembly.
+///
+/// Layout: one flag byte (bit 0 turns reassembly off), an 8-byte little-endian start
+/// timestamp, then records of `[length: u16 le][timestamp step: i8][frame]`. Capture-file
+/// timestamps are attacker-controlled, so they are fuzzed too.
+pub fn otpassive_feed(data: &[u8]) {
+    let Some((head, mut rest)) = data.split_first_chunk::<9>() else {
+        return;
+    };
+    let mut tracker = otpassive::Tracker::new();
+    tracker.set_reassembly(head[0] & 1 == 0);
+    let mut ts = i64::from_le_bytes(head[1..].try_into().unwrap_or_default());
+    while let Some((record, tail)) = rest.split_first_chunk::<3>() {
+        let len = usize::from(u16::from_le_bytes([record[0], record[1]])).min(tail.len());
+        ts = ts.wrapping_add(i64::from(record[2] as i8));
+        let (frame, next) = tail.split_at(len);
+        tracker.feed(frame, ts);
+        rest = next;
+    }
+    tracker.flush();
+    let observations = tracker.observations();
+    let assets = otpassive::assets(&observations);
+    std::hint::black_box(otpassive::assets_csv(&assets));
+    std::hint::black_box(otpassive::control_findings(&observations));
+    std::hint::black_box(tracker.reassembly_stats());
+}
+
+/// The server's first TLS flight during cipher enumeration, then its certificate.
+pub fn tls_flight(data: &[u8]) {
+    std::hint::black_box(tls::has_done(data));
+    if let tls::Reply::Accepted {
+        cert: Some(cert), ..
+    } = tls::parse_flight(data)
+    {
+        std::hint::black_box(tls::describe_cert(&cert).ok());
+    }
+}
+
+/// An NVD CVE JSON 2.0 feed file (streamed, so only the compact records are kept), the CPE
+/// lookup over what it produced, and the CPE and version parsers on the raw text.
+pub fn nvd_import(data: &[u8]) {
+    if let Ok(parsed) = nvd::parse_nvd(data) {
+        let mut cache = nvd::Nvd::default();
+        if cache.merge(parsed, "fuzz.json").is_ok() {
+            std::hint::black_box(cache.lookup("cpe:2.3:a:openbsd:openssh:9.6:p1:*:*:*:*:*:*"));
+            std::hint::black_box(cache.lookup("cpe:/a:apache:http_server:2.4.49"));
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        std::hint::black_box(nvd::parse_cpe(text));
+        std::hint::black_box(nvd::compare_versions(text, "1.0.1e"));
+    }
+}
+
+/// Unidentified banners (one per line, as devices send them): the workbench's grouping, the
+/// comparison text and the draft rule for every group, including the check that the draft matches
+/// its banners and passes the probe linter.
+pub fn banner_groups(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let hosts: Vec<crate::scan::Host> = text
+        .lines()
+        .take(64)
+        .enumerate()
+        .map(|(i, line)| {
+            let mut identity = BTreeMap::new();
+            identity.insert(
+                format!("banner.{}", 1000 + i % 3),
+                line.chars().take(120).collect(),
+            );
+            crate::scan::Host {
+                ip: std::net::IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8 + 1]),
+                responding: true,
+                ping: None,
+                ttl: None,
+                hostname: String::new(),
+                mac: String::new(),
+                open: vec![],
+                closed: 0,
+                unanswered: 0,
+                errors: vec![],
+                ports_checked: true,
+                identity,
+                udp_open: vec![],
+                trace: vec![],
+            }
+        })
+        .collect();
+    let snapshot = crate::store::Snapshot {
+        targets: String::new(),
+        complete: true,
+        settings: crate::scan::Settings::default(),
+        hosts,
+        observations: vec![],
+        notes: BTreeMap::new(),
+        sent: vec![],
+    };
+    let groups = service::workbench::groups([&snapshot]);
+    for g in &groups {
+        std::hint::black_box(service::workbench::compare_text(g));
+        if let Ok(d) = service::workbench::draft(g) {
+            std::hint::black_box(service::workbench::checklist_markdown(&d, g));
+        }
+    }
+    std::hint::black_box(service::workbench::groups_text(&groups));
+}
+
+/// A zones and conduits file (`segmentation check --zones`) and a check of a small scan
+/// against whatever it declared.
+pub fn zones_file(data: &[u8]) {
+    if let Ok(model) = crate::segmentation::ZoneModel::parse(data) {
+        let host = |ip: [u8; 4]| crate::scan::Host {
+            ip: std::net::IpAddr::from(ip),
+            responding: true,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![22, 502],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::new(),
+            udp_open: vec![161],
+            trace: vec![],
+        };
+        let snapshot = crate::store::Snapshot {
+            targets: String::new(),
+            complete: true,
+            settings: crate::scan::Settings::default(),
+            hosts: vec![
+                host([10, 0, 0, 1]),
+                host([10, 0, 2, 9]),
+                host([192, 168, 1, 1]),
+            ],
+            observations: vec![],
+            notes: BTreeMap::new(),
+            sent: vec![],
+        };
+        for zone in ["enterprise", "a", "control"] {
+            std::hint::black_box(crate::segmentation::check(&model, zone, &snapshot, None).ok());
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        std::hint::black_box(crate::segmentation::Cidr::parse(text).ok());
+        std::hint::black_box(crate::segmentation::PortSpec::parse(text).ok());
+    }
+}
+
+/// An OT traffic model file (`ot-learn` output, loaded by `ot-listen --model`), a detector run
+/// against it, and the maintenance window parser on the raw text.
+pub fn ot_model(data: &[u8]) {
+    if let Ok(model) = crate::otmodel::Model::parse(data, "fuzz") {
+        let event = |ts: i64, function: &str, control: bool| crate::otpassive::OtEvent {
+            ts,
+            proto: "Modbus/TCP",
+            client: std::net::IpAddr::from([10, 0, 0, 50]),
+            server: std::net::IpAddr::from([10, 0, 0, 10]),
+            function: function.into(),
+            control,
+        };
+        let mut detector = crate::otmodel::Detector::new(std::sync::Arc::new(model), None);
+        for e in [
+            event(0, "Read Coils", false),
+            event(i64::MAX, "Write Single Coil", true),
+            event(i64::MIN, "PLC Stop", true),
+        ] {
+            detector.observe(&e);
+        }
+        std::hint::black_box(detector.finish());
+    }
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(window) = crate::otmodel::Maintenance::parse(text)
+    {
+        for ts in [0, 1_700_000_000, i64::MAX, i64::MIN] {
+            std::hint::black_box(window.contains(ts));
+        }
+    }
+}
+
+/// A CISA ICS advisory in CSAF 2.0 format (a JSON tree with bounded depth and size), the matching
+/// of what it produced against devices of every protocol, and the version-range parser on the
+/// raw text.
+pub fn csaf_import(data: &[u8]) {
+    if let Ok(parsed) = csaf::parse_csaf(data) {
+        let mut cache = csaf::Csaf::default();
+        if cache.merge(parsed, "fuzz.json").is_ok() {
+            for (protocol, vendor, product, version) in [
+                ("S7", "Siemens", "CPU 1214C", "4.2.3"),
+                ("EtherNet/IP", "Rockwell Automation", "1756-L81E", "20.11"),
+                ("OPC UA", "", "Example OPC UA Gateway", ""),
+            ] {
+                std::hint::black_box(cache.lookup(&crate::otdevice::OtDevice {
+                    protocol,
+                    port: 102,
+                    vendor: vendor.into(),
+                    products: vec![product.into()],
+                    version: version.into(),
+                }));
+            }
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        if let Some(range) = csaf::parse_range(text) {
+            std::hint::black_box(csaf::range_holds(&range, "4.2.3"));
+        }
+        std::hint::black_box(csaf::range_holds(text, "1.0"));
+    }
+}
+
+/// A server's reply to a JARM probe: the ServerHello parser, the per-probe line and the hash
+/// built from ten copies of it.
+pub fn jarm_response(data: &[u8]) {
+    let parsed = jarm::parse_response(data);
+    let line = jarm::response_line(parsed.as_ref());
+    let lines = vec![line; 10];
+    assert!(jarm::is_jarm(&jarm::hash(&lines)));
+}
+
+/// A server's answer to `GET /favicon.ico`: the response parser and the hash of an accepted icon.
+pub fn favicon_response(data: &[u8]) {
+    if let Some(body) = favicon::icon(data) {
+        assert!(!body.is_empty() && body.len() <= favicon::MAX_BODY);
+        std::hint::black_box(crate::pivot::favicon_hash(&body));
+    }
+}
+
+/// The first handshake message of a TLS 1.3 server, and its JA3S.
+pub fn tls13_server_hello(data: &[u8]) {
+    if let tls::First::Hello(hello) = tls::first_server_hello(data) {
+        std::hint::black_box(fingerprint::ja3s(&hello));
+    }
+}
+
+/// A DER certificate as sent by a server.
+pub fn tls_certificate(data: &[u8]) {
+    std::hint::black_box(tls::describe_cert(data).ok());
+}
+
+/// A ServerHello body and its JA3S fingerprint.
+pub fn fingerprint_server_hello(data: &[u8]) {
+    if let Some(hello) = fingerprint::parse_server_hello(data) {
+        std::hint::black_box(fingerprint::ja3s(&hello));
+    }
+}
+
+/// An SMB negotiate reply (SMB1 or SMB2/3, NetBIOS-framed) and the fields derived from it.
+pub fn smb_negotiate(data: &[u8]) {
+    std::hint::black_box(service::parse_smb(data));
+    std::hint::black_box(service::smb1_accepted(data));
+    if let Some(n) = service::parse_smb2_negotiate(data) {
+        // The clock-skew field depends on "now": derive it from the input.
+        let now = i64::from_le_bytes(data.first_chunk::<8>().copied().unwrap_or_default());
+        std::hint::black_box(service::smb2_fields(&n, now));
+    }
+}
+
+/// An SMB2 SESSION_SETUP reply carrying an NTLM CHALLENGE message.
+pub fn ntlm_challenge(data: &[u8]) {
+    std::hint::black_box(service::parse_ntlm_challenge(data));
+}
+
+/// An SSH KEXINIT packet, its fields, HASSHServer and assessment.
+pub fn ssh_kexinit(data: &[u8]) {
+    if let Some(k) = service::parse_kexinit(data) {
+        std::hint::black_box(service::kexinit_fields(&k));
+    }
+}
+
+/// An HTTP response head, as plain HTTP and as HTTPS.
+pub fn http_response(data: &[u8]) {
+    for secure in [false, true] {
+        if let Some(h) = service::parse_http(data) {
+            let mut out = service::Outcome::default();
+            service::http_outcome(h, secure, &mut out);
+            std::hint::black_box(out);
+        }
+    }
+}
+
+/// An RDP X.224 Connection Confirm.
+pub fn rdp_reply(data: &[u8]) {
+    std::hint::black_box(service::parse_rdp_standard_reply(data));
+}
+
+/// A banner or probe reply matched against every built-in TCP and UDP probe rule.
+pub fn service_banner(data: &[u8]) {
+    let db = builtin_probes();
+    for probe in db.probes.iter().chain(&db.udp) {
+        std::hint::black_box(service::ProbeDb::identify(probe, data));
+    }
+}
+
+fn builtin_probes() -> &'static service::ProbeDb {
+    static DB: std::sync::OnceLock<service::ProbeDb> = std::sync::OnceLock::new();
+    DB.get_or_init(service::ProbeDb::builtin)
+}
+
+/// A Modbus Read Device Identification reply (PDU after the MBAP header).
+pub fn modbus_device_id(data: &[u8]) {
+    std::hint::black_box(ot::parse_modbus(data).ok());
+}
+
+/// An EtherNet/IP List Identity reply.
+pub fn enip_list_identity(data: &[u8]) {
+    std::hint::black_box(ot::parse_list_identity(data).ok());
+}
+
+/// A BACnet/IP I-Am reply.
+pub fn bacnet_iam(data: &[u8]) {
+    std::hint::black_box(ot::parse_bacnet(data).ok());
+}
+
+/// An S7 SZL read reply (TPKT frame), for both SZL ids the scanner reads.
+pub fn s7_szl(data: &[u8]) {
+    let mut fields = BTreeMap::new();
+    for (seq, id) in [(2, 0x11), (3, 0x1c)] {
+        std::hint::black_box(ot::parse_szl(data, seq, id, &mut fields).ok());
+    }
+    std::hint::black_box(fields);
+}
+
+/// An OPC UA message body: transport error, OpenSecureChannel, GetEndpoints and
+/// FindServers responses.
+pub fn opcua_reply(data: &[u8]) {
+    std::hint::black_box(ot::opcua::transport_error(data).ok());
+    std::hint::black_box(ot::opcua::parse_open(data).ok());
+    std::hint::black_box(ot::opcua::parse_endpoints(data).ok());
+    std::hint::black_box(ot::opcua::parse_servers(data).ok());
+}
+
+/// A DNS reply (version.bind) and an mDNS service-discovery reply.
+pub fn udp_dns(data: &[u8]) {
+    std::hint::black_box(udp::parse_dns(data));
+    std::hint::black_box(udp::parse_mdns(data));
+}
+
+/// An NTP reply.
+pub fn udp_ntp(data: &[u8]) {
+    std::hint::black_box(udp::parse_ntp(data));
+}
+
+/// An SSDP reply.
+pub fn udp_ssdp(data: &[u8]) {
+    std::hint::black_box(udp::parse_ssdp(data));
+}
+
+/// An ICMPv6 message in a valid Ethernet and IPv6 frame (hop limit 255, to ff02::1), so the
+/// Neighbor Discovery decoder of the passive listener sees every input.
+pub fn ndp_message(data: &[u8]) {
+    let mut frame = vec![
+        0x33, 0x33, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 1, 0x86, 0xdd, 0x60, 0, 0, 0,
+    ];
+    frame.extend(((data.len().min(1400)) as u16).to_be_bytes());
+    frame.extend([58, 255]);
+    frame.extend([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    frame.extend([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    frame.extend_from_slice(&data[..data.len().min(1400)]);
+    std::hint::black_box(passive::decode(&frame));
+    // and the same bytes as a whole frame
+    std::hint::black_box(passive::decode(data));
+}
+
+/// The text of `ip -6 neigh show`, `ndp -an`, `/proc/net/if_inet6` and `ifconfig -a`.
+pub fn neighbor_cache(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    std::hint::black_box(ipv6::parse_ip_neigh6(&text));
+    std::hint::black_box(ipv6::parse_ndp_an(&text));
+    std::hint::black_box(ipv6::parse_if_inet6(&text));
+    std::hint::black_box(ipv6::parse_ifconfig_inet6(&text));
+    std::hint::black_box(ipv6::normalize_mac(&text));
+}
+
+/// The reply to the Omron FINS Controller Data Read request (a FINS frame, from the ICF byte).
+pub fn fins_reply(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_fins_controller_data(data));
+}
+
+/// The replies to the FINS/TCP exchange: the node address reply and the framed Controller Data
+/// Read reply.
+pub fn fins_tcp_reply(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_fins_tcp_frame(data));
+    let _ = std::hint::black_box(ot::extra::parse_fins_node_address(data));
+    let _ = std::hint::black_box(ot::extra::parse_fins_tcp_controller_data(data));
+}
+
+/// The response to the MELSEC MC protocol Read CPU Model Name request (a 3E binary frame).
+pub fn mc_reply(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_mc_cpu_model(data));
+}
+
+/// An outstation's answer to the DNP3 Read class 0 request (data link frames with CRCs).
+pub fn dnp3_reply(data: &[u8]) {
+    std::hint::black_box(ot::extra::dnp3_frame_len(data));
+    let _ = std::hint::black_box(ot::extra::parse_dnp3_response(data));
+}
+
+/// A Niagara Fox hello (the station's answer to the hello request).
+pub fn fox_hello(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_fox_hello(data));
+}
+
+/// The broker's answer to the MQTT CONNECT.
+pub fn mqtt_connack(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_mqtt_connack(data));
+}
+
+/// A KNXnet/IP DESCRIPTION_RESPONSE or SEARCH_RESPONSE.
+pub fn knx_description(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_knx_description(data));
+}
+
+/// Any SNMP reply the read-only SNMP client may receive: v1/v2c responses and SNMPv3 messages
+/// (reports, authenticated and encrypted responses), and the BER pieces under them.
+pub fn snmp_response(data: &[u8]) {
+    crate::snmp::decode_reply_for_fuzzing(data);
+}
+
+/// An SNMP GetResponse (BER).
+pub fn udp_snmp(data: &[u8]) {
+    std::hint::black_box(udp::parse_snmp(data));
+}
+
+/// A NetBIOS node status reply.
+pub fn udp_netbios(data: &[u8]) {
+    std::hint::black_box(udp::parse_netbios(data));
+}
+
+/// A DHCP ACK or OFFER; the transaction id is taken from the reply so it matches.
+pub fn udp_dhcp(data: &[u8]) {
+    let xid = data
+        .get(4..8)
+        .map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    std::hint::black_box(udp::parse_dhcp(data, xid));
+    std::hint::black_box(udp::parse_offer(data, xid));
+}
+
+/// An nmap XML file: import (size cap included), then findings and re-export.
+pub fn nmap_import(data: &[u8]) {
+    let Ok(xml) = std::str::from_utf8(data) else {
+        return;
+    };
+    if let Ok(snapshot) = nmap::import(xml) {
+        std::hint::black_box(risk::analyze_snapshot(&snapshot));
+        std::hint::black_box(nmap::export(&snapshot, 0));
+    }
+}
+
+/// A file for `import` (CSV, DHCP leases, Active Directory, NetBox): the first byte picks the
+/// kind (modulo the number of kinds), the rest is the file. Parsing, joining entries that
+/// describe one device and writing the result as JSON must never panic or grow without bound.
+pub fn import_inventory(data: &[u8]) {
+    let Some((kind, file)) = data.split_first() else {
+        return;
+    };
+    let kind = import::Kind::ALL[usize::from(*kind) % import::Kind::ALL.len()];
+    if let Ok(parsed) = import::parse(kind, file) {
+        std::hint::black_box(serde_json::to_string(&parsed).ok());
+    }
+}
+
+/// A user `probes.json`, merged with the built-in probes; the rules then run on the file.
+pub fn probes_json(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    // The same merge as `ProbeDb::with_user_file`, on a cached copy of the built-in probes
+    // (compiling their regexes for every input would make fuzzing far too slow).
+    let _ = std::hint::black_box(service::lint_probes(text));
+    if let Ok(db) = builtin_probes().clone().merge_user(text, "probes.json") {
+        for probe in db.probes.iter().chain(&db.udp) {
+            std::hint::black_box(service::ProbeDb::identify(probe, data));
+        }
+    }
+}
+
+/// A CISA KEV catalog or an EPSS CSV (both parsers get the same bytes), followed through the
+/// enrichment of a finding.
+pub fn feeds_import(data: &[u8]) {
+    let mut feeds = crate::feeds::Feeds::default();
+    if let Ok(p) = crate::feeds::parse_kev(data) {
+        feeds.kev = Some(p.data);
+    }
+    if let Ok(p) = crate::feeds::parse_epss(data) {
+        feeds.epss = Some(p.data);
+    }
+    let cves = ["CVE-2021-44228".to_string(), "CVE-2023-48795".to_string()];
+    std::hint::black_box(feeds.exploit_for(&cves));
+}
+
+/// A scope file or `--scope` text: parsed, then used to judge a few addresses and target lists.
+pub fn scope_file(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    if let Ok(scope) = crate::scope::Scope::parse(text) {
+        for ip in ["10.0.0.1", "8.8.8.8", "::1", "fd00::1", "::ffff:1.2.3.4"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            std::hint::black_box((scope.contains(ip), crate::scope::is_public(ip)));
+        }
+        let hosts: Vec<std::net::IpAddr> = vec![
+            "10.0.0.1".parse().unwrap(),
+            "192.0.2.1".parse().unwrap(),
+            "2001:db8::1".parse().unwrap(),
+        ];
+        std::hint::black_box(crate::scope::assess(&hosts, Some(&scope)));
+    }
+}
+
+/// A user `cves.json`, merged with the built-in rules; every rule is then evaluated.
+pub fn cves_json(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    if let Ok(db) = risk::CveDb::with_user_text(text, "cves.json") {
+        for rule in db.rules.iter().take(256) {
+            for version in [rule.min.as_deref(), rule.max.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                std::hint::black_box(risk::in_range(
+                    version,
+                    rule.min.as_deref(),
+                    rule.max.as_deref(),
+                ));
+                std::hint::black_box(db.cpe(&rule.product, version));
+            }
+        }
+    }
+}
+
+/// The answer of the update check's release endpoint: the HTTP response (as received so far, and
+/// at the end of the connection), its body as a release, the tag as a version and the comparison
+/// with the running version. Nothing here touches the network.
+pub fn update_response(data: &[u8]) {
+    for eof in [false, true] {
+        if let Ok(Some(response)) = update::parse_response(data, eof) {
+            let _ = std::hint::black_box(update::parse_latest(&response.body).map(|release| {
+                update::compare("0.5.1", release).map(|o| update::describe(&o, "0.5.1"))
+            }));
+        }
+    }
+    let _ = std::hint::black_box(update::parse_latest(data));
+    if let Ok(text) = std::str::from_utf8(data) {
+        std::hint::black_box(update::parse_version(text));
+    }
+}
+
+/// An ARP reply; the frame's target address is taken as our own so it can match.
+pub fn arp_reply(data: &[u8]) {
+    let me = data.get(38..42).map_or(Ipv4Addr::UNSPECIFIED, |b| {
+        Ipv4Addr::new(b[0], b[1], b[2], b[3])
+    });
+    std::hint::black_box(arp::parse_reply(data, me));
+}
+
+/// A captured frame answering a SYN probe (SYN-ACK with TCP options, or RST). The pending
+/// probe is derived from the frame so the cookie check can pass.
+pub fn syn_reply(data: &[u8]) {
+    let field = |at: usize, n: usize| data.get(at..at + n);
+    let ihl = data.get(14).map_or(20, |b| usize::from(b & 15) * 4);
+    let (Some(src), Some(dst), Some(ports), Some(ack)) = (
+        field(26, 4),
+        field(30, 4),
+        field(14 + ihl, 4),
+        field(14 + ihl + 8, 4),
+    ) else {
+        std::hint::black_box(syn::classify(data, Ipv4Addr::UNSPECIFIED, &HashMap::new()));
+        return;
+    };
+    let ip = |b: &[u8]| Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+    let key = (
+        ip(src),
+        u16::from_be_bytes([ports[0], ports[1]]),
+        u16::from_be_bytes([ports[2], ports[3]]),
+    );
+    let cookie = u32::from_be_bytes([ack[0], ack[1], ack[2], ack[3]]).wrapping_sub(1);
+    let pending = HashMap::from([(key, cookie)]);
+    std::hint::black_box(syn::classify(data, ip(dst), &pending));
+}
+
+/// The TCP options of a SYN-ACK (OS fingerprint).
+pub fn tcp_options(data: &[u8]) {
+    std::hint::black_box(osfp::parse_options(data));
+}
+
+/// ICMP/ICMPv6 replies for ping and traceroute. Layout: the traced IPv4 destination
+/// (4 bytes), identifier or source port (2), sequence or destination port (2), then the
+/// packet as read from the socket.
+pub fn icmp_reply(data: &[u8]) {
+    let Some((head, packet)) = data.split_first_chunk::<8>() else {
+        return;
+    };
+    let dest = Ipv4Addr::new(head[0], head[1], head[2], head[3]);
+    let id = u16::from_be_bytes([head[4], head[5]]);
+    let seq = u16::from_be_bytes([head[6], head[7]]);
+    for v4 in [true, false] {
+        std::hint::black_box(platform::parse_echo_reply(packet, v4));
+    }
+    std::hint::black_box(platform::parse_hop_reply(packet, dest, id, seq));
+    std::hint::black_box(platform::parse_udp_hop_reply(packet, dest, id, seq));
+    let dest6 = dest.to_ipv6_mapped();
+    for from in [dest6, std::net::Ipv6Addr::LOCALHOST] {
+        std::hint::black_box(platform::parse_hop6_reply(packet, from, dest6, id, seq));
+    }
+}
+
+/// A stream of MCP (JSON-RPC) lines as `network-scope mcp` reads them from stdin. The server runs
+/// with the scan tool switched off (a fuzzer must never cause network traffic) and an inventory
+/// that does not exist (it touches no file); every reply must be a JSON-RPC 2.0 object.
+pub fn mcp_message(data: &[u8]) {
+    let cfg = crate::mcp::Config {
+        db: std::path::PathBuf::from("/nonexistent-network-scope-fuzz/inventory.sqlite"),
+        allow_scan: false,
+        scope: None,
+    };
+    let mut out = Vec::new();
+    let _ = crate::mcp::serve(cfg, std::io::Cursor::new(data), &mut out);
+    for line in out.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let reply: serde_json::Value = serde_json::from_slice(line).expect("replies are JSON");
+        // A batch is answered with an array of replies.
+        let replies = match reply {
+            serde_json::Value::Array(items) => items,
+            single => vec![single],
+        };
+        for reply in replies {
+            assert_eq!(reply["jsonrpc"], "2.0");
+        }
+    }
+}
+
+/// The output of the operating system commands that list the local networks (`ip addr`,
+/// `ifconfig`, PowerShell, `route print`): every parser, then the classification of what they found.
+pub fn local_networks(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let mut all = crate::localnets::parse_ip_addr(&text);
+    all.extend(crate::localnets::parse_ifconfig(&text));
+    all.extend(crate::localnets::parse_pipe_lines(&text));
+    all.extend(crate::localnets::parse_route_print(&text));
+    let candidates = crate::localnets::classify(&all);
+    std::hint::black_box(crate::localnets::selected(&candidates, true));
+    for net in &all {
+        std::hint::black_box((net.cidr(), net.size()));
+        if let Some(b) = crate::localnets::broadcast_for(&all, net.ip) {
+            std::hint::black_box(b);
+        }
+    }
+}
+
+/// A target list file, a MAC address typed for Wake-on-LAN and a search query: the three small
+/// parsers of user-supplied text added with the convenience features.
+pub fn target_list(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let list = crate::targets::from_list(&text);
+    if let Ok(targets) = crate::scan::parse_targets(&list, true, 1 << 12) {
+        let _ = std::hint::black_box(crate::targets::randomized(&targets, 7).map(|h| h.len()));
+    }
+    if let Ok(mac) = crate::wol::parse_mac(text.lines().next().unwrap_or("")) {
+        std::hint::black_box(crate::wol::magic_packet(mac).len());
+    }
+    if let Some(needle) = crate::search::Needle::parse(&text) {
+        std::hint::black_box(needle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TARGETS;
+    use std::path::Path;
+
+    fn fuzz_dir() -> &'static Path {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../fuzz"))
+    }
+
+    #[test]
+    fn every_target_has_a_fuzz_binary_and_seeds() {
+        let mut names: Vec<&str> = TARGETS.iter().map(|t| t.0).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), TARGETS.len(), "duplicate target names");
+        let manifest = std::fs::read_to_string(fuzz_dir().join("Cargo.toml")).unwrap();
+        let mut binaries = 0;
+        for entry in std::fs::read_dir(fuzz_dir().join("fuzz_targets")).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+            assert!(names.contains(&name.as_str()), "{name} is not in TARGETS");
+            let source = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                source.contains(&format!("network_scope::fuzz::{name}(")),
+                "{name}.rs must call its own entry point"
+            );
+            assert!(manifest.contains(&format!("name = \"{name}\"")), "{name}");
+            binaries += 1;
+        }
+        assert_eq!(binaries, TARGETS.len(), "a target has no fuzz binary");
+        for name in names {
+            let seeds = fuzz_dir().join("corpus").join(name);
+            assert!(
+                std::fs::read_dir(&seeds).is_ok_and(|mut d| d.next().is_some()),
+                "{name} has no seeds"
+            );
+        }
+    }
+
+    /// Seeds and regression inputs (crashes found by fuzzing are added to the corpus).
+    #[test]
+    fn seed_corpus_runs_cleanly() {
+        for (name, run) in TARGETS {
+            let Ok(dir) = std::fs::read_dir(fuzz_dir().join("corpus").join(name)) else {
+                continue;
+            };
+            for entry in dir {
+                let path = entry.unwrap().path();
+                run(&std::fs::read(&path).unwrap());
+            }
+        }
+    }
+}

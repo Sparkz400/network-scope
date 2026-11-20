@@ -102,6 +102,29 @@ slsa-verifier verify-artifact network-scope-0.5.1-linux-x86_64.tar.gz \
 gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
 ```
 
+Each release also has a CycloneDX SBOM. Rebuilding a release and comparing the hash is documented in [Supply chain: SBOM and reproducible builds](supply-chain.md#what-is-reproducible-where): the Windows binaries were measured identical on one machine, the Linux check has not run yet, and releases up to v0.5.1 cannot be reproduced.
+
+## Checking for updates
+
+Network Scope tells you when a newer release exists; it **never downloads or replaces anything**. The check is off until you ask for it:
+
+```sh
+network-scope-cli update check
+```
+
+prints either `Network Scope 0.5.1 is up to date.` or `Version X is available`, followed by the release page and the commands that verify a download (the checksum with `sha256sum`, `gh attestation verify` and `slsa-verifier`, the ones above). You download the file for your platform, verify it and install it yourself.
+
+In the desktop app, **Settings > Check for updates on start** (off by default) does the same once when the program starts and shows a notice in the status bar when a newer release exists. Without that setting, and without running the command, the program never contacts GitHub for this.
+
+What the check does:
+
+- One HTTPS request to `https://api.github.com/repos/Sparkz400/network-scope/releases/latest`, with the headers `Host`, `User-Agent: network-scope/<version>`, `Accept` and `Connection: close`. It sends no identifier, no cookie and no scan data. GitHub sees the IP address of the connection, as for any request.
+- The server certificate is verified against the operating system's certificate store (the same code as the [HTTPS webhooks](monitoring-alerts.md)); an untrusted certificate fails the check.
+- Only the release tag is used from the answer, after it has been checked as a strict semantic version (`vMAJOR.MINOR.PATCH`). The release link and the commands are built from that version, not copied from the answer. Pre-releases and drafts are not offered. Versions are compared by semantic versioning, so `0.10.0` is newer than `0.9.0`.
+- The answer is read up to 1 MiB within a time limit, redirects are not followed. A failed check (no network, rate limit, an answer that is not a release) is an error message (exit status 1 on the command line), never a reason to do anything else.
+
+The unit tests use an in-process server on 127.0.0.1 and a hand-written fixture shaped like GitHub's answer (with a hostile `html_url` and release text to show that they are ignored); they make no network calls. A run of `update check` against the real endpoint on Windows (2026-11-19) completed the TLS handshake with the system certificate store and recognised GitHub's rate-limit answer (HTTP 403 for an address that had used up its 60 unauthenticated requests per hour); a successful answer from the live endpoint has not been seen yet.
+
 ## Build from source
 
 Requires a current stable Rust toolchain ([rustup](https://rustup.rs/)).
@@ -120,6 +143,16 @@ Linux GUI build dependencies (Debian/Ubuntu):
 sudo apt-get install libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
   libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 ```
+
+### CLI-only build
+
+The GUI is an optional cargo feature (`gui`, on by default). For servers, containers and CI, where no window system exists, build the command-line program alone:
+
+```sh
+cargo build --release --locked --no-default-features --bin network-scope-cli
+```
+
+This compiles none of the GUI crates (eframe, egui, the file dialogs) and needs none of the Linux development packages above; the result is a considerably smaller `network-scope-cli` with the complete CLI and TUI (`scan --tui` included). Started without a command it prints `built without the GUI; see --help` and exits with status 2 instead of opening a window. The `network-scope` GUI binary is not built in this configuration.
 
 ### Windows installer from source
 

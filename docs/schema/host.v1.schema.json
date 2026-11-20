@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:host:v1",
+  "title": "Host record (JSON Lines)",
+  "description": "One line of `export ID --format jsonl` or `scan --format jsonl`: a responding host with its services and findings.",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "timestamp",
+    "scope",
+    "complete",
+    "ip",
+    "mac",
+    "vendor",
+    "hostname",
+    "device_type",
+    "open_tcp",
+    "open_udp",
+    "services",
+    "findings",
+    "identity"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/host/v1"
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Scan time, Unix seconds; 0 when not recorded"
+    },
+    "scope": {
+      "type": "string"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "ip": {
+      "type": "string",
+      "description": "IPv4 or IPv6 address in text form"
+    },
+    "mac": {
+      "type": "string"
+    },
+    "vendor": {
+      "type": "string"
+    },
+    "hostname": {
+      "type": "string"
+    },
+    "device_type": {
+      "type": "string"
+    },
+    "os": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "open_tcp": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65535
+      }
+    },
+    "open_udp": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65535
+      }
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "port",
+          "protocol"
+        ],
+        "properties": {
+          "port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "protocol": {
+            "enum": [
+              "tcp",
+              "udp"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "product": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cpe": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "severity",
+          "id",
+          "title",
+          "port",
+          "evidence",
+          "cve"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/$defs/severity"
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "cve": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "identity": {
+      "type": "object"
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

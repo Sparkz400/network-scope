@@ -2,6 +2,6 @@
 //! Network Scope desktop binary. Release builds use the Windows GUI subsystem so a
 //! double-click opens no console; the program itself is `network_scope::run`.
 
-fn main() -> eframe::Result<()> {
+fn main() -> network_scope::RunResult {
     network_scope::run()
 }

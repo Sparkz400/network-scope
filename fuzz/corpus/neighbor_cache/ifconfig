@@ -1,0 +1,2 @@
+en0: flags=8863<UP> mtu 1500
+	inet6 fe80::1c2b:3d4e:5f60:7182%en0 prefixlen 64 secured scopeid 0x4

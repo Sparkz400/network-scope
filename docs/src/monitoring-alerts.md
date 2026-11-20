@@ -10,10 +10,11 @@ network-scope-cli monitor TARGETS [scan options] --interval 300 [--cycles N]
 
 | Alert | Severity |
 | --- | --- |
-| New device | High for OT devices (including a device whose only hint is 2222/tcp), else Medium |
+| New device | High for OT devices (including a device whose only hint is 2222/tcp), else Medium. A device is recognised across address and randomised-MAC changes, see [Device identity](device-identity.md) |
 | TCP/UDP port newly opened | High for risky ports |
 | Port no longer open | Info (a timeout does not prove a port closed) |
 | New finding | Severity of the finding |
+| Device not on the approved baseline (`unknown-device`, only once a [baseline](inventory-diff-reports.md#approved-baseline) exists; the subject is the device key) | Medium |
 | Address change for a known MAC (`address-changed`) | Medium |
 | Device not seen (`device-missing`, only with `--report-missing`) | Low |
 | Passive capture lost data (`capture-incomplete`) | Low |

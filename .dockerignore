@@ -1,5 +1,5 @@
-# Build context for the Dockerfile: only src/, data/ (embedded with include_str!), the Cargo
-# files and rust-toolchain.toml are needed.
+# Build context for the Dockerfile: only src/, core/ (the engine crate), data/ and
+# scripts/library/ (both embedded with include_str!), tests/fixtures (used by tests only), the Cargo files and rust-toolchain.toml are needed.
 .git
 .github
 .devcontainer
@@ -23,3 +23,6 @@ Dockerfile
 # ClusterFuzzLite builds .clusterfuzzlite/Dockerfile from this same context and needs the
 # seed corpora (including .pcap/.pcapng files); later rules win, so keep them.
 !fuzz/corpus/**
+
+# The shared Rhai script library is compiled into the binary (core/src/script.rs).
+!scripts/library/**

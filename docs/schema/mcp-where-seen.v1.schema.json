@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:mcp-where-seen:v1",
+  "title": "Where an address was seen (MCP search_inventory)",
+  "description": "Result of the MCP tool search_inventory: every saved scan in which an IP address, MAC address or hostname appeared.",
+  "type": "object",
+  "required": [
+    "schema",
+    "query",
+    "scans_checked",
+    "scans_total",
+    "truncated",
+    "matches"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/mcp-where-seen/v1"
+    },
+    "query": {
+      "type": "string"
+    },
+    "scans_checked": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scans_total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "true when the match limit or the number of scans examined cut the result"
+    },
+    "matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "scan_id",
+          "timestamp",
+          "targets",
+          "ip",
+          "mac",
+          "hostname",
+          "source"
+        ],
+        "properties": {
+          "scan_id": {
+            "type": "integer"
+          },
+          "timestamp": {
+            "type": "integer"
+          },
+          "targets": {
+            "type": "string"
+          },
+          "ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mac": {
+            "type": "string"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "host",
+              "observation"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
