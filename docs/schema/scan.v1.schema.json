@@ -179,6 +179,30 @@
     "notes": {
       "type": "object",
       "description": "Per-address notes, keyed by IP"
+    },
+    "sent": {
+      "type": "array",
+      "description": "The packets the scan sent, by kind and detail (empty for passive captures and imports)",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "detail",
+          "count"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
     }
   }
 }

@@ -1,0 +1,538 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:changes:v1",
+  "title": "Changes between two scans",
+  "description": "Output of changes --format json: the new, gone and changed devices and the new and resolved risks between the newest completed scan and the previous one (or the state at the start of a window).",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "since",
+    "now",
+    "current",
+    "previous",
+    "notice",
+    "summary",
+    "new_devices",
+    "gone_devices",
+    "changed_devices",
+    "new_risks",
+    "resolved_risks",
+    "unconfirmed_risks",
+    "unknown_devices"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/changes/v1"
+    },
+    "since": {
+      "type": "string",
+      "description": "What was asked: last, a window such as 7d, or a date, as given"
+    },
+    "now": {
+      "type": "integer",
+      "description": "Unix seconds"
+    },
+    "current": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id",
+        "timestamp",
+        "targets",
+        "hosts"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "targets": {
+          "type": "string"
+        },
+        "hosts": {
+          "type": "integer"
+        }
+      }
+    },
+    "previous": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id",
+        "timestamp",
+        "targets",
+        "hosts"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "targets": {
+          "type": "string"
+        },
+        "hosts": {
+          "type": "integer"
+        }
+      }
+    },
+    "notice": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "new_devices",
+        "gone_devices",
+        "changed_devices",
+        "new_risks",
+        "resolved_risks",
+        "unconfirmed_risks"
+      ],
+      "properties": {
+        "new_devices": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gone_devices": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "changed_devices": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_risks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resolved_risks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unconfirmed_risks": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "new_devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "ips",
+          "mac",
+          "vendor",
+          "device_type",
+          "hostnames"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "ips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mac": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "device_type": {
+            "type": "string"
+          },
+          "hostnames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "in_baseline": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On the approved baseline; null while there is no baseline"
+          }
+        }
+      }
+    },
+    "gone_devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "ips",
+          "mac",
+          "vendor",
+          "device_type",
+          "hostnames"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "ips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mac": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "device_type": {
+            "type": "string"
+          },
+          "hostnames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "in_baseline": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On the approved baseline; null while there is no baseline"
+          }
+        }
+      }
+    },
+    "changed_devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "device",
+          "changes",
+          "more"
+        ],
+        "properties": {
+          "device": {
+            "type": "object",
+            "required": [
+              "key",
+              "label",
+              "ips",
+              "mac",
+              "vendor",
+              "device_type",
+              "hostnames"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "ips": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "mac": {
+                "type": "string"
+              },
+              "vendor": {
+                "type": "string"
+              },
+              "device_type": {
+                "type": "string"
+              },
+              "hostnames": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "in_baseline": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "On the approved baseline; null while there is no baseline"
+              }
+            }
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "detail"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "more": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "new_risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "device_key",
+          "finding"
+        ],
+        "properties": {
+          "device_key": {
+            "type": "string"
+          },
+          "finding": {
+            "type": "object",
+            "required": [
+              "severity",
+              "id",
+              "title",
+              "ip"
+            ],
+            "properties": {
+              "severity": {
+                "$ref": "#/$defs/severity"
+              },
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "ip": {
+                "type": "string",
+                "description": "IPv4 or IPv6 address in text form"
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "cve": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "advice": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "confidence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      }
+    },
+    "resolved_risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "device_key",
+          "finding"
+        ],
+        "properties": {
+          "device_key": {
+            "type": "string"
+          },
+          "finding": {
+            "type": "object",
+            "required": [
+              "severity",
+              "id",
+              "title",
+              "ip"
+            ],
+            "properties": {
+              "severity": {
+                "$ref": "#/$defs/severity"
+              },
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "ip": {
+                "type": "string",
+                "description": "IPv4 or IPv6 address in text form"
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "cve": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "advice": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "confidence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      }
+    },
+    "unconfirmed_risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "device_key",
+          "finding"
+        ],
+        "properties": {
+          "device_key": {
+            "type": "string"
+          },
+          "finding": {
+            "type": "object",
+            "required": [
+              "severity",
+              "id",
+              "title",
+              "ip"
+            ],
+            "properties": {
+              "severity": {
+                "$ref": "#/$defs/severity"
+              },
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "ip": {
+                "type": "string",
+                "description": "IPv4 or IPv6 address in text form"
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "cve": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "advice": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "confidence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      }
+    },
+    "unknown_devices": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Devices of the current scan that are not on the approved baseline; null while there is no baseline"
+    }
+  }
+}

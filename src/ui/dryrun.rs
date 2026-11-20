@@ -81,10 +81,7 @@ pub(super) fn scan_plan(
             "groups": groups,
             "per_cycle": extras,
         });
-        return output(
-            &serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?,
-            opts,
-        );
+        return output(&crate::schema::object("dry-run", &doc)?, opts);
     }
     let mut text = plan::format_scan(&groups, s);
     if let Some(extra) = extras {
@@ -117,10 +114,7 @@ pub(super) fn trace_plan(
             "packets": p.packets,
             "notes": p.notes,
         });
-        return output(
-            &serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?,
-            opts,
-        );
+        return output(&crate::schema::object("dry-run", &doc)?, opts);
     }
     let mut text = format!("DRY RUN: nothing was sent.\n\n{target}\n");
     for line in p.lines() {
@@ -141,10 +135,7 @@ pub(super) fn dcp_plan(opts: &BTreeMap<String, String>) -> Result<(), String> {
             "packets": p.packets,
             "notes": p.notes,
         });
-        return output(
-            &serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?,
-            opts,
-        );
+        return output(&crate::schema::object("dry-run", &doc)?, opts);
     }
     let mut text = String::from("DRY RUN: nothing was sent.\n\n");
     for line in p.lines() {

@@ -116,6 +116,92 @@ fn every_json_output_of_the_cli_carries_its_schema_and_matches_it() {
     f.check("ot-assets", &["ot-assets", "2"], false);
 }
 
+/// The outputs added with changes, baseline, risk scores, import and the dry run (G44).
+#[test]
+fn the_newer_json_outputs_carry_their_schema_and_match_it() {
+    let f = Fixture::new("newer");
+    let changes = f.check("changes", &["changes", "--format", "json"], false);
+    assert_eq!(changes[0]["summary"]["new_risks"], 1);
+    assert_eq!(changes[0]["new_risks"][0]["finding"]["id"], "telnet-open");
+    // No baseline yet: an empty entry list and no approval time.
+    let none = f.check("baseline", &["baseline", "show", "--format", "json"], false);
+    assert!(none[0]["approved_at"].is_null());
+    let (code, _, err) = f.run(&["baseline", "approve", "--quiet"]);
+    assert_eq!(code, 0, "{err}");
+    let approved = f.check("baseline", &["baseline", "show", "--format", "json"], false);
+    assert_eq!(approved[0]["entries"].as_array().unwrap().len(), 1);
+    let score = f.check(
+        "risk-score",
+        &["findings", "2", "--top", "3", "--format", "json"],
+        false,
+    );
+    assert_eq!(score[0]["top_fixes"][0]["id"], "telnet-open");
+    let csv = f.dir.join("inventory.csv");
+    std::fs::write(
+        &csv,
+        "ip,mac,hostname
+10.0.0.9,00:11:22:33:44:55,printer
+",
+    )
+    .unwrap();
+    let summary = f.check(
+        "import-summary",
+        &[
+            "import",
+            "csv",
+            csv.to_str().unwrap(),
+            "--format",
+            "json",
+            "--quiet",
+        ],
+        false,
+    );
+    assert_eq!(summary[0]["merged"]["new"], 1);
+}
+
+#[test]
+fn every_dry_run_prints_the_dry_run_schema() {
+    let f = Fixture::new("dryrun");
+    // A declared scope keeps the result independent of the developer's own scope file.
+    let scope = ["--scope", "10.0.0.0/8", "--format", "json", "--dry-run"];
+    for (command, args) in [
+        (
+            "scan",
+            vec![
+                "scan",
+                "10.0.0.1-3",
+                "--fast",
+                "--ot",
+                "--jarm",
+                "--services",
+            ],
+        ),
+        ("monitor", vec!["monitor", "10.0.0.1", "--dhcp-discover"]),
+        ("trace", vec!["trace", "10.0.0.1"]),
+        ("dcp", vec!["dcp"]),
+    ] {
+        let mut a = args;
+        a.extend(scope);
+        let doc = f.check("dry-run", &a, false);
+        assert_eq!(doc[0]["command"], command);
+        assert_eq!(doc[0]["packets_sent"], 0);
+    }
+    let scan = f.check(
+        "dry-run",
+        &[
+            "scan",
+            "10.0.0.1",
+            "--scope",
+            "10.0.0.0/8",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+        false,
+    );
+    assert_eq!(scan[0]["scope"]["would_need_confirmation"], false);
+}
+
 #[test]
 fn json_schema_option_accepts_v1_and_rejects_other_versions() {
     let f = Fixture::new("option");
