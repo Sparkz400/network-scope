@@ -409,8 +409,20 @@ pub fn host(
         }
     }
 
-    // SNMP with user-supplied credentials.
-    if let Some(config) = &s.snmp {
+    // SNMP with user-supplied credentials (or the saved names of the variables that hold them).
+    let saved_snmp = s
+        .snmp
+        .clone()
+        .or_else(|| s.snmp_ref.as_ref()?.resolve(|n| std::env::var(n).ok()).ok());
+    if saved_snmp.is_none()
+        && let Some(r) = &s.snmp_ref
+    {
+        plan.notes.push(format!(
+            "SNMP is configured ({}) but its environment variables are not set here: no SNMP request would be sent",
+            r.summary()
+        ));
+    }
+    if let Some(config) = &saved_snmp {
         let (requests, seconds) = if s.safe {
             (
                 crate::snmp::SAFE_MAX_REQUESTS,
@@ -425,7 +437,7 @@ pub fn host(
                 &label,
                 format!("udp/{}", config.port),
                 &format!(
-                    "only if the host answered; credentials were given ({}); at most {requests} requests and {seconds} s per host, read-only: sysDescr/sysName/sysObjectID/sysUpTime, ifTable, ipAddrTable, LLDP remote table",
+                    "only if the host answered; credentials were given ({}); at most {requests} requests and {seconds} s per host, read-only: sysDescr/sysName/sysObjectID/sysUpTime, ifTable and ifName, ipAddrTable and ipAddressTable, LLDP remote table",
                     config.credentials_summary()
                 ),
             );

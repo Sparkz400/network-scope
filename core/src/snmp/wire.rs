@@ -375,7 +375,7 @@ pub fn parse_v3(m: &[u8], expect_security: &V3Expect<'_>) -> Result<V3Reply, Str
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::snmp::ber::Value;
+    use crate::snmp::{PrivProto, ber::Value};
 
     fn oid(s: &str) -> Oid {
         Oid::parse(s).unwrap()
@@ -704,11 +704,119 @@ pub(super) mod tests {
         }
     }
 
+    /// HMAC-MD5-96 with DES-CBC: the request hides the OID, the reply (its padding included)
+    /// decodes, and a ciphertext that is not a whole number of DES blocks is an error.
+    #[test]
+    fn md5_and_des_requests_and_replies_round_trip() {
+        let engine = engine();
+        let auth_key = usm::localized_key(AuthProto::Md5, b"authpass-1234", &engine);
+        let privacy = Privacy::new(AuthProto::Md5, PrivProto::Des, b"privpass-5678", &engine);
+        let request = SnmpRequest::get(&[oid("1.3.6.1.2.1.1.1.0")]);
+        let salt = privacy.salt(7, 1);
+        let d = encode_v3(
+            1,
+            2,
+            &request,
+            &V3Send {
+                user: "u",
+                engine_id: &engine,
+                boots: 7,
+                time: 2,
+                auth: Some((AuthProto::Md5, &auth_key)),
+                privacy: Some((&privacy, salt)),
+            },
+        )
+        .unwrap();
+        let oid_bytes = oid("1.3.6.1.2.1.1.1.0").encode().unwrap();
+        assert!(!d.bytes().windows(oid_bytes.len()).any(|w| w == oid_bytes));
+        // the 12-byte HMAC-MD5-96 parameter and the 8-byte salt are in the security parameters
+        assert!(
+            d.bytes()
+                .windows(10)
+                .any(|w| *w == [&[0x04, 0x08][..], &salt[..]].concat()[..10])
+        );
+        let reply = Pdu {
+            report: false,
+            request_id: 2,
+            error_status: 0,
+            error_index: 0,
+            varbinds: vec![(
+                oid("1.3.6.1.2.1.1.1.0"),
+                Value::Octets(b"Old router 12.3".to_vec()),
+            )],
+        };
+        let usm = Usm {
+            engine_id: engine.clone(),
+            boots: 7,
+            time: 3,
+            user: b"u".to_vec(),
+        };
+        let bytes = agent_reply(
+            &reply,
+            &usm,
+            Some((AuthProto::Md5, &auth_key)),
+            Some((&privacy, privacy.salt(7, 9))),
+        );
+        let expect = V3Expect {
+            auth: Some((AuthProto::Md5, &auth_key)),
+            privacy: Some(&privacy),
+        };
+        assert_eq!(parse_v3(&bytes, &expect).unwrap().pdu, reply);
+        // the same bytes with the wrong DES key fail, with the wrong MAC algorithm too
+        let wrong = Privacy::new(AuthProto::Md5, PrivProto::Des, b"not-the-pass", &engine);
+        assert!(
+            parse_v3(
+                &bytes,
+                &V3Expect {
+                    auth: Some((AuthProto::Md5, &auth_key)),
+                    privacy: Some(&wrong)
+                }
+            )
+            .is_err()
+        );
+        let sha_key = usm::localized_key(AuthProto::Sha1, b"authpass-1234", &engine);
+        assert!(
+            parse_v3(
+                &bytes,
+                &V3Expect {
+                    auth: Some((AuthProto::Sha1, &sha_key)),
+                    privacy: Some(&privacy)
+                }
+            )
+            .is_err()
+        );
+        // every prefix of the message, and one byte cut from the ciphertext, is an error and
+        // never a panic (the MAC covers the message, so a cut ciphertext fails earlier or here)
+        for n in 0..bytes.len() {
+            let _ = parse_v3(&bytes[..n], &expect);
+        }
+        // a correctly authenticated message whose ciphertext is not a multiple of 8
+        let scoped = scoped_pdu(&engine, b"\xa2\x00");
+        let mut cipher = privacy.encrypt(7, 3, &salt, &scoped);
+        cipher.pop();
+        let build = |auth: &[u8]| {
+            v3_message(
+                1,
+                0x03,
+                &security_parameters(&engine, 7, 3, "u", auth, &salt),
+                &octets(&cipher),
+            )
+        };
+        let mac = usm::mac(AuthProto::Md5, &auth_key, &build(&[0; 12]));
+        let e = parse_v3(&build(&mac), &expect).unwrap_err();
+        assert!(e.contains("malformed"), "{e}");
+    }
+
     #[test]
     fn privacy_hides_the_pdu_and_a_wrong_key_is_detected() {
         let engine = engine();
         let auth_key = usm::localized_key(AuthProto::Sha1, b"authpass-1234", &engine);
-        let privacy = Privacy::new(AuthProto::Sha1, b"privpass-5678", &engine);
+        let privacy = Privacy::new(
+            AuthProto::Sha1,
+            PrivProto::Aes128,
+            b"privpass-5678",
+            &engine,
+        );
         let request = SnmpRequest::get(&[oid("1.3.6.1.2.1.1.1.0")]);
         let salt = [0, 0, 0, 0, 0, 0, 0, 1];
         let d = encode_v3(
@@ -777,7 +885,7 @@ pub(super) mod tests {
         )
         .unwrap();
         assert_eq!(got.pdu, reply);
-        let wrong = Privacy::new(AuthProto::Sha1, b"not-the-pass", &engine);
+        let wrong = Privacy::new(AuthProto::Sha1, PrivProto::Aes128, b"not-the-pass", &engine);
         let e = parse_v3(
             &bytes,
             &V3Expect {

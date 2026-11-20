@@ -44,7 +44,7 @@ pub(super) const FLAGS: [&str; 36] = [
     "incremental",
     "ipv6-discover",
 ];
-pub(super) const VALUES: [&str; 76] = [
+pub(super) const VALUES: [&str; 77] = [
     "feeds",
     "top",
     "nvd",
@@ -119,6 +119,7 @@ pub(super) const VALUES: [&str; 76] = [
     "targets-file",
     "full-every",
     "snmp-community",
+    "snmp-community-env",
     "snmp-version",
     "snmp-v3",
 ];
@@ -283,7 +284,7 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     // On by default; it only ever slows a host down (see `backoff`).
     s.backoff = !opts.contains_key("no-backoff");
     s.record = opts.contains_key("record");
-    s.snmp = snmp_config(opts)?;
+    (s.snmp, s.snmp_ref) = snmp_config(opts)?;
     s.ipv6_discover = opts.contains_key("ipv6-discover");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
@@ -325,26 +326,58 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     s.partial_events = opts.contains_key("stream");
     Ok(s)
 }
-/// `--snmp-community` / `--snmp-version` or `--snmp-v3`: the credentials of the SNMP read. The v3
-/// secrets come from the environment variables named in the option, never from the command line.
+/// `--snmp-community` / `--snmp-community-env` / `--snmp-version` or `--snmp-v3`: the credentials
+/// of the SNMP read, and the form that may be saved with the scan (names of environment
+/// variables only). The v3 secrets come from the environment variables named in the option,
+/// never from the command line; a community string given with `--snmp-community` is used for
+/// this run only and has no saved form.
 pub(super) fn snmp_config(
     opts: &BTreeMap<String, String>,
-) -> Result<Option<crate::snmp::SnmpConfig>, String> {
-    use crate::snmp::SnmpConfig;
-    let (community, v3) = (opts.get("snmp-community"), opts.get("snmp-v3"));
-    if community.is_some() && v3.is_some() {
-        return Err("Use either --snmp-community or --snmp-v3, not both".into());
+) -> Result<
+    (
+        Option<crate::snmp::SnmpConfig>,
+        Option<crate::snmp::SnmpRef>,
+    ),
+    String,
+> {
+    use crate::snmp::{SnmpConfig, SnmpRef};
+    let (community, community_env, v3) = (
+        opts.get("snmp-community"),
+        opts.get("snmp-community-env"),
+        opts.get("snmp-v3"),
+    );
+    if [community.is_some(), community_env.is_some(), v3.is_some()]
+        .iter()
+        .filter(|set| **set)
+        .count()
+        > 1
+    {
+        return Err(
+            "Use one of --snmp-community, --snmp-community-env and --snmp-v3, not several".into(),
+        );
     }
-    if opts.contains_key("snmp-version") && community.is_none() {
-        return Err("--snmp-version needs --snmp-community (SNMPv3 has --snmp-v3)".into());
+    if opts.contains_key("snmp-version") && community.is_none() && community_env.is_none() {
+        return Err(
+            "--snmp-version needs --snmp-community or --snmp-community-env (SNMPv3 has --snmp-v3)"
+                .into(),
+        );
     }
+    let version = opts.get("snmp-version").map_or("2c", String::as_str);
     if let Some(c) = community {
-        let version = opts.get("snmp-version").map_or("2c", String::as_str);
-        return SnmpConfig::community(version, c).map(Some);
+        return Ok((Some(SnmpConfig::community(version, c)?), None));
+    }
+    if let Some(name) = community_env {
+        let saved = SnmpRef::community(version, name)?;
+        let config = saved.resolve(|n| std::env::var(n).ok())?;
+        return Ok((Some(config), Some(saved)));
     }
     match v3 {
-        Some(spec) => SnmpConfig::v3(spec, |name| std::env::var(name).ok()).map(Some),
-        None => Ok(None),
+        Some(spec) => {
+            let saved = SnmpRef::v3(spec)?;
+            let config = saved.resolve(|n| std::env::var(n).ok())?;
+            Ok((Some(config), Some(saved)))
+        }
+        None => Ok((None, None)),
     }
 }
 pub(super) fn trace_method(text: &str) -> Result<crate::trace::TraceMethod, String> {
@@ -477,6 +510,35 @@ mod tests {
         assert!(
             !e.contains("passphrase here"),
             "a mistyped passphrase is never echoed: {e}"
+        );
+        // a community string given on the command line has no saved form; names have
+        let s = parse(&["--snmp-community", "s3cret"]).unwrap();
+        assert!(s.snmp.is_some() && s.snmp_ref.is_none());
+        let s = parse(&["--snmp-v3", "monitor:sha256:PATH:aes:PATH"]).unwrap();
+        let saved = serde_json::to_string(&s.snmp_ref).unwrap();
+        assert_eq!(saved, r#"{"v3":{"spec":"monitor:sha256:PATH:aes:PATH"}}"#);
+        // the weak algorithms are accepted when named
+        let s = parse(&["--snmp-v3", "monitor:md5:PATH:des:PATH"]).unwrap();
+        assert_eq!(s.snmp.unwrap().weak_crypto().len(), 2);
+        // --snmp-community-env: a variable name, never the community; one SNMP option at a time
+        let e = parse(&["--snmp-community-env", "NS_TEST_NO_SUCH_VARIABLE"]).unwrap_err();
+        assert!(e.contains("not set"), "{e}");
+        let e = parse(&["--snmp-community-env", "my community"]).unwrap_err();
+        assert!(
+            e.contains("environment variable") && !e.contains("my community"),
+            "{e}"
+        );
+        assert!(parse(&["--snmp-community-env", "PATH", "--snmp-community", "x"]).is_err());
+        assert!(parse(&["--snmp-community-env", "PATH", "--snmp-v3", "u"]).is_err());
+        assert!(
+            parse(&[
+                "--snmp-version",
+                "1",
+                "--snmp-community-env",
+                "NS_TEST_NO_SUCH_VARIABLE"
+            ])
+            .unwrap_err()
+            .contains("not set")
         );
     }
 

@@ -1197,6 +1197,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             Err(e) if e == crate::snmp::NO_ANSWER => {}
             Err(e) => note(&mut h, format!("SNMP: {e}")),
         }
+    } else if h.responding
+        && s.snmp.is_none()
+        && let Some(why) = &s.snmp_unresolved
+    {
+        // SNMP was configured (saved by name) but could not be set up: say so, never skip quietly
+        note(&mut h, format!("SNMP not read: {why}"));
     }
     if s.trace
         && h.responding

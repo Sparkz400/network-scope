@@ -173,8 +173,9 @@ const MAX_LINKS: usize = 2048;
 /// own. The two ends of a link usually report each other: the pair is kept once.
 ///
 /// The local port is named from `lldpLocPortDesc` when the agent reported it, else from the
-/// interface with the same number in `ifTable` (the port number of the LLDP-MIB is usually, but
-/// not necessarily, the `ifIndex`), else it is `port N`.
+/// short name (`ifName`) or the description (`ifDescr`) of the interface with the same number
+/// (the port number of the LLDP-MIB is usually, but not necessarily, the `ifIndex`), else it is
+/// `port N`.
 fn add_lldp_links(g: &mut Graph, hosts: &[Host]) {
     let responding: Vec<&Host> = hosts.iter().filter(|h| h.responding).collect();
     if !responding
@@ -222,6 +223,12 @@ fn add_lldp_links(g: &mut Graph, hosts: &[Host]) {
             let (sys, chassis, port) = (field("sys_name"), field("chassis_id"), field("port_id"));
             let local_port = Some(field("local_port_desc"))
                 .filter(|d| !d.is_empty())
+                .or_else(|| {
+                    h.identity
+                        .get(&format!("snmp.ifname.{local}"))
+                        .filter(|n| !n.is_empty())
+                        .cloned()
+                })
                 .or_else(|| {
                     h.identity
                         .get(&format!("snmp.if.{local}"))
@@ -559,6 +566,29 @@ mod tests {
             h.identity.insert((*k).into(), (*v).into());
         }
         h
+    }
+
+    /// Without `lldpLocPortDesc` the port is named by `ifName`, then `ifDescr`.
+    #[test]
+    fn the_local_port_is_named_from_ifname_before_ifdescr() {
+        let make = |with_name: bool| {
+            let mut pairs = vec![
+                ("snmp.sysname", "core-sw1"),
+                ("snmp.if.1", "GigabitEthernet1/0/1; 00:1B:21:0A:0B:01; up"),
+                ("snmp.lldp.0.local_port", "1"),
+                ("snmp.lldp.0.sys_name", "dist-sw2"),
+                ("snmp.lldp.0.chassis_id", "00:1B:21:77:00:01"),
+            ];
+            if with_name {
+                pairs.push(("snmp.ifname.1", "Gi1/0/1"));
+            }
+            with_identity(host("10.0.0.2", &[], &[]), "00:1B:21:0A:0B:FF", &pairs)
+        };
+        assert_eq!(build(&[make(true)]).links[0].a_port, "Gi1/0/1");
+        assert_eq!(
+            build(&[make(false)]).links[0].a_port,
+            "GigabitEthernet1/0/1"
+        );
     }
 
     #[test]

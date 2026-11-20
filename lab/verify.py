@@ -125,6 +125,10 @@ EXPECT_SNMP = {
     "snmp.if.1": "Gi1/0/1; 00:1B:21:0A:0B:01; up",
     "snmp.if.2": "Gi1/0/2; 00:1B:21:0A:0B:02; down",
     "snmp.ip.10.77.0.2": "ifIndex 3, mask 255.255.255.0",
+    # ifName (IF-MIB ifXTable) and the IPv6 address of ipAddressTable
+    "snmp.ifname.1": "Gi1/0/1",
+    "snmp.ifname.3": "Vlan1",
+    "snmp.ip.fd00:0:0:77::2": "ifIndex 3",
     "snmp.lldp.0.sys_name": "dist-sw2",
     "snmp.lldp.0.port_id": "Gi0/24",
     "snmp.lldp.0.chassis_id": "00:1B:21:77:00:01",
@@ -133,12 +137,15 @@ EXPECT_SNMP = {
 
 
 def check_snmp(exe, work, stats_file, failures):
-    """v2c, v1 and v3 (authNoPriv, SHA-1, passphrase from an environment variable) read the lab
-    agent in Safe Mode; a wrong community reads nothing; the agent never receives anything but
+    """v2c, v1 and v3 (authNoPriv, SHA-1 and the weak MD5, passphrase from an environment variable)
+    read the lab agent in Safe Mode; the community may come from an environment variable; a wrong community reads nothing; the agent never receives anything but
     GetRequest, GetNextRequest and GetBulkRequest."""
     options = ("--ports", "8080", "--timeout", "1500", "--tcp-only")
     os.environ["LAB_SNMP_AUTH"] = "lab-snmp-auth-pass"
+    os.environ["LAB_SNMP_COMMUNITY"] = "lab-community"
     runs = (("v2c", ("--snmp-community", "lab-community"), {}),
+            ("v2c", ("--snmp-community-env", "LAB_SNMP_COMMUNITY"), {}),
+            ("v3-md5", ("--snmp-v3", "labuser-md5:md5:LAB_SNMP_AUTH"), {"snmp.engine_id": "80001f88801a2b3c4d5e6f7081"}),
             ("v1", ("--snmp-community", "lab-community", "--snmp-version", "1"), {}),
             ("v3", ("--snmp-v3", "labuser:sha:LAB_SNMP_AUTH"), {"snmp.engine_id": "80001f88801a2b3c4d5e6f7081"}))
     for name, snmp_options, extra in runs:
@@ -147,7 +154,7 @@ def check_snmp(exe, work, stats_file, failures):
             if host["identity"].get(key) != want:
                 failures.append(f"snmp {name}: {key}: expected {want!r}, got {host['identity'].get(key)!r}")
         kinds = {(e["kind"], e["detail"].split(":")[0]) for e in host.get("sent_in_output") or []}
-        want_kind = ("snmp-request", "SNMPv3" if name == "v3" else f"SNMP{name}")
+        want_kind = ("snmp-request", "SNMPv3" if name.startswith("v3") else f"SNMP{name}")
         if want_kind not in kinds:
             failures.append(f"snmp {name}: {want_kind} missing from the sent log: {sorted(kinds)}")
         if 161 not in host["udp_open"]:

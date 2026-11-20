@@ -1,5 +1,6 @@
-//! What a scan reads over SNMP: the system group, `ifTable`, `ipAddrTable` and the LLDP
-//! remote-systems table, within hard limits, and how that becomes host identity.
+//! What a scan reads over SNMP: the system group, `ifTable` and `ifName` (`ifXTable`),
+//! `ipAddrTable` and the IPv6-capable `ipAddressTable`, and the LLDP remote-systems table, within
+//! hard limits, and how that becomes host identity.
 use super::{
     Oid, SnmpConfig, SnmpRequest, Value, Version,
     client::{Response, Session},
@@ -27,8 +28,9 @@ fn oid(text: &str) -> Oid {
     Oid::parse(text).expect("constant OID")
 }
 
-/// The system group (RFC 3418), `ifEntry` columns (RFC 2863), `ipAddrEntry` columns (RFC 4293
-/// legacy table) and the LLDP-MIB `lldpRemEntry` columns (IEEE 802.1AB) that are read.
+/// The system group (RFC 3418), `ifEntry` columns and `ifName` (RFC 2863), `ipAddrEntry` columns
+/// (the legacy table), `ipAddressIfIndex` (RFC 4293) and the LLDP-MIB `lldpRemEntry` columns
+/// (IEEE 802.1AB) that are read.
 mod mib {
     pub const SYSTEM: &str = "1.3.6.1.2.1.1";
     pub const IF_DESCR: &str = "1.3.6.1.2.1.2.2.1.2";
@@ -36,6 +38,10 @@ mod mib {
     pub const IF_OPER_STATUS: &str = "1.3.6.1.2.1.2.2.1.8";
     pub const IP_AD_ENT_IF_INDEX: &str = "1.3.6.1.2.1.4.20.1.2";
     pub const IP_AD_ENT_NET_MASK: &str = "1.3.6.1.2.1.4.20.1.3";
+    /// ifXTable `ifName`: the short port name (`Gi1/0/1`), by ifIndex.
+    pub const IF_NAME: &str = "1.3.6.1.2.1.31.1.1.1.1";
+    /// ipAddressTable `ipAddressIfIndex`; the row index is the address (see `inet_address`).
+    pub const IP_ADDRESS_IF_INDEX: &str = "1.3.6.1.2.1.4.34.1.3";
     pub const LLDP_REM_CHASSIS_ID_SUBTYPE: &str = "1.0.8802.1.1.2.1.4.1.1.4";
     pub const LLDP_REM_CHASSIS_ID: &str = "1.0.8802.1.1.2.1.4.1.1.5";
     pub const LLDP_REM_PORT_ID_SUBTYPE: &str = "1.0.8802.1.1.2.1.4.1.1.6";
@@ -61,6 +67,8 @@ pub struct System {
 pub struct Interface {
     pub index: u32,
     pub descr: String,
+    /// `ifName` (IF-MIB ifXTable), empty when the agent has no such table.
+    pub name: String,
     /// `AA:BB:CC:DD:EE:FF`, empty when the interface has none.
     pub mac: String,
     /// `up`, `down`, `testing`, ... (`ifOperStatus`).
@@ -143,6 +151,36 @@ fn lldp_id(subtype: Option<i64>, mac_subtype: i64, b: &[u8]) -> String {
         return mac_text(b);
     }
     b.iter().take(32).map(|v| format!("{v:02x}")).collect()
+}
+
+/// The address in the row index of an `ipAddressTable` column: `InetAddressType`, the length
+/// of the address and its octets (RFC 4001). Types 1 (IPv4), 2 (IPv6) and the zoned types 3 and
+/// 4 (the 4-byte zone is dropped); a length that does not fit its type is not an address.
+fn inet_address(index: &[u32]) -> Option<IpAddr> {
+    let (&kind, rest) = index.split_first()?;
+    let (&len, octets) = rest.split_first()?;
+    let (len, want, v6) = (len as usize, octets.len(), kind == 2 || kind == 4);
+    let expected = match kind {
+        1 => 4,
+        2 => 16,
+        3 => 8,
+        4 => 20,
+        _ => return None,
+    };
+    if len != expected || want != expected {
+        return None;
+    }
+    let bytes: Vec<u8> = octets
+        .iter()
+        .take(if v6 { 16 } else { 4 })
+        .map(|&o| u8::try_from(o))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    Some(if v6 {
+        IpAddr::from(<[u8; 16]>::try_from(bytes).ok()?)
+    } else {
+        IpAddr::from(<[u8; 4]>::try_from(bytes).ok()?)
+    })
 }
 
 fn oper_status(v: i64) -> &'static str {
@@ -402,6 +440,7 @@ pub async fn collect(
             out.interfaces.push(Interface {
                 index,
                 descr: v.as_octets().map(clean).unwrap_or_default(),
+                name: String::new(),
                 mac: macs
                     .get(&index)
                     .and_then(|v| v.as_octets())
@@ -458,6 +497,41 @@ pub async fn collect(
             });
         }
     }
+    // The newer tables come last, so that a small budget (Safe Mode) goes to the older ones
+    // first: the short port names, then the addresses of the IPv6-capable table.
+    if !session.exhausted() && !out.interfaces.is_empty() {
+        let base = oid(mib::IF_NAME);
+        let names = walk(&mut session, &base, MAX_INTERFACES, &limits, &mut notes).await;
+        let names = by_index(&names, &base);
+        for i in &mut out.interfaces {
+            if let Some(v) = names.get(&i.index) {
+                i.name = v.as_octets().map(clean).unwrap_or_default();
+            }
+        }
+    }
+    if !session.exhausted() {
+        let base = oid(mib::IP_ADDRESS_IF_INDEX);
+        let rows = walk(&mut session, &base, MAX_ADDRESSES, &limits, &mut notes).await;
+        for (o, v) in &rows {
+            let (Some(ip), Some(index)) = (o.suffix(&base).and_then(inet_address), v.as_int())
+            else {
+                continue;
+            };
+            // IPv4 addresses are usually in both tables: the legacy row has the mask.
+            if out.addresses.iter().any(|a| a.ip == ip) {
+                continue;
+            }
+            if out.addresses.len() >= MAX_ADDRESSES {
+                notes.push(format!("{base}: stopped after {MAX_ADDRESSES} addresses"));
+                break;
+            }
+            out.addresses.push(Address {
+                ip,
+                if_index: u32::try_from(index).unwrap_or(0),
+                mask: String::new(),
+            });
+        }
+    }
     if session.exhausted() {
         notes.push(if limits.safe {
             "Safe Mode request or time limit reached; the tables may be incomplete".into()
@@ -500,6 +574,8 @@ impl Collected {
                 parts.push(i.status.clone());
             }
             put(&format!("snmp.if.{}", i.index), &parts.join("; "));
+            // a separate key: the format of `snmp.if.<n>` is read by the topology
+            put(&format!("snmp.ifname.{}", i.index), &i.name);
         }
         for a in &self.addresses {
             put(

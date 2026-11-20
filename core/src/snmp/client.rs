@@ -173,8 +173,8 @@ impl<'a> Session<'a> {
             .as_ref()
             .map(|(proto, pass)| (*proto, usm::localized_key(*proto, pass.as_bytes(), &engine)));
         let privacy = match (&user.auth, &user.privacy) {
-            (Some((proto, _)), Some((_, pass))) => {
-                Some(Privacy::new(*proto, pass.as_bytes(), &engine))
+            (Some((proto, _)), Some((priv_proto, pass))) => {
+                Some(Privacy::new(*proto, *priv_proto, pass.as_bytes(), &engine))
             }
             _ => None,
         };
@@ -289,7 +289,7 @@ impl<'a> Session<'a> {
                     boots: st.boots,
                     time,
                     auth: st.auth.as_ref().map(|(p, k)| (*p, k.as_slice())),
-                    privacy: st.privacy.as_ref().map(|p| (p, st.salt.to_be_bytes())),
+                    privacy: st.privacy.as_ref().map(|p| (p, p.salt(st.boots, st.salt))),
                 },
             )
             .ok_or("SNMPv3 privacy needs authentication")?;

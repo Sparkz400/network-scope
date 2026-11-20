@@ -44,6 +44,11 @@ fn install(ctx: &mut Ctx) -> Result<(), String> {
     if ctx.opts.contains_key("cycles") {
         return Err("A service runs until it is stopped; --cycles does not apply".into());
     }
+    // The service's command line is stored in the service configuration, readable by every
+    // local administrator: a community string typed here would be saved in clear text.
+    if ctx.opts.contains_key("snmp-community") {
+        return Err("--snmp-community would store the community string in the service's command line; use --snmp-community-env NAME (the variable must be set for the service) or --snmp-v3".into());
+    }
     let targets: Vec<String> = ctx.pos.iter().skip(1).cloned().collect();
     // The same checks `monitor` makes at start-up, so a bad option fails here and not in a
     // service that then silently stops.
@@ -543,6 +548,17 @@ mod tests {
             );
         }
         for (bad, message) in [
+            (
+                vec![
+                    "service",
+                    "install",
+                    "10.0.0.0/24",
+                    "--snmp-community",
+                    "s3cret",
+                    "--dry-run",
+                ],
+                "--snmp-community-env",
+            ),
             (
                 vec![
                     "service",

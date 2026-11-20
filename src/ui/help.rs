@@ -118,9 +118,12 @@ Scan options:
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
   --snmp-community STRING  Read responding hosts over SNMP v2c (sysDescr, interfaces, LLDP neighbours) with
                   this community; read-only (Get/GetNext/GetBulk), never guessed; allowed in Safe Mode
-  --snmp-version 2c|1  Version for --snmp-community (default 2c)
-  --snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]  SNMPv3: AUTH is sha or sha256, PRIV is aes; the
-                  *_ENV parts are names of environment variables that hold the passphrases (min. 8 characters)
+  --snmp-community-env NAME  Like --snmp-community, but the community is read from the environment
+                  variable NAME; only the name is saved with the scan (scheduled scans, services, replay)
+  --snmp-version 2c|1  Version for --snmp-community and --snmp-community-env (default 2c)
+  --snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]  SNMPv3: AUTH is sha, sha256 or md5 (weak), PRIV is aes
+                  or des (weak); the *_ENV parts are names of environment variables that hold the
+                  passphrases (min. 8 characters); only the names are saved with the scan
   --ipv6-discover Find hosts on the local link over IPv6 (scan only): one ICMPv6 echo to ff02::1 per
                   interface (--interface picks one by index or name), then the OS neighbour cache;
                   joined to scanned hosts by MAC. One datagram per interface, also in Safe Mode

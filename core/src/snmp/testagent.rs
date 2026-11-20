@@ -1,9 +1,10 @@
 //! A small SNMP agent for the tests: a loopback UDP server with a fixed MIB that answers
-//! v1/v2c requests (community) and v3 requests (USM discovery, HMAC-SHA, AES-CFB). Test code only.
+//! v1/v2c requests (community) and v3 requests (USM discovery, HMAC-MD5/SHA, DES-CBC and
+//! AES-CFB). Test code only.
 use super::{
     SnmpPdu,
     ber::{self, INTEGER, OCTET_STRING, Oid, SEQUENCE, Value, expect, int, octets, tlv},
-    usm::{self, AuthProto, Privacy},
+    usm::{self, AuthProto, PrivProto, Privacy},
     wire::{Pdu, RESPONSE, Usm},
 };
 use std::{
@@ -64,6 +65,9 @@ pub fn lab_mib() -> BTreeMap<Oid, Value> {
             Value::Octets(mac.to_vec()),
         );
         put(&format!("1.3.6.1.2.1.2.2.1.8.{n}"), Value::Integer(status));
+        // ifXTable ifName
+        let short = ["Gi1/0/1", "Gi1/0/2", "Vl1"][i];
+        put(&format!("1.3.6.1.2.1.31.1.1.1.1.{n}"), text(short));
     }
     put(
         "1.3.6.1.2.1.4.20.1.1.10.0.0.2",
@@ -82,6 +86,17 @@ pub fn lab_mib() -> BTreeMap<Oid, Value> {
     put(
         "1.3.6.1.2.1.4.20.1.3.192.168.1.1",
         Value::IpAddress([255, 255, 255, 128]),
+    );
+    // ipAddressTable (RFC 4293): ipAddressIfIndex.<type>.<length>.<address octets>; the IPv4
+    // address of the legacy table again, a global IPv6 address, and a zoned link-local one
+    put("1.3.6.1.2.1.4.34.1.3.1.4.10.0.0.2", Value::Integer(3));
+    put(
+        "1.3.6.1.2.1.4.34.1.3.2.16.32.1.13.184.0.0.0.0.0.0.0.0.0.0.0.2",
+        Value::Integer(3),
+    );
+    put(
+        "1.3.6.1.2.1.4.34.1.3.4.20.254.128.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.0.3",
+        Value::Integer(3),
     );
     // lldpLocPortTable: lldpLocPortNum 1 and 2 are the first two ports
     put(
@@ -146,6 +161,13 @@ pub struct V3Agent {
 
 impl V3Agent {
     pub fn new(user: &str, auth: Option<(AuthProto, &str)>, privacy: Option<&str>) -> Self {
+        Self::with_privacy(user, auth, privacy.map(|p| (PrivProto::Aes128, p)))
+    }
+    pub fn with_privacy(
+        user: &str,
+        auth: Option<(AuthProto, &str)>,
+        privacy: Option<(PrivProto, &str)>,
+    ) -> Self {
         let engine_id = vec![
             0x80, 0, 0x1f, 0x88, 0x80, 0xde, 0xad, 0xbe, 0xef, 0, 0, 0, 1,
         ];
@@ -154,7 +176,7 @@ impl V3Agent {
             auth: auth.map(|(p, pw)| (p, usm::localized_key(p, pw.as_bytes(), &engine_id))),
             privacy: auth
                 .zip(privacy)
-                .map(|((p, _), pw)| Privacy::new(p, pw.as_bytes(), &engine_id)),
+                .map(|((p, _), (proto, pw))| Privacy::new(p, proto, pw.as_bytes(), &engine_id)),
             engine_id,
             boots: 12,
             time: 345_678,
