@@ -1,0 +1,302 @@
+{
+  "document": {
+    "acknowledgments": [
+      {
+        "summary": "Synthetic advisory written by hand for the tests of Network Scope. The advisory id, the CVE ids (CVE-2099-4001 to CVE-2099-4003), the vendor and the products are invented. It is not a real advisory. The affected versions are expressed only through product_tree relationships, as many real advisories do."
+      }
+    ],
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "distribution": {
+      "tlp": {
+        "label": "WHITE",
+        "url": "https://www.first.org/tlp/"
+      }
+    },
+    "lang": "en-US",
+    "publisher": {
+      "category": "coordinator",
+      "name": "Test Publisher",
+      "namespace": "https://example.invalid/"
+    },
+    "references": [
+      {
+        "category": "self",
+        "summary": "ICSA-TEST-0004 (synthetic)",
+        "url": "https://example.invalid/csaf/icsa-test-0004.json"
+      }
+    ],
+    "title": "Synthetic Examplon relationships test advisory",
+    "tracking": {
+      "current_release_date": "2026-03-01T00:00:00.000000Z",
+      "id": "ICSA-TEST-0004",
+      "initial_release_date": "2026-03-01T00:00:00.000000Z",
+      "revision_history": [
+        {
+          "date": "2026-03-01T00:00:00.000000Z",
+          "number": "1",
+          "summary": "Initial publication"
+        }
+      ],
+      "status": "final",
+      "version": "1"
+    }
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "branches": [
+          {
+            "branches": [
+              {
+                "category": "product_name",
+                "name": "Examplon EX-500 PLC",
+                "product": {
+                  "name": "Examplon EX-500 PLC",
+                  "product_id": "CSAFPID-4001"
+                }
+              },
+              {
+                "branches": [
+                  {
+                    "category": "product_version_range",
+                    "name": "vers:intdot/<2.8.0",
+                    "product": {
+                      "name": "Examplon EX-500 firmware: vers:intdot/<2.8.0",
+                      "product_id": "CSAFPID-4002"
+                    }
+                  }
+                ],
+                "category": "product_name",
+                "name": "Examplon EX-500 firmware"
+              },
+              {
+                "category": "product_name",
+                "name": "Examplon EX-700 PLC",
+                "product": {
+                  "name": "Examplon EX-700 PLC",
+                  "product_id": "CSAFPID-4011",
+                  "product_identification_helper": {
+                    "model_numbers": [
+                      "EX-700-A"
+                    ]
+                  }
+                }
+              },
+              {
+                "branches": [
+                  {
+                    "category": "product_version_range",
+                    "name": "vers:intdot/>=1.0|<1.4",
+                    "product": {
+                      "name": "Examplon Runtime: vers:intdot/>=1.0|<1.4",
+                      "product_id": "CSAFPID-4012"
+                    }
+                  }
+                ],
+                "category": "product_name",
+                "name": "Examplon Runtime"
+              },
+              {
+                "category": "product_name",
+                "name": "Examplon Cloud Agent",
+                "product": {
+                  "name": "Examplon Cloud Agent",
+                  "product_id": "CSAFPID-4014"
+                }
+              },
+              {
+                "category": "product_name",
+                "name": "Examplon EX-900 PLC",
+                "product": {
+                  "name": "Examplon EX-900 PLC",
+                  "product_id": "CSAFPID-4021"
+                }
+              },
+              {
+                "branches": [
+                  {
+                    "category": "product_version_range",
+                    "name": "vers:all/*",
+                    "product": {
+                      "name": "Examplon EX-900 firmware: vers:all/*",
+                      "product_id": "CSAFPID-4022"
+                    }
+                  }
+                ],
+                "category": "product_name",
+                "name": "Examplon EX-900 firmware"
+              }
+            ],
+            "category": "product_family",
+            "name": "Examplon controllers"
+          }
+        ],
+        "category": "vendor",
+        "name": "Examplon Controls"
+      }
+    ],
+    "relationships": [
+      {
+        "category": "default_component_of",
+        "full_product_name": {
+          "name": "Examplon EX-500 firmware vers:intdot/<2.8.0 as default component of Examplon EX-500 PLC",
+          "product_id": "CSAFPID-4003"
+        },
+        "product_reference": "CSAFPID-4002",
+        "relates_to_product_reference": "CSAFPID-4001"
+      },
+      {
+        "category": "installed_on",
+        "full_product_name": {
+          "name": "Examplon Runtime vers:intdot/>=1.0|<1.4 installed on Examplon EX-700 PLC",
+          "product_id": "CSAFPID-4013"
+        },
+        "product_reference": "CSAFPID-4012",
+        "relates_to_product_reference": "CSAFPID-4011"
+      },
+      {
+        "category": "installed_on",
+        "full_product_name": {
+          "name": "Examplon Cloud Agent installed on (Examplon Runtime installed on Examplon EX-700 PLC)",
+          "product_id": "CSAFPID-4015"
+        },
+        "product_reference": "CSAFPID-4014",
+        "relates_to_product_reference": "CSAFPID-4013"
+      },
+      {
+        "category": "default_component_of",
+        "full_product_name": {
+          "name": "Examplon EX-900 firmware vers:all/* as default component of Examplon EX-900 PLC",
+          "product_id": "CSAFPID-4023"
+        },
+        "product_reference": "CSAFPID-4022",
+        "relates_to_product_reference": "CSAFPID-4021"
+      },
+      {
+        "category": "installed_on",
+        "full_product_name": {
+          "name": "Pair whose parts the tree does not define",
+          "product_id": "CSAFPID-4031"
+        },
+        "product_reference": "CSAFPID-4097",
+        "relates_to_product_reference": "CSAFPID-4098"
+      },
+      {
+        "category": "optional_component_of",
+        "full_product_name": {
+          "name": "Examplon EX-500 PLC with an add-on that has no version",
+          "product_id": "CSAFPID-4032"
+        },
+        "product_reference": "CSAFPID-4001",
+        "relates_to_product_reference": "CSAFPID-4011"
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2099-4001",
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: the EX-500 firmware accepts an unauthenticated reboot request.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-4003"
+        ]
+      },
+      "remediations": [
+        {
+          "category": "vendor_fix",
+          "details": "Update the EX-500 firmware to 2.8.0 or later",
+          "product_ids": [
+            "CSAFPID-4003"
+          ]
+        }
+      ],
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 7.5,
+            "baseSeverity": "HIGH",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-4003"
+          ]
+        }
+      ],
+      "title": "Unauthenticated reboot (synthetic)"
+    },
+    {
+      "cve": "CVE-2099-4002",
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: the runtime on the EX-700 and its cloud agent disclose configuration data. Two of the product ids listed below are not defined anywhere in the product tree.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-4013",
+          "CSAFPID-4015",
+          "CSAFPID-4031",
+          "CSAFPID-4099"
+        ],
+        "known_not_affected": [
+          "CSAFPID-4023"
+        ]
+      },
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 5.3,
+            "baseSeverity": "MEDIUM",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-4013",
+            "CSAFPID-4015"
+          ]
+        }
+      ],
+      "title": "Configuration disclosure (synthetic)"
+    },
+    {
+      "cve": "CVE-2099-4003",
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: every EX-900 firmware version is affected.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-4023",
+          "CSAFPID-4032"
+        ]
+      },
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 9.1,
+            "baseSeverity": "CRITICAL",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-4023"
+          ]
+        }
+      ],
+      "title": "Hard-coded service credentials (synthetic)"
+    }
+  ]
+}
