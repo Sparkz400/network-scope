@@ -19,8 +19,12 @@ rustup_home=${RUSTUP_HOME:-$HOME/.rustup}
 windows=false
 if command -v cygpath >/dev/null 2>&1; then
   windows=true
-  cargo_home=$(cygpath -w "$cargo_home")
-  rustup_home=$(cygpath -w "$rustup_home")
+  # -l: the long form of every name. The compiler sees long names (cargo resolves them), and a
+  # prefix in the 8.3 form that Windows keeps for long user names (TEMP often holds one) would
+  # not match, so the build directory would stay in the binary and every build differs.
+  cargo_home=$(cygpath -w -l "$cargo_home")
+  rustup_home=$(cygpath -w -l "$rustup_home")
+  src=$(cygpath -w -l "$src")
 fi
 
 echo "SOURCE_DATE_EPOCH=$epoch"

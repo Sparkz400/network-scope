@@ -44,7 +44,7 @@ for dir in "$dir1" "$dir2"; do
   n=$((n + 1))
   # The directory as the compiler sees it: native path on Windows.
   native=$dir
-  if command -v cygpath >/dev/null 2>&1; then native=$(cygpath -w "$dir"); fi
+  if command -v cygpath >/dev/null 2>&1; then native=$(cygpath -w -l "$dir"); fi
   env_lines="$(SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" sh "$here/repro_env.sh" "$native")"
   (
     while IFS= read -r line; do export "$line"; done <<EOF
