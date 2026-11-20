@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Closed ports on Windows were reported as unanswered.** Windows re-sends a SYN that gets a RST and reports "refused" only after about 2 s, the default timeout, so every closed port looked unanswered (filtered). TCP connect probes now turn off SYN retransmissions for the probe socket (`SIO_TCP_INITIAL_RTO`), so a RST is seen at once: on a real /24 the closed/unanswered split now matches nmap, and scans finish sooner because closed ports no longer wait out the timeout. Silent ports still wait for the full timeout; a lost SYN is covered by `--retries`.
 - OT passive TCP reassembly no longer panics (integer overflow) on pcap files with extreme capture timestamps; found by ClusterFuzzLite.
 - A BACnet/IP device identified with `--ot` now lists UDP 47808 in the host's open UDP ports (and so in reports, exports and inventory), not only the default UDP probe ports.
 
