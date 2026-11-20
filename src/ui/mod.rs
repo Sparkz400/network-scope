@@ -146,11 +146,11 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     if opts.contains_key("fail-on-findings")
         && !matches!(
             command.as_str(),
-            "findings" | "diff" | "ot-listen" | "segmentation"
+            "findings" | "diff" | "ot-listen" | "segmentation" | "scan"
         )
     {
         return Err(
-            "--fail-on-findings applies to the findings and diff commands (and ot-listen --model, segmentation check) only"
+            "--fail-on-findings applies to the findings and diff commands (and ot-listen --model, segmentation check, scan --replay-check) only"
                 .into(),
         );
     }
@@ -166,6 +166,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
             "--dry-run applies to {} and service install only",
             dryrun::COMMANDS.join(", ")
         ));
+    }
+    if (opts.contains_key("record") || opts.contains_key("replay-check")) && command != "scan" {
+        return Err("--record and --replay-check apply to scan only".into());
     }
     if opts.contains_key("sent-log") && !matches!(command.as_str(), "scan" | "trace" | "dcp") {
         return Err(

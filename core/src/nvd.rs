@@ -661,6 +661,21 @@ impl Nvd {
 
     /// CVEs whose vulnerable ranges contain the CPE's version, highest severity first.
     /// Empty for a CPE without a usable version.
+    /// A SHA-256 over the import time, the source files and every CVE with its rating and number
+    /// of vulnerable ranges, for the provenance stamp. The ranges themselves are not hashed: the
+    /// cache can be a gigabyte.
+    pub fn fingerprint(&self) -> String {
+        let mut text = format!("{}|{}\n", self.imported_at, self.sources.join(","));
+        for (id, cve) in &self.cves {
+            text.push_str(&format!(
+                "{id}|{}|{}\n",
+                cve.severity.name(),
+                cve.matches.len()
+            ));
+        }
+        crate::provenance::hash(text.as_bytes())
+    }
+
     pub fn lookup(&self, cpe: &str) -> Vec<Hit> {
         let Some(c) = parse_cpe(cpe) else {
             return vec![];

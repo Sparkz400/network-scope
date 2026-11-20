@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:replay-check:v1",
+  "title": "Replay check",
+  "description": "Output of `scan --replay-check ID --format json`: a stored scan run again with its own targets and settings, compared with the stored result and its provenance stamp.",
+  "type": "object",
+  "required": [
+    "schema",
+    "original_scan",
+    "replay_scan",
+    "reproducible",
+    "same_result",
+    "same_rules",
+    "rule_differences",
+    "sent_differences",
+    "changes",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/replay-check/v1"
+    },
+    "original_scan": {
+      "type": "integer"
+    },
+    "replay_scan": {
+      "type": "integer"
+    },
+    "reproducible": {
+      "type": "boolean",
+      "description": "The result is the same and the rules are the same."
+    },
+    "same_result": {
+      "type": "boolean",
+      "description": "No host, port, identity or finding changed between the two results."
+    },
+    "same_rules": {
+      "type": "boolean",
+      "description": "Both scans carry a provenance stamp and the stamps are equal."
+    },
+    "original_provenance": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "tool, rules, feeds and combined of the stored scan; absent for a scan saved before the stamps existed."
+    },
+    "replay_provenance": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "rule_differences": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sent_differences": {
+      "type": "array",
+      "description": "Packets (kind and detail) sent a different number of times.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

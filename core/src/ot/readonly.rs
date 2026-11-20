@@ -147,29 +147,36 @@ pub trait ReadOnlyRequest: sealed::Sealed {
 
 /// A TCP connection that can read freely but only send [`ReadOnlyRequest`]s. With a log
 /// attached ([`OtStream::with_log`]) every request it sends is counted there.
-pub struct OtStream(TcpStream, Option<Arc<SentLog>>);
+pub struct OtStream(TcpStream, Option<Arc<SentLog>>, Option<SocketAddr>);
 
 impl OtStream {
     pub async fn connect(addr: impl ToSocketAddrs) -> io::Result<Self> {
-        TcpStream::connect(addr).await.map(|s| Self(s, None))
+        TcpStream::connect(addr).await.map(|s| Self(s, None, None))
     }
-    /// Counts every request sent through this stream in `log`.
+    /// Counts every request sent through this stream in `log` (and keeps the payloads of the
+    /// requests and the replies when the log records them, see `record`).
     pub fn with_log(mut self, log: Arc<SentLog>) -> Self {
+        self.2 = self.0.peer_addr().ok();
         self.1 = Some(log);
         self
     }
     /// Sends one request with a single `write_all`.
     pub async fn send<R: ReadOnlyRequest>(&mut self, request: &R) -> io::Result<()> {
+        let bytes = request.encode();
         if let Some(log) = &self.1 {
-            log.record(PacketKind::OtRequest, request.info().label());
+            let label = request.info().label();
+            log.record(PacketKind::OtRequest, label.as_str());
+            if let Some(peer) = self.2 {
+                log.capture(peer, false, true, &bytes, &label);
+            }
         }
-        self.0.write_all(&request.encode()).await
+        self.0.write_all(&bytes).await
     }
 }
 
 impl From<TcpStream> for OtStream {
     fn from(stream: TcpStream) -> Self {
-        Self(stream, None)
+        Self(stream, None, None)
     }
 }
 
@@ -179,33 +186,48 @@ impl AsyncRead for OtStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_read(cx, buf)
+        let before = buf.filled().len();
+        let ready = Pin::new(&mut self.0).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &ready
+            && let (Some(log), Some(peer)) = (&self.1, self.2)
+        {
+            log.capture(peer, false, false, &buf.filled()[before..], "OT reply");
+        }
+        ready
     }
 }
 
 /// A connected UDP socket that can receive freely but only send [`ReadOnlyRequest`]s.
-pub struct OtUdp(UdpSocket, Option<Arc<SentLog>>);
+pub struct OtUdp(UdpSocket, Option<Arc<SentLog>>, SocketAddr);
 
 impl OtUdp {
     /// Binds `local` and connects to `target`; datagrams go only to that one address.
     pub async fn connect(local: &str, target: SocketAddr) -> io::Result<Self> {
         let socket = UdpSocket::bind(local).await?;
         socket.connect(target).await?;
-        Ok(Self(socket, None))
+        Ok(Self(socket, None, target))
     }
-    /// Counts every request sent through this socket in `log`.
+    /// Counts every request sent through this socket in `log` (and keeps the payloads, see
+    /// `record`).
     pub fn with_log(mut self, log: Arc<SentLog>) -> Self {
         self.1 = Some(log);
         self
     }
     pub async fn send<R: ReadOnlyRequest>(&self, request: &R) -> io::Result<usize> {
+        let bytes = request.encode();
         if let Some(log) = &self.1 {
-            log.record(PacketKind::OtRequest, request.info().label());
+            let label = request.info().label();
+            log.record(PacketKind::OtRequest, label.as_str());
+            log.capture(self.2, true, true, &bytes, &label);
         }
-        self.0.send(&request.encode()).await
+        self.0.send(&bytes).await
     }
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.recv(buf).await
+        let n = self.0.recv(buf).await?;
+        if let Some(log) = &self.1 {
+            log.capture(self.2, true, false, &buf[..n], "OT reply");
+        }
+        Ok(n)
     }
 }
 

@@ -653,6 +653,11 @@ impl Csaf {
         Ok(())
     }
 
+    /// A SHA-256 of the imported advisories (the content of the cache), for the provenance stamp.
+    pub fn fingerprint(&self) -> String {
+        crate::provenance::hash(&serde_json::to_vec(self).unwrap_or_default())
+    }
+
     /// The advisories' CVEs that apply to `device`, strongest first, one per CVE.
     pub fn lookup(&self, device: &OtDevice) -> Vec<Hit> {
         let mut hits: BTreeMap<String, Hit> = BTreeMap::new();
