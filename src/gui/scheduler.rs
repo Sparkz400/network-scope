@@ -21,9 +21,9 @@ impl Scanner {
         self.schedule_note = match &action {
             Action::Off => String::new(),
             Action::Invalid(reason) => reason.clone(),
-            Action::Wait(left) => format!("Next scan {}", describe_wait(*left)),
-            Action::Postponed => "Next scan waits for the running scan or capture".into(),
-            Action::Start => "Starting".into(),
+            Action::Wait(left) => tr!("Next scan {}", describe_wait(*left)),
+            Action::Postponed => tr!("Next scan waits for the running scan or capture").into(),
+            Action::Start => tr!("Starting").into(),
         };
         if action == Action::Start {
             self.schedule_anchor = Some(Instant::now());
@@ -44,7 +44,7 @@ impl Scanner {
         self.saved.settings.safe = was_safe;
         self.targets = targets;
         if self.run.is_some() {
-            self.status = format!("Scheduled scan · {}", self.status);
+            self.status = tr!("Scheduled scan · {}", self.status);
         }
     }
 }
@@ -60,13 +60,13 @@ pub(super) fn schedule_section(
     error: &mut String,
 ) {
     ui.separator();
-    ui.heading("Scheduled scans");
+    ui.heading(tr!("Scheduled scans"));
     ui.checkbox(
         &mut saved.schedule.enabled,
-        "Scan on a schedule while Network Scope is open",
+        tr!("Scan on a schedule while Network Scope is open"),
     );
     ui.horizontal(|ui| {
-        ui.label("Targets");
+        ui.label(tr!("Targets"));
         let edit = ui.add(
             egui::TextEdit::singleline(&mut saved.schedule.targets)
                 .hint_text("192.168.1.1-254")
@@ -81,8 +81,8 @@ pub(super) fn schedule_section(
                 .unwrap_or_default();
         }
         if ui
-            .button("Use main window")
-            .on_hover_text("Copy the targets from the main window")
+            .button(tr!("Use main window"))
+            .on_hover_text(tr!("Copy the targets from the main window"))
             .clicked()
         {
             saved.schedule.targets = main_targets.to_string();
@@ -90,7 +90,7 @@ pub(super) fn schedule_section(
         }
     });
     ui.horizontal(|ui| {
-        ui.label("Every");
+        ui.label(tr!("Every"));
         ui.add(
             egui::DragValue::new(&mut saved.schedule.interval_minutes)
                 .range(MIN_INTERVAL_MINUTES..=MAX_INTERVAL_MINUTES)
@@ -98,20 +98,20 @@ pub(super) fn schedule_section(
         );
     });
     if !error.is_empty() {
-        ui.colored_label(egui::Color32::DARK_RED, error.as_str());
+        ui.colored_label(egui::Color32::from_rgb(205, 70, 70), error.as_str());
     }
     if saved.schedule.enabled && !note.is_empty() {
         ui.label(note);
     }
     ui.label(
-        "Scheduled scans always run in Safe Mode with your other settings and are saved to the inventory. They run only while this window is open.",
+        tr!("Scheduled scans always run in Safe Mode with your other settings and are saved to the inventory. They run only while this window is open."),
     );
-    ui.label(
-        "For monitoring that keeps running with the window closed, run `monitor` as a service:",
-    );
+    ui.label(tr!(
+        "For monitoring that keeps running with the window closed, run `monitor` as a service:"
+    ));
     let hint = crate::schedule::service_hint(&saved.schedule);
     ui.monospace(&hint);
-    if ui.button("Copy command").clicked() {
+    if ui.button(tr!("Copy command")).clicked() {
         ui.ctx().copy_text(hint);
     }
 }

@@ -1,11 +1,21 @@
 //! Sorting and filtering for the Findings and Devices windows. Row lists are recomputed only
 //! when the data or the view settings change.
+use super::i18n::tr;
 use crate::{devices::Device, risk};
 use eframe::egui;
 use std::{cmp::Ordering, collections::HashMap, net::IpAddr};
 
-/// Data generation, sort column, direction, minimum severity and lowercase query.
-type ViewKey = (Option<u64>, usize, bool, Option<risk::Severity>, String);
+/// Data generation, sort column, direction, minimum severity, lowercase query, "known exploited
+/// only" and the minimum EPSS in percent.
+type ViewKey = (
+    Option<u64>,
+    usize,
+    bool,
+    Option<risk::Severity>,
+    String,
+    bool,
+    u8,
+);
 /// Sort column, direction, minimum severity and text filter of one table.
 #[derive(Default)]
 pub(super) struct View {
@@ -14,9 +24,15 @@ pub(super) struct View {
     /// `None` shows everything (devices without findings included).
     pub min: Option<risk::Severity>,
     pub query: String,
+    /// Findings only: show only findings with a CVE in the CISA KEV catalog.
+    pub kev_only: bool,
+    /// Findings only: show only findings whose EPSS is at least this many percent (0: no limit).
+    pub epss_min: u8,
     pub rows: Vec<usize>,
     key: Option<ViewKey>,
 }
+/// The EPSS limits the filter offers, in percent.
+pub(super) const EPSS_STEPS: [u8; 4] = [0, 1, 10, 50];
 impl View {
     /// True when `rows` must be recomputed for data of this generation.
     pub fn stale(&mut self, generation: Option<u64>) -> bool {
@@ -26,6 +42,8 @@ impl View {
             self.reverse,
             self.min,
             self.query.to_lowercase(),
+            self.kev_only,
+            self.epss_min,
         );
         if self.key.as_ref() == Some(&key) {
             return false;
@@ -44,11 +62,16 @@ impl View {
     }
     /// Severity selector and text box above a table.
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str, any: &str) {
-        ui.horizontal(|ui| {
+        self.controls_with(ui, id, any, false);
+    }
+    /// The same, plus (for findings) the filters on the feed data: known exploited (KEV) only
+    /// and a minimum EPSS.
+    pub fn controls_with(&mut self, ui: &mut egui::Ui, id: &str, any: &str, exploit: bool) {
+        ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt(id)
                 .selected_text(
                     self.min
-                        .map_or(any.to_string(), |s| format!("{} and above", s.name())),
+                        .map_or(any.to_string(), |s| tr!("{} and above", super::home::severity_name(s))),
                 )
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.min, None, any);
@@ -62,17 +85,43 @@ impl View {
                         ui.selectable_value(
                             &mut self.min,
                             Some(s),
-                            format!("{} and above", s.name()),
+                            tr!("{} and above", super::home::severity_name(s)),
                         );
                     }
                 });
             ui.add(
                 egui::TextEdit::singleline(&mut self.query)
-                    .hint_text("Filter…")
+                    .hint_text(tr!("Filter…"))
                     .desired_width(220.0),
             );
-            if !self.query.is_empty() && ui.small_button("Clear").clicked() {
+            if !self.query.is_empty() && ui.small_button(tr!("Clear")).clicked() {
                 self.query.clear();
+            }
+            if exploit {
+                ui.checkbox(&mut self.kev_only, tr!("Known exploited (KEV) only"))
+                    .on_hover_text(tr!(
+                        "Findings with a CVE in the CISA catalog of vulnerabilities exploited in the wild. Needs imported feeds (feeds import)."
+                    ));
+                egui::ComboBox::from_id_salt(format!("{id}_epss"))
+                    .selected_text(if self.epss_min == 0 {
+                        tr!("Any EPSS").to_string()
+                    } else {
+                        tr!("EPSS {} % or more", self.epss_min)
+                    })
+                    .show_ui(ui, |ui| {
+                        for step in EPSS_STEPS {
+                            let text = if step == 0 {
+                                tr!("Any EPSS").to_string()
+                            } else {
+                                tr!("EPSS {} % or more", step)
+                            };
+                            ui.selectable_value(&mut self.epss_min, step, text);
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr!(
+                        "EPSS: the estimated probability that the vulnerability is exploited in the next 30 days."
+                    ));
             }
         });
     }
@@ -109,15 +158,34 @@ fn ordered<T>(
     rows
 }
 
-pub(super) const FINDING_COLUMNS: [&str; 5] = ["Severity", "Host", "Finding", "Evidence", "CVE"];
+/// The sortable column names of the findings table (translated).
+pub(super) fn finding_columns() -> [&'static str; 7] {
+    [
+        tr!("Severity"),
+        tr!("Host"),
+        tr!("Finding"),
+        tr!("Evidence"),
+        tr!("CVE"),
+        tr!("KEV"),
+        tr!("EPSS"),
+    ]
+}
+/// The EPSS of a finding in percent, if the feeds gave one.
+pub(super) fn epss_percent(f: &risk::Finding) -> Option<f64> {
+    f.exploit.epss.map(|s| s.as_f64() * 100.0)
+}
 
-/// Findings columns: severity (highest first), host, title, evidence, CVE.
+/// Findings columns: severity (highest first), host, title, evidence, CVE, known exploited
+/// (KEV first, then ransomware use) and EPSS (highest first).
 pub(super) fn finding_rows(findings: &[risk::Finding], view: &View) -> Vec<usize> {
     let query = view.query.to_lowercase();
     ordered(
         findings,
         |f| {
             view.min.is_none_or(|m| f.severity >= m)
+                && (!view.kev_only || f.exploit.kev)
+                && (view.epss_min == 0
+                    || epss_percent(f).is_some_and(|p| p >= f64::from(view.epss_min)))
                 && (query.is_empty()
                     || [
                         f.ip.to_string(),
@@ -127,6 +195,16 @@ pub(super) fn finding_rows(findings: &[risk::Finding], view: &View) -> Vec<usize
                         f.cve.join(" "),
                         f.id.clone(),
                         f.severity.name().to_string(),
+                        if f.exploit.kev {
+                            "kev".into()
+                        } else {
+                            String::new()
+                        },
+                        if f.exploit.kev_ransomware {
+                            "ransomware".into()
+                        } else {
+                            String::new()
+                        },
                     ]
                     .iter()
                     .any(|s| s.to_lowercase().contains(&query)))
@@ -141,6 +219,14 @@ pub(super) fn finding_rows(findings: &[risk::Finding], view: &View) -> Vec<usize
                     .len()
                     .cmp(&a.cve.len())
                     .then_with(|| a.cve.cmp(&b.cve)),
+                5 => (b.exploit.kev, b.exploit.kev_ransomware)
+                    .cmp(&(a.exploit.kev, a.exploit.kev_ransomware))
+                    .then_with(|| b.severity.cmp(&a.severity)),
+                6 => b
+                    .exploit
+                    .epss
+                    .cmp(&a.exploit.epss)
+                    .then_with(|| b.severity.cmp(&a.severity)),
                 _ => b.severity.cmp(&a.severity),
             }
             .then_with(|| a.ip.cmp(&b.ip))
@@ -149,15 +235,18 @@ pub(super) fn finding_rows(findings: &[risk::Finding], view: &View) -> Vec<usize
     )
 }
 
-pub(super) const DEVICE_COLUMNS: [&str; 7] = [
-    "Address",
-    "MAC",
-    "Manufacturer",
-    "Type",
-    "OS guess",
-    "Open ports",
-    "Risk",
-];
+/// The column names of the devices table (translated).
+pub(super) fn device_columns() -> [&'static str; 7] {
+    [
+        tr!("Address"),
+        tr!("MAC"),
+        tr!("Manufacturer"),
+        tr!("Type"),
+        tr!("OS guess"),
+        tr!("Open ports"),
+        tr!("Risk"),
+    ]
+}
 
 /// Highest finding severity per IP address.
 pub(super) fn risk_by_ip(findings: &[risk::Finding]) -> HashMap<IpAddr, risk::Severity> {
@@ -326,6 +415,100 @@ mod tests {
     #[test]
     fn a_click_on_cell_text_selects_the_row() {
         assert_eq!(click_label(true), Some(1));
+    }
+
+    fn with_feed(
+        mut f: risk::Finding,
+        kev: bool,
+        ransomware: bool,
+        epss: Option<f64>,
+    ) -> risk::Finding {
+        f.exploit.kev = kev;
+        f.exploit.kev_ransomware = ransomware;
+        f.exploit.epss = epss.and_then(crate::feeds::Score::from_f64);
+        f
+    }
+
+    #[test]
+    fn findings_sort_and_filter_by_kev_and_epss() {
+        let list = vec![
+            with_feed(
+                finding(Severity::Medium, "10.0.0.1", "a"),
+                false,
+                false,
+                Some(0.02),
+            ),
+            with_feed(
+                finding(Severity::High, "10.0.0.2", "b"),
+                true,
+                false,
+                Some(0.40),
+            ),
+            with_feed(
+                finding(Severity::Low, "10.0.0.3", "c"),
+                true,
+                true,
+                Some(0.95),
+            ),
+            with_feed(
+                finding(Severity::Critical, "10.0.0.4", "d"),
+                false,
+                false,
+                None,
+            ),
+        ];
+        let mut v = View::default();
+        // KEV column: ransomware use first, then known exploited, then the rest by severity.
+        v.click(5);
+        assert_eq!(finding_rows(&list, &v), [2, 1, 3, 0]);
+        // EPSS column: highest first, findings without a score last.
+        v.click(6);
+        assert_eq!(finding_rows(&list, &v), [2, 1, 0, 3]);
+        v.click(6);
+        assert_eq!(
+            finding_rows(&list, &v),
+            [3, 0, 1, 2],
+            "the same column again reverses it"
+        );
+        // Filters.
+        v.kev_only = true;
+        assert_eq!(finding_rows(&list, &v), [1, 2]);
+        v.kev_only = false;
+        v.epss_min = 10;
+        assert_eq!(
+            finding_rows(&list, &v),
+            [1, 2],
+            "EPSS 40 % and 95 %, not 2 % or none"
+        );
+        v.epss_min = 50;
+        assert_eq!(finding_rows(&list, &v), [2]);
+        v.epss_min = 0;
+        v.query = "ransomware".into();
+        assert_eq!(finding_rows(&list, &v), [2]);
+        v.query = "kev".into();
+        assert_eq!(finding_rows(&list, &v).len(), 2);
+        // The view recomputes when a feed filter changes.
+        let mut v = View::default();
+        assert!(v.stale(Some(1)));
+        assert!(!v.stale(Some(1)));
+        v.kev_only = true;
+        assert!(v.stale(Some(1)));
+        v.epss_min = 1;
+        assert!(v.stale(Some(1)));
+        assert!(!v.stale(Some(1)));
+    }
+
+    #[test]
+    fn epss_is_shown_in_percent() {
+        let f = with_feed(
+            finding(Severity::Low, "10.0.0.1", "a"),
+            false,
+            false,
+            Some(0.5),
+        );
+        assert_eq!(epss_percent(&f), Some(50.0));
+        assert_eq!(epss_percent(&finding(Severity::Low, "10.0.0.1", "a")), None);
+        assert_eq!(EPSS_STEPS[0], 0, "the first step is no limit");
     }
 
     #[test]

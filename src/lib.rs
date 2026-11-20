@@ -15,7 +15,7 @@ pub(crate) use network_scope_core::{
     update, wol,
 };
 #[cfg(feature = "gui")]
-pub(crate) use network_scope_core::{pcapfile, schedule};
+pub(crate) use network_scope_core::{localnets, netmap, pcapfile, schedule};
 
 /// The fuzz entry points (`network_scope::fuzz::*`, called by the targets in `fuzz/`).
 #[doc(hidden)]
