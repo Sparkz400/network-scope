@@ -114,7 +114,7 @@ jobs:
           if-no-files-found: error
 
   # CycloneDX SBOM of the dependency tree (all targets: Windows, Linux, macOS), as a release file.
-  # It is a file in dist/ like the binaries, so it is in SHA256SUMS, covered by both provenance
+  # It is a file in dist/ like the binaries, so it is in SHA256SUMS, covered by the provenance
   # attestations and attested as the SBOM of the release files in the `release` job.
   sbom:
     name: SBOM (CycloneDX)
