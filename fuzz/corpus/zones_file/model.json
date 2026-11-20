@@ -1,0 +1,1 @@
+{"zones":{"enterprise":["10.0.0.0/24"],"control":["10.0.2.0/24","fd00:2::/64"]},"conduits":[{"from":"enterprise","to":"control","ports":["tcp/44818","502","tcp/8000-8100","icmp"]}]}

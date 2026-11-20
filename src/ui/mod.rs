@@ -144,10 +144,13 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let command = &args[0];
     let (pos, mut opts) = args::options(&args[1..])?;
     if opts.contains_key("fail-on-findings")
-        && !matches!(command.as_str(), "findings" | "diff" | "ot-listen")
+        && !matches!(
+            command.as_str(),
+            "findings" | "diff" | "ot-listen" | "segmentation"
+        )
     {
         return Err(
-            "--fail-on-findings applies to the findings and diff commands (and ot-listen --model) only"
+            "--fail-on-findings applies to the findings and diff commands (and ot-listen --model, segmentation check) only"
                 .into(),
         );
     }

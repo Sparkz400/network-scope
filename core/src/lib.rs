@@ -133,6 +133,7 @@ pub mod schema;
 pub mod scope;
 pub mod score;
 pub mod script;
+pub mod segmentation;
 pub mod sendlog;
 pub mod service;
 pub mod store;

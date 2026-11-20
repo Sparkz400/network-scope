@@ -51,6 +51,7 @@ pub const TARGETS: &[Target] = &[
     ("nvd_import", nvd_import),
     ("csaf_import", csaf_import),
     ("ot_model", ot_model),
+    ("zones_file", zones_file),
     ("import_inventory", import_inventory),
     ("scope_file", scope_file),
     ("arp_reply", arp_reply),
@@ -128,6 +129,49 @@ pub fn nvd_import(data: &[u8]) {
     if let Ok(text) = std::str::from_utf8(data) {
         std::hint::black_box(nvd::parse_cpe(text));
         std::hint::black_box(nvd::compare_versions(text, "1.0.1e"));
+    }
+}
+
+/// A zones and conduits file (`segmentation check --zones`) and a check of a small scan
+/// against whatever it declared.
+pub fn zones_file(data: &[u8]) {
+    if let Ok(model) = crate::segmentation::ZoneModel::parse(data) {
+        let host = |ip: [u8; 4]| crate::scan::Host {
+            ip: std::net::IpAddr::from(ip),
+            responding: true,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![22, 502],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::new(),
+            udp_open: vec![161],
+            trace: vec![],
+        };
+        let snapshot = crate::store::Snapshot {
+            targets: String::new(),
+            complete: true,
+            settings: crate::scan::Settings::default(),
+            hosts: vec![
+                host([10, 0, 0, 1]),
+                host([10, 0, 2, 9]),
+                host([192, 168, 1, 1]),
+            ],
+            observations: vec![],
+            notes: BTreeMap::new(),
+            sent: vec![],
+        };
+        for zone in ["enterprise", "a", "control"] {
+            std::hint::black_box(crate::segmentation::check(&model, zone, &snapshot, None).ok());
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        std::hint::black_box(crate::segmentation::Cidr::parse(text).ok());
+        std::hint::black_box(crate::segmentation::PortSpec::parse(text).ok());
     }
 }
 
