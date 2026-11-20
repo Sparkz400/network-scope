@@ -11,6 +11,10 @@ on:
   schedule:
     - cron: "17 1 * * 6" # weekly, Saturday 01:17 UTC
   workflow_dispatch:
+    inputs:
+      seconds:
+        description: Fuzzing seconds per shard (17400 for the full run; e.g. 600 to try the workflow)
+        default: "17400"
 
 permissions:
   contents: read
@@ -22,7 +26,7 @@ concurrency:
 env:
   SHARDS: 5
   # Per shard; the build takes the rest of the 6 hours.
-  FUZZ_SECONDS: 17400
+  FUZZ_SECONDS: ${{ inputs.seconds || 17400 }}
   # Same nightly as .clusterfuzzlite/Dockerfile; bump them together.
   RUSTUP_TOOLCHAIN: nightly-2026-11-19
   CARGO_FUZZ_VERSION: "0.13.2"
@@ -47,18 +51,23 @@ jobs:
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
-      - name: Corpora of the previous run
+      - name: Corpora of the previous runs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prev=$(gh run list --workflow fuzz-long.yml --branch "$GITHUB_REF_NAME" --status completed \
-            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          if [ -n "$prev" ] && gh run download "$prev" --pattern 'corpus-*' --dir prev; then
-            for d in prev/corpus-*; do cp -r "$d"/. fuzz/corpus/; done
-            echo "corpora of run $prev: $(find fuzz/corpus -type f | wc -l) files"
-          else
-            echo "no earlier corpus: starting from the seeds in fuzz/corpus"
-          fi
+          # The last few completed runs, oldest first: a cancelled run or a shard that died early
+          # left little or nothing, and must not cut the chain. libFuzzer names corpus files by
+          # their content hash, so overlaying runs only adds files.
+          runs=$(gh run list --workflow fuzz-long.yml --branch "$GITHUB_REF_NAME" --status completed \
+            --limit 4 --json databaseId --jq 'reverse | .[].databaseId' || true)
+          for run in $runs; do
+            rm -rf prev
+            if gh run download "$run" --pattern 'corpus-*' --dir prev; then
+              for d in prev/corpus-*; do cp -r "$d"/. fuzz/corpus/; done
+              echo "corpora of run $run merged"
+            fi
+          done
+          echo "corpus: $(find fuzz/corpus -type f | wc -l) files"
       - name: Build the fuzz targets
         run: cargo fuzz build -O --debug-assertions
       - name: Fuzz
@@ -80,7 +89,8 @@ jobs:
               opts=$(sed -n 's/^\([a-z_]*\) *= *\(.*\)$/-\1=\2/p' "fuzz/options/$t.options")
             fi
             # shellcheck disable=SC2086 # $opts holds several arguments
-            if ! cargo fuzz run -O --debug-assertions "$t" "fuzz/corpus/$t" -- \
+            # The corpus is cargo-fuzz's default, fuzz/corpus/<target>.
+            if ! cargo fuzz run -O --debug-assertions "$t" -- \
                 -max_total_time="$per" -print_final_stats=1 $opts; then
               failed="$failed $t"
             fi
