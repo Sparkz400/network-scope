@@ -66,12 +66,14 @@ pub(super) fn schedule_section(
         tr!("Scan on a schedule while Network Scope is open"),
     );
     ui.horizontal(|ui| {
-        ui.label(tr!("Targets"));
-        let edit = ui.add(
-            egui::TextEdit::singleline(&mut saved.schedule.targets)
-                .hint_text("192.168.1.1-254")
-                .desired_width(180.0),
-        );
+        let label = ui.label(tr!("Targets"));
+        let edit = ui
+            .add(
+                egui::TextEdit::singleline(&mut saved.schedule.targets)
+                    .hint_text("192.168.1.1-254")
+                    .desired_width(180.0),
+            )
+            .labelled_by(label.id);
         if edit.changed() {
             *error = saved
                 .schedule
@@ -90,12 +92,13 @@ pub(super) fn schedule_section(
         }
     });
     ui.horizontal(|ui| {
-        ui.label(tr!("Every"));
+        let label = ui.label(tr!("Every"));
         ui.add(
             egui::DragValue::new(&mut saved.schedule.interval_minutes)
                 .range(MIN_INTERVAL_MINUTES..=MAX_INTERVAL_MINUTES)
                 .suffix(" min"),
-        );
+        )
+        .labelled_by(label.id);
     });
     if !error.is_empty() {
         ui.colored_label(egui::Color32::from_rgb(205, 70, 70), error.as_str());

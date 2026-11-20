@@ -1,5 +1,5 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
-//! (main, findings, devices, settings, ot, script, timeline, home, home-empty, map, map-large,
+//! (main, findings, devices, settings, ot, script, timeline, scan-details, workbench, home, home-empty, map, map-large,
 //! quick, palette, palette-actions, appearance, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
 //! "-dark" for the dark theme and "-de" for German, e.g. "home-dark" or "main-de"). Screenshot
 //! runs never save to the inventory or preferences.
@@ -380,6 +380,104 @@ impl Scanner {
                     destination: "10.20.0.255".into(),
                 });
                 self.saved.starred.insert(convenience::favorite_key(&host));
+            }
+            "workbench" | "workbench-compare" | "workbench-draft" => {
+                // Two unknown products from invented banners, grouped and drafted by the core
+                // functions (never the user's inventory).
+                let host = |ip: &str, mac: &str, port: u16, banner: &str| {
+                    let mut h = demo_host(ip, &[port], &[("mac.vendor", mac)]);
+                    h.identity
+                        .insert(format!("banner.{port}"), banner.to_string());
+                    h.identity
+                        .insert(format!("svc.{port}"), "unidentified".to_string());
+                    h
+                };
+                let hosts = vec![
+                    host(
+                        "10.20.0.7",
+                        "Kronos Automation",
+                        9999,
+                        "KRONOS-GW 2.1 ready",
+                    ),
+                    host(
+                        "10.20.0.8",
+                        "Kronos Automation",
+                        9999,
+                        "KRONOS-GW 2.1 ready",
+                    ),
+                    host(
+                        "10.20.0.9",
+                        "Kronos Automation",
+                        9999,
+                        "KRONOS-GW 3.0.4 ready",
+                    ),
+                    host(
+                        "10.20.0.10",
+                        "Kronos Automation",
+                        9999,
+                        "KRONOS-GW 2.0 ready",
+                    ),
+                    host("10.20.0.11", "", 7000, "KRONOS-GW 3.0.4 ready"),
+                    host(
+                        "10.20.0.76",
+                        "Hallprint",
+                        2000,
+                        "HALLPRINT queue empty, 12 pages",
+                    ),
+                    host(
+                        "10.20.0.78",
+                        "Hallprint",
+                        2000,
+                        "HALLPRINT queue empty, 40 pages",
+                    ),
+                ];
+                let snapshot = store::Snapshot {
+                    sent: vec![],
+                    targets: self.targets.clone(),
+                    complete: true,
+                    settings: Default::default(),
+                    hosts,
+                    observations: vec![],
+                    notes: Default::default(),
+                };
+                let groups = crate::service::workbench::groups(&[snapshot]);
+                let first = groups.first().map(|g| g.id.clone());
+                let second = groups.get(1).map(|g| g.id.clone());
+                self.workbench.open = true;
+                let token = self.workbench.request();
+                self.workbench.loaded(
+                    token,
+                    Ok(Box::new(workbench::GroupsData { groups, scans: 4 })),
+                );
+                if let Some(id) = first {
+                    self.workbench.select(&id);
+                    if state == "workbench-compare" {
+                        self.workbench.compare_with(second.as_deref());
+                    } else if let Some((token, group)) = self.workbench.ask_draft() {
+                        self.workbench.show_end = state == "workbench-draft";
+                        let id = group.id.clone();
+                        self.workbench
+                            .drafted(token, id, workbench::make_draft(&group));
+                    }
+                }
+            }
+            "scan-details" => {
+                // The inventory window with the scan on screen and its provenance stamp (the
+                // hashes are those of the rules this build carries, not of the user's files).
+                self.history_open = true;
+                self.loaded_scan = Some(9);
+                self.scan_scope = self.targets.clone();
+                self.scan_settings = windows::settings_for_scan(&self.saved.settings);
+                self.history = [(9, 12), (8, 12), (7, 11)]
+                    .iter()
+                    .map(|&(id, hosts)| store::Entry {
+                        id,
+                        timestamp: 1_790_000_000 - (9 - id) * 86_400,
+                        targets: self.targets.clone(),
+                        complete: true,
+                        hosts,
+                    })
+                    .collect();
             }
             "findings" => self.findings_open = true,
             "devices" => self.devices_open = true,

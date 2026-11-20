@@ -68,7 +68,7 @@ impl View {
     /// and a minimum EPSS.
     pub fn controls_with(&mut self, ui: &mut egui::Ui, id: &str, any: &str, exploit: bool) {
         ui.horizontal_wrapped(|ui| {
-            egui::ComboBox::from_id_salt(id)
+            let severity = egui::ComboBox::from_id_salt(id)
                 .selected_text(
                     self.min
                         .map_or(any.to_string(), |s| tr!("{} and above", super::home::severity_name(s))),
@@ -89,10 +89,14 @@ impl View {
                         );
                     }
                 });
-            ui.add(
-                egui::TextEdit::singleline(&mut self.query)
-                    .hint_text(tr!("Filter…"))
-                    .desired_width(220.0),
+            super::a11y::named(severity.response, tr!("Minimum severity"));
+            super::a11y::named(
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.query)
+                        .hint_text(tr!("Filter…"))
+                        .desired_width(220.0),
+                ),
+                tr!("Filter…"),
             );
             if !self.query.is_empty() && ui.small_button(tr!("Clear")).clicked() {
                 self.query.clear();
@@ -102,7 +106,7 @@ impl View {
                     .on_hover_text(tr!(
                         "Findings with a CVE in the CISA catalog of vulnerabilities exploited in the wild. Needs imported feeds (feeds import)."
                     ));
-                egui::ComboBox::from_id_salt(format!("{id}_epss"))
+                let epss = egui::ComboBox::from_id_salt(format!("{id}_epss"))
                     .selected_text(if self.epss_min == 0 {
                         tr!("Any EPSS").to_string()
                     } else {
@@ -118,8 +122,8 @@ impl View {
                             ui.selectable_value(&mut self.epss_min, step, text);
                         }
                     })
-                    .response
-                    .on_hover_text(tr!(
+                    .response;
+                super::a11y::named(epss, tr!("Minimum EPSS")).on_hover_text(tr!(
                         "EPSS: the estimated probability that the vulnerability is exploited in the next 30 days."
                     ));
             }
