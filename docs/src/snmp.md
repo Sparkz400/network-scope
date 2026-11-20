@@ -57,7 +57,7 @@ What that gives you:
 - **Desktop:** Settings has a "Read devices over SNMP" section (off, community, SNMPv3 user) where you type the *names* of the variables. A scheduled scan uses the saved setting and reads the variables when it starts. Set them in the environment the desktop is started from.
 - **`monitor` and `service`:** the options are part of the command line (`service install` stores the command line in the service configuration). `--snmp-community STRING` is therefore refused by `service install`; use `--snmp-community-env NAME` or `--snmp-v3`, and set the variables in the environment of the service (for a Windows service: system-wide variables or the service's environment).
 - **`scan --replay-check ID`:** repeats a stored scan with the stored settings, so the SNMP setting is read again from the same variable names. A community that was typed with `--snmp-community` has no saved form and is not read again.
-- **A variable that is not set** where the scan runs does not stop the scan and is not skipped quietly: nothing is sent over SNMP, and every responding host gets the note `SNMP not read: environment variable NAME is not set`. `--dry-run` says the same.
+- **A variable that is not set:** on the command line (`scan`, `monitor`, `service run`, `service install`) the options are resolved when they are parsed, so a missing variable is an error before anything is sent, as it was for `--snmp-v3` before. For a scan that starts from a saved setting (the desktop, a scheduled scan, `scan --replay-check`) a missing variable does not stop the scan and is not skipped quietly: nothing is sent over SNMP, every responding host gets the note `SNMP not read: environment variable NAME is not set`, and the dry-run plan says so.
 
 ## Results
 
