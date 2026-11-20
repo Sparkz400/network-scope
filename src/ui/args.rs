@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 30] = [
+pub(super) const FLAGS: [&str; 31] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -37,6 +37,7 @@ pub(super) const FLAGS: [&str; 30] = [
     "allow-out-of-scope",
     "no-backoff",
     "sent-log",
+    "ipv6-discover",
 ];
 pub(super) const VALUES: [&str; 65] = [
     "feeds",
@@ -182,6 +183,7 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     // On by default; it only ever slows a host down (see `backoff`).
     s.backoff = !opts.contains_key("no-backoff");
     s.snmp = snmp_config(opts)?;
+    s.ipv6_discover = opts.contains_key("ipv6-discover");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
         s.trace = true;

@@ -25,6 +25,7 @@
 - [Scanning engine](scanning-engine.md)
 - [Detection](detection.md)
 - [SNMP (read-only, with your credentials)](snmp.md)
+- [IPv6 discovery](ipv6-discovery.md)
 - [Device identity](device-identity.md)
 - [Findings and CVE hints](findings-and-cves.md)
   - [Finding reference](findings/index.md)

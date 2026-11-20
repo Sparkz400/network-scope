@@ -1,4 +1,4 @@
-//! Passive decoding of frames the capture sees anyway: ARP, LLDP, CDP, Profinet DCP replies,
+//! Passive decoding of frames the capture sees anyway: ARP, IPv6 Neighbor Discovery, LLDP, CDP, Profinet DCP replies,
 //! mDNS, NetBIOS, SSDP/UPnP, WS-Discovery and DHCP. [`decode`] never transmits; the only
 //! transmitting code in this file is the opt-in DCP Identify request in [`start`], after the
 //! decoders (a test keeps everything before [`Listening`] send-free).
@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 mod cdp;
 pub(crate) mod hints;
+mod ndp;
 mod wsd;
 use hints::Hint;
 use std::{
@@ -203,6 +204,8 @@ pub fn decode(frame: &[u8]) -> Option<Observation> {
             let llc = b.get(..usize::from(length).min(b.len()))?;
             cdp::decode(llc, &mut o)?;
         }
+        // ICMPv6 Neighbor Discovery: addresses and MACs of hosts and routers on the link
+        0x86dd if b.len() >= 40 && b[6] == 58 => ndp::decode(b, &mut o)?,
         0x0800 | 0x86dd => {
             let udp = if kind == 0x0800 {
                 if b.len() < 20 || b[0] >> 4 != 4 || b[9] != 17 || be16(b, 6)? & 0x3fff != 0 {
@@ -1479,6 +1482,7 @@ pub(crate) mod tests {
             decoders,
             include_str!("passive/cdp.rs"),
             include_str!("passive/hints.rs"),
+            include_str!("passive/ndp.rs"),
             include_str!("passive/wsd.rs"),
         ];
         for source in sources {

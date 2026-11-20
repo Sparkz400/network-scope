@@ -135,7 +135,7 @@
         "object",
         "null"
       ],
-      "description": "monitor only: what each cycle adds to the scan plan",
+      "description": "monitor: what each cycle adds to the scan plan; scan: what runs once per scan (the IPv6 discovery of --ipv6-discover)",
       "properties": {
         "packets": {
           "type": "array",

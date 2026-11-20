@@ -27,11 +27,33 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     }
     let total = hosts.count() as usize;
     let run = scan::start_stream(Box::new(hosts.iter()), total, ports, s.clone());
-    let (results, complete, errors) = if opts.contains_key("tui") {
+    let (mut results, complete, errors) = if opts.contains_key("tui") {
         tui::tui(&run)
     } else {
         collect(&run)
     };
+    // --ipv6-discover: the local link over IPv6, joined to the scanned hosts by MAC. Runs after the
+    // scan (the IPv4 hosts and their MACs are known), one echo per interface through the scan's
+    // own pacing and sent log. A stopped scan does not start it.
+    let mut observations = vec![];
+    if s.ipv6_discover && complete {
+        let gate = crate::ipv6::gate(&s, run.sent.clone());
+        let found = crate::ipv6::discover(&s, &gate);
+        for note in &found.notes {
+            progress(opts, note);
+        }
+        observations = crate::ipv6::observations(&found);
+        let added = crate::ipv6::merge(&mut results, &found);
+        progress(
+            opts,
+            format_args!(
+                "IPv6: {} interface(s), {} answered the multicast echo, {} neighbor(s) in the cache, {added} host(s) added",
+                found.interfaces.len(),
+                found.responders.len(),
+                found.neighbors.len()
+            ),
+        );
+    }
     if results.is_empty() && !errors.is_empty() {
         return Err(errors.join("; "));
     }
@@ -40,7 +62,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         complete,
         settings: s,
         hosts: results,
-        observations: vec![],
+        observations,
         notes: BTreeMap::new(),
         sent: run.sent.snapshot(),
     };
