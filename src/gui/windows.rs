@@ -317,6 +317,7 @@ impl Scanner {
         let mut open = self.devices_open;
         let mut focus = None;
         let mut sort = None;
+        let mut workbench = false;
         let devices = &self.devices.value;
         let view = &mut self.devices_view;
         egui::Window::new(tr!("Devices (active + passive merged)"))
@@ -331,7 +332,18 @@ impl Scanner {
                     view.rows.len(),
                     devices.len()
                 ));
-                view.controls(ui, "devices_severity", tr!("Any risk"));
+                ui.horizontal(|ui| {
+                    view.controls(ui, "devices_severity", tr!("Any risk"));
+                    if ui
+                        .button(tr!("Unknown devices…"))
+                        .on_hover_text(tr!(
+                            "Group the banners that no rule identified, compare firmware versions and draft a probe rule."
+                        ))
+                        .clicked()
+                    {
+                        workbench = true;
+                    }
+                });
                 tables::plain_labels(ui);
                 TableBuilder::new(ui)
                     .id_salt("devices_table")
@@ -412,6 +424,9 @@ impl Scanner {
         }
         if let Some(ips) = focus {
             self.focus_host(&ips);
+        }
+        if workbench {
+            self.open_workbench();
         }
         self.devices_open = open;
     }

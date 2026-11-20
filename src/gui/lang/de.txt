@@ -524,3 +524,46 @@ Data feeds: none in use || Datenquellen: keine in Benutzung
 Feed {}: {} || Datenquelle {}: {}
 Combined hash (cite this): || Gesamt-Hash (zum Zitieren):
 Copy || Kopieren
+
+# Unknown-device workbench (ROADMAP L73)
+Open the unknown-device workbench || Werkbank für unbekannte Geräte öffnen
+Unknown devices… || Unbekannte Geräte…
+Group the banners that no rule identified, compare firmware versions and draft a probe rule. || Fasst die Banner zusammen, die keine Regel erkannt hat, vergleicht Firmware-Versionen und entwirft eine Probe-Regel.
+Unknown devices: banner workbench || Unbekannte Geräte: Banner-Werkbank
+Banners of services that no rule identified, grouped by how alike they are. This reads the saved scans only and sends nothing. || Banner von Diensten, die keine Regel erkannt hat, gruppiert nach Ähnlichkeit. Gelesen werden nur die gespeicherten Scans; es wird nichts gesendet.
+Grouping unidentified banners… || Gruppiere unerkannte Banner…
+Drafting a probe rule… || Entwerfe eine Probe-Regel…
+Reading the saved scans… || Lese die gespeicherten Scans…
+{} groups from {} saved scans || {} Gruppen aus {} gespeicherten Scans
+No unidentified banners in the stored scans. || Keine unerkannten Banner in den gespeicherten Scans.
+Choose a group to see its variants. || Wählen Sie eine Gruppe, um ihre Varianten zu sehen.
+{} · {} hosts · {} banners · port {} · {} || {} · {} Hosts · {} Banner · Port {} · {}
+port suggests {} || Port deutet auf {}
+Compare with || Vergleichen mit
+(none) || (keine)
+Group || Gruppe
+Template || Vorlage
+Ports || Ports
+The port number suggests || Die Portnummer deutet auf
+Distinct banners || Verschiedene Banner
+MAC vendors || MAC-Hersteller
+Differs || Unterschiede
+Banner || Banner
+Versions || Versionen
+Similarity of the commonest banners: {} (a group needs at least {}): {} || Ähnlichkeit der häufigsten Banner: {} (eine Gruppe braucht mindestens {}): {}
+they would be one group || sie wären eine Gruppe
+different products or protocols || verschiedene Produkte oder Protokolle
+Group {}: {} ({} hosts, {} distinct banners, ports {}) || Gruppe {}: {} ({} Hosts, {} verschiedene Banner, Ports {})
+The port number suggests: {} || Die Portnummer deutet auf: {}
+MAC vendors of the hosts: {} || MAC-Hersteller der Hosts: {}
+The banners are identical apart from nothing the workbench can see. || Die Banner sind identisch, soweit die Werkbank es sehen kann.
+Differs: {} || Unterschied: {}
+… and {} more banners || … und {} weitere Banner
+Draft a probe rule || Probe-Regel entwerfen
+Builds a rule for data/probes.json from the banners of the group on view. It only listens: the rule adds no probe that sends anything. || Erstellt aus den Bannern der angezeigten Gruppe eine Regel für data/probes.json. Sie hört nur zu: Die Regel fügt keine Probe hinzu, die etwas sendet.
+Note: {} || Hinweis: {}
+Pull request checklist: || Checkliste für den Pull Request:
+Save probe file… || Probe-Datei speichern…
+Probe file || Probe-Datei
+Saved {} || {} gespeichert
+Wrote {} (check it with `probes validate`) and {}. Read both and remove anything that identifies a person, host or site; nothing was sent. || {} geschrieben (prüfen Sie sie mit `probes validate`) und {}. Lesen Sie beide und entfernen Sie alles, was eine Person, einen Host oder einen Standort kennzeichnet; es wurde nichts gesendet.
