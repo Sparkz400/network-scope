@@ -122,6 +122,8 @@ Scan options:
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
   --record FILE.pcapng  scan: keep the payloads the scan sent and received (OT requests and replies, service
                   probes, HTTP) as pcapng. An application-level record, not a wire capture
+  --record-wire   with --record: capture the real frames of the scan instead (Npcap/libpcap; --interface, or the
+                  loopback interface for loopback targets); falls back to the application-level record
   --replay-check ID  scan: run stored scan ID again with its own targets and settings and compare the result
                   and the version/rules stamp (--fail-on-findings: exit 3 when it is not reproduced)
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)

@@ -152,6 +152,7 @@ pub mod topology;
 pub mod trace;
 pub(crate) mod udp;
 pub mod update;
+pub mod wirecap;
 pub mod wol;
 
 #[doc(hidden)]

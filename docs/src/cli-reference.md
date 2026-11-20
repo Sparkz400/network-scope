@@ -288,6 +288,7 @@ See [Monitoring and alerts](monitoring-alerts.md).
 | `--no-reassembly` | off | Disable OT TCP reassembly |
 | `--model FILE` | `ot-model.json` next to the database (`ot-learn`) | The learned traffic model: written by `ot-learn`, read by `ot-listen` |
 | `--record FILE.pcapng` | | `scan`: keep the payloads of the scan as pcapng; see [Reproducible scans](reproducible-scans.md) |
+| `--record-wire` | off | `scan --record FILE`: capture the real frames of the scan instead of the application-level record (needs Npcap/libpcap and `--interface`, or loopback targets); falls back to the application-level record with the reason; see [Reproducible scans](reproducible-scans.md#scan---record-filepcapng---record-wire) |
 | `--replay-check ID` | | `scan`: run stored scan ID again with its own targets and settings and compare; `--format text\|json`, `--fail-on-findings` |
 | `--zones FILE` | | `segmentation check`: the zones and conduits file |
 | `--from ZONE` | | `segmentation check`: the zone the scan was run from |
