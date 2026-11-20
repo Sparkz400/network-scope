@@ -290,3 +290,31 @@ path = "fuzz_targets/snmp_response.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fins_reply"
+path = "fuzz_targets/fins_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fox_hello"
+path = "fuzz_targets/fox_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mqtt_connack"
+path = "fuzz_targets/mqtt_connack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "knx_description"
+path = "fuzz_targets/knx_description.rs"
+test = false
+doc = false
+bench = false

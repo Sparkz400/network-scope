@@ -152,7 +152,7 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     if let Some(p) = opts.get("ports") {
         s.ports = p.clone();
     } else if opts.contains_key("ot") {
-        s.ports = "80,443,102,502,4840,44818".into();
+        s.ports = "80,443,102,502,1883,1911,4840,9600,44818".into();
     }
     s.workers = number(opts, "workers", 1024)?;
     if !(1..=4096).contains(&s.workers) {

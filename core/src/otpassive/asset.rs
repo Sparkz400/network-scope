@@ -56,6 +56,8 @@ pub fn assets(observations: &[Observation]) -> Vec<Asset> {
                     "vendor" if a.vendor.is_empty() => a.vendor = v.clone(),
                     "name" if a.name.is_empty() => a.name = v.clone(),
                     "firmware" => a.firmware = v.clone(),
+                    // controller model of FINS, MELSEC and MMS (EtherNet/IP uses `name` below)
+                    "model" if a.product.is_empty() => a.product = v.clone(),
                     "serial" => a.serial = v.clone(),
                     "vendor_id" if a.vendor.is_empty() => {
                         a.vendor = if base == "EtherNet/IP" {

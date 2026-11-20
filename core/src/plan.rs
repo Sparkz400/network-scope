@@ -418,14 +418,21 @@ pub fn host(
                     PacketKind::TcpConnect,
                     "OT identification",
                     format!("tcp/{port}"),
-                    &format!("only if tcp/{port} was found open"),
+                    &if port == 1883 {
+                        format!("only if tcp/{port} was found open and --services is off (with --services the MQTT service probe sends the same CONNECT)")
+                    } else {
+                        format!("only if tcp/{port} was found open")
+                    },
                 );
             }
             for e in catalog.iter().filter(|e| e.port == port) {
                 let when = if e.tcp {
                     format!("only if tcp/{port} was found open")
-                } else {
+                } else if port == 47808 {
                     when_silent.to_string()
+                } else {
+                    // FINS and KNX: never to a host that answered nothing
+                    "only if the host answered".to_string()
                 };
                 plan.push(
                     PacketKind::OtRequest,

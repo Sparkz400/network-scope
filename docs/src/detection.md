@@ -102,7 +102,7 @@ Device timelines (`devices --history`) are described in [Inventory, diffs and re
 | SSDP/UPnP | SERVER, ST, NT, USN, LOCATION of NOTIFY and search replies | IGD or `MiniUPnPd` gives a router, MediaRenderer/DIAL/Roku/Sonos a media device, printers and cameras by device type, `Microsoft-Windows` a Windows host |
 | WS-Discovery | Hello, ProbeMatches and ResolveMatches on UDP 3702: types, XAddrs, endpoint address (Probe, Resolve and Bye are ignored) | `PrintDeviceType`/`ScanDeviceType` give a printer, `NetworkVideoTransmitter` a camera, `Computer` a weak Windows hint (Samba's `wsdd` also publishes it) |
 | DHCP | client messages: option 55 request list, 60 vendor class, 12 host name; server replies as before | `os_hint` and a type hint (Windows 10/11, macOS, iOS, Android, ISC dhclient, IP phones, printers) |
-| Profinet DCP | name, vendor, IDs, IP settings | industrial controller |
+| Profinet DCP | name, vendor, IDs, IP settings, device role, options, instance, OEM ID | industrial controller |
 
 Device-type hints are stored in the observation as `hint.<category>` (strong) and `hint_weak.<category>` (weak) fields with the reason, and scored like active evidence: a strong hint (40 points) is enough for a device type, a weak one (20) only adds to other evidence, and a weak hint beside a strong one of the same category is ignored. When a passive hint names a specific kind of device, a plain LLDP/CDP announcement no longer counts as a network-device hint. The reason text is never used for keyword matching.
 

@@ -220,7 +220,7 @@ fn wants_ot(h: &Host, s: &Settings) -> bool {
 /// identity keys) proves the port answered, so the host lists it as open UDP like a
 /// port found by the UDP scan. Today that is only BACnet/IP; EtherNet/IP is identified
 /// over TCP 44818.
-const OT_UDP: [(&str, u16); 1] = [("BACnet", 47808)];
+const OT_UDP: [(&str, u16); 3] = [("BACnet", 47808), ("Omron FINS", 9600), ("KNXnet/IP", 3671)];
 
 fn merge_ot_udp(h: &mut Host) {
     for (protocol, port) in OT_UDP {
