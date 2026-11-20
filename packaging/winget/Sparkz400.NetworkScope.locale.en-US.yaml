@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+PackageIdentifier: Sparkz400.NetworkScope
+PackageVersion: @VERSION@
+PackageLocale: en-US
+Publisher: Network Scope
+PublisherUrl: https://github.com/Sparkz400
+PublisherSupportUrl: https://github.com/Sparkz400/network-scope/issues
+PackageName: Network Scope
+PackageUrl: https://sparkz400.github.io/network-scope/
+License: MIT
+LicenseUrl: https://github.com/Sparkz400/network-scope/blob/main/LICENSE.txt
+ShortDescription: Network scanner and analysis tool with service, TLS and passive OT discovery
+Description: |-
+  Network Scope scans networks (TCP, SYN, UDP), identifies services, TLS and SMB, keeps an
+  inventory with change reports and monitoring, and discovers industrial (OT) devices passively.
+  It installs a desktop app (network-scope.exe) and a command-line tool (network-scope-cli.exe).
+Moniker: network-scope
+Tags:
+- network-scanner
+- port-scanner
+- inventory
+- ot-security
+- modbus
+- pcap
+ReleaseNotesUrl: https://github.com/Sparkz400/network-scope/releases/tag/v@VERSION@
+Documentations:
+- DocumentLabel: Documentation
+  DocumentUrl: https://sparkz400.github.io/network-scope/
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

@@ -5,3 +5,6 @@ fuzz/corpus/** -text
 # Capture files (test fixtures and fuzz seeds) are binary.
 *.pcap binary
 *.pcapng binary
+# Package-manager templates (packaging/): makepkg and Homebrew expect LF.
+packaging/aur/** text eol=lf
+packaging/homebrew/** text eol=lf

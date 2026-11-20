@@ -59,23 +59,22 @@ jobs:
 
       - run: cargo build --release --locked
 
-      - name: Package (Windows zip and installer)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          $stage = "network-scope-$env:VERSION-${{ matrix.label }}"
-          New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
-          Copy-Item target\release\network-scope.exe, target\release\network-scope-cli.exe, README.md, LICENSE.txt, THIRD-PARTY-NOTICES.md, CHANGELOG.md -Destination $stage
-          Compress-Archive -Path "$stage\*" -DestinationPath "dist\$stage.zip"
-          choco install innosetup -y --no-progress
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" installer\network-scope.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
-          Get-ChildItem dist
+      # Windows and macOS binaries are signed and packaged by the package-windows and
+      # package-macos jobs: signing credentials never reach the job that runs the build scripts of
+      # ~570 third-party crates.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os != 'Linux'
+        with:
+          name: binaries-${{ matrix.label }}
+          path: |
+            target/release/network-scope
+            target/release/network-scope-cli
+            target/release/network-scope.exe
+            target/release/network-scope-cli.exe
+          if-no-files-found: error
 
       - name: Package (tar.gz)
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -108,8 +107,241 @@ jobs:
           ls -l dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'Linux'
         with:
           name: dist-${{ matrix.label }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Code signing (roadmap I55) runs only when its secrets exist, so forks and repositories without
+  # them still release, unsigned. Secret names: docs/src/supply-chain.md#code-signing. Signing
+  # happens before packaging: the zip, the installer and the tar.gz contain the signed binaries,
+  # and SHA256SUMS, the SBOM attestation and the provenance (release job) cover the signed files.
+  # The `reproducible` workflow compares unsigned builds; to compare a rebuild with a signed
+  # release file, strip the signature first (scripts/strip_authenticode.py).
+  # These jobs compile nothing, run no package-manager install scripts and never execute the
+  # built binaries (the test-windows job does, without any credentials).
+  package-windows:
+    name: sign and package windows-x64
+    needs: build
+    runs-on: windows-latest
+    # The OIDC subject Azure's federated credential matches (`environment:release`; a tag subject
+    # would need one credential per tag). The signing secrets may live in this environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # Azure login (OIDC); unused when signing is off
+    env:
+      SIGN_WINDOWS: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      INNO_SETUP_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
+      INNO_SETUP_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries-windows-x64
+          path: target/release
+
+      # Pinned by hash instead of `choco install`: no package scripts run in a job that can sign.
+      - name: Inno Setup (pinned)
+        shell: pwsh
+        run: |
+          $setup = "$env:RUNNER_TEMP\innosetup.exe"
+          Invoke-WebRequest $env:INNO_SETUP_URL -OutFile $setup
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash -ne $env:INNO_SETUP_SHA256) { throw "Inno Setup download does not match its pinned SHA-256" }
+          $dir = "$env:RUNNER_TEMP\innosetup"
+          $p = Start-Process $setup -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/ALLUSERS', "/DIR=`"$dir`""
+          if ($p.ExitCode -ne 0) { throw "Inno Setup install exited with $($p.ExitCode)" }
+          if (-not (Test-Path "$dir\ISCC.exe")) { throw "ISCC.exe not found in $dir" }
+
+      - name: Azure login for code signing
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign the executables (Azure Artifact Signing)
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\target\release\network-scope.exe
+            ${{ github.workspace }}\target\release\network-scope-cli.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Network Scope
+          description-url: https://sparkz400.github.io/network-scope/
+
+      - name: Package (zip and installer)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $stage = "network-scope-$env:VERSION-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
+          Copy-Item target\release\network-scope.exe, target\release\network-scope-cli.exe, README.md, LICENSE.txt, THIRD-PARTY-NOTICES.md, CHANGELOG.md -Destination $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath "dist\$stage.zip"
+          & "$env:RUNNER_TEMP\innosetup\ISCC.exe" "/DAppVersion=$env:VERSION" installer\network-scope.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          Get-ChildItem dist
+
+      # The uninstaller inside the installer (unins000.exe) stays unsigned: Inno Setup signs it
+      # only through its own SignTool hook, which this action does not provide.
+      - name: Sign the installer (Azure Artifact Signing)
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\NetworkScope-${{ steps.version.outputs.version }}-setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Network Scope setup
+          description-url: https://sparkz400.github.io/network-scope/
+
+      - name: Check the signatures
+        if: env.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          foreach ($f in "target\release\network-scope.exe", "target\release\network-scope-cli.exe", "dist\NetworkScope-$env:VERSION-setup.exe") {
+            $s = Get-AuthenticodeSignature $f
+            if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "$f signature: $($s.Status) $($s.StatusMessage)" }
+            "$f signed by $($s.SignerCertificate.Subject), timestamped by $($s.TimeStamperCertificate.Subject)"
+          }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-windows-x64
+          path: dist/*
+          if-no-files-found: error
+
+  # Installs, runs and uninstalls the signed installer (roadmap I58). A job of its own: the built
+  # binaries contain third-party code and never run where signing credentials are available.
+  test-windows:
+    name: test windows-x64 installer
+    needs: package-windows
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-windows-x64
+          path: dist
+      - name: Installer smoke test
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          ./scripts/installer_smoke.ps1 "dist\NetworkScope-$version-setup.exe" $version
+
+  package-macos:
+    name: sign and package macos-arm64
+    needs: build
+    runs-on: macos-latest
+    environment: release # the Apple secrets may live in this environment
+    permissions:
+      contents: read
+    env:
+      SIGN_MACOS: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries-macos-arm64
+          path: target/release
+
+      - name: Restore the executable bit (artifacts do not keep it)
+        run: chmod +x target/release/network-scope target/release/network-scope-cli
+
+      # Hardened runtime and a secure timestamp (both required for notarization). notarytool takes
+      # zip, pkg or dmg, so the two binaries are submitted as a zip; the tar.gz below packs the
+      # same signed files. A bare Mach-O binary cannot be stapled: Gatekeeper fetches the
+      # notarization ticket online the first time it checks the binary.
+      - name: Sign and notarize
+        if: env.SIGN_MACOS == 'true'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          mkdir -p "$RUNNER_TEMP/notarize"
+          for bin in network-scope network-scope-cli; do
+            codesign --force --options runtime --timestamp --keychain "$keychain" \
+              --sign "$APPLE_SIGNING_IDENTITY" "target/release/$bin"
+            codesign --verify --strict --verbose=2 "target/release/$bin"
+            cp "target/release/$bin" "$RUNNER_TEMP/notarize/"
+          done
+          ditto -c -k "$RUNNER_TEMP/notarize" "$RUNNER_TEMP/notarize.zip"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            | tee "$RUNNER_TEMP/notary.json"
+          status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary.json")"
+          if [ "$status" != "Accepted" ]; then
+            id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$RUNNER_TEMP/notary.json")"
+            xcrun notarytool log "$id" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" || true
+            echo "::error::Notarization status: $status"
+            exit 1
+          fi
+
+      - name: Remove the signing keychain and key
+        if: always() && env.SIGN_MACOS == 'true'
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
+
+      - name: Package (tar.gz)
+        shell: bash
+        run: |
+          stage="network-scope-${GITHUB_REF_NAME#v}-macos-arm64"
+          mkdir -p "$stage" dist
+          cp target/release/network-scope target/release/network-scope-cli README.md LICENSE.txt THIRD-PARTY-NOTICES.md CHANGELOG.md "$stage/"
+          tar -czf "dist/$stage.tar.gz" "$stage"
+          ls -l dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-macos-arm64
           path: dist/*
           if-no-files-found: error
 
@@ -147,7 +379,7 @@ jobs:
 
   release:
     name: publish release
-    needs: [build, sbom]
+    needs: [build, package-windows, test-windows, package-macos, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -163,6 +395,19 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
+
+      # winget, Scoop, Chocolatey, Homebrew and AUR manifests with this release's version and
+      # hashes (roadmap I56), as a release file: ready to submit, and covered by SHA256SUMS and
+      # the provenance like the binaries. Submitting them is a manual step (packaging/README.md).
+      - name: Package-manager manifests
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # The tag archive the Homebrew formula builds from.
+          curl -fsSL --retry 3 -o source.tar.gz "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          python3 -I scripts/render_packaging.py "$version" dist "$(sha256sum source.tar.gz | cut -d' ' -f1)" packaging-out
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --pretty=%ct)" \
+            -czf "dist/network-scope-${version}-packaging.tar.gz" -C packaging-out .
 
       - name: Checksums
         id: checksums

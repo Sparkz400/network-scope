@@ -1,0 +1,31 @@
+# Maintainer: Sparkz400 <https://github.com/Sparkz400>
+# Prebuilt release binaries; building from source takes a full LTO build of ~570 crates.
+pkgname=network-scope-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Network scanner and analysis tool with service, TLS and passive OT discovery"
+arch=('x86_64')
+url="https://sparkz400.github.io/network-scope/"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+# Loaded at run time (dlopen) only when needed.
+optdepends=('libpcap: SYN scan, ARP sweep and passive capture'
+            'libxkbcommon: desktop GUI'
+            'libxkbcommon-x11: desktop GUI on X11'
+            'libx11: desktop GUI on X11'
+            'libxcursor: desktop GUI on X11'
+            'libxrandr: desktop GUI on X11'
+            'libxi: desktop GUI on X11'
+            'wayland: desktop GUI on Wayland'
+            'libglvnd: desktop GUI (OpenGL)')
+provides=('network-scope')
+conflicts=('network-scope')
+source=("https://github.com/Sparkz400/network-scope/releases/download/v${pkgver}/network-scope-${pkgver}-linux-x86_64.tar.gz")
+sha256sums=('@SHA256_LINUX@')
+
+package() {
+  cd "network-scope-${pkgver}-linux-x86_64"
+  install -Dm755 network-scope network-scope-cli -t "${pkgdir}/usr/bin/"
+  install -Dm644 LICENSE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md THIRD-PARTY-NOTICES.md -t "${pkgdir}/usr/share/doc/${pkgname}/"
+}
