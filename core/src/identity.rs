@@ -18,7 +18,7 @@
 //! | host name (mDNS, DHCP, NetBIOS, reverse DNS) | 30 | names get reused |
 //! | host name declared by an import (AD, NetBox, CSV) | 100 | decides alone; see below |
 //! | IP address | 15 | addresses get reassigned |
-//! | HASSH + JA4S pair | 10 | identifies the software, not the device |
+//! | HASSH + JA3S pair | 10 | identifies the software, not the device |
 //!
 //! Two records are the same device when the points of their *matching* identifiers reach
 //! [`MATCH_THRESHOLD`] (100), so one strong identifier decides, and weak ones only add up: a
@@ -63,7 +63,7 @@ pub enum Kind {
     TlsKey,
     DhcpClientId,
     Hostname,
-    /// HASSH and JA4S of the same host: weak evidence that two hosts run the same software.
+    /// HASSH and JA3S of the same host: weak evidence that two hosts run the same software.
     ServiceFingerprint,
     Ip,
     /// A host name an operator declared for the device (an import). Never derived from a scan.
@@ -185,7 +185,7 @@ pub fn identifiers(
             .filter_map(|ip| Identifier::new(Kind::Ip, ip.to_string())),
     );
     out.extend(hostnames.iter().filter_map(|h| hostname_identifier(h, ips)));
-    let (mut hassh, mut ja4s) = (None, None);
+    let (mut hassh, mut ja3s) = (None, None);
     for (key, value) in identity {
         let parts: Vec<&str> = key.split('.').collect();
         let kind = match parts.as_slice() {
@@ -200,8 +200,8 @@ pub fn identifiers(
                 hassh.get_or_insert(value.as_str());
                 None
             }
-            ["tls", port, "ja4s"] if port.parse::<u16>().is_ok() => {
-                ja4s.get_or_insert(value.as_str());
+            ["tls", port, "ja3s"] if port.parse::<u16>().is_ok() => {
+                ja3s.get_or_insert(value.as_str());
                 None
             }
             _ => None,
@@ -211,7 +211,7 @@ pub fn identifiers(
             out.extend(Identifier::new(kind, value.to_ascii_lowercase()));
         }
     }
-    if let (Some(h), Some(j)) = (hassh, ja4s) {
+    if let (Some(h), Some(j)) = (hassh, ja3s) {
         out.extend(Identifier::new(
             Kind::ServiceFingerprint,
             format!("{}+{}", h.to_ascii_lowercase(), j.to_ascii_lowercase()),
@@ -616,7 +616,7 @@ mod tests {
             "printer",
             &[
                 ("ssh.22.hassh", "h1"),
-                ("tls.443.ja4s", "j1"),
+                ("tls.443.ja3s", "j1"),
                 ("tls.443.spki_sha256", "DEFAULTCERT"),
             ],
         )]);
@@ -628,7 +628,7 @@ mod tests {
             "printer",
             &[
                 ("ssh.22.hassh", "h1"),
-                ("tls.443.ja4s", "j1"),
+                ("tls.443.ja3s", "j1"),
                 ("tls.443.spki_sha256", "DEFAULTCERT"),
             ],
         )]);
@@ -851,7 +851,7 @@ mod tests {
             hostname_identifier(&long, &ips).unwrap().value.len(),
             MAX_VALUE_LEN
         );
-        // HASSH alone is not an identifier; HASSH with JA4S is a weak one.
+        // HASSH alone is not an identifier; HASSH with JA3S is a weak one.
         let only_hassh = devices_of(&[host("10.0.0.5", "", "", &[("ssh.22.hassh", "x")])]);
         assert!(
             !only_hassh[0]

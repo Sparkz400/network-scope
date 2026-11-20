@@ -120,8 +120,8 @@ fn export(ctx: &mut Ctx) -> Result<(), String> {
     }
 }
 
-/// `research groups`: devices that share a key, a certificate template, a TLS or SSH stack, a
-/// web interface or an industrial firmware (see `research::groups`).
+/// `research groups`: devices that share a key, a TLS or SSH stack, a web interface or an
+/// industrial firmware (see `research::groups`).
 fn groups(ctx: &mut Ctx) -> Result<(), String> {
     let (opts, db) = (&ctx.opts, &ctx.db);
     let limit: usize = number(opts, "top", research::groups::DEFAULT_LIMIT)?;

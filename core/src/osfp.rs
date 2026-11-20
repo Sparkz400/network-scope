@@ -117,7 +117,8 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
 fn derived(key: &str) -> bool {
     key.ends_with(".cpe")
         || key.ends_with(".hassh")
-        || key.ends_with(".ja4s")
+        || key.ends_with(".ja3s")
+        || key.ends_with(".ja3s_string")
         || key.ends_with(".jarm")
         || key.ends_with(".favicon_mmh3")
 }

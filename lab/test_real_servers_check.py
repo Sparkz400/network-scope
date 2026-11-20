@@ -88,25 +88,25 @@ class Independent(unittest.TestCase):
         with self.assertRaises(ValueError):
             rs.parse_kexinit(b"\x15" + b"\x00" * 40)
 
-    def test_ja4s_follows_the_published_foxio_examples(self):
-        # Published in the FoxIO JA4+ README; the extension lists are the ones that reproduce the hash.
-        self.assertEqual(rs.ja4s(0x0303, 0x1301, [0x002B, 0x0033], 0x0304, None), "t130200_1301_a56c5b993250")
-        self.assertEqual(rs.ja4s(0x0303, 0x1302, [0x002B, 0x0033], 0x0304, None), "t130200_1302_a56c5b993250")
-        self.assertEqual(rs.ja4s(0x0303, 0xC030, [0xFF01, 0x0023, 0x0017], None, None), "t120300_c030_5e2616a54c73")
-        self.assertEqual(rs.ja4s(0x0303, 0x1301, [0x0033, 0x002B], 0x0304, None), "t130200_1301_234ea6891581")
-        self.assertEqual(rs.ja4s(0x0303, 0x002F, [], None, None), "t120000_002f_000000000000")
-        # The examples of FoxIO's technical_details/JA4.md ("ALPN Extension Value").
-        cases = ((b"h2", "h2"), (b"http/1.1", "h1"), (b"x", "xx"), (b"\xab", "ab"), (b"\x20", "20"),
-                 (b"\xab\xcd", "ad"), (b"\x20\x61", "21"), (b"\x30\xab", "3b"), (b"\x61\x20", "60"),
-                 (b"\x30\x31\xab\xcd", "3d"), (b"\x30\xab\xcd\x31", "01"), (b"-a-", "2d"))
-        for alpn, want in cases:
-            self.assertEqual(rs.ja4s(0x0303, 0xC02F, [0x0010], None, alpn)[5:7], want, alpn)
+    def test_ja3s_follows_the_reference_implementation(self):
+        # Values printed by salesforce/ja3 python/ja3s.py (commit 502cc63) for ServerHellos of local
+        # TLS servers; the first is also the Trickbot value in the reference README.
+        self.assertEqual(rs.ja3s(0x0301, 0xC014, [0xFF01, 0x000B]),
+                         ("623de93db17d313345d7ea481e7443cf", "769,49172,65281-11"))
+        self.assertEqual(rs.ja3s(0x0303, 0x1302, [0x002B, 0x0033]),
+                         ("15af977ce25de452b96affa2addb1036", "771,4866,43-51"))
+        self.assertEqual(rs.ja3s(0x0303, 0x1303, [0x002B, 0x0033]),
+                         ("475c9302dc42b2751db9edcac3b74891", "771,4867,43-51"))
+        self.assertEqual(rs.ja3s(0x0303, 0xC030, [0xFF01, 0x000B]),
+                         ("0debd3853f330c574b05e0b6d882dc27", "771,49200,65281-11"))
+        self.assertEqual(rs.ja3s(0x0301, 0x002F, []), ("18e962e106761869a61045bed0e81c2c", "769,47,"))
 
     def test_a_server_hello_is_parsed_and_hashed_from_a_raw_connection(self):
         record = server_hello(0x1303, [0x002B, 0x0033])
-        self.assertEqual(rs.parse_server_hello(record), (0x0303, 0x1303, [0x002B, 0x0033], 0x0304, None))
+        self.assertEqual(rs.parse_server_hello(record), (0x0303, 0x1303, [0x002B, 0x0033]))
         port = serve_once(record)
-        self.assertEqual(rs.server_ja4s("127.0.0.1", port, timeout=5), "t130200_1303_a56c5b993250")
+        self.assertEqual(rs.server_ja3s("127.0.0.1", port, timeout=5),
+                         ("475c9302dc42b2751db9edcac3b74891", "771,4867,43-51"))
         hello = rs.client_hello13()
         self.assertEqual(hello[:3], b"\x16\x03\x01")
         self.assertEqual(struct.unpack(">H", hello[3:5])[0], len(hello) - 5)
@@ -126,7 +126,8 @@ def host_with(**extra):
         f"ssh.{s}.hassh": rs.hassh_server(LISTS)[0], f"ssh.{s}.hassh_algorithms": rs.hassh_server(LISTS)[1],
         f"tls.{a}.tls13_suites": "TLS_CHACHA20_POLY1305_SHA256, TLS_AES_256_GCM_SHA384",
         f"tls.{a}.ciphers": "TLS1.3: TLS_CHACHA20_POLY1305_SHA256, TLS_AES_256_GCM_SHA384",
-        f"tls.{a}.versions": "TLS1.3", f"tls.{a}.ja4s": "t130200_1303_a56c5b993250", f"tls.{a}.self_signed": "true",
+        f"tls.{a}.versions": "TLS1.3", f"tls.{a}.ja3s": "475c9302dc42b2751db9edcac3b74891",
+        f"tls.{a}.ja3s_string": "771,4867,43-51", f"tls.{a}.self_signed": "true",
         f"tls.{a}.cn": cfg["CERT_CN"], f"tls.{a}.key": "RSA 2048",
         f"tls.{b}.tls13_suites": "TLS_AES_128_GCM_SHA256",
         f"tls.{b}.ciphers": "TLS1.3: TLS_AES_128_GCM_SHA256 | TLS1.2: ECDHE_RSA_AES_256_GCM_SHA384",
@@ -144,7 +145,8 @@ class Expectations(unittest.TestCase):
     ALL = ["smb", "ssh", "tls", "nginx"]
 
     def run_checks(self, host):
-        return rs.check_scan(host, rs.LAB, self.ALL, rs.hassh_server(LISTS), "t130200_1303_a56c5b993250")
+        return rs.check_scan(host, rs.LAB, self.ALL, rs.hassh_server(LISTS),
+                              ("475c9302dc42b2751db9edcac3b74891", "771,4867,43-51"))
 
     def test_a_scan_that_matches_the_configuration_passes(self):
         self.assertEqual(self.run_checks(host_with()), [])
@@ -159,7 +161,7 @@ class Expectations(unittest.TestCase):
             ({f"ssh.{s}.hassh": "0" * 32}, "HASSHServer"),
             ({f"tls.{a}.tls13_suites": "TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256"}, "in this order"),
             ({f"tls.{a}.tls13_suites": "TLS_AES_256_GCM_SHA384"}, "TLS 1.3 suites"),
-            ({f"tls.{a}.ja4s": "t130200_1301_000000000000"}, "JA4S"),
+            ({f"tls.{a}.ja3s": "0" * 32}, "JA3S"),
             ({f"tls.{a}.versions": "TLS1.3, TLS1.2"}, "TLS 1.3 only"),
             ({f"tls.{a}.suites_truncated": "true"}, "truncated"),
             ({f"tls.{a}.weak": "TLS1.2: x"}, "weak"),
@@ -176,7 +178,7 @@ class Expectations(unittest.TestCase):
         host = host_with()
         host["identity"] = {k: v for k, v in host["identity"].items() if k.startswith(("tls.", "svc.8443"))}
         host["open"] = [rs.LAB["TLS_A_PORT"], rs.LAB["TLS_B_PORT"]]
-        self.assertEqual(rs.check_scan(host, rs.LAB, ["tls"], None, "t130200_1303_a56c5b993250"), [])
+        self.assertEqual(rs.check_scan(host, rs.LAB, ["tls"], None, ("475c9302dc42b2751db9edcac3b74891", "771,4867,43-51")), [])
 
     def test_the_lab_constants_agree_with_each_other(self):
         env = rs.shell_env()
