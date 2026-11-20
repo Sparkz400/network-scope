@@ -73,6 +73,10 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `probes [--probes FILE]` | List the TCP and UDP probe database |
 | `probes validate FILE` | Load a probe file like a scan with `--probes` would, then lint it; exit 1 on an error |
 | `probes lint [FILE]` | Safety lint: OT and printer ports, write-like payloads, payload and regex size, nested quantifiers (default: the built-in probes) |
+| `research query "SQL" [--top N] [--format json\|csv\|tsv]` | One read-only SQL statement on the [research tables](research.md); sends nothing |
+| `research schema`, `research rebuild` | Document the tables; derive the rows of scans saved before the tables existed |
+| `research export csv\|ndjson --output DIR` | One file per table (DuckDB layout) and a manifest |
+| `research export stix\|ocsf [SCAN_ID] [--output FILE]` | STIX 2.1 bundle or OCSF events of one scan |
 | `fingerprints export-unknown [SCAN_ID] [--output FILE]` | Banners of unidentified services from the local store as JSON, without host addresses, to review and redact before sharing; sends nothing. See [Contributing fingerprints](contributing-fingerprints.md) |
 | `update check` | Ask GitHub whether a newer release exists; prints the release page and the verification commands. Notify only: it never downloads or installs anything. See [Checking for updates](installation.md#checking-for-updates) |
 | `completions powershell\|bash` | Print a shell completion script |

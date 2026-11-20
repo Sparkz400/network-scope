@@ -57,6 +57,10 @@ network-scope probes lint [FILE]               Safety lint (OT/printer ports, wr
 network-scope fingerprints export-unknown [SCAN_ID] [--output FILE]
                                                Banners nothing identified, from the local store, as JSON
                                                to review and redact (never uploaded)
+network-scope research query "SELECT ..." [--top N] [--format json|csv|tsv]   Read-only SQL on the research tables
+network-scope research schema | rebuild        Document the tables; fill them for scans saved before they existed
+network-scope research export csv|ndjson --output DIR   One file per table (DuckDB/pandas layout)
+network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bundle or OCSF events of one scan
 network-scope update check                     Ask GitHub for the latest release (one HTTPS request); prints
                                                the release page and how to verify a download; never downloads
 network-scope completions powershell|bash      Print a shell completion script

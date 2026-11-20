@@ -172,6 +172,42 @@ fn the_unknown_banner_export_carries_its_schema_and_keeps_its_own_format() {
 }
 
 #[test]
+fn the_research_outputs_carry_their_schema_and_match_it() {
+    let f = Fixture::new("research");
+    let rebuilt = f.check(
+        "research-rebuild",
+        &["research", "rebuild", "--quiet"],
+        false,
+    );
+    assert_eq!(rebuilt[0]["rows"]["hosts"], 2);
+    let q = f.check(
+        "research-query",
+        &[
+            "research",
+            "query",
+            "SELECT ip, port FROM services WHERE port = 23",
+        ],
+        false,
+    );
+    assert_eq!(q[0]["rows"][0][1], 23);
+    let dir = f.dir.join("tables");
+    let manifest = f.check(
+        "research-export",
+        &[
+            "research",
+            "export",
+            "ndjson",
+            "--output",
+            dir.to_str().unwrap(),
+            "--quiet",
+        ],
+        false,
+    );
+    assert_eq!(manifest[0]["tables"][0]["table"], "hosts");
+    assert!(dir.join("manifest.json").exists());
+}
+
+#[test]
 fn every_dry_run_prints_the_dry_run_schema() {
     let f = Fixture::new("dryrun");
     // A declared scope keeps the result independent of the developer's own scope file.

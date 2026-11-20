@@ -52,6 +52,9 @@ pub const KINDS: &[&str] = &[
     "import-summary",
     "dry-run",
     "unknown-banners",
+    "research-query",
+    "research-export",
+    "research-rebuild",
 ];
 
 /// The `schema` value of a kind at the current version.

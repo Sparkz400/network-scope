@@ -46,7 +46,11 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, t
 /// Schema changes after [`BASE_VERSION`], in order. Append new ones at the end with the next
 /// number; never edit a migration that has shipped. Each runs once, inside the transaction that
 /// opens an older database, and must be idempotent (`IF NOT EXISTS`, `INSERT OR IGNORE`).
-const MIGRATIONS: &[Migration] = &[(3, migrate_device_identifiers), (4, migrate_baseline)];
+const MIGRATIONS: &[Migration] = &[
+    (3, migrate_device_identifiers),
+    (4, migrate_baseline),
+    (5, crate::research::migrate),
+];
 type Migration = (i64, fn(&Connection) -> rusqlite::Result<()>);
 /// Schema version of a database this program has fully upgraded.
 const SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
@@ -138,6 +142,9 @@ pub fn save(path: &Path, snapshot: &Snapshot) -> Result<i64, String> {
 /// taken, and for tests of anything that depends on the age of a scan.
 pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, String> {
     let mut c = open(path)?;
+    // The research rows (L67) are derived before the transaction opens: the analysis may read
+    // feed caches, which must not happen while the write lock is held.
+    let findings = crate::risk::analyze_snapshot(snapshot);
     let tx = c.transaction().map_err(|e| e.to_string())?;
     let data = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
     tx.execute(
@@ -152,6 +159,9 @@ pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, 
     )
     .map_err(|e| e.to_string())?;
     let id = tx.last_insert_rowid();
+    // Same transaction as the snapshot, so the tables and the scans never disagree; a failure
+    // of the research rows alone never loses the scan (`research rebuild` repairs them).
+    crate::research::insert_scan_guarded(&tx, id, timestamp, snapshot, &findings);
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
