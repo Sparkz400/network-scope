@@ -63,7 +63,7 @@ The price is stated plainly: a repeat scan can miss a new service on a port outs
 
 Several target ranges (`10.0.1.0/24,10.0.2.0/24,192.168.1.0/24`) are scanned at the same time, not one after the other: the targets are handed to the scheduler one address of each range in turn, so a slow or silent subnet cannot hold the others back. There is one rate gate, one worker limit and one back-off for the whole scan, so `--rate` and Safe Mode spacing apply to the scan as a whole, however many subnets it covers. A test scans two loopback ranges concurrently.
 
-The raw features can use several interfaces: `--interface eth0,eth1 --source-ip 10.0.0.5,192.168.1.5 --source-mac M1,M2` (paired by position) opens a SYN engine and an ARP sweep engine per interface, and each target goes out through the interface the operating system's routing table picks for it: one on whose subnet the target lies, else the first that routes to it, else the connect scan. The pairing and the choice are unit-tested; the capture part has not been run against two real interfaces (it needs Npcap or libpcap and administrator rights).
+The raw features can use several interfaces: `--interface eth0,eth1 --source-ip 10.0.0.5,192.168.1.5 --source-mac M1,M2` (paired by position) opens a SYN engine and an ARP sweep engine per interface, and each target goes out through the interface the operating system's routing table picks for it: one on whose subnet the target lies, else the first that routes to it, else the connect scan. The pairing and the choice are unit-tested, and one SYN + ARP sweep scan over a wired adapter and a VMware adapter ran on Windows with Npcap, without administrator rights (see [Lab and testing](lab-and-testing.md#what-has-been-tested-on-real-hardware)); not run with libpcap.
 
 ## Probe order and early stop
 
@@ -113,7 +113,7 @@ A diff of an old (0.4) /23-or-larger snapshot against a new one of the same text
 - One Npcap/libpcap handle, opened non-promiscuous with the kernel filter `tcp and dst host <source-ip>`, is owned by one I/O thread that sends and receives.
 - Replies are matched on target, ports and a hashed sequence cookie.
 - **Routed IPv4 targets** are scanned too: the next hop comes from the OS routing table (Windows `GetBestRoute`, Linux longest-prefix match in `/proc/net/route`, macOS/BSD `route -n get`). An on-link target is sent to its own MAC, a routed one to the gateway MAC, resolved once per gateway. The route must leave through the capture interface.
-- A failed lookup, a silent gateway or another interface falls back to TCP connect with a note "SYN unavailable; TCP connect fallback: …". Driver or configuration errors trigger the same explicit fallback; a missing reply is reported as unanswered.
+- A failed lookup, a silent gateway or another interface falls back to TCP connect with a note "SYN unavailable; TCP connect fallback: …". So does an address of this computer (the source address; on Windows any of its adapters' addresses): a frame to it leaves on the wire and is never looped back. TCP traceroute to such an address says so. Driver or configuration errors trigger the same explicit fallback; a missing reply is reported as unanswered.
 - IPv4 only, untagged frames; no IPv6 SYN.
 - After Stop no queued SYN or retransmit leaves.
 
