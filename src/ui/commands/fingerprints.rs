@@ -12,8 +12,25 @@ use crate::{
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     match ctx.pos.first().map(String::as_str) {
         Some("export-unknown") => export_unknown(ctx),
-        _ => Err("Use: fingerprints export-unknown [SCAN_ID] [--output FILE]".into()),
+        Some("favicon") => favicon(ctx),
+        _ => Err("Use: fingerprints export-unknown [SCAN_ID] [--output FILE] | fingerprints favicon FILE".into()),
     }
+}
+
+/// `fingerprints favicon FILE`: the Shodan-compatible favicon hash of a local file. Reads the
+/// file only; nothing is fetched or sent.
+fn favicon(ctx: &mut Ctx) -> Result<(), String> {
+    const MAX_FAVICON: u64 = 4 * 1024 * 1024;
+    let file = ctx.pos.get(1).ok_or("Use: fingerprints favicon FILE")?;
+    let size = std::fs::metadata(file)
+        .map_err(|e| format!("{file}: {e}"))?
+        .len();
+    if size > MAX_FAVICON {
+        return Err(format!("{file}: not a favicon (larger than 4 MB)"));
+    }
+    let data = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+    let hash = crate::pivot::favicon_hash(&data);
+    output(&format!("http.favicon.hash:{hash}"), &ctx.opts)
 }
 
 fn export_unknown(ctx: &mut Ctx) -> Result<(), String> {
@@ -117,6 +134,39 @@ mod tests {
                 "abc",
                 "--db",
                 &path(&db)
+            ]))
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn favicon_prints_the_shodan_hash_of_a_local_file() {
+        let dir = std::env::temp_dir().join(format!("ns-favicon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (icon, out) = (dir.join("favicon.ico"), dir.join("out.txt"));
+        let path = |p: &std::path::Path| p.to_str().unwrap().to_string();
+        std::fs::write(&icon, (0..=255u8).collect::<Vec<u8>>()).unwrap();
+        run(&args(&[
+            "fingerprints",
+            "favicon",
+            &path(&icon),
+            "--output",
+            &path(&out),
+        ]))
+        .unwrap();
+        // the value of an independent Python implementation of mmh3.hash(base64 with newlines)
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap().trim(),
+            "http.favicon.hash:-757223386"
+        );
+        assert!(run(&args(&["fingerprints", "favicon"])).is_err());
+        assert!(
+            run(&args(&[
+                "fingerprints",
+                "favicon",
+                &path(&dir.join("none.ico"))
             ]))
             .is_err()
         );

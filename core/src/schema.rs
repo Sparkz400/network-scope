@@ -57,6 +57,7 @@ pub const KINDS: &[&str] = &[
     "research-rebuild",
     "ot-model",
     "ot-alerts",
+    "research-groups",
 ];
 
 /// The `schema` value of a kind at the current version.

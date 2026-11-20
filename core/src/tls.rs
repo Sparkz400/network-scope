@@ -290,6 +290,8 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
         "spki_sha256".into(),
         crate::fingerprint::hex(&crate::fingerprint::sha256(cert.public_key().raw)),
     );
+    // JA4X (self-derived, see `pivot`): groups certificates built from the same template.
+    f.insert("ja4x".into(), crate::pivot::ja4x(&cert));
     Ok(f)
 }
 
@@ -1412,6 +1414,54 @@ mod tests {
         let params = rcgen::CertificateParams::new(vec!["a.local".to_string()]).unwrap();
         let c = describe_cert(params.self_signed(&other).unwrap().der()).unwrap();
         assert_ne!(a["spki_sha256"], c["spki_sha256"]);
+    }
+
+    /// JA4X (see `pivot`) depends on the shape of the certificate, not on its key, serial or
+    /// validity: two certificates built from one template share it.
+    #[test]
+    fn ja4x_follows_the_certificate_template() {
+        let build = |org: bool, sans: &[&str], ca: bool| {
+            let key = rcgen::KeyPair::generate().unwrap();
+            let mut params = rcgen::CertificateParams::new(
+                sans.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+            .unwrap();
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, "plc.local");
+            if org {
+                params
+                    .distinguished_name
+                    .push(rcgen::DnType::OrganizationName, "Acme");
+            }
+            if ca {
+                params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            }
+            describe_cert(params.self_signed(&key).unwrap().der()).unwrap()["ja4x"].clone()
+        };
+        let base = build(true, &["a.local"], false);
+        let parts: Vec<&str> = base.split('_').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.len() == 12 && p.bytes().all(|b| b.is_ascii_hexdigit()))
+        );
+        assert_eq!(
+            parts[0], parts[1],
+            "a self-signed certificate: issuer and subject are alike"
+        );
+        // sha256("550403,55040a")[..12]: common name (2.5.4.3), then organization (2.5.4.10)
+        assert_eq!(parts[0], "711618dec96d");
+        // a new key, name and serial do not change it: the same template
+        assert_eq!(build(true, &["b.local"], false), base);
+        // another set of name fields, or other extensions, do
+        assert_ne!(build(false, &["a.local"], false), base);
+        assert_ne!(build(true, &["a.local"], true), base);
+        assert_ne!(
+            build(true, &[], false).split('_').nth(2),
+            base.split('_').nth(2)
+        );
     }
 
     #[test]
