@@ -104,17 +104,17 @@ How to read it:
 
 ### Small home LAN, Network Scope only (`--fast`); nmap and RustScan not installed
 
-This is one real network: the owner's home LAN `192.168.178.0/24`, scanned with the owner's permission from the Windows machine above over wired Ethernet, on 2026-11-20. It is a small network of consumer devices behind one router; only a few dozen ports are open on the whole range. The script's `--lan` mode refuses anything but a private range of at most 256 addresses, and it has no ground truth. It reports how stable the result was across runs instead of whether it was correct.
+This is one real network: the owner's home LAN (a private /24), scanned with the owner's permission from the Windows machine above over wired Ethernet, on 2026-11-20. It is a small network of consumer devices behind one router; only a few dozen ports are open on the whole range. The script's `--lan` mode refuses anything but a private range of at most 256 addresses, and it has no ground truth. It reports how stable the result was across runs instead of whether it was correct.
 
 ```sh
-python -I lab/speed_compare.py --cli <path>/network-scope-cli --lan 192.168.178.0/24 --fast --cells 24-top100 --repeat 3
-# runs: network-scope-cli scan 192.168.178.0/24 --fast --tcp-only --ports <top:100> --scope 192.168.178.0/24 --quiet --db ... --output ...
+python -I lab/speed_compare.py --cli <path>/network-scope-cli --lan <home-lan>/24 --fast --cells 24-top100 --repeat 3
+# runs: network-scope-cli scan <home-lan>/24 --fast --tcp-only --ports <top:100> --scope <home-lan>/24 --quiet --db ... --output ...
 ```
 
 | Range and ports | Runs | Wall time, median (min to max) | Peak memory | Open ports |
 | --- | --- | --- | --- | --- |
-| `192.168.178.0/24`, Network Scope's `top:100` | 3 | 28.20 s (24.54 to 28.23) | 29.7 MB | 29 in every run, 30 in at least one |
-| `192.168.178.0/24`, ports 1 to 1000 | not run | | | |
+| home /24, Network Scope's `top:100` | 3 | 28.20 s (24.54 to 28.23) | 29.7 MB | 29 in every run, 30 in at least one |
+| home /24, ports 1 to 1000 | not run | | | |
 
 How to read it:
 
