@@ -46,7 +46,38 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     } else {
         None
     };
-    let run = scan::start_stream(Box::new(hosts.iter_interleaved()), total, ports, s.clone());
+    // A repeat scan: the newest complete scan of the same targets is the base.
+    let previous = if opts.contains_key("incremental") {
+        match crate::incremental::load_base(db, &targets, &s)? {
+            Ok(base) => {
+                progress(
+                    opts,
+                    format_args!(
+                        "Incremental scan based on scan #{} ({} hosts): known open ports and a sample are probed again, the rest is carried over",
+                        base.id,
+                        base.len()
+                    ),
+                );
+                Some(base)
+            }
+            Err(why) => {
+                progress(
+                    opts,
+                    format_args!("Full scan instead of an incremental one: {why}"),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let run = scan::start_incremental(
+        Box::new(hosts.iter_interleaved()),
+        total,
+        ports,
+        s.clone(),
+        previous,
+    );
     let (results, complete, errors) = if tui_view {
         tui::tui(&run)
     } else if let Some(w) = writer.as_mut() {

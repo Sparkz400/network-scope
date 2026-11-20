@@ -462,6 +462,9 @@ def main():
     ap.add_argument("--update-baseline", action="store_true",
                     help="record this run as the baseline of this platform (review the diff!)")
     ap.add_argument("--timeout", type=int, default=1500, help="port timeout in ms passed to the CLI")
+    ap.add_argument("--gate-first-result", action="store_true",
+                    help=f"with --check: fail when the median time to the first result is above {FIRST_RESULT_LIMIT_MS} ms "
+                         "(off by default: on a busy machine it was 235-557 ms against 35-42 ms idle; CI turns it on)")
     ap.add_argument("--max-scan-seconds", type=float, default=None,
                     help="with --check: fail when the scan takes longer (a sanity bound for gross slowdowns; "
                          "wall time is otherwise reported only, because shared machines are noisy)")
@@ -518,7 +521,7 @@ def main():
             f.write(text + "\n")
     if note and args.check:
         print("::warning::" + note if os.environ.get("GITHUB_ACTIONS") else note)
-    if args.check and first["median"] > FIRST_RESULT_LIMIT_MS:
+    if args.check and args.gate_first_result and first["median"] > FIRST_RESULT_LIMIT_MS:
         regressions.append(f"first result {first['median']:.0f} ms (median) is above the limit of "
                            f"{FIRST_RESULT_LIMIT_MS} ms")
     if args.check and args.max_scan_seconds is not None and elapsed > args.max_scan_seconds:

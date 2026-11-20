@@ -562,6 +562,18 @@ pub fn start_stream(
     ports: Vec<u16>,
     settings: Settings,
 ) -> Running {
+    start_incremental(hosts, total, ports, settings, None)
+}
+
+/// [`start_stream`] as a repeat scan (`scan --incremental`): `previous` is the scan to base it on
+/// (see `incremental`); `None` is an ordinary full scan.
+pub fn start_incremental(
+    hosts: Box<dyn Iterator<Item = IpAddr> + Send>,
+    total: usize,
+    ports: Vec<u16>,
+    settings: Settings,
+    previous: Option<Arc<crate::incremental::Previous>>,
+) -> Running {
     let (tx, receiver) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
@@ -590,6 +602,7 @@ pub fn start_stream(
                     pause,
                     tx.clone(),
                     sent,
+                    previous,
                 ));
                 rt.shutdown_timeout(Duration::from_secs(1));
             }

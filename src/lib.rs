@@ -9,10 +9,10 @@ pub(crate) mod ui;
 // The engine lives in `network-scope-core`; its modules are used here under the same paths
 // (`crate::scan::Host`, `crate::risk::analyze_host`, ...).
 pub(crate) use network_scope_core::{
-    alertscript, baseline, capture, changes, core, devices, evidence, feeds, import, interfaces,
-    mcp, monitor, nmap, notify, nvd, observations, otpassive, passive, plan, report, risk, scan,
-    schema, scope, score, script, sendlog, service, store, store_stream, syn, sync, topology,
-    trace, update,
+    alertscript, baseline, capture, changes, core, devices, evidence, feeds, import, incremental,
+    interfaces, mcp, monitor, nmap, notify, nvd, observations, otpassive, passive, plan, report,
+    risk, scan, schema, scope, score, script, sendlog, service, store, store_stream, syn, sync,
+    topology, trace, update,
 };
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::{pcapfile, schedule};

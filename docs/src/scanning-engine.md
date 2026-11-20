@@ -44,6 +44,21 @@ Targets are never expanded into a list: a /8 (16,777,214 addresses, the limit of
 
 Above 65,536 addresses only responding hosts are kept, and they are not kept in memory: the CLI writes them to the inventory in transactions of 1,000 hosts (`store_stream::ScanWriter`, table `scan_hosts`, database migration 5) while the scan runs. The scan row is inserted when the scan starts and marked incomplete, so an interrupted scan is on record as a partial scan with the hosts written so far. Reading a scan (`export`, `diff`, the desktop) puts the hosts back, so nothing else changes. Measured with real loopback scans of 127.0.0.0/15 (131,070 targets) and 127.0.0.0/14 (262,142): 26.0 and 26.1 MB peak, against 69.6 MB for the /16 (65,534 targets), which is below the limit and kept in memory. The report of a big scan is the exception: it is built from the stored scan and needs every responding host in memory, so very large scans are best run with `--no-report` (or `--stream`) and read later with `export ID`.
 
+## Fast repeat scans
+
+`scan --incremental` (and `monitor --incremental`) check a network that was scanned before without looking at everything again. The base is the newest complete scan of exactly the same targets in the inventory; if there is none, or it used other ports or detection settings, a full scan runs and the message says why.
+
+| Per host | What a repeat scan does |
+| --- | --- |
+| Ports | probes the ports that were open (that are still requested) plus a sample: the 8 likeliest of the others and a rotating slice of 8 more, moved by one slice per base scan, so every port is reached after a few scans. A host that was silent gets the sample only, which is where a sparse network saves most. A scan with 16 ports or fewer is always probed completely |
+| Services (`--services`) | connects once and hashes what the service says first (its greeting banner) or, for a web server, its status line, `Server` header and title. Unchanged: the identification of the base scan is kept. Changed, new or not hashable (a TLS port, a silent one): identified in full as usual. The hash is stored as `incr.fp.PORT` |
+| UDP, traceroute | copied from the base scan for a host that answered then |
+| Ping, ARP, OT identification, DNS, OS and device guess | run as usual |
+
+**Nothing carried over is presented as checked again.** A host that was not probed on every requested port has `ports_checked: false`, the ports it did probe in the identity key `incr.rechecked`, the base scan in `incr.base`, and what was copied in `incr.carried` (for example `svc:22,80;udp`). `diff` and `monitor` compare exactly the ports both scans looked at: a known port that closed or a sampled port that opened is reported, a port the repeat scan did not probe is not, and the `incr.*` keys are bookkeeping that never shows up as a change. A repeat of an unchanged host diffs empty (a test checks it); a test also closes a port between a full and a repeat scan and checks the diff names it.
+
+The price is stated plainly: a repeat scan can miss a new service on a port outside the sample, or a changed UDP answer, until the rotation reaches it. Run a full scan now and then; `monitor --incremental` does it every 10th cycle (`--full-every N`). Run time depends on how much of the cost is port probing and identification; the lab numbers are in [Lab and testing](lab-and-testing.md#fast-repeat-scans).
+
 ## Several subnets and interfaces at once
 
 Several target ranges (`10.0.1.0/24,10.0.2.0/24,192.168.1.0/24`) are scanned at the same time, not one after the other: the targets are handed to the scheduler one address of each range in turn, so a slow or silent subnet cannot hold the others back. There is one rate gate, one worker limit and one back-off for the whole scan, so `--rate` and Safe Mode spacing apply to the scan as a whole, however many subnets it covers. A test scans two loopback ranges concurrently.

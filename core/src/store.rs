@@ -526,7 +526,7 @@ fn key_port(key: &str) -> Option<(&str, u16)> {
 
 /// Detection settings that decide which ports and identity keys a scan can report. Scans that
 /// differ in any of them cannot be compared without flooding the diff with spurious changes.
-fn incompatible_settings(a: &Settings, b: &Settings) -> Vec<&'static str> {
+pub(crate) fn incompatible_settings(a: &Settings, b: &Settings) -> Vec<&'static str> {
     let ports = |s: &Settings| crate::scan::parse_ports(&s.ports).map_err(|_| s.ports.clone());
     let mut out = vec![];
     if ports(a) != ports(b) {
@@ -794,7 +794,8 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
     let comparable = |key: &str| match key_port(key) {
         Some(("udp", p)) => udp_probed.contains(&p),
         _ => true,
-    } && !ignore.matches(key);
+    } && !ignore.matches(key)
+        && !crate::incremental::is_marker(key);
     let old: BTreeMap<_, _> = a.hosts.iter().map(|h| (h.ip, h)).collect();
     let new: BTreeMap<_, _> = b.hosts.iter().map(|h| (h.ip, h)).collect();
     let mut changes = vec![];
@@ -814,9 +815,12 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
         // listed again one by one.
         let mut gone_tcp = std::collections::BTreeSet::new();
         let mut gone_udp = std::collections::BTreeSet::new();
-        if h.ports_checked && previous.ports_checked {
+        // Only ports both scans looked at are compared: every port for a fully checked host, the
+        // probed ports for one that an incremental scan sampled (`incremental::checked`).
+        {
+            use crate::incremental::checked;
             for &port in &h.open {
-                if !previous.open.contains(&port) {
+                if !previous.open.contains(&port) && checked(h, port) && checked(previous, port) {
                     changes.push(Change::PortOpened {
                         ip,
                         protocol: "tcp",
@@ -825,7 +829,7 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
                 }
             }
             for &port in &previous.open {
-                if !h.open.contains(&port) {
+                if !h.open.contains(&port) && checked(h, port) && checked(previous, port) {
                     changes.push(Change::PortClosed {
                         ip,
                         protocol: "tcp",
@@ -1015,7 +1019,7 @@ fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings)
         let was_udp = old.get(&f.ip).is_some_and(|h| h.udp_open.contains(&port));
         let was_tcp = old.get(&f.ip).is_some_and(|h| h.open.contains(&port));
         (!was_udp || (udp_probed.contains(&port) && now.ports_checked))
-            && (!was_tcp || now.ports_checked)
+            && (!was_tcp || crate::incremental::checked(now, port))
     };
     let new = fb.into_iter().filter(|f| !ka.contains(&f.key())).collect();
     let (mut resolved, mut unconfirmed) = (vec![], vec![]);
