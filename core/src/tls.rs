@@ -1807,17 +1807,28 @@ mod tests {
         assert_eq!(fields["cn"], "ns-schannel.invalid");
         assert_eq!(fields["self_signed"], "true");
         assert_eq!(fields["key"], "RSA 2048");
-        // The JA3S names the suite Schannel chose for the full offer; it is one of the listed ones.
+        // The JA3S names the suite Schannel chose for the full offer (TLS 1.2 and 1.3 suites).
+        // Schannel may answer it with TLS 1.3 (then the reply carries supported_versions, 43,
+        // and the suite is one the OS lists) or with a TLS 1.2 suite (seen on the GitHub runner:
+        // 49200, TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384); either way it is a suite we know.
         let ja3s = &fields["ja3s_string"];
         let mut parts = ja3s.split(',');
         assert_eq!(parts.next(), Some("771"), "{ja3s}");
         let chosen: u16 = parts.next().unwrap().parse().unwrap();
-        assert!(
-            expected
-                .iter()
-                .any(|n| TLS13_SUITES.iter().any(|s| s.0 == chosen && s.1 == n)),
-            "{ja3s} {expected:?}"
-        );
+        let extensions: Vec<&str> = parts.next().unwrap_or("").split('-').collect();
+        if extensions.contains(&"43") {
+            assert!(
+                expected
+                    .iter()
+                    .any(|n| TLS13_SUITES.iter().any(|s| s.0 == chosen && s.1 == n)),
+                "{ja3s} {expected:?}"
+            );
+        } else {
+            assert!(
+                SUITES.iter().any(|s| s.0 == chosen),
+                "a TLS 1.2 suite we know: {ja3s}"
+            );
+        }
         assert_eq!(
             fields["ja3s"],
             crate::fingerprint::ja3s_hash(ja3s),
