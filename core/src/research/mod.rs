@@ -19,6 +19,7 @@ use serde_json::Value;
 use std::path::Path;
 
 pub mod export;
+pub mod groups;
 pub mod uuid;
 
 /// `(name, SQL type and constraints, description)` of a column.

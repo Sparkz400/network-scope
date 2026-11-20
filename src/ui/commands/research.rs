@@ -6,7 +6,7 @@ use crate::{
     ui::{Ctx, args::number, output, progress},
 };
 
-const USAGE: &str = "Use: research query SQL [--top N] [--format json|csv|tsv] | research schema | research rebuild | research export csv|ndjson --output DIR | research export stix|ocsf [SCAN_ID] [--output FILE]";
+const USAGE: &str = "Use: research query SQL [--top N] [--format json|csv|tsv] | research schema | research rebuild | research export csv|ndjson --output DIR | research export stix|ocsf [SCAN_ID] [--output FILE] | research groups [--top N] [--format text|json]";
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let (pos, opts, db) = (&ctx.pos, &ctx.opts, &ctx.db);
@@ -43,6 +43,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             }
         }
         Some("export") => export(ctx),
+        Some("groups") => groups(ctx),
         _ => Err(USAGE.into()),
     }
 }
@@ -116,6 +117,19 @@ fn export(ctx: &mut Ctx) -> Result<(), String> {
             output(&text, opts)
         }
         _ => Err(USAGE.into()),
+    }
+}
+
+/// `research groups`: devices that share a key, a certificate template, a TLS or SSH stack, a
+/// web interface or an industrial firmware (see `research::groups`).
+fn groups(ctx: &mut Ctx) -> Result<(), String> {
+    let (opts, db) = (&ctx.opts, &ctx.db);
+    let limit: usize = number(opts, "top", research::groups::DEFAULT_LIMIT)?;
+    let groups = research::groups::groups(db, limit)?;
+    match opts.get("format").map(String::as_str).unwrap_or("text") {
+        "json" => output(&schema::list("research-groups", "groups", &groups)?, opts),
+        "text" => output(&research::groups::text(&groups), opts),
+        _ => Err("Choose text or json".into()),
     }
 }
 
@@ -218,6 +232,62 @@ mod tests {
         assert!(std::path::Path::new(&tables).join("hosts.ndjson").exists());
         assert!(run(&args(&["research", "export", "ndjson", "--db", &db])).is_err());
         assert!(run(&args(&["research", "bogus", "--db", &db])).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn groups_lists_devices_that_share_a_key() {
+        let dir = std::env::temp_dir().join(format!("ns-groups-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (db, out) = (dir.join("inventory.sqlite"), dir.join("out.txt"));
+        let host = |ip: &str, mac: &str| crate::scan::Host {
+            ip: ip.parse().unwrap(),
+            responding: true,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: mac.into(),
+            open: vec![443],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: [("tls.443.spki_sha256".to_string(), "ab".repeat(32))].into(),
+            udp_open: vec![],
+            trace: vec![],
+        };
+        let snapshot = crate::store::Snapshot {
+            targets: "10.0.0.0/24".into(),
+            complete: true,
+            settings: crate::scan::Settings::default(),
+            hosts: vec![
+                host("10.0.0.5", "AA:00:00:00:00:01"),
+                host("10.0.0.6", "AA:00:00:00:00:02"),
+            ],
+            observations: vec![],
+            notes: Default::default(),
+            sent: vec![],
+        };
+        crate::store::save(&db, &snapshot).unwrap();
+        let (db, out) = (db.to_str().unwrap(), out.to_str().unwrap());
+        run(&args(&["research", "groups", "--db", db, "--output", out])).unwrap();
+        let text = std::fs::read_to_string(out).unwrap();
+        assert!(text.contains("[KEY] spki_sha256 abab"), "{text}");
+        assert!(text.contains("2 devices"), "{text}");
+        run(&args(&[
+            "research", "groups", "--format", "json", "--db", db, "--output", out,
+        ]))
+        .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
+        assert_eq!(json["groups"][0]["devices"], 2);
+        assert!(
+            run(&args(&[
+                "research", "groups", "--format", "xml", "--db", db
+            ]))
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

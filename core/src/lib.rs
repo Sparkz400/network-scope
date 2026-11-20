@@ -119,6 +119,7 @@ pub mod otpassive;
 pub(crate) mod oui;
 pub mod passive;
 pub mod pcapfile;
+pub mod pivot;
 pub mod plan;
 pub(crate) mod platform;
 pub(crate) mod probes;

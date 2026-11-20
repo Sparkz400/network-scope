@@ -79,6 +79,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `probes lint [FILE]` | Safety lint: OT and printer ports, write-like payloads, payload and regex size, nested quantifiers (default: the built-in probes) |
 | `research query "SQL" [--top N] [--format json\|csv\|tsv]` | One read-only SQL statement on the [research tables](research.md); sends nothing |
 | `research schema`, `research rebuild` | Document the tables; derive the rows of scans saved before the tables existed |
+| `research groups [--top N] [--format text\|json]` | Devices that share a key, certificate template, TLS/SSH stack, web interface or OT firmware across scans and sites; see [Fingerprints you can pivot on](research.md#fingerprints-you-can-pivot-on) |
+| `fingerprints favicon FILE` | Shodan-compatible favicon hash (`http.favicon.hash:N`) of a local file; nothing is fetched |
 | `research export csv\|ndjson --output DIR` | One file per table (DuckDB layout) and a manifest |
 | `research export stix\|ocsf [SCAN_ID] [--output FILE]` | STIX 2.1 bundle or OCSF events of one scan |
 | `fingerprints export-unknown [SCAN_ID] [--output FILE]` | Banners of unidentified services from the local store as JSON, without host addresses, to review and redact before sharing; sends nothing. See [Contributing fingerprints](contributing-fingerprints.md) |

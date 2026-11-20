@@ -68,6 +68,9 @@ network-scope research query "SELECT ..." [--top N] [--format json|csv|tsv]   Re
 network-scope research schema | rebuild        Document the tables; fill them for scans saved before they existed
 network-scope research export csv|ndjson --output DIR   One file per table (DuckDB/pandas layout)
 network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bundle or OCSF events of one scan
+network-scope research groups [--top N] [--format text|json]   Devices that share a key, certificate template,
+                                               TLS/SSH stack, web interface or OT firmware, across scans and sites
+network-scope fingerprints favicon FILE        Shodan-compatible favicon hash of a local file (nothing is fetched)
 network-scope update check                     Ask GitHub for the latest release (one HTTPS request); prints
                                                the release page and how to verify a download; never downloads
 network-scope completions powershell|bash      Print a shell completion script

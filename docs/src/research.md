@@ -116,6 +116,34 @@ Passive observations of a scan or capture (ARP, DHCP, mDNS, observed OT clients 
 | `protocol`, `mac`, `ip` | Observation protocol label, MAC and IP (NULL when none) |
 | `fields` | JSON object with everything the observation carries |
 
+## Fingerprints you can pivot on
+
+The `fingerprints` table holds what can link devices across scans and sites:
+
+| `kind` | What it is | Comes from |
+| --- | --- | --- |
+| `spki_sha256` | SHA-256 of the certificate's public key; the same private key on several devices | every TLS port (`tls.PORT.spki_sha256`) |
+| `ja4x` | JA4X certificate fingerprint: the same issuer and subject fields and extensions, whatever the key | every TLS port (`tls.PORT.ja4x`) |
+| `ja4s`, `jarm` | The TLS stack and its configuration | `--services`; `--jarm` for JARM |
+| `hassh` | The SSH stack and its configuration | `--services` |
+| `favicon_mmh3` | Shodan-compatible hash of the web interface's favicon | `http.PORT.favicon_mmh3`, see below |
+| `ot_firmware` | Industrial vendor, product and firmware version (derived from `services` when `research groups` runs) | `--ot` |
+
+**JA4X.** The three parts are the first 12 hex digits of the SHA-256 of the comma-separated hex of the object identifiers of the issuer's name attributes, of the subject's name attributes and of the extensions, in certificate order (`000000000000` for an empty list). It is **self-derived** from the published JA4X description: it was implemented from that text, the hashing and the extraction of the OIDs are tested against independent computations, but it has not been compared with FoxIO's reference implementation or its test vectors, so a value may differ from other tools'. As a pivot inside Network Scope it works either way: certificates built from one template give the same value. JA4X belongs to the JA4+ methods under the FoxIO License 1.1 (see `data/README.md`).
+
+**Favicon hash.** `fingerprints favicon FILE` prints `http.favicon.hash:N`, the value Shodan indexes: MurmurHash3 (x86, 32 bit, seed 0) of the favicon's base64 text with a line break every 76 characters, as a signed number. The algorithm is checked against published MurmurHash3 test vectors and an independent Python implementation of the two steps; no real favicon with a published Shodan value is in the tests. **The scanner does not fetch favicons**: that would be one more request per web port, and the hash is computed only from a file you give. The `favicon_mmh3` kind is therefore empty unless an import fills the `http.PORT.favicon_mmh3` identity key.
+
+**JA4H** fingerprints the headers of an HTTP *request*, which only a client sends. The scanner is the client, a device's reply has no JA4H, and no server-side variant is defined, so it is not implemented.
+
+### `research groups`
+
+```sh
+network-scope-cli research groups                    # text
+network-scope-cli research groups --format json --top 50
+```
+
+lists the devices that share a fingerprint across scans and sites: a *group* is one fingerprint value with at least two different devices. A device is its MAC address when a scan saw one, else its IP address, so a device that changed address counts once; a *site* is the target list of the scan that saw it. The `strength` says what a group means: `key` (the devices use the same private key: a vendor default key or a cloned image, so whoever holds the key can impersonate all of them), `firmware` (the same industrial vendor, product and firmware version) or `software` (likely the same TLS or SSH stack, certificate template or web interface: evidence, not proof). Keys come first, then groups by size. `--top N` bounds how many fingerprints are examined (default 200); at most 50 members are listed per group, the count is always complete. The same grouping is one SQL query over `fingerprints` and `services`, which you can adapt (see `core/src/research/groups.rs`).
+
 ## Existing databases: `research rebuild`
 
 A database written by an earlier version gets the tables empty. `research rebuild` derives the rows of every stored scan again and replaces what is there (one transaction; a failure changes nothing). The findings of a rebuilt scan are evaluated with today's rules and feed caches, not with the ones of the day of the scan, so a rebuilt `findings` table can show CVE matches that did not exist then. Scans saved after the upgrade keep the findings of their day. A scan whose stored snapshot cannot be read is skipped and counted.

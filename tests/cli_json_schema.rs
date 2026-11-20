@@ -205,6 +205,13 @@ fn the_research_outputs_carry_their_schema_and_match_it() {
     );
     assert_eq!(manifest[0]["tables"][0]["table"], "hosts");
     assert!(dir.join("manifest.json").exists());
+    // no two devices of this small database share a fingerprint: an empty list is still valid
+    let groups = f.check(
+        "research-groups",
+        &["research", "groups", "--format", "json"],
+        false,
+    );
+    assert!(groups[0]["groups"].as_array().unwrap().is_empty());
 }
 
 #[test]
