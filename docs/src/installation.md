@@ -102,7 +102,7 @@ slsa-verifier verify-artifact network-scope-0.5.1-linux-x86_64.tar.gz \
 gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
 ```
 
-Each release also has a CycloneDX SBOM, and the Linux command-line binary can be rebuilt and compared bit for bit: see [Supply chain: SBOM and reproducible builds](supply-chain.md).
+Each release also has a CycloneDX SBOM. Rebuilding a release and comparing the hash is documented in [Supply chain: SBOM and reproducible builds](supply-chain.md#what-is-reproducible-where): the Windows binaries were measured identical on one machine, the Linux check has not run yet, and releases up to v0.5.1 cannot be reproduced.
 
 ## Checking for updates
 

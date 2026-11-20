@@ -65,16 +65,34 @@ What is done to get there (`scripts/repro_env.sh`, used by `release.yml` for eve
 - `SOURCE_DATE_EPOCH` is the commit time of the built commit, so nothing embeds the wall-clock time.
 - `--remap-path-prefix` maps the build directory to `/build`, the cargo home to `/cargo` and the rustup home to `/rustup` (and `-ffile-prefix-map` does the same for the bundled C code, on Linux and macOS), so the binary does not contain where it was built.
 - `CARGO_INCREMENTAL=0`, and the release profile already uses `lto`, `codegen-units = 1` and `strip`.
+- On Windows the paths to remap are given in their long form (`cygpath -w -l`). Windows keeps a short 8.3 name for long folder and user names (`C:\Users\RUNNER~1`, and `TEMP` often holds it); the compiler sees the long name, a prefix in the short form matches nothing, and then the build directory stays inside the binary (2.6 MB of the file differed between two builds before this was fixed).
+- `CONST_RANDOM_SEED` is fixed. The `const-random` crate (switched on by `ahash`'s `compile-time-rng`, which `rhai` enables) draws random numbers from the operating system while the compiler runs and builds them into the program, so without a seed every build is different: on Windows some 8,900 bytes of `.text` differed between two builds of one commit, and the `/Brepro` link time and debug GUID, which are hashes of the content, followed. This was the only cause found there. The numbers are the fixed hash keys of the `ahash` maps inside `rhai` and the GUI toolkit; with the seed a release has the same keys in every build (they are public, `ahash` still mixes in an address that ASLR randomizes at run time, and no hash of network data in Network Scope uses them).
+
+### What is reproducible, where
+
+| Platform and file | Status |
+| --- | --- |
+| Windows x86_64 (MSVC), `network-scope-cli.exe` and `network-scope.exe` | **Measured identical on one machine** (2026-11-20, Windows 11, `sh scripts/repro_check.sh`, commit `2f07242`, `SOURCE_DATE_EPOCH=1795166676`): two exports of the commit in directories of different depth and length, clean `target` folders, both binaries built in each. An earlier manual run of the command-line binary with the seed (directories on two different drives, partly reused `target` folders) gave the same hash for both builds as well. `network-scope-cli.exe`: `4195aeb4f05a2fcd1288b13d49c391e3e4714f6e8006e18e23969b16a0fcc2ac` twice. `network-scope.exe`: `a2c5e1d4d1b94bbe4d87d78e924004c772be3f6905e28c6e8978f6e414267d4b` twice. Not yet measured on a second machine or with another Visual Studio version. |
+| Linux x86_64, `network-scope-cli` | The CI job `reproducible build` checks it, **but it has not run on GitHub yet and was not run by hand**. The cause fixed above is not specific to Windows, so the Linux build was probably not reproducible before the seed either; do not rely on it until the job has passed. |
+| macOS, Linux GUI binary, the Windows installer and zip, the container image | Not claimed. Archives and installers contain timestamps; the build flags are the same, nothing else was measured. |
+
+A release built before this change (v0.5.1 and earlier) was built without the seed and **cannot be reproduced**; the first release that carries `CONST_RANDOM_SEED` in `scripts/repro_env.sh` can.
 
 ### What CI checks
 
-The `reproducible` workflow (job `reproducible build`) runs on Linux when `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/`, `core/`, `data/`, `assets/` or the script change, and every Wednesday. It exports the commit twice into two directories with different paths, builds `network-scope-cli` in each, and fails if the SHA-256 differs; the two binaries are then attached to the run for comparison with `diffoscope` or `cmp`.
+The `reproducible` workflow runs when `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/`, `core/`, `data/`, `assets/` or the scripts change, and every Wednesday. Job `reproducible build` (Linux) exports the commit twice into two directories with different paths, builds `network-scope-cli` in each, and fails if the SHA-256 differs. Job `reproducible build (Windows)` runs `scripts/repro_check.sh`, which does the same for `network-scope-cli.exe` and `network-scope.exe` (clean `target` folders). On a mismatch the binaries are attached to the run for comparison with `diffoscope` or `cmp`. Neither job has run on GitHub yet.
 
-Only the Linux x86_64 command-line binary is checked. The Windows and macOS release builds use the same flags (on Windows also `/Brepro`, so the linker does not stamp the link time), but they are not claimed to be reproducible: a local rehearsal on Windows (two directories, same commit, `network-scope-cli.exe`) still produced different files, about 8,000 bytes apart, without a build path in either. The cause was not investigated. The GUI binary links the same code and is expected to behave the same, but it is not part of the check.
+### Check it on your own machine
+
+```sh
+sh scripts/repro_check.sh            # Linux, macOS, or Git Bash on Windows; two builds, several minutes each
+```
+
+It exports `HEAD` twice, builds both binaries in each copy with the environment of `scripts/repro_env.sh`, prints the hashes and exits with 1 when any differs. On Windows keep the work folder path short (`REPRO_WORK=/c/r`): the linker fails with LNK1104 on paths longer than 260 characters, and cargo's build folder adds about 110. To find out where two files differ, compare them as PE files (the section and the byte ranges); with `/Brepro` the COFF time stamp and the debug GUID are content hashes and differ whenever anything else does, so look at `.text` and `.rdata` first.
 
 ### Rebuild a release yourself
 
-On Linux, in the same environment as the release build (the runner image is `ubuntu-latest`; the version is in the log of the `build linux-x86_64` job). A different distribution or linker can change the binary even when everything above matches, so a mismatch there is a question to ask, not yet a proof of tampering.
+For a release built with `CONST_RANDOM_SEED` (see above). On Linux, in the same environment as the release build (the runner image is `ubuntu-latest`; the version is in the log of the `build linux-x86_64` job); a Windows release needs the same Visual Studio build tools as the release job, which are also in its log. A different distribution or linker can change the binary even when everything above matches, so a mismatch there is a question to ask, not yet a proof of tampering.
 
 ```sh
 git clone https://github.com/Sparkz400/network-scope
