@@ -670,8 +670,14 @@ def backoff_notes(exe, work, name, port, extra):
 def check_backoff(exe, work, failures):
     """H52: a device that refuses after its first connection gets a 'backed off' note, and
     --no-backoff turns that off. The healthy lab host (main scan) must not get one."""
-    port = flaky_device(1)
-    host, notes = backoff_notes(exe, work, "flaky", port, [])
+    # The fake device closes its listener on a thread; on a slow runner the identification
+    # connect can still reach the backlog, and then the device has not stopped answering yet (no
+    # error at all). Such a run proves nothing: try a fresh device a few times.
+    for attempt in range(5):
+        port = flaky_device(1)
+        host, notes = backoff_notes(exe, work, f"flaky-{attempt}", port, [])
+        if host["errors"]:
+            break
     if port not in host["open"]:
         failures.append(f"back-off: the flaky port {port} was not found open")
     if not any(f"port {port} stopped answering after it was found open" in n for n in notes):
