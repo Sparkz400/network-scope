@@ -6,8 +6,8 @@
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
-    arp, csaf, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile,
-    platform, risk, service, syn, tls, udp, update,
+    arp, csaf, favicon, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive,
+    pcapfile, platform, risk, service, syn, tls, udp, update,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -31,6 +31,7 @@ pub const TARGETS: &[Target] = &[
     ("ntlm_challenge", ntlm_challenge),
     ("ssh_kexinit", ssh_kexinit),
     ("http_response", http_response),
+    ("favicon_response", favicon_response),
     ("rdp_reply", rdp_reply),
     ("service_banner", service_banner),
     ("modbus_device_id", modbus_device_id),
@@ -298,6 +299,14 @@ pub fn jarm_response(data: &[u8]) {
     let line = jarm::response_line(parsed.as_ref());
     let lines = vec![line; 10];
     assert!(jarm::is_jarm(&jarm::hash(&lines)));
+}
+
+/// A server's answer to `GET /favicon.ico`: the response parser and the hash of an accepted icon.
+pub fn favicon_response(data: &[u8]) {
+    if let Some(body) = favicon::icon(data) {
+        assert!(!body.is_empty() && body.len() <= favicon::MAX_BODY);
+        std::hint::black_box(crate::pivot::favicon_hash(&body));
+    }
 }
 
 /// The first handshake message of a TLS 1.3 server, and its JA4S.

@@ -317,6 +317,19 @@ pub fn host(
                     .into(),
             );
         }
+        if crate::favicon::enabled(s) {
+            plan.push(
+                PacketKind::HttpRequest,
+                crate::favicon::DETAIL,
+                &to,
+                "one request per port that answered as HTTP(S) (inside the TLS session for https), at most 256 KiB read, no redirects; --favicon only, never in Safe Mode, not on hosts found to be industrial",
+            );
+        } else if s.favicon {
+            plan.notes.push(
+                "Favicon fetch (--favicon) needs --services and leaving Safe Mode, so no favicon requests are sent"
+                    .into(),
+            );
+        }
         if eligible.contains(&445) {
             plan.push(PacketKind::SmbNegotiate, "SMB2 negotiate", "tcp/445", open);
             plan.push(PacketKind::SmbNegotiate, "SMB1 negotiate", "tcp/445", open);
@@ -656,6 +669,7 @@ mod tests {
             syn: true,
             arp_sweep: true,
             jarm: true,
+            favicon: true,
             scan_nonresponders: true,
             ..Settings::default()
         }
@@ -944,6 +958,7 @@ mod tests {
         let senders = [
             ("arp.rs", include_str!("arp.rs")),
             ("core.rs", include_str!("core.rs")),
+            ("favicon.rs", include_str!("favicon.rs")),
             ("jarm.rs", include_str!("jarm.rs")),
             ("ot.rs", include_str!("ot.rs")),
             ("syn.rs", include_str!("syn.rs")),
@@ -1035,6 +1050,7 @@ mod tests",
                 os_detect: true,
                 ot: true,
                 jarm: true,
+                favicon: true,
                 trace: false,
                 dns: false,
                 tcp_only: false,

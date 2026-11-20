@@ -100,6 +100,7 @@ pub mod core;
 pub mod csaf;
 pub mod devices;
 pub mod evidence;
+pub mod favicon;
 pub mod feeds;
 pub(crate) mod fingerprint;
 pub mod identity;

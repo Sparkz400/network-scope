@@ -138,6 +138,7 @@ These apply to `scan` and `monitor`.
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
 | `--jarm` | off | JARM-style TLS fingerprint: ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode; not verified against the reference JARM, see [Detection](detection.md)) |
+| `--favicon` | off | One `GET /favicon.ico` per web port that answered as HTTP(S), hashed with the Shodan-compatible MurmurHash3 into `http.PORT.favicon_mmh3` (needs `--services` and `--fast`; ignored in Safe Mode; not on a host the scan found to be industrial (an industrial port open or identified); see [Detection](detection.md#favicon-hash---favicon)) |
 | `--no-backoff` | off | Turn off the [automatic back-off](scanning-engine.md#automatic-back-off) (on by default; it only ever slows a host down) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
