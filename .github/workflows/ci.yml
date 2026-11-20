@@ -226,7 +226,9 @@ jobs:
       - run: python -I docs/check_finding_pages.py
   # Line coverage of the parsers and risk rules (cargo-llvm-cov). scripts/coverage_gate.py fails
   # the job when one of those files drops below its threshold in scripts/coverage_targets.json
-  # (80%, or the measured floor of a file that is not there yet). The HTML report, lcov and the
+  # (80%, or the measured floor of a file that is not there yet; none is below 80% at the moment).
+  # The report commands need --workspace (without it the summary lists no files here) and the
+  # folder target/llvm-cov must exist before --output-path writes into it. The HTML report, lcov and the
   # JSON summary are uploaded either way. Linux only: the numbers differ slightly per platform.
   coverage:
     name: coverage (parsers and risk rules)
@@ -253,9 +255,10 @@ jobs:
         run: cargo llvm-cov --locked --workspace --no-report
       - name: Reports (JSON summary, lcov, HTML)
         run: |
-          cargo llvm-cov report --json --summary-only --output-path target/llvm-cov/summary.json
-          cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info
-          cargo llvm-cov report --html
+          mkdir -p target/llvm-cov
+          cargo llvm-cov report --workspace --json --summary-only --output-path target/llvm-cov/summary.json
+          cargo llvm-cov report --workspace --lcov --output-path target/llvm-cov/lcov.info
+          cargo llvm-cov report --workspace --html
       - name: Coverage gate
         shell: bash
         run: |

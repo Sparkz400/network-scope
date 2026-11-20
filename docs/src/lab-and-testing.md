@@ -22,26 +22,32 @@ The goal is at least 80% line coverage of every parser and risk-rule file: `risk
 
 The targets are in [`scripts/coverage_targets.json`](https://github.com/Sparkz400/network-scope/blob/main/scripts/coverage_targets.json): a regular expression per target, matched against the source path, so the same entry covers `src/` and `core/src/`. The first matching target wins, so a file with a lower floor is listed before its group.
 
-Not every file is at 80% yet. Measured on 2026-11-19 (cargo-llvm-cov 0.9.1 on Windows, 333 unit tests; three runs gave identical line counts for every file), these are below it and have a threshold at their measured value, rounded down, marked `"ratchet_to": 80`:
+Every target file is at or above 80% now. Measured on 2026-11-20 (cargo-llvm-cov 0.9.1 on Windows, `cargo llvm-cov --locked --workspace --no-report`, 1,039 tests passed in the run; command-by-command in the block below), the files that had a lower floor or fell short were:
 
-| File | Measured | Threshold today |
-| --- | --- | --- |
-| `ot.rs` (active OT identification) | 66.60% | 66% |
-| `passive.rs` | 65.05% | 65% |
-| `otpassive/s7.rs` | 76.19% | 76% |
-| `otpassive/dnp3.rs` | 42.86% | 42% |
-| `otpassive/iec104.rs` | 35.71% | 35% |
+| File | Before | After | What was added |
+| --- | --- | --- | --- |
+| `ot.rs` (active OT identification) | 79.86% (460/576) | 93.87% (812/865) | scripted loopback devices for the EtherNet/IP, Modbus and S7 exchanges (good replies, wrong header, size, unit, sequence, truncated and closed connections), the List Identity and BACnet parsers against malformed input, and `identify` skipping closed ports, silent hosts and the duplicate MQTT CONNECT; the S7 exchange moved into `s7_stream` so that it can be driven without port 102 |
+| `otpassive/fins.rs` | 78.74% (100/127) | 100% (165/165) | the whole command table: every named command is flagged exactly when it changes state, all 65,536 codes are checked, unnamed codes are never flagged |
+| `otpassive/iec104.rs` | 64.29% (9/14) | 100% (36/36) | every ASDU type class: commands flagged, interrogation and monitoring types and the gaps between the ranges not |
+| `otpassive/s7.rs` | 83.33% (35/42) | 100% (82/82) | the function table and the request decoder (acknowledgements, truncations, wrong protocol id, a COTP header that runs past the frame) |
+| `otpassive/dnp3.rs` | 89.69% (235/262) | 98.56% (273/277) | all 256 function codes |
+| `passive.rs` | 91.92% (1183/1287) | 91.92% | nothing: it was already above 80% |
 
-The floors can only go up: when the gate prints "raise the threshold" for a file, raise it in the same change, and once a file reaches 80% drop its `ratchet_to`. A threshold is never set above a measured value. The files not listed were between 82% and 99% at that measurement. The numbers include the `#[cfg(test)]` modules in the same files, and Linux and Windows compile different platform code, so the first Linux run in CI may differ from the Windows numbers by a little; recalibrate from the uploaded `summary.json` if a floor is hit by that alone.
+The floors in `scripts/coverage_targets.json` for these five files (66%, 65%, 76%, 42%, 35%, set from the numbers of 2026-11-19) were stale: `dnp3.rs`, `s7.rs` and `passive.rs` were above 80% before any test was added, so those numbers did not describe this tree. All five now use the plain 80% target and no target ratchets. Two caveats: the gate counts the `#[cfg(test)]` code in the same file, so a file with many tests of its own scores higher than its production code alone (the production lines alone, from the lcov file: `ot.rs` 89.4%, `ot/extra.rs` 73.7%, `passive.rs` 81.3%, `dnp3.rs` 97.3%; `ot/extra.rs` reaches 82.7% only with its own tests, its network functions for FINS, Fox, MQTT and KNX are exercised by `lab/verify.py` but not by the unit tests), and Linux and Windows compile different platform code, so the first Linux run in CI may differ by a little.
+
+The report commands need `--workspace` (without it the JSON summary of this tree listed no files, and the gate says so: "lists no files") and the folder `target/llvm-cov` must exist before `--output-path` writes into it (the command fails with "failed to create file" otherwise); `ci.yml` had neither, and it is fixed there. The job itself has not run on GitHub yet.
+
+If a file falls below 80% again, give it a floor at its measured value (rounded down) with `"ratchet_to": 80` in `scripts/coverage_targets.json`, list it before its group, and raise the floor whenever the gate prints "raise the threshold"; a threshold is never set above a measured value and never lowered.
 
 Run it locally (needs the `llvm-tools-preview` rustup component):
 
 ```sh
 cargo install cargo-llvm-cov --locked
 cargo llvm-cov --locked --workspace --no-report
-cargo llvm-cov report --json --summary-only --output-path target/llvm-cov/summary.json
+mkdir -p target/llvm-cov
+cargo llvm-cov report --workspace --json --summary-only --output-path target/llvm-cov/summary.json
 python -I scripts/coverage_gate.py target/llvm-cov/summary.json
-cargo llvm-cov report --html     # target/llvm-cov/html/index.html
+cargo llvm-cov report --workspace --html     # target/llvm-cov/html/index.html
 ```
 
 The gate has its own unit tests (`python -I -m unittest discover -s scripts -p "test_*.py"`), which CI runs first.
