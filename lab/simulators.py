@@ -474,7 +474,7 @@ def bacnet(bind, port):
             sock.sendto(reply, addr)
 
 
-# ---- SNMP agent: v1/v2c with a community, v3 authNoPriv (HMAC-SHA-1-96), read-only -------------
+# ---- SNMP agent: v1/v2c with a community, v3 authNoPriv (HMAC-SHA-1-96 and HMAC-MD5-96), read-only --
 # A switch with three ports, two addresses and two LLDP neighbours. It answers only GetRequest,
 # GetNextRequest and GetBulkRequest; any other PDU (a SetRequest, say) is counted and ignored, and
 # `--snmp-stats FILE` records the PDU tags it saw, so lab/verify.py can show the scanner sent no
@@ -484,6 +484,8 @@ def bacnet(bind, port):
 # the standard library) so that the lab cross-checks the scanner's SNMPv3 message layout.
 SNMP_COMMUNITY = b"lab-community"
 SNMP_USER = b"labuser"
+# a second user with the weak HMAC-MD5-96 (the same passphrase), for `--snmp-v3 labuser-md5:md5:ENV`
+SNMP_USERS = {b"labuser": hashlib.sha1, b"labuser-md5": hashlib.md5}
 SNMP_AUTH_PASSPHRASE = b"lab-snmp-auth-pass"
 SNMP_ENGINE_ID = bytes.fromhex("80001f88801a2b3c4d5e6f7081")
 SNMP_STATS = {"datagrams": 0, "pdu_tags": {}, "other_pdus": 0}
@@ -569,10 +571,14 @@ def snmp_mib():
         mib[o(f"1.3.6.1.2.1.2.2.1.2.{n}")] = ("s", name.encode())
         mib[o(f"1.3.6.1.2.1.2.2.1.6.{n}")] = ("s", bytes.fromhex(mac))
         mib[o(f"1.3.6.1.2.1.2.2.1.8.{n}")] = ("i", status)
+        mib[o(f"1.3.6.1.2.1.31.1.1.1.1.{n}")] = ("s", name.encode())  # ifName
     for address, index, mask in (("10.77.0.2", 3, bytes([255, 255, 255, 0])), ("192.168.77.1", 3, bytes([255, 255, 255, 128]))):
         mib[o(f"1.3.6.1.2.1.4.20.1.1.{address}")] = ("ip", bytes(int(p) for p in address.split(".")))
         mib[o(f"1.3.6.1.2.1.4.20.1.2.{address}")] = ("i", index)
         mib[o(f"1.3.6.1.2.1.4.20.1.3.{address}")] = ("ip", mask)
+    # ipAddressTable: ipAddressIfIndex.<type>.<length>.<address octets> (IPv4 again, IPv6 global)
+    mib[o("1.3.6.1.2.1.4.34.1.3.1.4.10.77.0.2")] = ("i", 3)
+    mib[o("1.3.6.1.2.1.4.34.1.3.2.16.253.0.0.0.0.0.0.119.0.0.0.0.0.0.0.2")] = ("i", 3)
     for row, chassis, port, name in (("0.1.1", "001b21770001", b"Gi0/24", b"dist-sw2"), ("0.2.1", "525400123456", b"eth0", b"lab-ap")):
         mib[o(f"1.0.8802.1.1.2.1.4.1.1.4.{row}")] = ("i", 4)
         mib[o(f"1.0.8802.1.1.2.1.4.1.1.5.{row}")] = ("s", bytes.fromhex(chassis))
@@ -659,10 +665,10 @@ def snmp_count(tag):
         SNMP_STATS["other_pdus"] += 1
 
 
-def snmp_localized_key(passphrase, engine_id):
+def snmp_localized_key(passphrase, engine_id, hash_function=hashlib.sha1):
     block = (passphrase * (1048576 // len(passphrase) + 1))[:1048576]
-    ku = hashlib.sha1(block).digest()
-    return hashlib.sha1(ku + engine_id + ku).digest()
+    ku = hash_function(block).digest()
+    return hash_function(ku + engine_id + ku).digest()
 
 
 def snmp_v3(data, started):
@@ -683,7 +689,8 @@ def snmp_v3(data, started):
     _, auth, j = ber_read(params, j)
     msg_id = int.from_bytes(msg_id, "big", signed=True)
     now = int(time.monotonic() - started) + 1000
-    key = snmp_localized_key(SNMP_AUTH_PASSPHRASE, SNMP_ENGINE_ID)
+    hash_function = SNMP_USERS.get(user, hashlib.sha1)
+    key = snmp_localized_key(SNMP_AUTH_PASSPHRASE, SNMP_ENGINE_ID, hash_function)
 
     def message(flags_byte, rid, tag, status, binds, user_name, authenticated):
         pdu = ber(tag, ber_int(rid) + ber_int(status) + ber_int(0) + binds)
@@ -696,7 +703,7 @@ def snmp_v3(data, started):
         if not authenticated:
             return build(b"")
         zeroed = build(b"\x00" * 12)
-        return build(hmac.new(key, zeroed, hashlib.sha1).digest()[:12])
+        return build(hmac.new(key, zeroed, hash_function).digest()[:12])
 
     def report(counter):
         binds = ber(0x30, ber(0x30, oid_encode((1, 3, 6, 1, 6, 3, 15, 1, 1, counter, 0)) + ber(0x41, b"\x01")))
@@ -704,7 +711,7 @@ def snmp_v3(data, started):
 
     if engine != SNMP_ENGINE_ID:
         return report(4)  # usmStatsUnknownEngineIDs: how a manager discovers the engine
-    if user != SNMP_USER:
+    if user not in SNMP_USERS:
         return report(3)  # usmStatsUnknownUserNames
     if flags & 0x03 == 0x01:  # authNoPriv
         zeroed = bytearray(data)
@@ -712,7 +719,7 @@ def snmp_v3(data, started):
         if len(auth) != 12 or at < 0:
             return report(5)
         zeroed[at:at + 12] = b"\x00" * 12
-        if not hmac.compare_digest(hmac.new(key, bytes(zeroed), hashlib.sha1).digest()[:12], auth):
+        if not hmac.compare_digest(hmac.new(key, bytes(zeroed), hash_function).digest()[:12], auth):
             return report(5)  # usmStatsWrongDigests
     else:
         return report(1)  # the user needs authentication, and there is no privacy: usmStatsUnsupportedSecLevels
@@ -724,7 +731,7 @@ def snmp_v3(data, started):
         return None
     rid, a, b, oids = snmp_request(pdu)
     binds = snmp_walk(tag, oids, a, b, False)
-    return message(flags & 0x01, rid, 0xA2, 0, snmp_varbinds(binds), SNMP_USER, bool(flags & 1))
+    return message(flags & 0x01, rid, 0xA2, 0, snmp_varbinds(binds), user, bool(flags & 1))
 
 
 def snmp_handle(data, started):

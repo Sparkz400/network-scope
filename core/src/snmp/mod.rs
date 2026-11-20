@@ -70,14 +70,17 @@
 //! at most [`MAX_REQUESTS`] datagrams and [`MAX_SECONDS`] seconds per host (fewer in Safe Mode).
 //! v3: one unauthenticated discovery `GetRequest` (empty engine ID and user name, no variable
 //! bindings) to learn the engine ID, boots and time, then the same requests as above with the
-//! user's authentication (HMAC-SHA-1-96 or HMAC-192-SHA-256) and privacy (AES-128-CFB). Every
-//! datagram takes a token from the rate gate (`PacketKind::SnmpRequest`).
+//! user's authentication (HMAC-SHA-1-96 or HMAC-192-SHA-256; the weak HMAC-MD5-96 only when
+//! named) and privacy (AES-128-CFB; the weak DES-CBC only when named). Every datagram takes a
+//! token from the rate gate (`PacketKind::SnmpRequest`).
 //!
 //! What has not been tested against real devices is stated in `docs/src/snmp.md`.
 mod aes;
 pub mod ber;
 mod client;
 mod collect;
+mod des;
+mod md5;
 #[cfg(test)]
 mod testagent;
 pub mod usm;
@@ -256,12 +259,15 @@ pub fn decode_reply_for_fuzzing(data: &[u8]) {
         let _ = wire::parse_community(data, version);
     }
     // The keys cost a megabyte of hashing each: derive them once.
-    static KEYS: std::sync::OnceLock<(Vec<u8>, usm::Privacy)> = std::sync::OnceLock::new();
-    let (key, privacy) = KEYS.get_or_init(|| {
+    static KEYS: std::sync::OnceLock<(Vec<u8>, usm::Privacy, Vec<u8>, usm::Privacy)> =
+        std::sync::OnceLock::new();
+    let (key, privacy, md5_key, des) = KEYS.get_or_init(|| {
         let engine = [0x80, 0, 0x1f, 0x88, 0x80, 1, 2, 3];
         (
             usm::localized_key(AuthProto::Sha1, b"fuzzfuzz", &engine),
-            usm::Privacy::new(AuthProto::Sha1, b"fuzzfuzz", &engine),
+            usm::Privacy::new(AuthProto::Sha1, PrivProto::Aes128, b"fuzzfuzz", &engine),
+            usm::localized_key(AuthProto::Md5, b"fuzzfuzz", &engine),
+            usm::Privacy::new(AuthProto::Md5, PrivProto::Des, b"fuzzfuzz", &engine),
         )
     });
     let _ = wire::parse_v3(
@@ -276,6 +282,14 @@ pub fn decode_reply_for_fuzzing(data: &[u8]) {
         &wire::V3Expect {
             auth: Some((AuthProto::Sha1, key)),
             privacy: Some(privacy),
+        },
+    );
+    // the weak pair (HMAC-MD5-96, DES-CBC) has its own decryption and padding path
+    let _ = wire::parse_v3(
+        data,
+        &wire::V3Expect {
+            auth: Some((AuthProto::Md5, md5_key)),
+            privacy: Some(des),
         },
     );
     let _ = ber::parse_varbinds(data);
@@ -376,6 +390,82 @@ impl UsmUser {
     }
 }
 
+/// What of an SNMP configuration may be saved: **names only**, never a secret. A scheduled
+/// scan, a service, a replayed scan and the desktop's saved settings keep this and read the
+/// community string or the passphrases from the named environment variables each time they
+/// start (see [`SnmpRef::resolve`]). A community string typed on the command line
+/// (`--snmp-community STRING`) has no such form: it cannot be saved without saving the secret.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnmpRef {
+    /// SNMPv1 or v2c: the version (`1` or `2c`) and the variable that holds the community.
+    Community { version: String, env: String },
+    /// SNMPv3: the `--snmp-v3` spec, `user[:auth:AUTH_ENV[:priv:PRIV_ENV]]`, which holds
+    /// variable names.
+    V3 { spec: String },
+}
+
+impl SnmpRef {
+    /// `--snmp-community-env NAME [--snmp-version 1|2c]`.
+    pub fn community(version: &str, env: &str) -> Result<Self, String> {
+        // the same checks as the real configuration, with a stand-in secret
+        SnmpConfig::community(version, "x")?;
+        if !is_env_name(env) {
+            return Err("--snmp-community-env takes the name of an environment variable (the community string itself must not be given here)".into());
+        }
+        let version = match version.to_ascii_lowercase().as_str() {
+            "1" | "v1" => "1",
+            _ => "2c",
+        };
+        Ok(Self::Community {
+            version: version.into(),
+            env: env.into(),
+        })
+    }
+    /// `--snmp-v3 SPEC`: checks the form (names, protocols, user) without reading any variable.
+    pub fn v3(spec: &str) -> Result<Self, String> {
+        SnmpConfig::v3(spec, |_| Some("x".repeat(MIN_PASSPHRASE)))?;
+        Ok(Self::V3 { spec: spec.into() })
+    }
+    /// The full configuration: reads the secrets from the environment through `env`.
+    pub fn resolve(&self, env: impl Fn(&str) -> Option<String>) -> Result<SnmpConfig, String> {
+        match self {
+            Self::Community { version, env: name } => {
+                let value =
+                    env(name).ok_or_else(|| format!("environment variable {name} is not set"))?;
+                SnmpConfig::community(version, &value)
+            }
+            Self::V3 { spec } => SnmpConfig::v3(spec, env),
+        }
+    }
+    /// For the dry run, the settings page and notes: what it is, never a secret.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Community { version, env } => format!("SNMP v{version}, community from ${env}"),
+            Self::V3 { spec } => {
+                // the spec holds only names, but show the shape rather than the spec
+                let parts = spec.split(':').count();
+                let level = match parts {
+                    1 => "noAuthNoPriv",
+                    3 => "authNoPriv",
+                    _ => "authPriv",
+                };
+                format!(
+                    "SNMPv3 {level}, user {}, secrets from environment variables",
+                    spec.split(':').next().unwrap_or("")
+                )
+            }
+        }
+    }
+}
+
+/// A valid environment variable name (what the options accept in place of a secret).
+fn is_env_name(var: &str) -> bool {
+    !var.is_empty()
+        && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !var.starts_with(|c: char| c.is_ascii_digit())
+}
+
 /// The SNMP session settings of a scan (`--snmp-community`, `--snmp-v3`). Opt-in: a scan without
 /// this value sends no SNMP request of its own. Not serialised into scan results, so a secret
 /// never reaches the database or the JSON output.
@@ -426,7 +516,8 @@ impl SnmpConfig {
 
     /// `--snmp-v3 user[:auth-proto:auth-pass-env[:priv-proto:priv-pass-env]]`. The passphrases
     /// are never on the command line: the spec holds the *names* of environment variables, and
-    /// `env` reads them. `auth-proto` is `sha` or `sha256`, `priv-proto` is `aes`.
+    /// `env` reads them. `auth-proto` is `sha` or `sha256` (or the weak `md5`), `priv-proto` is
+    /// `aes` (or the weak `des`).
     pub fn v3(spec: &str, env: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         const FORM: &str =
             "--snmp-v3 takes user[:auth-proto:auth-pass-env[:priv-proto:priv-pass-env]]";
@@ -439,10 +530,7 @@ impl SnmpConfig {
             return Err("The SNMPv3 user name must be 1-32 bytes".into());
         }
         let secret = |what: &str, var: &str| -> Result<String, String> {
-            let valid = !var.is_empty()
-                && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && !var.starts_with(|c: char| c.is_ascii_digit());
-            if !valid {
+            if !is_env_name(var) {
                 // never echo the value: it may be a passphrase typed in the wrong place
                 return Err(format!(
                     "{what}: expected the name of an environment variable (the passphrase itself must not be given on the command line)"
@@ -460,14 +548,15 @@ impl SnmpConfig {
         let auth = match parts.get(1) {
             Some(proto) => {
                 let proto = AuthProto::parse(proto)
-                    .ok_or("SNMPv3 authentication protocol must be sha or sha256")?;
+                    .ok_or("SNMPv3 authentication protocol must be sha, sha256 or md5")?;
                 Some((proto, secret("SNMPv3 authentication", parts[2])?))
             }
             None => None,
         };
         let privacy = match parts.get(3) {
             Some(proto) => {
-                let proto = PrivProto::parse(proto).ok_or("SNMPv3 privacy protocol must be aes")?;
+                let proto =
+                    PrivProto::parse(proto).ok_or("SNMPv3 privacy protocol must be aes or des")?;
                 Some((proto, secret("SNMPv3 privacy", parts[4])?))
             }
             None => None,
@@ -487,6 +576,39 @@ impl SnmpConfig {
             Credentials::Community { version, .. } => *version,
             Credentials::V3(_) => Version::V3,
         }
+    }
+    /// The weak algorithms this configuration uses (MD5 authentication, DES privacy): the CLI
+    /// warns about them before the scan starts.
+    pub fn weak_crypto(&self) -> Vec<&'static str> {
+        let Credentials::V3(u) = &self.credentials else {
+            return vec![];
+        };
+        let mut weak = vec![];
+        if u.auth.as_ref().is_some_and(|(p, _)| p.is_weak()) {
+            weak.push("HMAC-MD5-96 authentication is weak (MD5)");
+        }
+        if u.privacy.as_ref().is_some_and(|(p, _)| p.is_weak()) {
+            weak.push("DES privacy is weak (56-bit key)");
+        }
+        weak
+    }
+    /// Everything weak about this configuration: [`weak_crypto`](Self::weak_crypto), a
+    /// clear-text community string (SNMPv1 and v2c), an SNMPv3 level without encryption.
+    pub fn weaknesses(&self) -> Vec<&'static str> {
+        let mut weak = self.weak_crypto();
+        match &self.credentials {
+            Credentials::Community { .. } => {
+                weak.push("the community string is sent in clear text");
+            }
+            Credentials::V3(u) if u.auth.is_none() => {
+                weak.push("noAuthNoPriv sends nothing authenticated or encrypted");
+            }
+            Credentials::V3(u) if u.privacy.is_none() => {
+                weak.push("authNoPriv does not encrypt the data");
+            }
+            Credentials::V3(_) => {}
+        }
+        weak
     }
     /// The plan and dry run list these.
     pub fn catalog(&self) -> Vec<String> {
@@ -651,8 +773,11 @@ mod tests {
                 .unwrap_err()
                 .contains("shorter than 8")
         );
-        assert!(SnmpConfig::v3("u:md5:AUTH_PASS", env).is_err());
-        assert!(SnmpConfig::v3("u:sha:AUTH_PASS:des:PRIV_PASS", env).is_err());
+        // the weak protocols are accepted when named, nothing else is
+        assert!(SnmpConfig::v3("u:md5:AUTH_PASS", env).is_ok());
+        assert!(SnmpConfig::v3("u:sha:AUTH_PASS:des:PRIV_PASS", env).is_ok());
+        assert!(SnmpConfig::v3("u:sha512:AUTH_PASS", env).is_err());
+        assert!(SnmpConfig::v3("u:sha:AUTH_PASS:3des:PRIV_PASS", env).is_err());
         assert!(
             SnmpConfig::v3("u:sha:AUTH_PASS:aes", env).is_err(),
             "four fields"

@@ -458,3 +458,17 @@ medium || mittel
 low || niedrig
 info || Info
 none || keines
+
+# SNMP (read-only) in the settings
+Read devices over SNMP (read-only) || Geräte über SNMP lesen (nur lesend)
+Off || Aus
+Community (SNMP v1/v2c) || Community (SNMP v1/v2c)
+SNMPv3 user || SNMPv3-Benutzer
+Version || Version
+Environment variable with the community || Umgebungsvariable mit der Community
+User name || Benutzername
+Authentication || Authentifizierung
+Privacy || Verschlüsselung
+Environment variable with the authentication passphrase || Umgebungsvariable mit dem Authentifizierungs-Kennwort
+Environment variable with the privacy passphrase || Umgebungsvariable mit dem Verschlüsselungs-Kennwort
+Only the names of the variables are saved, never the passphrases. A scheduled scan reads them again each time it starts. || Gespeichert werden nur die Namen der Variablen, nie die Kennwörter. Ein geplanter Scan liest sie bei jedem Start erneut.

@@ -36,6 +36,7 @@ pub(in crate::ui) fn run_monitor(
         return Err("--ipv6-discover works with scan only".into());
     }
     s.scan_nonresponders = true;
+    super::scan::snmp_warnings(opts, &s);
     // The same scope rule as `scan`; monitor runs unattended, so without a terminal it refuses
     // unless --yes-public / --allow-out-of-scope is given.
     let hosts = crate::scan::parse_targets(&targets, s.skip_edges, crate::scan::MAX_STREAM)?;

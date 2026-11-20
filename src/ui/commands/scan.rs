@@ -97,6 +97,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     if stream && tui_view {
         return Err("--stream and --tui both take the terminal; choose one".into());
     }
+    snmp_warnings(opts, &s);
     // The terminal view shows a host as soon as it answers (provisional rows, like the desktop).
     let mut s = s;
     s.partial_events |= tui_view;
@@ -325,6 +326,15 @@ fn collect_with(run: &scan::Running, stream: bool) -> Collected {
         Ok(())
     });
     (hosts, complete, errors)
+}
+/// A warning before the scan when the SNMP setting uses a weak algorithm (MD5 authentication,
+/// DES privacy): they exist for old devices and must not look like a default.
+pub(in crate::ui) fn snmp_warnings(opts: &BTreeMap<String, String>, s: &scan::Settings) {
+    if let Some(config) = &s.snmp {
+        for weak in config.weak_crypto() {
+            progress(opts, format_args!("SNMP warning: {weak}"));
+        }
+    }
 }
 /// Runs the scan's events to the end: every host worth keeping (responding ones, or all when the
 /// scan is small) goes to `sink`, with `stream` the live events go to stdout. A failing sink
