@@ -622,8 +622,9 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
             }
         }
         // UDP silence means open|filtered, so only ports probed in both scans are compared and a
-        // port that stops answering is not called closed.
-        for &port in &udp_probed {
+        // port that stops answering is not called closed. A host the new scan did not finish
+        // (paused by the back-off, `ports_checked` false) was not probed for UDP either.
+        for &port in udp_probed.iter().filter(|_| h.ports_checked) {
             match (
                 previous.udp_open.contains(&port),
                 h.udp_open.contains(&port),
@@ -671,7 +672,8 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
                 Some((_, p)) => gone_tcp.contains(&p),
                 None => false,
             };
-            if !covered {
+            // Identity keys of a host that was not fully checked are missing, not removed.
+            if !covered && h.ports_checked {
                 changes.push(Change::IdentityRemoved {
                     ip,
                     key: key.clone(),
@@ -798,7 +800,8 @@ fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings)
         let Some(port) = f.port else { return true };
         let was_udp = old.get(&f.ip).is_some_and(|h| h.udp_open.contains(&port));
         let was_tcp = old.get(&f.ip).is_some_and(|h| h.open.contains(&port));
-        (!was_udp || udp_probed.contains(&port)) && (!was_tcp || now.ports_checked)
+        (!was_udp || (udp_probed.contains(&port) && now.ports_checked))
+            && (!was_tcp || now.ports_checked)
     };
     let new = fb.into_iter().filter(|f| !ka.contains(&f.key())).collect();
     let (mut resolved, mut unconfirmed) = (vec![], vec![]);
@@ -908,6 +911,34 @@ pub fn export_at(snapshot: &Snapshot, format: &str, timestamp: i64) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_that_was_not_fully_checked_does_not_lose_udp_ports_or_identity() {
+        let mut a = snapshot();
+        a.settings.udp = true;
+        a.settings.udp_ports = "161".into();
+        let h = &mut a.hosts[0];
+        h.responding = true;
+        h.ports_checked = true;
+        h.udp_open = vec![161];
+        h.identity.insert("svc.80".into(), "http".into());
+        // The new scan paused the host: nothing after the TCP phase was probed.
+        let mut b = a.clone();
+        let h = &mut b.hosts[0];
+        h.ports_checked = false;
+        h.udp_open.clear();
+        h.identity.clear();
+        let changes = diff(&a, &b).unwrap().join("\n");
+        assert!(!changes.contains("161"), "{changes}");
+        assert!(!changes.contains("svc.80"), "{changes}");
+        // The same data from a fully checked host is a real change.
+        b.hosts[0].ports_checked = true;
+        let changes = diff(&a, &b).unwrap().join("\n");
+        assert!(
+            changes.contains("161") && changes.contains("svc.80"),
+            "{changes}"
+        );
+    }
 
     #[test]
     fn the_sent_log_is_stored_and_old_snapshots_have_none() {

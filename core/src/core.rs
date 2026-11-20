@@ -850,7 +850,10 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
     }
     if wants_ot(&h, &s) && !gov.paused() {
-        crate::ot::identify(&mut h, &s, &ctx.gate).await;
+        for port in crate::ot::identify(&mut h, &s, &ctx.gate).await {
+            gov.known_open_failed(port);
+        }
+        flush_backoff_notes(&gov, &mut h);
         merge_ot_udp(&mut h);
     }
     if s.trace && h.responding && !gov.paused() {
