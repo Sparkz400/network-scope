@@ -1,6 +1,8 @@
 //! JARM active TLS server fingerprint (opt-in, never in Safe Mode).
 //!
-//! JARM (Salesforce, BSD-3-Clause, <https://github.com/salesforce/jarm>) sends ten differently
+//! JARM (Salesforce, <https://github.com/salesforce/jarm>; this module is a transcription of its
+//! `jarm.py`, Copyright (c) 2020, Salesforce.com, Inc., BSD-3-Clause, license text in
+//! THIRD-PARTY-NOTICES.md) sends ten differently
 //! shaped TLS ClientHellos to one port and condenses the ServerHellos into a 62 character hash:
 //! per probe the selected cipher (2 hex characters, its index in the reference's sorted cipher
 //! table) and the selected version (1 letter), 30 characters in all, then the first 32 hex
