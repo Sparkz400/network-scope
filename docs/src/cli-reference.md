@@ -161,7 +161,7 @@ These apply to `scan` and `monitor`.
 | `--yes-public` | off | Confirm that public addresses may be scanned |
 | `--allow-out-of-scope` | off | Confirm that addresses outside the declared scope may be scanned (also covers public ones) |
 
-TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result; Up/Down/PgUp/PgDn/Home/End select a row; Enter shows the host's ports, services, findings and identity fields (Enter or Backspace returns); S cycles the sort order (newest, address, open ports).
+TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result; Up/Down/PgUp/PgDn/Home/End select a row; Enter shows the host's ports, services, findings and identity fields (Enter or Backspace returns); S cycles the sort order (newest, address, open ports). A host appears in the list as soon as it answers (status `Scanning...`) and its open ports are added as they are found, like the rows of the desktop; the final record replaces the provisional row. A provisional row of a host that had not finished when you stopped is not saved: only finished hosts are results.
 
 ## Scope guard
 

@@ -1,7 +1,7 @@
 //! The live terminal view of `scan --tui`: host list, detail view, sort, pause and stop keys.
 use super::commands::scan::{Collected, accept, collect};
 use crate::{evidence::Evidence, risk, scan};
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{collections::HashMap, net::IpAddr, sync::atomic::Ordering, time::Duration};
 
 fn stop_key(code: crossterm::event::KeyCode) -> bool {
     use crossterm::event::KeyCode;
@@ -80,18 +80,22 @@ enum TuiAction {
 #[derive(Default)]
 struct TuiView {
     sort: TuiSort,
-    selected: Option<std::net::IpAddr>,
+    selected: Option<IpAddr>,
     detail: bool,
     /// First line shown in the detail view.
     scroll: u16,
     /// Indexes into the host list in display order.
     order: Vec<usize>,
-    key: Option<(usize, TuiSort)>,
+    key: Option<(usize, TuiSort, u64)>,
+    /// Hosts still being scanned, with the index of their provisional row (`scan::Event::Partial`).
+    pending: HashMap<IpAddr, usize>,
+    /// Counts changes to a row that keep the list length (a provisional row updated).
+    version: u64,
 }
 impl TuiView {
     /// Re-sorts only when hosts arrived or the sort mode changed.
     fn refresh(&mut self, hosts: &[scan::Host]) {
-        let key = (hosts.len(), self.sort);
+        let key = (hosts.len(), self.sort, self.version);
         if self.key == Some(key) {
             return;
         }
@@ -268,6 +272,50 @@ fn detail_lines(h: &scan::Host) -> Vec<String> {
     }
     lines
 }
+/// Applies one scan event to the live view. A `Partial` host becomes (or updates) a provisional
+/// row; the final `Host` event replaces it. Returns true on `Done`. Provisional rows are not
+/// results: see [`drop_provisional`].
+fn apply_event(
+    event: scan::Event,
+    hosts: &mut Vec<scan::Host>,
+    view: &mut TuiView,
+    sparse: bool,
+    errors: &mut Vec<String>,
+) -> bool {
+    match event {
+        scan::Event::Partial(h) => {
+            view.version += 1;
+            match view.pending.get(&h.ip).copied() {
+                Some(i) if hosts.get(i).is_some_and(|r| r.ip == h.ip) => hosts[i] = h,
+                _ => {
+                    view.pending.insert(h.ip, hosts.len());
+                    hosts.push(h);
+                }
+            }
+            false
+        }
+        scan::Event::Host(h) => match view.pending.remove(&h.ip) {
+            Some(i) if hosts.get(i).is_some_and(|r| r.ip == h.ip) => {
+                view.version += 1;
+                hosts[i] = h;
+                false
+            }
+            _ => accept(scan::Event::Host(h), hosts, sparse, errors),
+        },
+        other => accept(other, hosts, sparse, errors),
+    }
+}
+/// Removes the provisional rows that never became final (the scan was stopped): half-known hosts
+/// are shown while the scan runs but are not saved as if they were complete results.
+fn drop_provisional(hosts: &mut Vec<scan::Host>, view: &TuiView) {
+    let pending: std::collections::HashSet<usize> = view.pending.values().copied().collect();
+    let mut index = 0usize;
+    hosts.retain(|_| {
+        let keep = !pending.contains(&index);
+        index += 1;
+        keep
+    });
+}
 /// One frame of the live view: the host list, or the detail view of the selected host.
 fn draw_tui(f: &mut ratatui::Frame, view: &TuiView, hosts: &[scan::Host], progress: &str) {
     use ratatui::{
@@ -297,7 +345,9 @@ fn draw_tui(f: &mut ratatui::Frame, view: &TuiView, hosts: &[scan::Host], progre
         let h: &scan::Host = &hosts[i];
         let row = Row::new(vec![
             h.ip.to_string(),
-            if h.responding {
+            if view.pending.contains_key(&h.ip) {
+                "Scanning..."
+            } else if h.responding {
                 "Responding"
             } else {
                 "No reply"
@@ -412,7 +462,7 @@ pub(super) fn tui(run: &scan::Running) -> Collected {
                     if matches!(event, scan::Event::Host(_)) {
                         seen += 1;
                     }
-                    if accept(event, &mut hosts, sparse, &mut errors) {
+                    if apply_event(event, &mut hosts, &mut view, sparse, &mut errors) {
                         done = true;
                         break;
                     }
@@ -459,6 +509,7 @@ pub(super) fn tui(run: &scan::Running) -> Collected {
         }
     }
     drop(restore);
+    drop_provisional(&mut hosts, &view);
     let complete = done && errors.is_empty() && !run.cancel.load(Ordering::Relaxed);
     (hosts, complete, errors)
 }
@@ -475,6 +526,104 @@ mod tests {
         assert!(stop_key(KeyCode::Char('Q')));
         assert!(stop_key(KeyCode::Esc));
         assert!(!stop_key(KeyCode::Char(' ')));
+    }
+
+    #[test]
+    fn partial_hosts_show_up_at_once_and_are_replaced_by_the_final_row() {
+        let (mut hosts, mut view, mut errors) = (vec![], TuiView::default(), vec![]);
+        let mut step = |e, hosts: &mut Vec<scan::Host>, view: &mut TuiView| {
+            apply_event(e, hosts, view, false, &mut errors)
+        };
+        let ip: IpAddr = "10.0.0.7".parse().unwrap();
+        // First sign of life: a provisional row, listed and sortable.
+        assert!(!step(
+            scan::Event::Partial(tui_host("10.0.0.7", vec![])),
+            &mut hosts,
+            &mut view
+        ));
+        assert_eq!(hosts.len(), 1);
+        assert!(view.pending.contains_key(&ip));
+        view.refresh(&hosts);
+        assert_eq!(view.order, [0]);
+        // A port found open updates the same row (same length, the list is still re-sorted).
+        step(
+            scan::Event::Partial(tui_host("10.0.0.7", vec![80])),
+            &mut hosts,
+            &mut view,
+        );
+        assert_eq!((hosts.len(), hosts[0].open.clone()), (1, vec![80]));
+        let before = view.key;
+        view.refresh(&hosts);
+        assert_ne!(view.key, before, "an update of a row is noticed");
+        // A second host, then the final record of the first replaces its provisional row.
+        step(
+            scan::Event::Partial(tui_host("10.0.0.8", vec![])),
+            &mut hosts,
+            &mut view,
+        );
+        step(
+            scan::Event::Host(tui_host("10.0.0.7", vec![80, 443])),
+            &mut hosts,
+            &mut view,
+        );
+        assert_eq!(hosts.len(), 2, "no duplicate row");
+        assert_eq!(hosts[0].open, [80, 443]);
+        assert!(!view.pending.contains_key(&ip));
+        // The scan is stopped: 10.0.0.8 never finished, so it is not kept as a result.
+        assert_eq!(view.pending.len(), 1);
+        drop_provisional(&mut hosts, &view);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].ip, ip);
+        // Events without a provisional row behave as before.
+        assert!(step(scan::Event::Done, &mut hosts, &mut view));
+        step(
+            scan::Event::Host(tui_host("10.0.0.9", vec![])),
+            &mut hosts,
+            &mut view,
+        );
+        assert_eq!(hosts.len(), 2);
+    }
+
+    #[test]
+    fn a_provisional_row_is_labelled_scanning() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut hosts = vec![];
+        let (mut view, mut errors) = (TuiView::default(), vec![]);
+        apply_event(
+            scan::Event::Partial(tui_host("10.0.0.7", vec![80])),
+            &mut hosts,
+            &mut view,
+            false,
+            &mut errors,
+        );
+        view.refresh(&hosts);
+        let mut t = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        let screen = |t: &Terminal<TestBackend>| {
+            t.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        t.draw(|f| draw_tui(f, &view, &hosts, "0/1 · scanning"))
+            .unwrap();
+        let text = screen(&t);
+        assert!(
+            text.contains("Scanning...") && text.contains("80"),
+            "{text}"
+        );
+        apply_event(
+            scan::Event::Host(tui_host("10.0.0.7", vec![80])),
+            &mut hosts,
+            &mut view,
+            false,
+            &mut errors,
+        );
+        view.refresh(&hosts);
+        t.draw(|f| draw_tui(f, &view, &hosts, "1/1 · scanning"))
+            .unwrap();
+        assert!(screen(&t).contains("Responding"));
     }
 
     #[test]
