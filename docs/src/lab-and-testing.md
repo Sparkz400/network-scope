@@ -175,6 +175,37 @@ Measured on Windows on 2026-11-19, which the expectations above were set from:
 
 What this does not show: loss and latency of the real network stack (SYN loss, retransmission timers, the SYN scan mode), because nothing here drops packets; real devices, which can fail in ways a counter does not; BACnet and the other UDP services are not made fragile (only `lossy` touches the BACnet reply); DNP3, IEC 104 and OPC UA have no simulator. The scenarios have run on Windows; the first Linux run is the CI.
 
+### Test plant: planted weaknesses and replayable traffic
+
+`lab/plant.py` is a small plant of four fake devices on loopback addresses (`127.0.20.1`-`4`), built on the handlers of `simulators.py`, with the weaknesses planted in them written down in `lab/plant_truth.json` (the ground truth):
+
+| Device | Planted |
+| --- | --- |
+| `plc-s7` (127.0.20.1) | an S7 CPU 1214C with firmware 4.2.3, inside the affected range of the synthetic advisory `ICSA-TEST-0001` (`tests/fixtures/csaf`); the engineering port 102 exposed |
+| `plc-modbus` (127.0.20.2) | Modbus/TCP with **writable registers** (the trap), a Telnet console that names the factory credentials, a cleartext web admin page on Apache 2.4.49 |
+| `plc-enip` (127.0.20.3) | a ControlLogix 1756-L81E with firmware 20.11, inside the range of `ICSA-TEST-0002`; EtherNet/IP exposed |
+| `hmi` (127.0.20.4) | vsFTPd 2.3.4, OpenSSH 7.4 with weak algorithms, Apache 2.4.49 with Basic authentication |
+
+`lab/plant_benchmark.py` starts the plant, imports the CSAF fixtures into a temporary cache, scans it (Safe Mode, then `--fast`) and reports:
+
+- **weakness recall**: the planted weaknesses (17, each a rule id on an address and port) that came out as findings, over all of them;
+- **writes**: every write or control request that reaches a device is counted (the Modbus registers really change); **any write fails the run**, whatever else was found. The scanner sends none;
+- the findings the truth does not list (informational);
+- the **L69 replay**: `lab/plant_traffic.py` writes a capture of six hours of normal traffic between an HMI, an engineering station and two PLCs (nothing is sent on a network) and two copies of it, one with a single Modbus write injected from a station that never appears in the normal capture and one with a single S7 PLC Stop at 05:00, outside the maintenance window. `ot-learn` learns the normal capture and `ot-listen --model` must report nothing for it and exactly the injected event for each replay.
+
+```sh
+python -I lab/plant_benchmark.py --cli /absolute/path/to/network-scope-cli --check
+python lab/plant.py                       # serve the plant to scan it by hand (loopback only)
+python lab/plant_traffic.py --out DIR     # only the capture files
+python -I -m unittest discover -s lab -p "test_plant.py"
+```
+
+`--check` also fails when the recall is below `lab/plant_baseline.json` (a separate file: `benchmark_baseline.json` and `ground_truth.json` are not touched). The machine must be clean: if something already listens on a plant address and port (a wildcard listener such as Siemens software on 102 or 4840), the run refuses; `--allow-busy` skips that check on a development machine and then fails unless a connection of the scan reached every plant device.
+
+Measured on Windows 11 (10.0.26300), 2026-11-20, debug build of the CLI, `--allow-busy` because Siemens software listens on 102 and 4840 of this machine: recall 17 of 17 in Safe Mode (14.3 s for the scan, which includes the Safe Mode pacing) and 17 of 17 with `--fast` (4.4 s), 0 writes, the replay reported exactly the two injected events and nothing for the normal capture. The three extra findings were `ot-reachable` on port 102 of the other three plant addresses, answered by that foreign listener, not by the plant. The CI step (Linux) has not run yet.
+
+What the plant is not: the devices emulate what a scanner can observe, not real PLC software. A lab with real controller software (OpenPLC) is prepared in `lab/docker-compose.yml` (profile `plant-ci`) and has **not** been run: there is no Docker on the development machine, and the image name and tag there were written from memory and must be checked before use. There is no OPC UA, DNP3 or IEC 104 device in the plant.
+
 ### Docker lab
 
 [`lab/docker-compose.yml`](https://github.com/Sparkz400/network-scope/blob/main/lab/docker-compose.yml) runs the simulators (plus a real Redis) on an internal Docker network `172.28.0.0/24` with no outside access:
@@ -239,7 +270,7 @@ Be aware of these gaps before relying on a feature:
 - UDP traceroute with administrator/root rights; ICMPv6 hop-limit expiry from a real router on Windows.
 - Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine (CI is the first compile) and not exercised on a real network.
 - The GUI binary's console attach when started from a shell (use `network-scope-cli` for scripting).
-- The Inno Setup installer script (never compiled with `iscc` yet) and the CI, release and documentation workflows (not run yet). That includes the accuracy benchmark steps in `ci.yml` and `release.yml`; the benchmark itself has only been run on Windows, so the Linux baseline is not recorded yet. The nmap comparison has also only been run on Windows with nmap 7.98; its explanations are calibrated on that run and may not cover the older nmap of Ubuntu's apt repository.
+- The Inno Setup installer script (never compiled with `iscc` yet) and the CI, release and documentation workflows (not run yet). That includes the accuracy benchmark steps in `ci.yml` and `release.yml` and the test plant step; the benchmark itself has only been run on Windows, so the Linux baseline is not recorded yet. The nmap comparison has also only been run on Windows with nmap 7.98; its explanations are calibrated on that run and may not cover the older nmap of Ubuntu's apt repository.
 - The ClusterFuzzLite build (`.clusterfuzzlite/`) and workflow (`cflite.yml`): not run yet. The fuzz targets themselves were built and run locally on Windows (cargo-fuzz, AddressSanitizer), every target for at least 3 minutes, without a crash (the later `mcp_message` target: 60 seconds, about 28,000 runs, without a crash).
 - Webhook/syslog delivery against real receivers. SMB against Samba, and the TLS 1.3 and SSH checks against nginx and OpenSSH, are written ([Real servers](#real-servers)) but the CI job has not run yet; TLS 1.3 enumeration was run against OpenSSL (Git's build) and Windows Schannel. JA4S is checked against the published FoxIO examples, not against their tool on a capture. CPE names were looked up in the NVD CPE API once; the dictionary check runs in CI only.
 - OT decoders and reassembly against real industrial traffic (synthetic frames only); industrial-device interoperability in general.
