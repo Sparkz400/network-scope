@@ -37,7 +37,7 @@ impl Scanner {
     /// unattended scan never lifts the safety limits). It is saved to the inventory like any scan.
     fn start_scheduled(&mut self) {
         let targets = std::mem::replace(&mut self.targets, self.saved.schedule.targets.clone());
-        let was_safe = std::mem::replace(&mut self.saved.settings.safe, true);
+        let was_safe = crate::schedule::force_safe_mode(&mut self.saved.settings);
         self.start();
         self.saved.settings.safe = was_safe;
         self.targets = targets;
