@@ -845,6 +845,50 @@ fn findings_gained_compares_with_the_last_complete_scan_before_the_date() {
 }
 
 #[test]
+fn findings_gained_finds_a_baseline_older_than_the_newest_500_scans() {
+    // A monitor repeats scan 3 every few minutes: the baseline (scan 1) falls out of the
+    // newest 500 within two days, but it is still the answer.
+    let db = fixture("gained-many");
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<500)
+             INSERT INTO scans(timestamp,targets,complete,hosts,snapshot)
+             SELECT s.timestamp+n.i,s.targets,s.complete,s.hosts,s.snapshot FROM n, scans s WHERE s.id=3",
+        )
+        .unwrap();
+    let mut server = session(&db);
+    let r = ok(
+        &mut server,
+        "findings_gained",
+        json!({"finding_id": "telnet-open", "since": "2023-11-15"}),
+        "mcp-findings-gained",
+    );
+    assert_eq!(r["hosts"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["hosts"][0]["scan_id"], 503);
+    assert_eq!(r["hosts"][0]["baseline_scan_id"], 1);
+    assert!(r["notes"].as_array().unwrap().is_empty(), "{r}");
+    remove_db(&db);
+}
+
+#[test]
+fn a_damaged_scan_is_reported_as_damaged_not_as_missing() {
+    let db = fixture("damaged");
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE scans SET snapshot='not json' WHERE id=2", [])
+        .unwrap();
+    let mut server = session(&db);
+    let text = failed(&mut server, "list_devices", json!({"scan_id": 2}));
+    assert!(text.starts_with("Could not read scan 2: "), "{text}");
+    let text = failed(&mut server, "diff_scans", json!({"old_id": 1, "new_id": 2}));
+    assert!(text.starts_with("Could not read scan 2: "), "{text}");
+    let text = failed(&mut server, "list_findings", json!({"scan_id": 99}));
+    assert_eq!(text, "No scan with ID 99");
+    remove_db(&db);
+}
+
+#[test]
 fn a_missing_database_is_an_empty_inventory_and_is_not_created() {
     let db = temp_db("missing");
     let mut server = session(&db);
