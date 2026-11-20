@@ -1,5 +1,5 @@
 //! `export ID --format ...` and `report ID`: a saved scan as JSON, CSV, HTML, nmap XML,
-//! Markdown or JSON lines, optionally with a "changes since" section (`--baseline ID`).
+//! Markdown, JSON lines or a compliance inventory (`compliance-iec62443|nis2|cis[-csv]`), optionally with a "changes since" section (`--baseline ID`).
 use crate::{
     nmap, store,
     ui::{Ctx, output},

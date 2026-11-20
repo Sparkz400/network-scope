@@ -86,7 +86,13 @@ Only loopback addresses (`127.0.0.0/8`) are ever contacted; a ground truth with 
 | Service accuracy | Services named correctly / services served (`svc.<port>`, or the OT identity fields for Modbus, EtherNet/IP and BACnet) |
 | Product accuracy | Product and version correct / products with a known product (for example vsFTPd 2.3.4, Apache 2.4.49) |
 | Device type, OS accuracy | Correct / hosts with a known device type, or a known OS (named by their banners) |
+| Finding recall | Findings the ground truth expects (`findings` per host) that were raised / expected findings |
+| False alarms | Count, lower is better: findings raised on a host whose ground truth lists exactly which rule ids its lab condition warrants, but not that rule. Per-rule detail is in `benchmark.json` (`metrics.false_alarms.by_rule`) and in the deviations list. `--check` fails when the count rises above the baseline (a missing baseline value means 0) |
 | Wall time | Reported, not gated |
+
+The risk rules run over the same scan (`findings 1`). A host that has a `findings` list in the ground truth states exactly which rule ids its simulators warrant (for example `redis-noauth` for the Redis host, nothing for the IIS host); everything else raised there is a false alarm. A host without the key states nothing and is skipped.
+
+The rules also have a unit-level false-alarm budget: `core/src/risk_budget.rs` holds one host that must trigger each rule and one near-miss host that must not (same port and keys, different value). A test reads the rule ids out of `core/src/risk.rs`, so a new rule without both cases fails `cargo test`. `cargo test false_alarm -- --nocapture` prints the per-rule counts (all zero).
 
 `--check` exits with code 1 when an accuracy metric is below [`lab/benchmark_baseline.json`](https://github.com/Sparkz400/network-scope/blob/main/lab/benchmark_baseline.json) (one entry per platform). CI runs it on Linux after the lab check, writes the table to the job summary and uploads `benchmark.json` as the `benchmark-Linux` artifact. Each release attaches `network-scope-<version>-benchmark.json` and `.md`, measured with the Linux release binary. To raise the baseline after an improvement (or to record a new platform), run `--update-baseline` and review the diff.
 

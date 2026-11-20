@@ -59,6 +59,63 @@ pub struct Finding {
     /// exports written before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    /// How sure the rule is that the condition is real (0-100; see [`rule_confidence`]). 0 in
+    /// exports written before the score existed, and then left out of the JSON.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub confidence: u8,
+}
+fn is_zero(v: &u8) -> bool {
+    *v == 0
+}
+
+/// Confidence (0-100) that a finding of this rule is real. Direct observations (the server
+/// said so) score 95, rules that read a service name or banner 90, an open port number alone 50
+/// and version-based hints 40 (distributions backport fixes). `None` for an id without an
+/// entry; a test requires one for every rule. The run-time families are looked up by their
+/// prefix (`cve-`, `script-`).
+pub fn rule_confidence(id: &str) -> Option<u8> {
+    Some(match id {
+        "tls-cert-expired"
+        | "tls-cert-expiring"
+        | "tls-cert-not-yet-valid"
+        | "tls-self-signed"
+        | "tls-self-signed-bad-signature"
+        | "tls-weak-signature"
+        | "tls-weak-key"
+        | "tls-sslv3"
+        | "tls-deprecated-protocol"
+        | "tls-broken-cipher"
+        | "tls-3des"
+        | "tls-no-pfs"
+        | "ssh-weak-algorithms"
+        | "ssh-legacy-algorithms"
+        | "redis-noauth"
+        | "memcached-open"
+        | "mqtt-anonymous"
+        | "ldap-anonymous"
+        | "postgres-no-tls"
+        | "rdp-no-nla"
+        | "smb1-enabled"
+        | "smb-signing"
+        | "smb-no-encryption"
+        | "docker-api"
+        | "snmp-public" => 95,
+        "ssh-protocol-1"
+        | "telnet-open"
+        | "ftp-cleartext"
+        | "vnc-exposed"
+        | "mail-cleartext"
+        | "http-basic-cleartext"
+        | "netbios-ns"
+        | "upnp-exposed" => 90,
+        "ot-control-traffic" => 85,
+        "php-eol" => 70,
+        "ot-reachable" => 50,
+        "heartbleed" | "cve-cve-2020-0796" => 40,
+        _ if id.starts_with("cve-") => 40,
+        _ if id.starts_with("script-") => 60,
+        _ => return None,
+    })
 }
 
 const MS_SMB: &str = "https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3";
@@ -87,6 +144,19 @@ fn reference_for(id: &str) -> Option<&'static str> {
 }
 
 impl Finding {
+    /// The reasons for the finding and its confidence: what was observed, and how the rule
+    /// works (see the finding's documentation page for the false positives).
+    pub fn explain(&self) -> crate::evidence::Evidence {
+        let basis = match self.confidence {
+            90.. => "observed directly",
+            60..=89 => "inferred from what the service reported",
+            50..=59 => "inferred from the port number only",
+            1..=49 => "version-based hint, fixes may be backported",
+            0 => "",
+        };
+        crate::evidence::Evidence::new([self.evidence.as_str(), basis], self.confidence)
+    }
+
     /// Identity used to decide whether a finding is new compared with a previous scan.
     pub fn key(&self) -> String {
         format!(
@@ -514,15 +584,25 @@ impl Out<'_> {
             advice: advice.into(),
             exploit: Default::default(),
             reference: reference_for(id).map(str::to_string),
+            confidence: rule_confidence(id).unwrap_or(0),
         });
     }
 }
 
 pub fn analyze_host(h: &Host) -> Vec<Finding> {
-    analyze_host_with(h, &cve_db())
+    analyze_host_nvd(h, &cve_db(), &crate::nvd::active())
 }
 
+/// The built-in/user CVE rules only (no imported NVD data); used by the tests.
+#[cfg_attr(not(test), allow(dead_code))]
 fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
+    analyze_host_nvd(h, cves, &crate::nvd::Nvd::default())
+}
+
+/// Every rule, with the CVE rules from `cves` and the imported NVD feed `nvd` (see
+/// [`crate::nvd`]): NVD hits for a port's `svc.<port>.cpe` come after the built-in rules and
+/// never repeat a CVE they already raised.
+fn analyze_host_nvd(h: &Host, cves: &CveDb, nvd: &crate::nvd::Nvd) -> Vec<Finding> {
     let mut o = Out {
         host: h,
         list: vec![],
@@ -584,7 +664,25 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                     "Check the device clock and reissue the certificate with a correct validity period.",
                 );
             }
-            if get(format!("tls.{p}.self_signed")) == "true" {
+            if get(format!("tls.{p}.self_signed")) == "true"
+                && get(format!("tls.{p}.self_signature")) == "invalid"
+            {
+                // Issuer equals subject, but the signature does not verify with the
+                // certificate's own key. Reported instead of the plain self-signed finding;
+                // "unchecked" (an algorithm the verifier lacks) never lands here.
+                o.add(
+                    Severity::Medium,
+                    "tls-self-signed-bad-signature",
+                    "Certificate claims to be self-signed but its signature does not verify",
+                    port,
+                    format!(
+                        "{}: signature does not verify with the certificate's own key",
+                        get(format!("tls.{p}.subject"))
+                    ),
+                    &[],
+                    "Replace the certificate. Either it was issued by another key under its own name, or it is corrupt or has been tampered with.",
+                );
+            } else if get(format!("tls.{p}.self_signed")) == "true" {
                 o.add(
                     Severity::Low,
                     "tls-self-signed",
@@ -705,7 +803,8 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                 "Prefer modern algorithms; drop SHA-1 and CBC modes.",
             );
         }
-        if svc.contains("protocol 1.") && !svc.contains("protocol 1.99") {
+        // Only an SSH service: other protocols print "protocol 1.x" for their own version.
+        if name == "ssh" && svc.contains("protocol 1.") && !svc.contains("protocol 1.99") {
             o.add(
                 Severity::High,
                 "ssh-protocol-1",
@@ -813,6 +912,8 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
             ));
         }
         let mut seen = std::collections::BTreeSet::new();
+        // CVE ids the built-in rules raised on this port; the NVD lookup below skips them.
+        let mut raised = std::collections::BTreeSet::<String>::new();
         for (prod, ver) in candidates {
             let prod = prod.to_ascii_lowercase();
             for rule in cves.rules.iter().filter(|r| {
@@ -823,6 +924,7 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                     && in_range(&ver, r.min.as_deref(), r.max.as_deref())
             }) {
                 if seen.insert(rule.cve[0].clone()) {
+                    raised.extend(rule.cve.iter().map(|c| c.to_ascii_uppercase()));
                     let cve: Vec<&str> = rule.cve.iter().map(String::as_str).collect();
                     o.add(
                         rule.severity,
@@ -834,6 +936,31 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
                         "Update to a fixed release or confirm the vendor backported the fix.",
                     );
                 }
+            }
+        }
+        // Imported NVD feed (`feeds import nvd`): CVEs whose vulnerable range holds the version
+        // of the CPE the scanner derived for this port.
+        let cpe = get(format!("svc.{p}.cpe"));
+        if !cpe.is_empty() {
+            for hit in nvd
+                .lookup(cpe)
+                .into_iter()
+                .filter(|hit| !raised.contains(&hit.cve))
+                .take(crate::nvd::MAX_FINDINGS_PER_PORT)
+            {
+                o.add(
+                    hit.severity,
+                    &format!("cve-{}", hit.cve.to_ascii_lowercase()),
+                    if hit.title.is_empty() {
+                        &hit.cve
+                    } else {
+                        &hit.title
+                    },
+                    port,
+                    format!("{cpe} in the NVD range {}. {BACKPORT_NOTE}", hit.range),
+                    &[&hit.cve],
+                    "Update to a fixed release or confirm the vendor backported the fix.",
+                );
             }
         }
         if let Some(v) = get(format!("http.{p}.powered_by")).strip_prefix("PHP/")
@@ -851,9 +978,11 @@ fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
         }
         // 2222/tcp is EtherNet/IP I/O (and legacy Allen-Bradley CSP) but also a very common
         // alternative SSH port; service detection only listens there, so an SSH greeting
-        // means it is not an industrial service.
-        let ssh_on_2222 = p == 2222 && name == "ssh";
-        if crate::service::is_ot_port_candidate(p) && !ssh_on_2222 {
+        // means it is not an industrial service. The same holds on every other industrial
+        // port number: nothing there speaks SSH (a service imported from Nmap XML, or a
+        // server moved onto the port).
+        let ssh_on_ot_port = name == "ssh";
+        if crate::service::is_ot_port_candidate(p) && !ssh_on_ot_port {
             o.add(Severity::Medium, "ot-reachable", "Industrial protocol port is reachable from the scanner", port, format!("TCP {p} open"), &[], "OT services should only be reachable from the control network; check segmentation.");
         }
     }
@@ -945,6 +1074,7 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             advice: "Verify that writes, program downloads and stop/restart commands come from authorised engineering stations.".into(),
             exploit: Default::default(),
             reference: None,
+            confidence: rule_confidence("ot-control-traffic").unwrap_or(0),
         });
     }
     all.sort_by(|a, b| {
@@ -1668,3 +1798,8 @@ mod tests {
         assert!(smbghost_hint("3.1.1", "LZ77", "10.0.18362").is_some());
     }
 }
+
+// False-alarm budget: a case table with one must-trigger and one must-not-trigger host per rule.
+#[cfg(test)]
+#[path = "risk_budget.rs"]
+pub(crate) mod budget;

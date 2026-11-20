@@ -60,6 +60,8 @@ See [data/README.md](data/README.md) for provenance and licensing details.
 
 nmap is a trademark of its owners; Network Scope reads and writes the documented nmap XML format and contains no nmap code or data. Modbus, PROFINET, EtherNet/IP, CIP, BACnet, OPC UA and other protocol and product names are trademarks of their respective owners and are used only to describe interoperability.
 
+- JARM structure (`core/src/jarm.rs`): the ten-probe design and the hash composition follow the public description of JARM, https://github.com/salesforce/jarm, Copyright (c) 2020, salesforce.com, inc., BSD-3-Clause. No JARM source code is included; the cipher table and extension bodies are original to Network Scope and not verified against the reference.
+
 ## Protocol references
 
 [OPC UA mappings](https://reference.opcfoundation.org/specs/OPC-10000-6/full), [Modbus specification](https://www.modbus.org/docs/Modbus_Application_Protocol_V1_1b3.pdf), [Npcap API](https://npcap.com/guide/wpcap/pcap.html). The lab simulators are original code.

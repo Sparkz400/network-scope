@@ -1,0 +1,1 @@
+{"format":"NVD_CVE","vulnerabilities":[{"cve":{"id":"CVE-2099-0100","configurations":[{"nodes":[{"cpeMatch":[{"vulnerable":true,"criteria":"cpe:2.3:a:openbsd:openssh:*:*:*:*:*:*:*:*","versionEndExcluding":"9.8p1"}]}]}]}}]}

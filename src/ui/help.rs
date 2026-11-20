@@ -11,12 +11,14 @@ network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
         [--fail-on-findings [--min-severity low]]
-network-scope export ID --format json|csv|html|nmap|md|jsonl [--baseline ID] [--output FILE]
+network-scope export ID --format json|csv|html|nmap|md|jsonl|compliance-iec62443|compliance-nis2|compliance-cis[-csv] [--baseline ID] [--output FILE]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
 network-scope import FILE.xml                  Import an nmap XML scan into the inventory
 network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]
                                                Weak TLS/SSH, risky services, CVE hints
+network-scope findings ID --top N [--format text|json]   Risk scores and the "fix these first" list
 network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
+network-scope feeds import nvd FILE...   Offline NVD CVE JSON 2.0 feed files (unzip .gz first) for CVE findings
 network-scope feeds status                     What the feeds cache holds
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
@@ -53,12 +55,14 @@ Scan options:
   --probes FILE   Extra service probes (TCP and UDP), merged over data/probes.json by name
   --cves FILE     Extra CVE/CPE rules, merged over data/cves.json by id; any command
   --feeds FILE    KEV/EPSS cache (default: feeds.json next to the user cves.json); any command
+  --nvd FILE      NVD cache (default: nvd.json next to feeds.json); any command
   --script PATH   Rhai script (or folder of .rhai files) run against every host
   --db FILE       Defaults to LOCALAPPDATA/NetworkScope/inventory.sqlite
   --fast          Disable conservative rate limits (read-only OT still applies)
   --syn           IPv4 SYN via Npcap (routed targets via the gateway MAC); else TCP connect
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
   --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
+  --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing

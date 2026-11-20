@@ -6,12 +6,13 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 23] = [
+pub(super) const FLAGS: [&str; 24] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
     "adaptive-syn",
     "adaptive-tcp",
+    "jarm",
     "no-dedup",
     "progress",
     "no-reassembly",
@@ -31,8 +32,10 @@ pub(super) const FLAGS: [&str; 23] = [
     "dhcp-discover",
     "report-missing",
 ];
-pub(super) const VALUES: [&str; 42] = [
+pub(super) const VALUES: [&str; 44] = [
     "feeds",
+    "top",
+    "nvd",
     "kev",
     "epss",
     "sort",
@@ -148,6 +151,7 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     s.arp_sweep = opts.contains_key("arp-sweep");
     s.syn_adaptive = opts.contains_key("adaptive-syn");
     s.tcp_adaptive = opts.contains_key("adaptive-tcp");
+    s.jarm = opts.contains_key("jarm");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
         s.trace = true;
@@ -289,6 +293,7 @@ mod tests {
             "--arp-sweep",
             "--adaptive-syn",
             "--adaptive-tcp",
+            "--jarm",
             "--trace-method",
             "TCP",
             "--trace-port",
@@ -296,7 +301,7 @@ mod tests {
         ]))
         .unwrap();
         let s = scan_settings(&opts).unwrap();
-        assert!(s.arp_sweep && s.syn_adaptive && s.tcp_adaptive && s.trace && s.safe);
+        assert!(s.arp_sweep && s.syn_adaptive && s.tcp_adaptive && s.jarm && s.trace && s.safe);
         assert_eq!(s.trace_method, crate::trace::TraceMethod::Tcp);
         assert_eq!(s.trace_port, 8443);
         assert!(trace_method("ping").is_err());

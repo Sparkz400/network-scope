@@ -8,6 +8,7 @@ General rules:
 - `--quiet` (before or after the command, any command) suppresses progress lines on stderr, including monitor's per-cycle lines; errors still print and the exit status is unchanged.
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
+- `--nvd FILE` selects the NVD cache (default `nvd.json` next to `feeds.json`); see [NVD import](findings-and-cves.md#nvd-import-offline).
 - `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
 - `--format` and `--output FILE` select an export where a command produces one. Without `--output` the result is printed to stdout.
 
@@ -46,11 +47,13 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `history [--db FILE]` | List saved scans as JSON |
 | `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
+| `export ID --format compliance-iec62443\|compliance-nis2\|compliance-cis [-csv] [--output FILE]` | Asset inventory with findings mapped to IEC 62443, NIS2 Art. 21 or CIS Controls v8 (Markdown, or CSV with the `-csv` suffix); see [Compliance exports](inventory-diff-reports.md#compliance-exports) |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
 | `findings ID [--min-severity low] [--sort exploited\|severity] [--fail-on-findings]` | Weak TLS/SSH, risky services, CVE hints |
 | `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
-| `feeds status [--feeds FILE]` | Show what the feeds cache holds (JSON) |
+| `feeds import nvd FILE... [--nvd FILE]` | Import NVD CVE JSON 2.0 feed files (unpack `.gz` first) into the NVD cache; CPE matches become `cve` findings. No network access |
+| `feeds status [--feeds FILE] [--nvd FILE]` | Show what the feeds cache and the NVD cache hold (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
 | `alerts [--db FILE]` | Alerts raised by monitor runs |
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
@@ -105,6 +108,7 @@ These apply to `scan` and `monitor`.
 | `--syn` | off | IPv4 SYN scan via Npcap/libpcap (routed targets via the gateway MAC); else TCP connect |
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
+| `--jarm` | off | JARM-style TLS fingerprint: ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode; not verified against the reference JARM, see [Detection](detection.md)) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
 | `--source-ip IPV4` / `--source-mac MAC` | | Source addresses of that interface |
@@ -116,7 +120,7 @@ TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result;
 
 ## Export formats
 
-`--format json|csv|html|nmap|md|jsonl` for `scan` and `export`:
+`--format json|csv|html|nmap|md|jsonl` for `scan` and `export` (`export` also takes `compliance-iec62443|compliance-nis2|compliance-cis`, with `-csv` for CSV):
 
 | Format | Content |
 | --- | --- |
@@ -142,7 +146,7 @@ Exports from `scan`, `listen`, `dcp` and `export` carry the stored scan time. De
 
 ## findings options
 
-`--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`, `--feeds FILE`, `--fail-on-findings` (exit 3 when anything at or above the threshold is listed; see [Exit codes](#exit-codes)), `--sort exploited|severity` (default `exploited`: known exploited first, then severity, then EPSS, when feeds are imported; the same as `severity` without feeds).
+`--top N` (1 to 1000) prints the network risk score, the riskiest hosts and the N things to fix first instead of the list (`--format text|json`, default text; see [Risk score and fix list](findings-and-cves.md#risk-score-and-fix-list)), `--min-severity info|low|medium|high|critical` (default `info`), `--cves FILE`, `--feeds FILE`, `--fail-on-findings` (exit 3 when anything at or above the threshold is listed; see [Exit codes](#exit-codes)), `--sort exploited|severity` (default `exploited`: known exploited first, then severity, then EPSS, when feeds are imported; the same as `severity` without feeds).
 
 ## feeds options
 

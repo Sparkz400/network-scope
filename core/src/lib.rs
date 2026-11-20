@@ -88,13 +88,17 @@
 //! Network Scope engine.
 pub(crate) mod arp;
 pub mod capture;
+pub mod compliance;
 pub mod core;
 pub mod devices;
+pub mod evidence;
 pub mod feeds;
 pub(crate) mod fingerprint;
+pub mod jarm;
 pub mod monitor;
 pub mod nmap;
 pub mod notify;
+pub mod nvd;
 pub mod observations;
 pub(crate) mod osfp;
 pub mod ot;
@@ -108,6 +112,7 @@ pub mod report;
 pub mod risk;
 pub(crate) mod rtt;
 pub mod scan;
+pub mod score;
 pub mod script;
 pub mod service;
 pub mod store;

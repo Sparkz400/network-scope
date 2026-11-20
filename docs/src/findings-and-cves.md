@@ -18,6 +18,10 @@ The desktop shows them in the **Findings** window (sortable, filterable by sever
 - Industrial ports reachable from the scanner (`ot-reachable`).
 - PHP end of life, date-aware (table `PHP_EOL` in `risk.rs`; branches not in the table are never flagged).
 
+## Evidence and confidence
+
+Each finding states its evidence (what was observed) and a `confidence` from 0 to 100 that depends on how the rule decides: direct observation, banner text, port number only or a version-based hint. See [Evidence and confidence](detection.md#evidence-and-confidence).
+
 ## Reference links
 
 Some findings carry an optional `reference`: a link to official documentation on the problem and how to fix it. Currently `smb1-enabled` and `smb-signing` (Microsoft Learn), `rdp-no-nla` (Microsoft Learn), `telnet-open` (CISA) and the weak-TLS rules `tls-sslv3`, `tls-deprecated-protocol`, `tls-broken-cipher`, `tls-3des`, `tls-no-pfs`, `tls-weak-signature` and `tls-weak-key` (Mozilla Server Side TLS). The link appears in the HTML report, in a `Reference` column of the Markdown summary, as `reference` in the JSON and JSONL exports (omitted when a finding has none) and in the Findings window. Only HTTPS links are shown. Exports written before this field existed still load.
@@ -69,9 +73,65 @@ Either option may be given alone; the part not imported keeps its previous conte
 - Findings are ranked by in KEV first, then severity, then EPSS, then host, port and id. Without a cache the order is the usual severity order. `findings ID --sort severity` restores the usual order even with feeds; `--sort exploited` is the default.
 - The HTML report shows a "Known exploited" badge (with the date CISA added it and "Ransomware use" where KEV says so) and "EPSS NN %" next to the CVE links.
 
-**Limits.** KEV and EPSS describe a CVE, not your host: a version-based hint that matches a known exploited CVE is still only a hint (see above). EPSS is a statistical estimate, not a prediction for one device. The desktop Findings window does not show these fields yet. Importing the NVD feed is a separate roadmap item and is not part of this.
+**Limits.** KEV and EPSS describe a CVE, not your host: a version-based hint that matches a known exploited CVE is still only a hint (see above). EPSS is a statistical estimate, not a prediction for one device. The desktop Findings window does not show these fields yet. The NVD import is described next.
 
 Sources and terms: KEV is published by the US government (CISA); EPSS is published free of charge by the EPSS Special Interest Group at FIRST. See [data/README.md](https://github.com/Sparkz400/network-scope/blob/main/data/README.md). The EPSS download address was checked on FIRST's data page (`first.org/epss/data`) on 2026-11-19.
+
+## Risk score and fix list
+
+Every host and the whole network get a score from 0 to 100, and a list of the ten things to fix first.
+
+**Points of one finding** = severity weight x known-exploited factor x EPSS factor x exposure factor x confidence.
+
+| Factor | Value |
+| --- | --- |
+| Severity weight | critical 40, high 20, medium 8, low 3, info 1 |
+| Known exploited (CISA KEV, needs imported feeds) | x 2.0; x 2.5 when KEV lists ransomware use |
+| EPSS (needs imported feeds) | x (1 + EPSS), EPSS from 0 to 1 |
+| Exposure: cleartext or unauthenticated remote access or administration (`telnet-open`, `ftp-cleartext`, `mail-cleartext`, `http-basic-cleartext`, `vnc-exposed`, `rdp-no-nla`, `smb1-enabled`, `redis-noauth`, `memcached-open`, `mqtt-anonymous`, `ldap-anonymous`, `docker-api`, `snmp-public`, `ot-reachable`, `ot-control-traffic`) | x 1.5 |
+| Confidence of the rule (0 to 100, see [Evidence and confidence](detection.md#evidence-and-confidence)) | x confidence / 100, so a version-based hint (40) counts 40 % |
+
+**Host score** = 100 x (1 - e^(-P/60)), P being the sum of the points of the host's findings. The curve saturates: one critical finding scores about 49, two about 74, a KEV-listed critical also about 74, and 100 is never exceeded. **Network score** = 0.7 x the worst host score + 0.3 x the mean of the ten highest host scores, so one very exposed host dominates but many exposed hosts rank above a single one. Bands: 0 none, 1-24 low, 25-49 medium, 50-74 high, 75-100 critical.
+
+**Fix these first.** Findings with the same id on several hosts (the same CVE, the same weak setting) form one entry. Its *risk lowered* is the sum, over the affected hosts, of how far the host score drops when the entry is fixed there, computed for each entry alone against the current state. Entries are ranked by that number, then by severity and id, so a medium issue on 40 hosts can outrank one critical on a single host. Each entry shows the hosts, the severity, "known exploited" when a CVE is in KEV and the advice of the rule.
+
+```sh
+network-scope-cli findings 1 --top 10              # text: network score, riskiest hosts, fix list
+network-scope-cli findings 1 --top 10 --format json
+```
+
+The HTML report shows the network score as a card, a "Fix these first" table and the riskiest hosts; the Markdown summary has a "Risk score and fix list" section; the JSONL export has `risk_score` per host. For programs, `network_scope_core::score::assess(&findings, 10)` returns the network score, the host scores and the fix list (`score::host_scores`, `score::network_score`, `score::top_fixes` and `score::finding_points` are public as well).
+
+The score is a ranking aid for deciding what to do first, not a measure of how likely a compromise is. It inherits the limits of the findings: version-based hints count less but are still not confirmed. Without `--min-severity` the list includes info findings (weight 1).
+
+## NVD import (offline)
+
+The built-in rules in `data/cves.json` cover a handful of well-known products. For everything else you can import the NVD (National Vulnerability Database) CVE feed, and the scanner matches the CPE names it derives (`svc.<port>.cpe`) against it:
+
+```sh
+# nvdcve-2.0-2024.json and friends: the "CVE JSON 2.0" feed files, downloaded by you
+gunzip nvdcve-2.0-2024.json.gz           # gzip is not read directly (no extra dependency)
+network-scope-cli feeds import nvd nvdcve-2.0-2023.json nvdcve-2.0-2024.json
+network-scope-cli feeds status
+network-scope-cli findings 1
+```
+
+Network Scope never downloads the files. Files saved from the NVD API 2.0 (`/rest/json/cves/2.0`) have the same layout and import too. A `.gz` file is detected and refused with the `gunzip` hint. You can import several files in one call and repeat the import to refresh: a CVE that is imported again replaces the earlier entry, everything else is kept.
+
+**Cache.** The import writes a compact index (`nvd.json`, next to `feeds.json`; `--nvd FILE` on any command selects another one), not the whole feed: for each CVE the rating (CVSS 4.0, 3.1, 3.0 or 2, the newest present; `info` when NVD has not rated it), a short title and its vulnerable CPE ranges. The file is read while parsing, so memory use does not grow with the size of the feed (an unpacked year file is a few hundred MB). The cache is loaded only when a scan has a CPE to look up. It is a file for the same reason as `feeds.json`: a global lookup table, not part of a scan or the SQLite inventory (no store migration is involved).
+
+**What becomes a finding.** For every open port with a `svc.<port>.cpe`, each CVE whose vulnerable range contains the CPE's version becomes a finding `cve-cve-YYYY-NNNN` (see [Version-based CVE hint](findings/cve-hints.md)) with the NVD rating as its severity, the first sentence of the NVD description as its title and the matching range in the evidence ("8.5 <= v < 9.8"). KEV and EPSS data rank them like every CVE finding. At most 50 per port are listed, highest severity first. A CVE that a built-in rule already raised on the port is not repeated, and `data/cves.json` stays the fallback: without an imported cache nothing changes.
+
+**Matching is deliberately conservative:**
+
+- only matches marked `vulnerable` count; a match without any version bound (all versions) or with the "not applicable" version `-` is ignored, because it would flag every host running the product;
+- a configuration that combines the application with a platform (AND, for example "on this operating system or hardware") is not matched, since the scan cannot confirm the platform;
+- versions are compared with their letter suffixes and patch levels (`1.0.1e` is older than `1.0.1f`, `9.6` older than `9.6p1`, `1.0rc1` older than `1.0`), start and end bounds may be inclusive or exclusive, and a CPE without a version with digits matches nothing;
+- rejected CVEs and CVEs that name no usable product are dropped; only application (`a`) and operating-system (`o`) and hardware (`h`) CPEs are matched, and only for the products the scanner derives a CPE for (see below).
+
+Like every version-based hint, a match is **not** a confirmed vulnerability: distributions backport fixes without changing the version string, and the product and vendor names of the derived CPEs were written from memory and not checked against the NVD dictionary (see CPE names). The fixture in `tests/fixtures/nvd-sample.json` was written by hand following the NVD 2.0 schema (two real CVE ids with paraphrased text, the rest synthetic `CVE-2099-*`); the importer has not been run on a full real NVD download in this project's tests. The feed parser is fuzzed (`nvd_import`).
+
+NVD data is a work of the US government (NIST) and free to use; see [data/README.md](https://github.com/Sparkz400/network-scope/blob/main/data/README.md).
 
 ## CPE names
 
