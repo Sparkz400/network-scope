@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:segmentation-report:v1",
+  "title": "Segmentation report",
+  "description": "Output of `segmentation check --format json`: the paths from the scan's vantage zone that the declared zone and conduit model does not allow.",
+  "type": "object",
+  "required": [
+    "schema",
+    "scan_id",
+    "vantage_zone",
+    "hosts_reachable",
+    "hosts_in_other_zones",
+    "unzoned_hosts",
+    "reachable_per_zone",
+    "violations",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/segmentation-report/v1"
+    },
+    "scan_id": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "vantage_zone": {
+      "type": "string"
+    },
+    "hosts_reachable": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Hosts that answered the scan."
+    },
+    "hosts_in_other_zones": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unzoned_hosts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reachable_per_zone": {
+      "type": "object",
+      "description": "Zone name to the number of its hosts that answered."
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "severity",
+          "from_zone",
+          "to_zone",
+          "host",
+          "port",
+          "protocol",
+          "service",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "no-conduit",
+              "port-not-allowed",
+              "unzoned-host"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "from_zone": {
+            "type": "string"
+          },
+          "to_zone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "tcp",
+              "udp",
+              "icmp"
+            ]
+          },
+          "service": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

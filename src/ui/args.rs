@@ -38,13 +38,15 @@ pub(super) const FLAGS: [&str; 30] = [
     "no-backoff",
     "sent-log",
 ];
-pub(super) const VALUES: [&str; 65] = [
+pub(super) const VALUES: [&str; 67] = [
     "feeds",
     "top",
     "nvd",
     "csaf",
     "model",
     "maintenance",
+    "zones",
+    "from",
     "kev",
     "epss",
     "sort",

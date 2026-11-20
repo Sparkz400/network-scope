@@ -21,9 +21,9 @@ General rules:
 | 0 | Success |
 | 1 | Error: bad arguments, I/O, database (also: nothing was saved because the scan or capture failed before collecting anything) |
 | 2 | Partial result: a scan or capture stopped early and its results were saved (marked partial in the inventory). Also: the [scope guard](#scope-guard) refused to start because the targets are public or outside the declared scope and nothing confirmed them (nothing was sent or saved; the message on stderr says which) |
-| 3 | `findings` / `diff` found something at or above `--min-severity`, **only** when `--fail-on-findings` is given |
+| 3 | `findings` / `diff` found something at or above `--min-severity`; `ot-listen --model` raised an alert; `segmentation check` found a path that breaks the zone model. **Only** when `--fail-on-findings` is given |
 
-Without `--fail-on-findings`, `findings` and `diff` exit 0 however much they report. The flag is an error on any other command (status 1).
+Without `--fail-on-findings`, `findings` and `diff` exit 0 however much they report. The flag is an error on any command other than `findings`, `diff`, `ot-listen` (with `--model`) and `segmentation check` (status 1).
 
 What counts as partial (2): `scan` stopped with Q/Esc in the `--tui` view, or ended after errors (for example a terminal failure or a worker that disconnected) with at least some results; `listen` and `dcp` that hit a capture error after observing something. In each case the snapshot is saved with `complete = false` (shown as `partial`), the result is still written to stdout or `--output`, and an error line is printed on stderr. `listen --seconds N` running to the end is a normal, complete run (0). `ot-listen` and `monitor` are not covered by the partial-result code 2 (a scope-guard refusal does apply to `monitor`): `monitor` reports incomplete passive captures as `capture-incomplete` alerts and keeps running, and Ctrl+C or a process kill ends the process without saving (the shell's own status for the signal).
 
@@ -79,6 +79,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `probes lint [FILE]` | Safety lint: OT and printer ports, write-like payloads, payload and regex size, nested quantifiers (default: the built-in probes) |
 | `research query "SQL" [--top N] [--format json\|csv\|tsv]` | One read-only SQL statement on the [research tables](research.md); sends nothing |
 | `research schema`, `research rebuild` | Document the tables; derive the rows of scans saved before the tables existed |
+| `segmentation check --zones FILE --from ZONE [SCAN_ID] [--format text\|json] [--fail-on-findings]` | Lists every path from the scan's zone that the declared IEC 62443 zones and conduits do not allow; reads a stored scan, sends nothing. See [Segmentation check](segmentation.md) |
 | `research groups [--top N] [--format text\|json]` | Devices that share a key, certificate template, TLS/SSH stack, web interface or OT firmware across scans and sites; see [Fingerprints you can pivot on](research.md#fingerprints-you-can-pivot-on) |
 | `fingerprints favicon FILE` | Shodan-compatible favicon hash (`http.favicon.hash:N`) of a local file; nothing is fetched |
 | `research export csv\|ndjson --output DIR` | One file per table (DuckDB layout) and a manifest |
@@ -251,6 +252,8 @@ See [Monitoring and alerts](monitoring-alerts.md).
 | `--progress` | off | Print percent, frames and frames/s on stderr while reading a file |
 | `--no-reassembly` | off | Disable OT TCP reassembly |
 | `--model FILE` | `ot-model.json` next to the database (`ot-learn`) | The learned traffic model: written by `ot-learn`, read by `ot-listen` |
+| `--zones FILE` | | `segmentation check`: the zones and conduits file |
+| `--from ZONE` | | `segmentation check`: the zone the scan was run from |
 | `--maintenance SPEC` | none | `ot-listen --model`: when Stops are expected, `"Sat 02:00-06:00"` (UTC unless `UTC+H`), several windows separated by `;` |
 
 ## trace options

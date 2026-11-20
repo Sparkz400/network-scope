@@ -71,6 +71,9 @@ network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bun
 network-scope research groups [--top N] [--format text|json]   Devices that share a key, certificate template,
                                                TLS/SSH stack, web interface or OT firmware, across scans and sites
 network-scope fingerprints favicon FILE        Shodan-compatible favicon hash of a local file (nothing is fetched)
+network-scope segmentation check --zones FILE --from ZONE [SCAN_ID] [--format text|json] [--fail-on-findings]
+                                               Paths from the scan's zone that the declared IEC 62443 zones and
+                                               conduits do not allow (reads a stored scan, sends nothing)
 network-scope update check                     Ask GitHub for the latest release (one HTTPS request); prints
                                                the release page and how to verify a download; never downloads
 network-scope completions powershell|bash      Print a shell completion script

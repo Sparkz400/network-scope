@@ -19,6 +19,7 @@ mod probes;
 mod research;
 pub(in crate::ui) mod scan;
 mod scripts;
+mod segmentation;
 mod service;
 #[cfg(windows)]
 mod service_scm;
@@ -61,6 +62,7 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("probes", probes::run),
     ("fingerprints", fingerprints::run),
     ("research", research::run),
+    ("segmentation", segmentation::run),
     ("update", update::run),
     ("completions", completions::run),
 ];

@@ -337,6 +337,36 @@ fn the_ot_model_and_the_alerts_carry_their_schema_and_match_it() {
 }
 
 #[test]
+fn the_segmentation_report_carries_its_schema_and_matches_it() {
+    let f = Fixture::new("segmentation");
+    let zones = f.dir.join("zones.json");
+    std::fs::write(
+        &zones,
+        r#"{"zones":{"office":["10.0.0.0/24"],"plant":["10.0.9.0/24"]},"conduits":[]}"#,
+    )
+    .unwrap();
+    let report = f.check(
+        "segmentation-report",
+        &[
+            "segmentation",
+            "check",
+            "--zones",
+            zones.to_str().unwrap(),
+            "--from",
+            "plant",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+        false,
+    );
+    assert_eq!(report[0]["vantage_zone"], "plant");
+    // the imported host 10.0.0.1 (telnet and ssh open) is in the office zone: no conduit
+    assert_eq!(report[0]["violations"][0]["kind"], "no-conduit");
+    assert_eq!(report[0]["violations"][0]["host"], "10.0.0.1");
+}
+
+#[test]
 fn every_dry_run_prints_the_dry_run_schema() {
     let f = Fixture::new("dryrun");
     // A declared scope keeps the result independent of the developer's own scope file.

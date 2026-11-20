@@ -278,6 +278,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "zones_file"
+path = "fuzz_targets/zones_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mcp_message"
 path = "fuzz_targets/mcp_message.rs"
 test = false
