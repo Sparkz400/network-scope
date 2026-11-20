@@ -36,6 +36,7 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+FIRST_RESULT_LIMIT_MS = 200  # roadmap B11; measured 35-42 ms on Windows, so five times the margin
 EPSILON = 1e-4  # baseline values are stored with 4 decimals
 PLATFORMS = {"win32": "windows", "linux": "linux", "darwin": "macos"}
 
@@ -206,6 +207,33 @@ def run_scan(cli, addresses, ports, timeout_ms, limit_s):
     return scan, elapsed, options
 
 
+def first_result(cli, addresses, ports, timeout_ms, runs=5, limit_s=120):
+    """Time to the first live result (`scan --stream`, roadmap B11): milliseconds from starting the
+    CLI to its first line on stdout, which is the first host or open port the engine reports (the
+    process start is included). Returns (median, min, max) over `runs` scans of the lab."""
+    samples = []
+    for _ in range(runs):
+        work = tempfile.mkdtemp(prefix="ns-first-")
+        cmd = [cli, "scan", ",".join(addresses), "--fast", "--tcp-only", "--stream", "--quiet",
+               "--ports", ",".join(str(p) for p in ports), "--timeout", str(timeout_ms),
+               "--db", os.path.join(work, "first.sqlite")]
+        started = time.monotonic()
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            line = proc.stdout.readline()
+            first = time.monotonic() - started
+            proc.stdout.read()  # drain until the scan ends
+            proc.wait(timeout=limit_s)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise LabError(f"could not run the CLI (--stream): {e}") from None
+        if not line or proc.returncode != 0:
+            raise LabError(f"scan --stream printed no event or failed (exit {proc.returncode})")
+        samples.append(first * 1000)
+    samples.sort()
+    return {"median": round(samples[len(samples) // 2], 1), "min": round(samples[0], 1),
+            "max": round(samples[-1], 1), "runs": runs}
+
+
 def ratio(num, den):
     return {"value": round(num / den, 4) if den else None, "num": num, "den": den}
 
@@ -323,9 +351,18 @@ def compare(truth, scan):
         "os_accuracy": ratio(os_ok, os_n),
         "finding_recall": ratio(allowed_hit, allowed_n),
     }
+    # A healthy lab never trips the back-off (H52): a "backed off:" note on a lab host means the
+    # scan was slowed down by a strike (reset connection, or a port that stopped answering), the
+    # cause of long wall times that are not noise. It is a count, lower is better, like false_alarms.
+    backoff = sorted(f"{h['ip']}: {e}" for h in scan["hosts"] for e in h.get("errors", [])
+                     if e.startswith("backed off:"))
     count = sum(len(v) for v in false_alarms.values())
     metrics["false_alarms"] = {"value": count, "num": count, "den": reported_n,
                                "by_rule": {k: sorted(v) for k, v in sorted(false_alarms.items())}}
+    metrics["backoff_notes"] = {"value": len(backoff), "num": len(backoff), "den": len(scan["hosts"]),
+                                "notes": backoff}
+    for note in backoff:
+        misses.append(f"back-off during the scan: {note}")
     return metrics, misses
 
 
@@ -350,6 +387,9 @@ def check(metrics, platform, baseline_path):
     allowed = base.get("false_alarms", 0)
     if metrics["false_alarms"]["value"] > allowed:
         regressions.append(f"false_alarms: {metrics['false_alarms']['value']} is above the baseline {allowed}")
+    allowed = base.get("backoff_notes", 0)
+    if metrics["backoff_notes"]["value"] > allowed:
+        regressions.append(f"backoff_notes: {metrics['backoff_notes']['value']} is above the baseline {allowed}")
     return base, regressions, ""
 
 
@@ -374,9 +414,17 @@ def markdown(result, baseline, regressions, note):
     mark = "" if not baseline else ("REGRESSION" if fa["value"] > allowed else "ok")
     lines.append(f"| False alarms (lower is better) | {fa['value']} | {fa['num']}/{fa['den']} findings | "
                  f"{allowed if baseline else '-'} | {mark} |")
+    bn = result["metrics"]["backoff_notes"]
+    allowed = baseline.get("backoff_notes", 0)
+    mark = "" if not baseline else ("REGRESSION" if bn["value"] > allowed else "ok")
+    lines.append(f"| Back-off notes (lower is better) | {bn['value']} | {bn['num']}/{bn['den']} hosts | "
+                 f"{allowed if baseline else '-'} | {mark} |")
     t = result["timing"]
     lines += ["", f"Scan wall time {t['scan_seconds']:.1f} s for {result['lab']['addresses']} addresses "
               f"x {result['lab']['ports_per_host']} ports (reported, not gated). "
+              f"First result {t['first_result_ms']['median']:.0f} ms (median of {t['first_result_ms']['runs']} runs, "
+              f"{t['first_result_ms']['min']:.0f}-{t['first_result_ms']['max']:.0f} ms; roadmap target under 200 ms, "
+              "from process start to the first `scan --stream` line). "
               f"Ground truth: {result['lab']['hosts']} hosts, {result['lab']['open_tcp']} open TCP ports, "
               f"{result['lab']['open_udp']} open UDP ports, {result['lab']['absent']} absent addresses."]
     if note:
@@ -398,6 +446,7 @@ def update_baseline(path, platform, metrics):
     data.setdefault("platforms", {})[platform] = {k: metrics[k]["value"] for k, _, _ in METRICS
                                                   if metrics[k]["value"] is not None}
     data["platforms"][platform]["false_alarms"] = metrics["false_alarms"]["value"]
+    data["platforms"][platform]["backoff_notes"] = metrics["backoff_notes"]["value"]
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2, sort_keys=True)
         f.write("\n")
@@ -413,6 +462,12 @@ def main():
     ap.add_argument("--update-baseline", action="store_true",
                     help="record this run as the baseline of this platform (review the diff!)")
     ap.add_argument("--timeout", type=int, default=1500, help="port timeout in ms passed to the CLI")
+    ap.add_argument("--gate-first-result", action="store_true",
+                    help=f"with --check: fail when the median time to the first result is above {FIRST_RESULT_LIMIT_MS} ms "
+                         "(off by default: on a busy machine it was 235-557 ms against 35-42 ms idle; CI turns it on)")
+    ap.add_argument("--max-scan-seconds", type=float, default=None,
+                    help="with --check: fail when the scan takes longer (a sanity bound for gross slowdowns; "
+                         "wall time is otherwise reported only, because shared machines are noisy)")
     args = ap.parse_args()
     # The scope guard reads a default scope file from the config folder; a developer's own file
     # must not change the result of the lab (it only knows loopback addresses).
@@ -427,6 +482,7 @@ def main():
         scan_ports = sorted(set(open_tcp) | set(truth["scan"]["closed_tcp_ports"]))
         start_lab(truth, addresses, scan_ports)
         scan, elapsed, cli_args = run_scan(cli, addresses, scan_ports, args.timeout, 600)
+        first = first_result(cli, addresses, scan_ports, args.timeout)
     except LabError as e:
         print(f"benchmark error: {e}", file=sys.stderr)
         return 2
@@ -438,7 +494,7 @@ def main():
         "commit": os.environ.get("GITHUB_SHA", ""),
         "ref": os.environ.get("GITHUB_REF_NAME", ""),
         "metrics": metrics,
-        "timing": {"scan_seconds": round(elapsed, 2)},
+        "timing": {"scan_seconds": round(elapsed, 2), "first_result_ms": first},
         "lab": {"hosts": len(truth["hosts"]), "absent": len(truth["absent_hosts"]), "addresses": len(addresses),
                 "ports_per_host": len(scan_ports), "open_tcp": sum(len(h["tcp"]) for h in truth["hosts"]),
                 "open_udp": sum(len(h["udp"]) for h in truth["hosts"])},
@@ -465,8 +521,13 @@ def main():
             f.write(text + "\n")
     if note and args.check:
         print("::warning::" + note if os.environ.get("GITHUB_ACTIONS") else note)
+    if args.check and args.gate_first_result and first["median"] > FIRST_RESULT_LIMIT_MS:
+        regressions.append(f"first result {first['median']:.0f} ms (median) is above the limit of "
+                           f"{FIRST_RESULT_LIMIT_MS} ms")
+    if args.check and args.max_scan_seconds is not None and elapsed > args.max_scan_seconds:
+        regressions.append(f"scan wall time {elapsed:.1f} s is above the bound of {args.max_scan_seconds:.0f} s")
     if regressions:
-        print("benchmark FAILED: accuracy fell below the baseline", file=sys.stderr)
+        print("benchmark FAILED: a metric fell below the baseline or the scan was too slow", file=sys.stderr)
         return 1
     return 0
 

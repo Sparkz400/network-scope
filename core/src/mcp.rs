@@ -975,6 +975,7 @@ impl Server {
         loop {
             match run.receiver.recv_timeout(Duration::from_millis(250)) {
                 Ok(scan::Event::Host(h)) => hosts.push(h),
+                Ok(scan::Event::Partial(_)) => {}
                 Ok(scan::Event::Done) => break,
                 Ok(scan::Event::Error(e)) => {
                     notes.push(e);

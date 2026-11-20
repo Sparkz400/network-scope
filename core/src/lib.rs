@@ -74,7 +74,7 @@
 //! while let Ok(event) = run.receiver.recv() {
 //!     match event {
 //!         Event::Host(h) if h.responding => println!("{} open: {:?}", h.ip, h.open),
-//!         Event::Host(_) => {}
+//!         Event::Host(_) | Event::Partial(_) => {}
 //!         Event::Error(e) => eprintln!("{e}"),
 //!         Event::Done => break,
 //!     }
@@ -104,6 +104,8 @@ pub mod feeds;
 pub(crate) mod fingerprint;
 pub mod identity;
 pub mod import;
+pub mod incremental;
+pub mod interfaces;
 pub mod jarm;
 pub mod localnets;
 pub mod mcp;
@@ -124,6 +126,7 @@ pub mod pcapfile;
 pub mod pivot;
 pub mod plan;
 pub(crate) mod platform;
+pub mod portorder;
 pub mod presets;
 pub(crate) mod probes;
 pub mod provenance;
@@ -143,6 +146,7 @@ pub mod segmentation;
 pub mod sendlog;
 pub mod service;
 pub mod store;
+pub mod store_stream;
 pub mod syn;
 pub mod sync;
 pub mod targets;

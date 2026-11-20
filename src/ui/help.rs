@@ -122,11 +122,20 @@ Scan options:
                   probes, HTTP) as pcapng. An application-level record, not a wire capture
   --replay-check ID  scan: run stored scan ID again with its own targets and settings and compare the result
                   and the version/rules stamp (--fail-on-findings: exit 3 when it is not reproduced)
+  --incremental   scan, monitor: a repeat scan of the same targets: known open ports plus a sample are probed again,
+                  unchanged services keep their identification (marked as carried over); needs an earlier scan
+  --full-every N  monitor with --incremental: every Nth cycle is a full scan (default 10, 0 never)
+  --early-stop    Stop probing a host's remaining ports once its device class is certain (e.g. two print
+                  ports open); such a host is marked as not fully checked. Off by default
+  --no-report     scan: save the scan and print no report (for very large scans; read it with export ID)
+  --stream        scan: print each result as a JSON line the moment it is found (host-up, port-open,
+                  host-done); the report then goes to --output only, not stdout
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)
   --no-backoff    Turn off the automatic back-off (per-device-type parallel limits and slowing or
                   pausing a host that resets connections; on by default, it only ever slows down)
   --arp-sweep     Fast ARP sweep through the capture interface (with --fast; needs Npcap)
   --interface ID --source-ip IPV4 --source-mac MAC  Required for SYN, ARP sweep, TCP trace
+                  scan: --interface A,B --source-ip X,Y --source-mac M1,M2 uses several interfaces (paired by position)
   --unit 1 --rack 0 --slot 2   Modbus unit and S7 addressing
   --json-schema v1  JSON output version (default and only version for now); any command
   --scope CIDR[,CIDR]  Declared scope (also --scope-file FILE; default scope.txt in the config folder)
