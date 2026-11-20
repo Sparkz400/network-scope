@@ -399,6 +399,8 @@ mod tests {
 
     #[test]
     fn the_service_arguments_reproduce_the_monitor_options_and_pin_the_database() {
+        // An absolute path on every platform (a relative one would be made absolute).
+        let alerts = std::env::temp_dir().join("a b.jsonl").display().to_string();
         let (pos, opts) = opts(&[
             "install",
             "10.0.0.0/24",
@@ -414,7 +416,7 @@ mod tests {
             "--db",
             "relative.sqlite",
             "--alerts",
-            r"C:\Data\a b.jsonl",
+            &alerts,
         ]);
         let name = service_name(&opts).unwrap();
         assert_eq!(name, "MyScope");

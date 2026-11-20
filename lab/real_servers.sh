@@ -44,8 +44,8 @@ cleanup() {
   for pid in "${pids[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; done
   # smbd and sshd run as root: kill by the pid files and by command line.
   if [ -n "$SUDO" ] || [ "$(id -u)" = 0 ]; then
-    $SUDO pkill -f "smbd .*$WORK" 2>/dev/null || true
-    $SUDO pkill -f "sshd .*$WORK" 2>/dev/null || true
+    $SUDO pkill -f "[s]mbd .*$WORK" 2>/dev/null || true
+    $SUDO pkill -f "[s]shd .*$WORK" 2>/dev/null || true
   fi
   if [ "$status" != 0 ]; then
     for log in "$WORK"/*.log "$WORK"/samba/log.*; do
