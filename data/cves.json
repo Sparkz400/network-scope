@@ -81,7 +81,7 @@
     { "id": "nginx", "products": ["nginx"], "template": "cpe:2.3:a:f5:nginx:{version}:*:*:*:*:*:*:*" },
     { "id": "iis", "products": ["microsoft-iis"], "template": "cpe:2.3:a:microsoft:internet_information_services:{version}:*:*:*:*:*:*:*" },
     { "id": "lighttpd", "products": ["lighttpd"], "template": "cpe:2.3:a:lighttpd:lighttpd:{version}:*:*:*:*:*:*:*" },
-    { "id": "vsftpd", "products": ["vsftpd"], "template": "cpe:2.3:a:beasts:vsftpd:{version}:*:*:*:*:*:*:*" },
+    { "id": "vsftpd", "products": ["vsftpd"], "template": "cpe:2.3:a:vsftpd_project:vsftpd:{version}:*:*:*:*:*:*:*" },
     { "id": "proftpd", "products": ["proftpd"], "template": "cpe:2.3:a:proftpd:proftpd:{version}:*:*:*:*:*:*:*" },
     { "id": "filezilla-server", "products": ["filezilla server"], "template": "cpe:2.3:a:filezilla-project:filezilla_server:{version}:*:*:*:*:*:*:*" },
     { "id": "exim", "products": ["exim"], "template": "cpe:2.3:a:exim:exim:{version}:*:*:*:*:*:*:*" },

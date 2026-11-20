@@ -43,6 +43,14 @@ Accuracy benchmark against the ground truth in `lab/ground_truth.json` (needs an
 python -I lab/benchmark.py --cli /absolute/path/to/target/release/network-scope-cli --check
 ```
 
+Tests of the lab scripts (Python standard library only), and the checks against real servers (Samba, OpenSSH, OpenSSL, nginx, the NVD CPE dictionary), which run in the CI job `real-servers` and are described in [Lab and testing](docs/src/lab-and-testing.md#real-servers):
+
+```sh
+python -I -m unittest discover -s lab -p "test_*.py"
+python -I lab/check_cpe.py                 # format of the CPE table only; --download compares with NVD
+cargo test -p network-scope-core windows_schannel -- --ignored   # Windows with PowerShell 7
+```
+
 Dependency checks (RustSec advisories, licenses, sources), the same ones the `security` workflow runs:
 
 ```sh

@@ -29,7 +29,11 @@ Original work of the Network Scope authors, under the project's MIT license. The
 
 ## cves.json
 
-Original work of the Network Scope authors, under the project's MIT license. The rules are hand-written version ranges that reference public CVE identifiers. The CPE vendor/product names were written from memory of the NVD CPE dictionary and have not been checked against it. See [Findings and CVE hints](../docs/src/findings-and-cves.md).
+Original work of the Network Scope authors, under the project's MIT license. The rules are hand-written version ranges that reference public CVE identifiers. The CPE vendor/product names were written from memory; on 2026-11-19 they were looked up in the NVD CPE API (one was wrong and is fixed, see [Lab and testing](../docs/src/lab-and-testing.md#cpe-names-against-the-nvd-dictionary)), and `lab/check_cpe.py` compares them with the official NVD CPE dictionary in CI. See [Findings and CVE hints](../docs/src/findings-and-cves.md).
+
+## JA4S test values
+
+The tests in `core/src/fingerprint.rs` contain three JA4S example fingerprints (`t120300_c030_5e2616a54c73`, `t130200_1301_a56c5b993250`, `t130200_1302_a56c5b993250`) and one pair from the python test data (`t130200_1301_234ea6891581` for the extensions `0033,002b`), all published by FoxIO in the JA4+ repository (github.com/FoxIO-LLC/ja4, README examples table and `python/test/testdata`). Only these fingerprint strings are used, as published facts for checking our implementation; no code or test files were copied. JA4S is part of JA4+, which FoxIO licenses under the FoxIO License 1.1 (permissive for internal use, not for monetization) and describes as patent pending; Network Scope is MIT-licensed. Whether shipping a JA4S implementation is acceptable is an open question for the maintainers.
 
 ## Imported feeds (not shipped): CISA KEV and FIRST EPSS
 
