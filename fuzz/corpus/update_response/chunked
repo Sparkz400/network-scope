@@ -1,0 +1,7 @@
+HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+59
+{"tag_name":"v0.6.0","draft":false,"prerelease":false,"html_url":"https://example.com/x"}
+0
+

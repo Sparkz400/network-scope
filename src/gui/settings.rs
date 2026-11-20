@@ -235,6 +235,15 @@ impl Scanner {
                     ui.checkbox(&mut s.dns, "Resolve hostnames (system DNS)");
                     ui.checkbox(&mut s.mac, "Look up MAC addresses (local IPv4 network)");
                     ui.separator();
+                    ui.checkbox(
+                        &mut self.saved.check_updates,
+                        "Check for updates on start (one request to GitHub; only tells you, never downloads)",
+                    )
+                    .on_hover_text(
+                        "Sends one HTTPS request to api.github.com with the user agent \
+                         network-scope/<version> and no other data. Off by default.",
+                    );
+                    ui.separator();
                     ui.label("A ping timeout does not prove a device is offline.");
                     ui.label("Read-only queries can still affect fragile devices. Passive listening sends none.");
                     ui.label("Pause lets active hosts finish. Stop cancels async work.");

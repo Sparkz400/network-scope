@@ -70,7 +70,11 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `devices --history MAC\|IP [--format text\|json]` | Timeline of one device across saved scans |
 | `topology ID [--format ascii\|dot]` | Network path map from traceroute data |
 | `trace TARGET [--max-hops 20] [--timeout 1000] [--fast --trace-method udp\|tcp --trace-port N]` | Traceroute to one IP |
-| `probes [--probes FILE]` | List and validate the TCP and UDP probe database |
+| `probes [--probes FILE]` | List the TCP and UDP probe database |
+| `probes validate FILE` | Load a probe file like a scan with `--probes` would, then lint it; exit 1 on an error |
+| `probes lint [FILE]` | Safety lint: OT and printer ports, write-like payloads, payload and regex size, nested quantifiers (default: the built-in probes) |
+| `fingerprints export-unknown [SCAN_ID] [--output FILE]` | Banners of unidentified services from the local store as JSON, without host addresses, to review and redact before sharing; sends nothing. See [Contributing fingerprints](contributing-fingerprints.md) |
+| `update check` | Ask GitHub whether a newer release exists; prints the release page and the verification commands. Notify only: it never downloads or installs anything. See [Checking for updates](installation.md#checking-for-updates) |
 | `completions powershell\|bash` | Print a shell completion script |
 | `help`, `--help`, `-h` | Print the help text |
 | `--version`, `-V` | Print the program version |

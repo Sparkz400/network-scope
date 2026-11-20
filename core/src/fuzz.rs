@@ -7,7 +7,7 @@
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
     arp, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile, platform,
-    risk, service, syn, tls, udp,
+    risk, service, syn, tls, udp, update,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -56,6 +56,7 @@ pub const TARGETS: &[Target] = &[
     ("tcp_options", tcp_options),
     ("icmp_reply", icmp_reply),
     ("mcp_message", mcp_message),
+    ("update_response", update_response),
 ];
 
 /// A pcap or pcapng file, read to the end as the capture-file import does.
@@ -307,6 +308,7 @@ pub fn probes_json(data: &[u8]) {
     };
     // The same merge as `ProbeDb::with_user_file`, on a cached copy of the built-in probes
     // (compiling their regexes for every input would make fuzzing far too slow).
+    let _ = std::hint::black_box(service::lint_probes(text));
     if let Ok(db) = builtin_probes().clone().merge_user(text, "probes.json") {
         for probe in db.probes.iter().chain(&db.udp) {
             std::hint::black_box(service::ProbeDb::identify(probe, data));
@@ -366,6 +368,23 @@ pub fn cves_json(data: &[u8]) {
                 std::hint::black_box(db.cpe(&rule.product, version));
             }
         }
+    }
+}
+
+/// The answer of the update check's release endpoint: the HTTP response (as received so far, and
+/// at the end of the connection), its body as a release, the tag as a version and the comparison
+/// with the running version. Nothing here touches the network.
+pub fn update_response(data: &[u8]) {
+    for eof in [false, true] {
+        if let Ok(Some(response)) = update::parse_response(data, eof) {
+            let _ = std::hint::black_box(update::parse_latest(&response.body).map(|release| {
+                update::compare("0.5.1", release).map(|o| update::describe(&o, "0.5.1"))
+            }));
+        }
+    }
+    let _ = std::hint::black_box(update::parse_latest(data));
+    if let Ok(text) = std::str::from_utf8(data) {
+        std::hint::black_box(update::parse_version(text));
     }
 }
 

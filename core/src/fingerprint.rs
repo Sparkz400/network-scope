@@ -147,7 +147,7 @@ pub struct ServerHello {
     /// From the supported_versions extension (TLS 1.3), when present.
     pub selected_version: Option<u16>,
     /// Protocol the server chose via ALPN, when present.
-    pub alpn: Option<String>,
+    pub alpn: Option<Vec<u8>>,
     /// The message is a TLS 1.3 HelloRetryRequest (special random), not a real ServerHello.
     pub retry: bool,
 }
@@ -191,7 +191,7 @@ pub fn parse_server_hello(body: &[u8]) -> Option<ServerHello> {
             16 if data.len() >= 3 => {
                 let l = usize::from(data[2]);
                 if let Some(name) = data.get(3..3 + l) {
-                    hello.alpn = Some(String::from_utf8_lossy(name).into_owned());
+                    hello.alpn = Some(name.to_vec());
                 }
             }
             _ => {}
@@ -201,10 +201,32 @@ pub fn parse_server_hello(body: &[u8]) -> Option<ServerHello> {
     Some(hello)
 }
 
+/// The ALPN part of a JA4 fingerprint, from the server's chosen protocol as it came on the wire:
+/// `00` for none or an empty one; the first and last character when both are ASCII alphanumeric
+/// (a single character is both); otherwise the first and last character of the hexadecimal
+/// representation of the whole value (`0x20 0x61` gives `21`). This is the rule of FoxIO's
+/// technical details for JA4 (JA4.md, "ALPN Extension Value"). The python implementation in the
+/// same repository still substitutes `9` for a non-ASCII end character, and says so; the written
+/// rule is followed here. The output is always `00`, an alphanumeric pair or two hex digits, so
+/// bytes chosen by a server never reach the fingerprint as control characters.
+pub fn alpn_part(alpn: Option<&[u8]>) -> String {
+    let Some(a) = alpn.filter(|a| !a.is_empty()) else {
+        return "00".into();
+    };
+    let (first, last) = (a[0], a[a.len() - 1]);
+    if first.is_ascii_alphanumeric() && last.is_ascii_alphanumeric() {
+        format!("{}{}", char::from(first), char::from(last))
+    } else {
+        let text = hex(a);
+        format!("{}{}", &text[..1], &text[text.len() - 1..])
+    }
+}
+
 /// JA4S (FoxIO): `t<version><ext count><alpn>_<cipher>_<sha256(ext list)[..12]>`.
 /// version: 13/12/11/10/s3 (from supported_versions when present), ext count two digits,
-/// alpn the first and last character of the chosen protocol or `00`, extension list
-/// lower-case 4-digit hex in wire order, comma-separated.
+/// alpn per [`alpn_part`], extension list lower-case 4-digit hex in wire order, comma-separated;
+/// with no extensions the hash part is twelve zeros. Checked against the published examples in
+/// the tests.
 pub fn ja4s(hello: &ServerHello) -> String {
     let version = match hello.selected_version.unwrap_or(hello.legacy_version) {
         0x0304 => "13",
@@ -214,27 +236,22 @@ pub fn ja4s(hello: &ServerHello) -> String {
         0x0300 => "s3",
         _ => "00",
     };
-    let alpn = match hello.alpn.as_deref() {
-        Some(a) if !a.is_empty() => {
-            let first = a.chars().next().unwrap_or('0');
-            let last = a.chars().last().unwrap_or('0');
-            let pick = |c: char| if c.is_ascii_alphanumeric() { c } else { '9' };
-            format!("{}{}", pick(first), pick(last))
-        }
-        _ => "00".into(),
-    };
+    let alpn = alpn_part(hello.alpn.as_deref());
     let list = hello
         .extensions
         .iter()
         .map(|e| format!("{e:04x}"))
         .collect::<Vec<_>>()
         .join(",");
-    let hash = hex(&sha256(list.as_bytes()));
+    let hash = if hello.extensions.is_empty() {
+        "000000000000".to_string()
+    } else {
+        hex(&sha256(list.as_bytes()))[..12].to_string()
+    };
     format!(
-        "t{version}{:02}{alpn}_{:04x}_{}",
+        "t{version}{:02}{alpn}_{:04x}_{hash}",
         hello.extensions.len().min(99),
-        hello.cipher,
-        &hash[..12]
+        hello.cipher
     )
 }
 
@@ -330,15 +347,111 @@ mod tests {
             [2; 32],
         );
         let h = parse_server_hello(&body).unwrap();
-        assert_eq!(h.alpn.as_deref(), Some("h2"));
+        assert_eq!(h.alpn.as_deref(), Some(&b"h2"[..]));
         assert!(ja4s(&h).starts_with("t1203h2_c030_"));
         // A hello without extensions, and a HelloRetryRequest.
         let mut bare = hello_body(0x0301, 0x002F, &[], [3; 32]);
         bare.truncate(bare.len() - 2);
         let h = parse_server_hello(&bare).unwrap();
-        assert!(ja4s(&h).starts_with("t100000_002f_"));
+        assert_eq!(ja4s(&h), "t100000_002f_000000000000");
         let hrr = hello_body(0x0303, 0x1302, &[(43, &[3, 4])], HRR_RANDOM);
         assert!(parse_server_hello(&hrr).unwrap().retry);
         assert_eq!(parse_server_hello(&[3, 3, 0]), None);
+    }
+
+    /// The JA4S of a ServerHello with the given legacy version, cipher and extensions (in wire
+    /// order); `43` is given the data of a TLS 1.3 supported_versions.
+    fn ja4s_of(version: u16, cipher: u16, exts: &[u16]) -> String {
+        let data: Vec<(u16, &[u8])> = exts
+            .iter()
+            .map(|e| {
+                (
+                    *e,
+                    if *e == 43 {
+                        &[3u8, 4][..]
+                    } else {
+                        &[0u8; 4][..]
+                    },
+                )
+            })
+            .collect();
+        ja4s(&parse_server_hello(&hello_body(version, cipher, &data, [9; 32])).unwrap())
+    }
+
+    // Test vectors for JA4S. The first three values are the JA4S examples published in the
+    // README of the FoxIO JA4+ project (github.com/FoxIO-LLC/ja4, "Examples" table) and the
+    // fourth is the JA4S/JA4S_r pair in that project's python test data. The README gives only
+    // the fingerprint; the extension list of a ServerHello is not published with it. The lists
+    // below are the ones whose SHA-256 gives the published hash (the order matters: 0033,002b
+    // and 002b,0033 hash differently), found by trying the extensions such servers send. That
+    // the hash is reproduced with a plausible list is strong evidence that the algorithm is
+    // the same; it is not a capture of those servers.
+    #[test]
+    fn ja4s_matches_the_published_foxio_examples() {
+        // Sliver malware: TLS 1.3, TLS_AES_128_GCM_SHA256, supported_versions then key_share.
+        assert_eq!(
+            ja4s_of(0x0303, 0x1301, &[43, 51]),
+            "t130200_1301_a56c5b993250"
+        );
+        // SoftEther VPN: the same extensions with TLS_AES_256_GCM_SHA384.
+        assert_eq!(
+            ja4s_of(0x0303, 0x1302, &[43, 51]),
+            "t130200_1302_a56c5b993250"
+        );
+        // IcedID malware: TLS 1.2 ECDHE-RSA-AES256-GCM-SHA384 with renegotiation_info,
+        // session_ticket and extended_master_secret.
+        assert_eq!(
+            ja4s_of(0x0303, 0xc030, &[0xff01, 0x0023, 0x0017]),
+            "t120300_c030_5e2616a54c73"
+        );
+        // The reference implementation's test data: JA4S_r "0033,002b" has the hash below.
+        assert_eq!(
+            ja4s_of(0x0303, 0x1301, &[51, 43]),
+            "t130200_1301_234ea6891581"
+        );
+        let (a, b) = (hex(&sha256(b"002b,0033")), hex(&sha256(b"0033,002b")));
+        assert_eq!((&a[..12], &b[..12]), ("a56c5b993250", "234ea6891581"));
+    }
+
+    // The ALPN part: the written rule of the FoxIO JA4 technical details (JA4.md, "ALPN Extension
+    // Value"), with its examples, and the alphanumeric cases of the python unit test.
+    #[test]
+    fn ja4s_alpn_part_follows_the_written_rule() {
+        let alpn_in_hello = |name: &[u8]| {
+            let mut data = ((name.len() + 1) as u16).to_be_bytes().to_vec();
+            data.push(name.len() as u8);
+            data.extend(name);
+            let body = hello_body(0x0303, 0xc02f, &[(16, &data)], [5; 32]);
+            ja4s(&parse_server_hello(&body).unwrap())[5..7].to_string()
+        };
+        for (alpn, want) in [
+            (&b"h2"[..], "h2"),
+            (b"http/1.1", "h1"),
+            (b"x", "xx"),
+            (b"7", "77"),
+            // The examples of the specification.
+            (&[0xAB], "ab"),
+            (&[0x20], "20"),
+            (&[0xAB, 0xCD], "ad"),
+            (&[0x20, 0x61], "21"),
+            (&[0x30, 0xAB], "3b"),
+            (&[0x61, 0x20], "60"),
+            (&[0x30, 0x31, 0xAB, 0xCD], "3d"),
+            (&[0x30, 0xAB, 0xCD, 0x31], "01"),
+            // Punctuation and control characters never reach the fingerprint.
+            (b"-a-", "2d"),
+            (b"\x1b[31m", "1d"),
+            (b"a_b\n", "6a"),
+            ("\u{e9}x".as_bytes(), "c8"),
+        ] {
+            let got = alpn_in_hello(alpn);
+            assert_eq!(got, want, "{alpn:?}");
+            assert!(got.bytes().all(|b| b.is_ascii_alphanumeric()), "{got:?}");
+        }
+        assert_eq!(alpn_part(None), "00");
+        assert_eq!(alpn_part(Some(&[])), "00");
+        // No ALPN extension: 00.
+        let body = hello_body(0x0303, 0xc02f, &[(0xff01, &[0])], [5; 32]);
+        assert_eq!(&ja4s(&parse_server_hello(&body).unwrap())[5..7], "00");
     }
 }
