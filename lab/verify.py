@@ -115,6 +115,114 @@ def check_normal(exe, work, failures):
         failures.append(f"identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
     for want in sorted(EXPECT_FINDINGS - ids):
         failures.append(f"finding missing: {want}")
+    check_segmentation(exe, work, failures)
+
+
+# L71: `segmentation check` against a real scan of five lab hosts (127.0.0.1-5, one simulator set
+# each). The model puts the scan in zone "enterprise" (127.0.0.5), and the expected violations
+# below are written by hand from the model, not computed by the code under test.
+SEG_PORTS = "21,22,23,502,6379,8080,44818"
+SEG_ZONES = {
+    "zones": {
+        "enterprise": ["127.0.0.5/32"],
+        "dmz": ["127.0.0.1/32"],
+        "control": ["127.0.0.2/32"],
+        "safety": ["127.0.0.4/32"],
+    },
+    "conduits": [
+        {"from": "enterprise", "to": "dmz", "ports": ["tcp/22", "tcp/8080", "icmp"]},
+        {"from": "enterprise", "to": "control", "ports": ["502", "tcp/44818"]},
+        # the wrong direction: it must not open enterprise -> safety
+        {"from": "safety", "to": "enterprise", "ports": ["any"]},
+        {"from": "dmz", "to": "safety", "ports": ["any"]},
+    ],
+}
+# (kind, host, port, severity): 127.0.0.1 and .2 have all seven ports open, .3 is in no zone, .4
+# has 22 and 502 open and no conduit from enterprise, .5 is the scan's own zone.
+SEG_EXPECT = {
+    ("port-not-allowed", "127.0.0.1", 21, "medium"),
+    ("port-not-allowed", "127.0.0.1", 23, "medium"),
+    ("port-not-allowed", "127.0.0.1", 502, "high"),
+    ("port-not-allowed", "127.0.0.1", 6379, "medium"),
+    ("port-not-allowed", "127.0.0.1", 44818, "high"),
+    ("port-not-allowed", "127.0.0.2", 21, "medium"),
+    ("port-not-allowed", "127.0.0.2", 22, "medium"),
+    ("port-not-allowed", "127.0.0.2", 23, "medium"),
+    ("port-not-allowed", "127.0.0.2", 6379, "medium"),
+    ("port-not-allowed", "127.0.0.2", 8080, "medium"),
+    ("unzoned-host", "127.0.0.3", None, "medium"),
+    ("no-conduit", "127.0.0.4", None, "high"),
+}
+
+
+def segmentation(exe, db, zones, *options):
+    return subprocess.run([exe, "segmentation", "check", "--zones", zones, "--db", db, *options],
+                          capture_output=True, text=True, timeout=60)
+
+
+def check_segmentation(exe, work, failures):
+    import contextlib
+    with contextlib.ExitStack() as stack:
+        for n in range(1, 6):
+            skip = ["80"]
+            if n == 4:
+                skip = ["80", "21", "23", "6379", "8080", "44818"]
+            if n == 5:
+                skip = ["80", "21", "23", "502", "6379", "8080", "44818"]
+            stack.enter_context(Sim("--bind", f"127.0.0.{n}", "--skip", *skip))
+        host_db = os.path.join(work, "segmentation.sqlite")
+        out = os.path.join(work, "segmentation-scan.json")
+        subprocess.run([exe, "scan", "127.0.0.1-5", "--ports", SEG_PORTS, "--timeout", "1500", "--db", host_db, "--output", out],
+                       check=True, capture_output=True, timeout=120)
+    hosts = {h["ip"]: h for h in json.load(open(out))["hosts"]}
+    all_ports = [21, 22, 23, 502, 6379, 8080, 44818]
+    want_open = {"127.0.0.1": all_ports, "127.0.0.2": all_ports, "127.0.0.3": all_ports,
+                 "127.0.0.4": [22, 502], "127.0.0.5": [22]}
+    for ip, ports in want_open.items():
+        if hosts.get(ip, {}).get("open") != ports:
+            failures.append(f"segmentation: scan of {ip}: open {hosts.get(ip, {}).get('open')}, expected {ports}")
+    zones = os.path.join(work, "zones.json")
+    json.dump(SEG_ZONES, open(zones, "w"))
+    r = segmentation(exe, host_db, zones, "--from", "enterprise", "--format", "json")
+    if r.returncode != 0:
+        failures.append(f"segmentation check failed ({r.returncode}): {r.stderr.strip()[:300]}")
+        return
+    report = json.loads(r.stdout)
+    got = [(v["kind"], v["host"], v["port"], v["severity"]) for v in report["violations"]]
+    if len(got) != len(set(got)) or set(got) != SEG_EXPECT:
+        failures.append(f"segmentation: missing {sorted(SEG_EXPECT - set(got), key=str)}, unexpected {sorted(set(got) - SEG_EXPECT, key=str)}, "
+                        f"{len(got)} reported (duplicates: {len(got) != len(set(got))})")
+    counts = (report["hosts_reachable"], report["hosts_in_other_zones"], report["unzoned_hosts"], report["reachable_per_zone"])
+    if counts != (5, 3, 1, {"enterprise": 1, "dmz": 1, "control": 1, "safety": 1}):
+        failures.append(f"segmentation: host counts {counts}")
+    if report["vantage_zone"] != "enterprise" or report["scan_id"] != 1:
+        failures.append(f"segmentation: vantage/scan id {report['vantage_zone']} {report['scan_id']}")
+    # no violation names a host of the scan's own zone
+    if any(v["host"] == "127.0.0.5" for v in report["violations"]):
+        failures.append("segmentation: a host in the scan's own zone was reported")
+    # exit status 3 with --fail-on-findings, 0 without; the text report names the hosts
+    if segmentation(exe, host_db, zones, "--from", "enterprise", "--fail-on-findings").returncode != 3:
+        failures.append("segmentation: --fail-on-findings did not exit with 3")
+    text = segmentation(exe, host_db, zones, "--from", "enterprise")
+    if text.returncode != 0 or "127.0.0.4" not in text.stdout:
+        failures.append(f"segmentation: text report: exit {text.returncode}")
+    # the other direction: from safety no conduit leads to dmz or control
+    r = segmentation(exe, host_db, zones, "--from", "safety", "--format", "json")
+    other = {(v["kind"], v["host"]) for v in json.loads(r.stdout)["violations"]} if r.returncode == 0 else None
+    want_other = {("no-conduit", "127.0.0.1"), ("no-conduit", "127.0.0.2"), ("unzoned-host", "127.0.0.3")}
+    if other != want_other:
+        failures.append(f"segmentation from safety: {other}, expected {sorted(want_other)}")
+    # a model that allows everything has nothing to report
+    open_model = {"zones": {**SEG_ZONES["zones"], "extra": ["127.0.0.3/32"]},
+                  "conduits": [{"from": "enterprise", "to": z, "ports": ["any"]} for z in ("dmz", "control", "safety", "extra")]}
+    json.dump(open_model, open(zones, "w"))
+    r = segmentation(exe, host_db, zones, "--from", "enterprise", "--format", "json", "--fail-on-findings")
+    if r.returncode != 0 or json.loads(r.stdout)["violations"]:
+        failures.append(f"segmentation: an allow-all model still reported violations (exit {r.returncode})")
+    # mistakes in the input are errors, not silence
+    if segmentation(exe, host_db, zones, "--from", "nowhere").returncode == 0:
+        failures.append("segmentation: an undeclared --from zone was accepted")
+    print(f"segmentation: {len(got)} violations from enterprise, exactly the expected ones")
 
 
 # C20: the SNMP read with the credentials of the lab agent (simulators.py, UDP 161).
