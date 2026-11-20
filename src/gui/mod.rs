@@ -350,7 +350,7 @@ struct Scanner {
     opened_stamp: Option<i64>,
     /// The scope guard wants a yes before this scan starts: what it found (public or
     /// out-of-scope addresses). Shown as a dialog; `None` when nothing is pending.
-    scope_confirm: Option<String>,
+    scope_confirm: Option<(String, String)>,
     /// What the last scan sent, by packet kind and detail (saved with the scan).
     scan_sent: Vec<crate::sendlog::SentEntry>,
     /// Set for one call of `start` after the user confirmed the dialog.
@@ -654,6 +654,8 @@ impl Scanner {
             self.error = "Wait until the inventory scan has been opened.".into();
             return;
         }
+        // Consent counts for this call only, whichever way it ends.
+        let consent = std::mem::take(&mut self.scope_consent);
         let parsed =
             scan::parse_hosts(&self.targets, self.saved.settings.skip_edges).and_then(|hosts| {
                 scan::parse_ports(&self.saved.settings.ports).map(|ports| (hosts, ports))
@@ -662,8 +664,9 @@ impl Scanner {
             Ok((hosts, ports)) => {
                 // The same scope check as the CLI (ROADMAP H54): public or out-of-scope
                 // addresses need a yes in the confirmation dialog first.
-                if let Some(text) = self.scope_check(&hosts) {
-                    self.scope_confirm = Some(text);
+                if let Some(text) = self.scope_check(&hosts, consent) {
+                    // The dialog remembers the targets it was shown for.
+                    self.scope_confirm = Some((self.targets.clone(), text));
                     return;
                 }
                 // Passive observations stay: the Devices window merges them with this scan.
@@ -686,8 +689,7 @@ impl Scanner {
         }
     }
     /// `Some(description)` when the scope guard needs the user's confirmation for `hosts`.
-    fn scope_check(&mut self, hosts: &[IpAddr]) -> Option<String> {
-        let consent = std::mem::take(&mut self.scope_consent);
+    fn scope_check(&mut self, hosts: &[IpAddr], consent: crate::scope::Consent) -> Option<String> {
         let declared = match crate::scope::declared(None, crate::scope::default_path().as_deref()) {
             Ok(declared) => declared,
             // An unreadable scope file blocks the scan until the user confirms once.

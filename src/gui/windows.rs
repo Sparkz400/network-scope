@@ -58,7 +58,7 @@ impl Scanner {
     /// Confirmation before a scan of public or out-of-scope addresses (ROADMAP H54). "Scan
     /// anyway" starts the scan with consent for this one start; "Cancel" sends nothing.
     pub(super) fn scope_dialog(&mut self, ctx: &egui::Context) {
-        let Some(text) = self.scope_confirm.clone() else {
+        let Some((shown_for, text)) = self.scope_confirm.clone() else {
             return;
         };
         let mut choice = None;
@@ -81,6 +81,11 @@ impl Scanner {
                 });
             });
         match choice {
+            Some(true) if shown_for != self.targets => {
+                // The targets were edited after the dialog was shown: the answer does not apply.
+                self.scope_confirm = None;
+                self.status = "Targets changed; press Start again".into();
+            }
             Some(true) => {
                 self.scope_confirm = None;
                 self.scope_consent = crate::scope::Consent {
