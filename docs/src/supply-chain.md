@@ -117,7 +117,7 @@ Equal hashes mean the release binary was built from this source with this toolch
 
 `release.yml` signs the Windows and macOS binaries when the signing secrets below exist in the repository, and skips signing when they do not: a fork, or this repository before the maintainer has set them up, still publishes a release, unsigned. **No release has been signed yet**; the signing steps have not run.
 
-Signing happens in the `build` job right after `cargo build`, before anything is packaged. The zip, the installer and the tar.gz therefore contain the signed binaries, and `SHA256SUMS`, the SBOM attestation and the build provenance (all made later, in the `release` job) cover the signed files.
+Signing happens in the jobs `package-windows` and `package-macos`, which take the unsigned binaries from the `build` job, sign them and only then package them. They compile nothing and run no package-manager install scripts (Inno Setup is downloaded from its GitHub release and checked against a pinned SHA-256), so the build scripts of the third-party crates never run where the signing credentials or the OIDC token are available. The zip, the installer and the tar.gz contain the signed binaries, and `SHA256SUMS`, the SBOM attestation and the build provenance (all made later, in the `release` job) cover the signed files.
 
 ### Windows: Azure Artifact Signing
 
@@ -130,11 +130,11 @@ Limits:
 - Public trust identities are only validated for organizations in some countries and for **individual developers in the United States and Canada** (as of 2026). If the maintainer cannot get an identity, the alternatives are a certificate on a cloud HSM from a CA (DigiCert KeyLocker, SSL.com eSigner, Certum SimplySign) or [SignPath Foundation](https://signpath.org/) for open-source projects; each needs its own signing step in place of the two `azure/artifact-signing-action` steps.
 - The uninstaller inside the installer (`unins000.exe`) stays unsigned: Inno Setup signs it only through its own `SignTool` hook.
 
-Set them as repository secrets or as secrets of the `release` environment (which can then be limited to `v*` tags).
+Set them as secrets of the `release` environment and limit that environment to `v*` tags (Settings, Environments, Deployment branches and tags), so no other workflow or branch can use them; repository secrets work too.
 
 | Secret | Value |
 | --- | --- |
-| `AZURE_CLIENT_ID` | Application (client) ID of the Entra ID app registration with a federated credential for this repository, entity type *Environment*, name `release` (the `build` job runs in that environment) and the role *Artifact Signing Certificate Profile Signer* on the signing account. **Its presence switches Windows signing on.** |
+| `AZURE_CLIENT_ID` | Application (client) ID of the Entra ID app registration with a federated credential for this repository, entity type *Environment*, name `release` (the `package-windows` job runs in that environment) and the role *Artifact Signing Certificate Profile Signer* on the signing account. **Its presence switches Windows signing on.** |
 | `AZURE_TENANT_ID` | Directory (tenant) ID |
 | `AZURE_SUBSCRIPTION_ID` | Subscription that holds the signing account |
 | `ARTIFACT_SIGNING_ENDPOINT` | Endpoint of the signing account's region, for example `https://weu.codesigning.azure.net/` |
