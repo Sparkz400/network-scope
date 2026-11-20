@@ -1748,19 +1748,37 @@ mod tests",
     #[test]
     fn persisting_errors_pause_the_host_for_the_rest_of_the_scan() {
         // Four open ports that each refuse the identification that follows: four strikes pause an
-        // unclassified host.
-        let ports: Vec<u16> = (0..4).map(|_| flaky_device()).collect();
-        let h = scan_loopback(ports.clone(), true, true);
-        for p in &ports {
-            assert!(h.open.contains(p), "{p} was found open: {:?}", h.open);
-        }
-        assert!(
+        // unclassified host. As in the test above, a fake device that has not closed its listener
+        // yet on a slow runner is no strike; such a run proves nothing, so fresh devices are tried
+        // a few times and one run must pause the host.
+        let paused = |h: &Host| {
             h.errors
                 .iter()
-                .any(|e| e.contains("host paused for the rest of this scan")),
-            "{:?}",
-            h.errors
-        );
+                .any(|e| e.contains("host paused for the rest of this scan"))
+        };
+        let mut seen = vec![];
+        let h = (0..5)
+            .find_map(|_| {
+                let ports: Vec<u16> = (0..4).map(|_| flaky_device()).collect();
+                let h = scan_loopback(ports.clone(), true, true);
+                for p in &ports {
+                    assert!(h.open.contains(p), "{p} was found open: {:?}", h.open);
+                }
+                let strikes = h
+                    .errors
+                    .iter()
+                    .filter(|e| e.contains("stopped answering"))
+                    .count();
+                // A run with all four strikes must have paused the host; fewer is the race.
+                if strikes >= 4 || paused(&h) {
+                    Some(h)
+                } else {
+                    seen.push(h.errors.clone());
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("the devices never all stopped answering in time: {seen:?}"));
+        assert!(paused(&h), "{:?}", h.errors);
         // Every port had been probed before the identification started.
         assert!(h.ports_checked);
     }
