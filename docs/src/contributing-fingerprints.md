@@ -17,6 +17,7 @@ network-scope-cli fingerprints export-unknown --db my.sqlite --output unknown.js
 
 ```json
 {
+  "schema": "network-scope/unknown-banners/v1",
   "format": "network-scope-unknown-banners",
   "version": 1,
   "generated_by": "network-scope 0.5.1",

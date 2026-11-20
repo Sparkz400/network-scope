@@ -37,7 +37,7 @@ fn export_unknown(ctx: &mut Ctx) -> Result<(), String> {
         ),
     );
     output(
-        &serde_json::to_string_pretty(&export).map_err(|e| e.to_string())?,
+        &crate::schema::object("unknown-banners", &export)?,
         &ctx.opts,
     )
 }
