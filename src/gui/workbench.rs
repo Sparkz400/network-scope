@@ -435,7 +435,7 @@ impl Scanner {
                             let shown = st
                                 .other_group()
                                 .map_or_else(|| tr!("(none)").to_string(), |g| g.id.clone());
-                            egui::ComboBox::from_id_salt("workbench_other")
+                            let combo = egui::ComboBox::from_id_salt("workbench_other")
                                 .selected_text(shown)
                                 .show_ui(ui, |ui| {
                                     if ui.selectable_label(st.other.is_none(), tr!("(none)")).clicked() {
@@ -448,6 +448,7 @@ impl Scanner {
                                         }
                                     }
                                 });
+                            super::a11y::named(combo.response, tr!("Compare with"));
                         });
                         match st.other_group() {
                             Some(b) => {

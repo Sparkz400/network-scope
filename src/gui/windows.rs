@@ -455,7 +455,7 @@ impl Scanner {
                     if ui
                         .add_enabled(
                             !self.busy.comparing,
-                            egui::Button::new(tr!("Compare A → B")),
+                            egui::Button::new(tr!("Compare A to B")),
                         )
                         .clicked()
                     {
@@ -684,20 +684,23 @@ impl Scanner {
                                 }
                             });
                         ui.horizontal(|ui| {
-                            ui.label(tr!("Duration"));
+                            let label = ui.label(tr!("Duration"));
                             ui.add(
                                 egui::DragValue::new(&mut self.capture_seconds)
                                     .range(1..=86400)
                                     .suffix(format!(" {}", tr!("seconds"))),
-                            );
+                            )
+                            .labelled_by(label.id);
                         });
                         ui.horizontal(|ui| {
-                            ui.label(tr!("Interface MAC (DCP / SYN)"));
-                            ui.text_edit_singleline(&mut self.saved.settings.source_mac);
+                            let label = ui.label(tr!("Interface MAC (DCP / SYN)"));
+                            ui.text_edit_singleline(&mut self.saved.settings.source_mac)
+                                .labelled_by(label.id);
                         });
                         ui.horizontal(|ui| {
-                            ui.label(tr!("Interface IPv4 (SYN)"));
-                            ui.text_edit_singleline(&mut self.saved.settings.source_ip);
+                            let label = ui.label(tr!("Interface IPv4 (SYN)"));
+                            ui.text_edit_singleline(&mut self.saved.settings.source_ip)
+                                .labelled_by(label.id);
                         });
                         ui.horizontal(|ui| {
                             if ui

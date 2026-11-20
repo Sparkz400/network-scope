@@ -140,7 +140,7 @@ Risk || Risiko
 Saved inventory & scan differences || Gespeichertes Inventar und Scan-Unterschiede
 Scans are saved automatically, including interrupted scans marked as partial. || Scans werden automatisch gespeichert, auch abgebrochene Scans (als teilweise markiert).
 Refresh || Aktualisieren
-Compare A → B || A → B vergleichen
+Compare A to B || A mit B vergleichen
 Select baseline A || Wählen Sie die Basis A
 Select scan B || Wählen Sie den Scan B
 #{} · {} hosts · {} · {} || #{} · {} Hosts · {} · {}
@@ -567,3 +567,8 @@ Save probe file… || Probe-Datei speichern…
 Probe file || Probe-Datei
 Saved {} || {} gespeichert
 Wrote {} (check it with `probes validate`) and {}. Read both and remove anything that identifies a person, host or site; nothing was sent. || {} geschrieben (prüfen Sie sie mit `probes validate`) und {}. Lesen Sie beide und entfernen Sie alles, was eine Person, einen Host oder einen Standort kennzeichnet; es wurde nichts gesendet.
+
+# Names for screen readers
+Minimum severity || Mindest-Schweregrad
+Minimum EPSS || Mindest-EPSS
+S7 slot || S7-Steckplatz

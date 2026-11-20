@@ -100,7 +100,7 @@ impl Scanner {
                     }
                 }
             });
-        response.response.on_hover_text(tr!(
+        super::a11y::named(response.response, tr!("Preset")).on_hover_text(tr!(
             "A bundle of scan settings. Hover a preset to see what it turns on."
         ));
         if let Some(p) = chosen {

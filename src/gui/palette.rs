@@ -363,6 +363,10 @@ impl Scanner {
                         ))
                         .desired_width(f32::INFINITY),
                 );
+                a11y::named(
+                    edit.clone(),
+                    tr!("Type an action, or an address, MAC, name, vendor or finding id…"),
+                );
                 if self.palette.focus {
                     edit.request_focus();
                     self.palette.focus = false;
