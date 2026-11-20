@@ -32,9 +32,6 @@ pub(in crate::ui) fn run_monitor(
     let opts = &opts;
     let targets = ctx.pos.join(" ");
     let mut s = scan_settings(opts)?;
-    if s.ipv6_discover {
-        return Err("--ipv6-discover works with scan only".into());
-    }
     s.scan_nonresponders = true;
     super::scan::snmp_warnings(opts, &s);
     // The same scope rule as `scan`; monitor runs unattended, so without a terminal it refuses

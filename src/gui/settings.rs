@@ -137,6 +137,13 @@ impl Scanner {
                                 .labelled_by(name.id);
                         });
                     }
+                    ui.checkbox(
+                        &mut s.ipv6_discover,
+                        tr!("Find IPv6 hosts on the local link after the scan (one multicast ping per interface)"),
+                    )
+                    .on_hover_text(tr!(
+                        "Sends one ICMPv6 echo request to ff02::1 per network interface with hop limit 1, also in Safe Mode, then reads the system's IPv6 neighbor list and joins it to the scanned hosts by MAC address."
+                    ));
                     snmp_section(ui, s);
                     ui.horizontal(|ui| {
                         ui.label(tr!("Script (.rhai file or folder)"));

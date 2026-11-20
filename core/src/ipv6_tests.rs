@@ -369,6 +369,115 @@ fn the_run_takes_one_token_per_interface_and_skips_our_own_addresses() {
     );
 }
 
+/// The step shared by `scan`, `monitor` and the desktop, with the OS replaced: one echo per
+/// interface and cycle, through the gate and into the plan's detail; nothing at all when off;
+/// `monitor`'s rule keeps a flapping cache entry from becoming a host.
+#[test]
+fn the_shared_step_sends_one_echo_per_interface_and_monitor_adds_only_answerers() {
+    let make = |cache_state: State, answers: bool| {
+        let echo_calls = Mutex::new(0usize);
+        let s = Settings {
+            ipv6_discover: true,
+            ..Settings::default()
+        };
+        let log = Arc::new(crate::sendlog::SentLog::new());
+        let hosts = vec![host("192.168.1.10", "02:00:00:00:00:01")];
+        let (answered, silent) = (v6("fe80::10"), v6("fe80::20"));
+        let os = Os {
+            interfaces: &|| {
+                Ok((
+                    vec![Interface {
+                        index: 3,
+                        name: "Ethernet".into(),
+                    }],
+                    vec![],
+                ))
+            },
+            echo: &|_, _| {
+                *echo_calls.lock().unwrap() += 1;
+                Ok(if answers { vec![answered] } else { vec![] })
+            },
+            cache: &|| {
+                Ok(vec![
+                    neighbor("fe80::1", "02:00:00:00:00:01", State::Reachable),
+                    neighbor("fe80::10", "02:00:00:00:00:10", cache_state),
+                    neighbor("fe80::20", "02:00:00:00:00:20", cache_state),
+                ])
+            },
+        };
+        let add = |mode| {
+            let mut h = hosts.clone();
+            let out = after_scan_with(&s, log.clone(), &mut h, mode, &os);
+            (h, out)
+        };
+        let fresh = add(AddHosts::Fresh);
+        let answered_only = add(AddHosts::Answered);
+        let sent = log.snapshot();
+        (
+            fresh,
+            answered_only,
+            sent,
+            *echo_calls.lock().unwrap(),
+            silent,
+        )
+    };
+    // The cache says reachable for both, and one of them answered this run's echo.
+    let (fresh, answered, sent, calls, silent) = make(State::Reachable, true);
+    assert_eq!(calls, 2, "one echo per interface and run (two runs here)");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].kind, sent[0].detail.as_str(), sent[0].count),
+        (PacketKind::Ipv6Echo, DETAIL, 2)
+    );
+    let ips = |h: &Vec<Host>| h.iter().map(|h| h.ip).collect::<Vec<_>>();
+    assert_eq!(fresh.1.added, 2, "scan: both fresh neighbours become hosts");
+    assert_eq!(answered.1.added, 1, "monitor: only the one that answered");
+    assert!(
+        ips(&answered.0).contains(&IpAddr::V6(v6("fe80::10")))
+            && !ips(&answered.0).contains(&IpAddr::V6(silent)),
+        "{:?}",
+        ips(&answered.0)
+    );
+    // The silent neighbour is still in the observations, so nothing is lost.
+    assert!(
+        answered
+            .1
+            .observations
+            .iter()
+            .any(|o| o.ip == Some(IpAddr::V6(silent)))
+    );
+    // Flapping: the same cache entry stale in the next cycle adds no host in either mode, and
+    // monitor's host list for the neighbour that does not answer is the same in both cycles.
+    let (fresh2, answered2, _, _, _) = make(State::Stale, false);
+    assert_eq!((fresh2.1.added, answered2.1.added), (0, 0));
+    assert_eq!(
+        ips(&answered2.0),
+        ["192.168.1.10".parse::<IpAddr>().unwrap()]
+    );
+    // the IPv4 host got its IPv6 address either way (joined by MAC)
+    assert_eq!(
+        answered2.0[0].identity["ipv6.addresses"], "fe80::1",
+        "{:?}",
+        answered2.0[0].identity
+    );
+    // off: nothing is sent, nothing changes
+    let log = Arc::new(crate::sendlog::SentLog::new());
+    let mut hosts = vec![host("192.168.1.10", "02:00:00:00:00:01")];
+    let os = Os {
+        interfaces: &|| panic!("the OS must not be asked when the step is off"),
+        echo: &|_, _| panic!("no echo when off"),
+        cache: &|| panic!("no cache read when off"),
+    };
+    let out = after_scan_with(
+        &Settings::default(),
+        log.clone(),
+        &mut hosts,
+        AddHosts::Fresh,
+        &os,
+    );
+    assert_eq!((out.added, hosts.len(), log.snapshot().len()), (0, 1, 0));
+}
+
 #[test]
 fn failures_and_selection_become_notes_not_panics() {
     let gate = Gate::unlimited();

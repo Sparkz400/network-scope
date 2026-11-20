@@ -414,6 +414,10 @@ struct Scanner {
     scan_complete: bool,
     scan_scope: String,
     scan_settings: scan::Settings,
+    /// The IPv6 step after a finished scan (`--ipv6-discover`), running off the UI thread: it
+    /// blocks for the echo's wait on every interface. Its answer is the host list with the IPv6
+    /// results joined by MAC.
+    ipv6_job: Option<mpsc::Receiver<(Vec<scan::Host>, crate::ipv6::Outcome)>>,
     /// Bumped whenever results (including their order) or observations change.
     generation: u64,
     /// Bumped whenever a note changes.
@@ -544,6 +548,7 @@ impl Scanner {
             scan_complete: true,
             scan_scope: String::new(),
             scan_settings: scan::Settings::default(),
+            ipv6_job: None,
             generation: 0,
             notes_generation: 0,
             haystacks: HashMap::new(),
@@ -940,7 +945,51 @@ impl Scanner {
             Err(_) => Some(crate::scope::assess(hosts, declared.as_ref()).describe()),
         }
     }
+    /// The end of a scan: the results are final (the IPv6 step, if any, has run), they are saved
+    /// to the inventory and the scan is over for the rest of the window.
+    fn finish_scan(&mut self) {
+        self.live.clear();
+        self.run = None;
+        self.data_changed();
+        let snapshot = self.scan_snapshot();
+        self.submit(Job::Save(Box::new(snapshot), "scan"));
+    }
+    /// Waits for the IPv6 step; true while it runs.
+    fn poll_ipv6(&mut self) -> bool {
+        let Some(job) = &self.ipv6_job else {
+            return false;
+        };
+        match job.try_recv() {
+            Ok((hosts, outcome)) => {
+                self.ipv6_job = None;
+                self.results = hosts;
+                self.haystacks.clear();
+                if let Some(run) = &self.run {
+                    // the echoes are in the sent log now
+                    self.scan_sent = run.sent.snapshot();
+                }
+                self.status = format!("{} · {}", self.status, outcome.summary());
+                if !outcome.found.notes.is_empty() {
+                    self.status = format!("{} ({})", self.status, outcome.found.notes.join("; "));
+                }
+                self.recount();
+                self.sort();
+                self.finish_scan();
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.ipv6_job = None;
+                self.status = format!("{} · IPv6 discovery failed", self.status);
+                self.finish_scan();
+                false
+            }
+        }
+    }
     fn poll(&mut self) {
+        if self.poll_ipv6() {
+            return;
+        }
         let mut done = false;
         let mut changed = false;
         let mut recount = false;
@@ -1023,11 +1072,30 @@ impl Scanner {
                 .as_ref()
                 .map(|r| !r.cancel.load(Ordering::Relaxed))
                 .unwrap_or(false);
-            self.live.clear();
-            self.run = None;
-            self.data_changed();
-            let snapshot = self.scan_snapshot();
-            self.submit(Job::Save(Box::new(snapshot), "scan"));
+            // IPv6 discovery of the local link (opt-in; also in Safe Mode, one echo per interface):
+            // after a complete scan, on a worker thread, joined to the hosts by MAC. A stopped
+            // scan does not start it. The scan stays "running" until it has answered.
+            if self.scan_complete
+                && self.scan_settings.ipv6_discover
+                && let Some(run) = &self.run
+            {
+                let (tx, rx) = mpsc::channel();
+                let (settings, sent) = (self.scan_settings.clone(), run.sent.clone());
+                let mut hosts = self.results.clone();
+                std::thread::spawn(move || {
+                    let outcome = crate::ipv6::after_scan(
+                        &settings,
+                        sent,
+                        &mut hosts,
+                        crate::ipv6::AddHosts::Fresh,
+                    );
+                    let _ = tx.send((hosts, outcome));
+                });
+                self.ipv6_job = Some(rx);
+                self.status = format!("{} · IPv6 discovery…", self.status);
+            } else {
+                self.finish_scan();
+            }
         }
     }
     fn sort(&mut self) {
