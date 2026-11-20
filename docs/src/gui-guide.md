@@ -4,7 +4,7 @@ The desktop app (`network-scope.exe`, or either binary started without arguments
 
 ## Scanning
 
-Enter an IP, an IPv4 range, a CIDR block, or comma/space-separated addresses, then **Start**. Nothing scans automatically. The desktop accepts up to 65,536 addresses per scan.
+Enter an IP, an IPv4 range, a CIDR block, or comma/space-separated addresses, then **Start**. Nothing scans automatically. After a scan the status line shows how many packets it sent; hover it for the breakdown by packet kind (the same log is saved with the scan). If the targets include public addresses, or addresses outside the scope declared in `scope.txt` (see the [scope guard](cli-reference.md#scope-guard)), a dialog asks for confirmation first; Cancel sends nothing. The desktop accepts up to 65,536 addresses per scan.
 
 - **Settings** enables ARP discovery, industrial identification, services/UDP/OS detection, traceroute and the opt-in transmitting features (ARP sweep, adaptive SYN, trace method and port; these are greyed out in Safe Mode).
 - **CVE rules file** in Settings (type a path or **Browse…**; **Clear** returns to the default rules) merges your own CVE/CPE rules over the built-in ones, like `--cves FILE`; see [Findings and CVE hints](findings-and-cves.md). It is saved with the other preferences and loaded when you leave the field, press Enter or pick a file. A file that fails to parse is reported under the field and the previous rules stay in use; findings on screen are recomputed with new rules.

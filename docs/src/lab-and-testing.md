@@ -65,7 +65,7 @@ cargo build --release --locked
 python lab/verify.py target/release/network-scope        # .exe on Windows
 ```
 
-`verify.py` starts the simulators on loopback, scans them with the built binary and asserts the expected identities and findings (exit code 0 = all passed). CI runs it on Windows, Linux and macOS.
+`verify.py` starts the simulators on loopback, scans them with the built binary and asserts the expected identities and findings (exit code 0 = all passed). CI runs it on Windows, Linux and macOS. It also checks the safety features: a loopback device that accepts one connection and then stops listening must produce a `backed off:` host note (and none with `--no-backoff`), the healthy lab host must not be backed off, the scan's JSON must carry the sent log, and `scan --dry-run` against a counting listener must print the plan, save nothing and never connect.
 
 ### Accuracy benchmark
 

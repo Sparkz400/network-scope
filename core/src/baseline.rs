@@ -662,6 +662,7 @@ mod tests {
     }
     fn snapshot(hosts: Vec<Host>, complete: bool) -> Snapshot {
         Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete,
             settings: Settings::default(),

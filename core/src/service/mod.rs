@@ -4,7 +4,7 @@
 //! This file holds the detection flow (`detect`, the send policy, the shared socket helpers);
 //! the protocols live in the submodules: `probes` (probes.json matching), `http`, `ssh`,
 //! `smb` (with `smb2` and `ntlm`) and `rdp`.
-use crate::{core::Gate, tls};
+use crate::{core::Gate, sendlog::PacketKind, tls};
 use std::{collections::BTreeMap, net::IpAddr, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
@@ -106,7 +106,8 @@ impl Service {
 // ---- I/O helpers -------------------------------------------------------------------------
 
 async fn connect(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> Option<TcpStream> {
-    gate.wait().await;
+    gate.wait_for(PacketKind::TcpConnect, "service identification")
+        .await;
     timeout(limit, TcpStream::connect((ip, port)))
         .await
         .ok()?
@@ -133,11 +134,13 @@ async fn negotiate_once(
     port: u16,
     limit: Duration,
     gate: &Gate,
+    sent: (PacketKind, &str),
     request: &[u8],
 ) -> Vec<u8> {
     let Some(mut s) = connect(ip, port, limit, gate).await else {
         return vec![];
     };
+    gate.note(sent.0, sent.1);
     if s.write_all(request).await.is_err() {
         return vec![];
     }
@@ -167,6 +170,12 @@ fn send_policy(port: u16) -> SendPolicy {
     }
 }
 
+/// Service identification may send a payload (probe, HTTP request, TLS hello) to this port:
+/// not the listen-only printer ports and not 2222.
+pub(crate) fn sends_payload(port: u16) -> bool {
+    send_policy(port) == SendPolicy::Normal
+}
+
 /// Banner wait without sending anything (except the SSH identification once the server has
 /// greeted as SSH under `SshOrSilent`).
 async fn detect_passive(
@@ -188,6 +197,7 @@ async fn detect_passive(
     match null.and_then(|p| ProbeDb::identify(p, &banner)) {
         Some(svc) => {
             if svc.name == "ssh" && policy == SendPolicy::SshOrSilent {
+                gate.note(PacketKind::SshBanner, "SSH identification and KEXINIT");
                 out.fields.extend(ssh_fields(&mut s, &banner, limit).await);
             }
             out.service = Some(svc);
@@ -245,6 +255,7 @@ async fn tls_service(
     rounds: usize,
 ) -> Option<Outcome> {
     let tcp = connect(ip, port, limit, gate).await?;
+    gate.note(PacketKind::TlsClientHello, "TLS handshake");
     let (mut stream, handshake) = match tls::wrap(tcp, ip, limit).await {
         Ok(ok) => ok,
         // rustls speaks only TLS 1.2/1.3. On a well-known TLS port a legacy-only server
@@ -280,7 +291,10 @@ async fn tls_service(
         });
     } else if let Some(h) = parse_http(&banner) {
         http_outcome(h, true, &mut out);
-    } else if let Some(h) = http_get(&mut stream, ip, port, limit).await {
+    } else if let Some(h) = {
+        gate.note(PacketKind::HttpRequest, "GET /");
+        http_get(&mut stream, ip, port, limit).await
+    } {
         http_outcome(h, true, &mut out);
     } else {
         out.service = Some(Service {
@@ -349,7 +363,10 @@ async fn detect_with(
         && candidates.is_empty()
         && port != 445
         && let Some(mut s) = connect(ip, port, limit, gate).await
-        && let Some(h) = http_get(&mut s, ip, port, limit).await
+        && let Some(h) = {
+            gate.note(PacketKind::HttpRequest, "GET /");
+            http_get(&mut s, ip, port, limit).await
+        }
     {
         http_outcome(h, false, &mut out);
         return Some(out);
@@ -370,6 +387,7 @@ async fn detect_with(
                 return Some(out);
             }
             if svc.name == "ssh" {
+                gate.note(PacketKind::SshBanner, "SSH identification and KEXINIT");
                 out.fields
                     .extend(ssh_fields(&mut first, &banner, limit).await);
             }
@@ -384,6 +402,7 @@ async fn detect_with(
             Some(s) => s,
             None => connect(ip, port, limit, gate).await?,
         };
+        gate.note(PacketKind::ServiceProbe, probe.name.clone());
         if stream.write_all(&probe.payload).await.is_err() {
             continue;
         }
@@ -408,7 +427,10 @@ async fn detect_with(
         return Some(out);
     }
     if let Some(mut s) = connect(ip, port, limit, gate).await
-        && let Some(h) = http_get(&mut s, ip, port, limit).await
+        && let Some(h) = {
+            gate.note(PacketKind::HttpRequest, "GET /");
+            http_get(&mut s, ip, port, limit).await
+        }
     {
         http_outcome(h, false, &mut out);
         return Some(out);

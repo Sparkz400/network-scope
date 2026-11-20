@@ -50,6 +50,7 @@ pub const TARGETS: &[Target] = &[
     ("feeds_import", feeds_import),
     ("nvd_import", nvd_import),
     ("import_inventory", import_inventory),
+    ("scope_file", scope_file),
     ("arp_reply", arp_reply),
     ("syn_reply", syn_reply),
     ("tcp_options", tcp_options),
@@ -325,6 +326,25 @@ pub fn feeds_import(data: &[u8]) {
     }
     let cves = ["CVE-2021-44228".to_string(), "CVE-2023-48795".to_string()];
     std::hint::black_box(feeds.exploit_for(&cves));
+}
+
+/// A scope file or `--scope` text: parsed, then used to judge a few addresses and target lists.
+pub fn scope_file(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    if let Ok(scope) = crate::scope::Scope::parse(text) {
+        for ip in ["10.0.0.1", "8.8.8.8", "::1", "fd00::1", "::ffff:1.2.3.4"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            std::hint::black_box((scope.contains(ip), crate::scope::is_public(ip)));
+        }
+        let hosts: Vec<std::net::IpAddr> = vec![
+            "10.0.0.1".parse().unwrap(),
+            "192.0.2.1".parse().unwrap(),
+            "2001:db8::1".parse().unwrap(),
+        ];
+        std::hint::black_box(crate::scope::assess(&hosts, Some(&scope)));
+    }
 }
 
 /// A user `cves.json`, merged with the built-in rules; every rule is then evaluated.

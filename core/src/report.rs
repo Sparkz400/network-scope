@@ -1070,6 +1070,7 @@ mod tests {
     }
     fn snapshot() -> Snapshot {
         Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24 <script>".into(),
             complete: true,
             settings: Settings::default(),
@@ -1160,6 +1161,7 @@ mod tests {
         assert!(cve_links(&["CVE-2024-6387".into()]).contains("nvd.nist.gov"));
         assert!(!cve_links(&["javascript:alert(1)\"".into()]).contains("<a "));
         let empty = Snapshot {
+            sent: vec![],
             targets: String::new(),
             complete: true,
             settings: Settings::default(),

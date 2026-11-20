@@ -155,6 +155,7 @@ fn host(ip: &str, mac: &str, name: &str) -> Host {
 }
 fn snapshot(hosts: Vec<Host>) -> Snapshot {
     Snapshot {
+        sent: vec![],
         targets: "10.1.0.0/24".into(),
         complete: true,
         settings: Settings::default(),

@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 26] = [
+pub(super) const FLAGS: [&str; 30] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -33,8 +33,12 @@ pub(super) const FLAGS: [&str; 26] = [
     "report-missing",
     "dry-run",
     "no-scan",
+    "yes-public",
+    "allow-out-of-scope",
+    "no-backoff",
+    "sent-log",
 ];
-pub(super) const VALUES: [&str; 60] = [
+pub(super) const VALUES: [&str; 62] = [
     "feeds",
     "top",
     "nvd",
@@ -95,6 +99,8 @@ pub(super) const VALUES: [&str; 60] = [
     "netbox-role",
     "netbox-device-type",
     "index",
+    "scope",
+    "scope-file",
 ];
 pub(super) fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);
@@ -170,6 +176,8 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     s.syn_adaptive = opts.contains_key("adaptive-syn");
     s.tcp_adaptive = opts.contains_key("adaptive-tcp");
     s.jarm = opts.contains_key("jarm");
+    // On by default; it only ever slows a host down (see `backoff`).
+    s.backoff = !opts.contains_key("no-backoff");
     if let Some(m) = opts.get("trace-method") {
         s.trace_method = trace_method(m)?;
         s.trace = true;
@@ -320,6 +328,9 @@ mod tests {
         .unwrap();
         let s = scan_settings(&opts).unwrap();
         assert!(s.arp_sweep && s.syn_adaptive && s.tcp_adaptive && s.jarm && s.trace && s.safe);
+        assert!(s.backoff, "the back-off is on unless --no-backoff is given");
+        let (_, opts) = options(&args(&["--no-backoff"])).unwrap();
+        assert!(!scan_settings(&opts).unwrap().backoff);
         assert_eq!(s.trace_method, crate::trace::TraceMethod::Tcp);
         assert_eq!(s.trace_port, 8443);
         assert!(trace_method("ping").is_err());

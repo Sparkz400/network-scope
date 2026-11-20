@@ -79,6 +79,10 @@ pub struct Settings {
     /// JARM-style TLS fingerprint (ten extra ClientHellos per TLS port). Opt-in, and ignored in
     /// Safe Mode like the other transmitting extras.
     pub jarm: bool,
+    /// Automatic back-off (`backoff` module): per-device-type limits on the parallel probes to
+    /// a host, and a slower pace (or a pause for the rest of the scan) when the host starts
+    /// resetting connections. It only ever slows a host down; `--no-backoff` turns it off.
+    pub backoff: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -123,6 +127,7 @@ impl Default for Settings {
             trace_method: crate::trace::TraceMethod::Icmp,
             trace_port: 0,
             jarm: false,
+            backoff: true,
         }
     }
 }
@@ -259,6 +264,11 @@ impl Targets {
             .filter(|ip| matches!(ip, IpAddr::V4(v) if self.covered(u32::from(*v))))
             .count() as u64;
         n - overlap
+    }
+    /// The target list as it is stored: single addresses and merged IPv4 ranges (as numbers).
+    /// The scope guard judges these without expanding them.
+    pub fn spans(&self) -> (Vec<IpAddr>, Vec<(u32, u32)>) {
+        (self.singles.clone(), self.ranges.clone())
     }
     pub fn iter(&self) -> TargetIter {
         TargetIter {
@@ -429,6 +439,8 @@ pub enum PortState {
     Open,
     Closed,
     Unanswered,
+    /// The connection was reset or aborted while connecting (not a plain refusal).
+    Reset,
     Error(String),
 }
 #[cfg(test)]
@@ -438,6 +450,9 @@ pub fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> PortState {
         Err(e) => match e.kind() {
             std::io::ErrorKind::ConnectionRefused => PortState::Closed,
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => PortState::Unanswered,
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted => {
+                PortState::Reset
+            }
             _ => PortState::Error(e.to_string()),
         },
     }
@@ -454,6 +469,9 @@ pub struct Running {
     pub pause: Arc<AtomicBool>,
     pub total: usize,
     pub started: Instant,
+    /// What this scan has sent so far, by packet kind and detail (final after `Event::Done`).
+    /// Save it with the scan as `store::Snapshot::sent`.
+    pub sent: Arc<crate::sendlog::SentLog>,
 }
 impl Drop for Running {
     fn drop(&mut self) {
@@ -475,12 +493,14 @@ pub fn start_stream(
     let (tx, receiver) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
+    let sent = Arc::new(crate::sendlog::SentLog::new());
     let run = Running {
         receiver,
         cancel: cancel.clone(),
         pause: pause.clone(),
         total,
         started: Instant::now(),
+        sent: sent.clone(),
     };
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -497,6 +517,7 @@ pub fn start_stream(
                     cancel,
                     pause,
                     tx.clone(),
+                    sent,
                 ));
                 rt.shutdown_timeout(Duration::from_secs(1));
             }
@@ -706,6 +727,10 @@ mod tests {
     fn new_engine_options_are_off_in_old_snapshots() {
         let old: Settings = serde_json::from_str(r#"{"ports":"22","safe":false}"#).unwrap();
         assert!(!old.arp_sweep && !old.syn_adaptive && !old.tcp_adaptive && !old.jarm);
+        assert!(
+            old.backoff,
+            "old snapshots and settings files get the back-off"
+        );
         assert_eq!(old.trace_method, crate::trace::TraceMethod::Icmp);
         assert_eq!(old.trace_port, 0);
         let tcp: Settings = serde_json::from_str(r#"{"trace_method":"tcp"}"#).unwrap();

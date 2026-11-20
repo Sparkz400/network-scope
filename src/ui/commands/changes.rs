@@ -55,6 +55,7 @@ mod tests {
         let (d, out) = (db.to_str().unwrap(), dir.join("out.txt"));
         let o = out.to_str().unwrap();
         let snapshot = |hosts: Vec<Host>| store::Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete: true,
             settings: Settings::default(),

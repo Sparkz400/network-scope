@@ -744,8 +744,9 @@ pub fn run(
         if run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             complete = false;
         }
+        let dhcp_log = crate::sendlog::SentLog::new();
         if cfg.dhcp_discover && !cfg.stopped() {
-            match crate::udp::dhcp_discover(Duration::from_secs(4)) {
+            match crate::udp::dhcp_discover(Duration::from_secs(4), &dhcp_log) {
                 Ok(offers) => {
                     for o in offers {
                         observations.push(crate::passive::Observation {
@@ -790,6 +791,7 @@ pub fn run(
             hosts,
             observations,
             notes: BTreeMap::new(),
+            sent: crate::sendlog::merge([run.sent.snapshot(), dhcp_log.snapshot()]),
         };
         let id = store::save(db, &snapshot)?;
         let prev = store::latest_complete(db, targets_text, id)?.map(|(_, _, s)| s);
@@ -879,6 +881,7 @@ mod tests {
     }
     fn snap(hosts: Vec<Host>, observations: Vec<Observation>) -> Snapshot {
         Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete: true,
             settings: crate::scan::Settings {
@@ -1639,6 +1642,7 @@ mod tests {
         let id = store::save(
             db,
             &Snapshot {
+                sent: vec![],
                 targets: targets.into(),
                 complete: true,
                 settings: scan::Settings::default(),

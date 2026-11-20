@@ -225,6 +225,10 @@ impl Scanner {
                     );
                     ui.checkbox(&mut s.adaptive, "Adapt port timeout to measured ping");
                     ui.checkbox(
+                        &mut s.backoff,
+                        "Back off when a device resets connections (lower limits for OT/printers)",
+                    );
+                    ui.checkbox(
                         &mut s.skip_edges,
                         "Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255)",
                     );

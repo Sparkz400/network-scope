@@ -379,6 +379,7 @@ impl Scanner {
         }
         // Saved like `ot-listen` does, so `ot-assets ID` works on it later.
         let snapshot = store::Snapshot {
+            sent: vec![],
             targets: label,
             complete,
             settings: Default::default(),
