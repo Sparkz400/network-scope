@@ -1,0 +1,115 @@
+{
+  "document": {
+    "acknowledgments": [
+      {
+        "summary": "Synthetic advisory written by hand for the tests of Network Scope. The advisory id, the CVE id (CVE-2099-2001) and the firmware versions are invented. It is not a real advisory."
+      }
+    ],
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "distribution": {
+      "tlp": {
+        "label": "WHITE",
+        "url": "https://www.first.org/tlp/"
+      }
+    },
+    "lang": "en-US",
+    "publisher": {
+      "category": "coordinator",
+      "name": "Test Publisher",
+      "namespace": "https://example.invalid/"
+    },
+    "references": [
+      {
+        "category": "self",
+        "summary": "ICSA-TEST-0002 (synthetic)",
+        "url": "https://example.invalid/csaf/icsa-test-0002.json"
+      }
+    ],
+    "title": "Synthetic ControlLogix test advisory",
+    "tracking": {
+      "current_release_date": "2026-02-01T00:00:00.000000Z",
+      "id": "ICSA-TEST-0002",
+      "initial_release_date": "2026-02-01T00:00:00.000000Z",
+      "revision_history": [
+        {
+          "date": "2026-02-01T00:00:00.000000Z",
+          "number": "1",
+          "summary": "Initial publication"
+        }
+      ],
+      "status": "final",
+      "version": "1"
+    }
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "branches": [
+          {
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "vers:intdot/>=20.0|<20.14",
+                "product": {
+                  "name": "Rockwell Automation ControlLogix 5580: >=V20.0|<V20.14",
+                  "product_id": "CSAFPID-0001",
+                  "product_identification_helper": {
+                    "model_numbers": [
+                      "1756-L81E",
+                      "1756-L82E"
+                    ]
+                  }
+                }
+              }
+            ],
+            "category": "product_name",
+            "name": "ControlLogix 5580"
+          }
+        ],
+        "category": "vendor",
+        "name": "Rockwell Automation"
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2099-2001",
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: a crafted CIP request faults the controller.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-0001"
+        ]
+      },
+      "remediations": [
+        {
+          "category": "vendor_fix",
+          "details": "Update to 20.14 or later",
+          "product_ids": [
+            "CSAFPID-0001"
+          ]
+        }
+      ],
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 8.6,
+            "baseSeverity": "HIGH",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:N/A:H",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-0001"
+          ]
+        }
+      ],
+      "title": "Denial of service through a crafted CIP request (synthetic)"
+    }
+  ]
+}

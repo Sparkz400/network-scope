@@ -11,6 +11,19 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         .or_else(crate::feeds::default_path)
         .ok_or("No default location for the feeds cache; use --feeds FILE")?;
     match pos.first().map(String::as_str) {
+        Some("import") if pos.get(1).map(String::as_str) == Some("csaf") => {
+            let csaf_cache = opts
+                .get("csaf")
+                .map(PathBuf::from)
+                .or_else(crate::csaf::default_path)
+                .ok_or("No default location for the CSAF cache; use --csaf FILE")?;
+            let paths: Vec<PathBuf> = pos[2..].iter().map(PathBuf::from).collect();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let report = crate::csaf::import(&paths, &csaf_cache, now)?;
+            output(&report.lines().join("\n"), opts)
+        }
         Some("import") if pos.get(1).map(String::as_str) == Some("nvd") => {
             let nvd_cache = opts
                 .get("nvd")
@@ -51,12 +64,20 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             {
                 status["nvd"] = crate::nvd::status(&crate::nvd::Nvd::load(&path)?, &path);
             }
+            if let Some(path) = opts
+                .get("csaf")
+                .map(PathBuf::from)
+                .or_else(crate::csaf::default_path)
+                .filter(|p| p.exists())
+            {
+                status["csaf"] = crate::csaf::status(&crate::csaf::Csaf::load(&path)?, &path);
+            }
             output(
                 &serde_json::to_string_pretty(&status).map_err(|e| e.to_string())?,
                 opts,
             )
         }
-        _ => Err("Use: feeds import [--kev FILE] [--epss FILE] | feeds import nvd FILE... | feeds status".into()),
+        _ => Err("Use: feeds import [--kev FILE] [--epss FILE] | feeds import nvd FILE... | feeds import csaf FILE|DIR... | feeds status".into()),
     }
 }
 
@@ -134,6 +155,110 @@ mod tests {
             ]))
             .is_err()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L68 end to end: advisories imported with `feeds import csaf`, then `findings` on a scan
+    /// that identified an S7 CPU raises the advisory's CVE and says which advisory it is from.
+    #[test]
+    fn csaf_import_feeds_the_findings_of_an_s7_cpu() {
+        let dir = std::env::temp_dir().join(format!("ns-csaf-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let advisories = dir.join("advisories");
+        std::fs::create_dir_all(&advisories).unwrap();
+        std::fs::write(
+            advisories.join("icsa-test-0001.json"),
+            include_str!("../../../tests/fixtures/csaf/icsa-test-0001-siemens-s7.json"),
+        )
+        .unwrap();
+        let (cache, out, db) = (
+            dir.join("csaf.json"),
+            dir.join("out.txt"),
+            dir.join("inventory.sqlite"),
+        );
+        let path = |p: &std::path::Path| p.to_str().unwrap().to_string();
+        run(&args(&[
+            "feeds",
+            "import",
+            "csaf",
+            &path(&advisories),
+            "--csaf",
+            &path(&cache),
+            "--output",
+            &path(&out),
+        ]))
+        .unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.contains("1 advisories"), "{text}");
+        let host = crate::scan::Host {
+            ip: "10.0.0.10".parse().unwrap(),
+            responding: true,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![102],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: [
+                ("S7.order_code", "6ES7 214-1AG40-0XB0"),
+                ("S7.module", "CPU 1214C DC/DC/DC"),
+                ("S7.firmware", "4.2.3"),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+            udp_open: vec![],
+            trace: vec![],
+        };
+        let snapshot = crate::store::Snapshot {
+            targets: "10.0.0.10".into(),
+            complete: true,
+            settings: crate::scan::Settings::default(),
+            hosts: vec![host],
+            observations: vec![],
+            notes: Default::default(),
+            sent: vec![],
+        };
+        crate::store::save(&db, &snapshot).unwrap();
+        let findings = |extra: &[&str]| -> String {
+            let (db_path, out_path) = (path(&db), path(&out));
+            let mut a = vec!["findings", "1", "--db", &db_path, "--output", &out_path];
+            a.extend(extra);
+            run(&args(&a)).unwrap();
+            std::fs::read_to_string(&out).unwrap()
+        };
+        let with = findings(&["--csaf", &path(&cache)]);
+        assert!(with.contains("cve-cve-2099-1001"), "{with}");
+        assert!(with.contains("ICSA-TEST-0001"), "{with}");
+        // a cache that does not exist is an error, not silence
+        assert!(
+            run(&args(&[
+                "findings",
+                "1",
+                "--db",
+                &path(&db),
+                "--csaf",
+                &path(&dir.join("missing.json")),
+            ]))
+            .is_err()
+        );
+        // a non-advisory file imports nothing and says so
+        let junk = dir.join("junk.json");
+        std::fs::write(&junk, "{}").unwrap();
+        let e = run(&args(&[
+            "feeds",
+            "import",
+            "csaf",
+            &path(&junk),
+            "--csaf",
+            &path(&cache),
+        ]))
+        .unwrap_err();
+        assert!(e.contains("No CSAF advisory"), "{e}");
+        assert!(run(&args(&["feeds", "import", "csaf", "--csaf", &path(&cache)])).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

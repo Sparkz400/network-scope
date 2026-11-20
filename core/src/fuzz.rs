@@ -6,8 +6,8 @@
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
-    arp, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile, platform,
-    risk, service, syn, tls, udp, update,
+    arp, csaf, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile,
+    platform, risk, service, syn, tls, udp, update,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -49,6 +49,7 @@ pub const TARGETS: &[Target] = &[
     ("cves_json", cves_json),
     ("feeds_import", feeds_import),
     ("nvd_import", nvd_import),
+    ("csaf_import", csaf_import),
     ("import_inventory", import_inventory),
     ("scope_file", scope_file),
     ("arp_reply", arp_reply),
@@ -126,6 +127,36 @@ pub fn nvd_import(data: &[u8]) {
     if let Ok(text) = std::str::from_utf8(data) {
         std::hint::black_box(nvd::parse_cpe(text));
         std::hint::black_box(nvd::compare_versions(text, "1.0.1e"));
+    }
+}
+
+/// A CISA ICS advisory in CSAF 2.0 format (a JSON tree with bounded depth and size), the matching
+/// of what it produced against devices of every protocol, and the version-range parser on the
+/// raw text.
+pub fn csaf_import(data: &[u8]) {
+    if let Ok(parsed) = csaf::parse_csaf(data) {
+        let mut cache = csaf::Csaf::default();
+        if cache.merge(parsed, "fuzz.json").is_ok() {
+            for (protocol, vendor, product, version) in [
+                ("S7", "Siemens", "CPU 1214C", "4.2.3"),
+                ("EtherNet/IP", "Rockwell Automation", "1756-L81E", "20.11"),
+                ("OPC UA", "", "Example OPC UA Gateway", ""),
+            ] {
+                std::hint::black_box(cache.lookup(&crate::otdevice::OtDevice {
+                    protocol,
+                    port: 102,
+                    vendor: vendor.into(),
+                    products: vec![product.into()],
+                    version: version.into(),
+                }));
+            }
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        if let Some(range) = csaf::parse_range(text) {
+            std::hint::black_box(csaf::range_holds(&range, "4.2.3"));
+        }
+        std::hint::black_box(csaf::range_holds(text, "1.0"));
     }
 }
 
