@@ -147,7 +147,7 @@ pub struct ServerHello {
     /// From the supported_versions extension (TLS 1.3), when present.
     pub selected_version: Option<u16>,
     /// Protocol the server chose via ALPN, when present.
-    pub alpn: Option<String>,
+    pub alpn: Option<Vec<u8>>,
     /// The message is a TLS 1.3 HelloRetryRequest (special random), not a real ServerHello.
     pub retry: bool,
 }
@@ -191,7 +191,7 @@ pub fn parse_server_hello(body: &[u8]) -> Option<ServerHello> {
             16 if data.len() >= 3 => {
                 let l = usize::from(data[2]);
                 if let Some(name) = data.get(3..3 + l) {
-                    hello.alpn = Some(String::from_utf8_lossy(name).into_owned());
+                    hello.alpn = Some(name.to_vec());
                 }
             }
             _ => {}
@@ -201,12 +201,32 @@ pub fn parse_server_hello(body: &[u8]) -> Option<ServerHello> {
     Some(hello)
 }
 
+/// The ALPN part of a JA4 fingerprint, from the server's chosen protocol as it came on the wire:
+/// `00` for none or an empty one; the first and last character when both are ASCII alphanumeric
+/// (a single character is both); otherwise the first and last character of the hexadecimal
+/// representation of the whole value (`0x20 0x61` gives `21`). This is the rule of FoxIO's
+/// technical details for JA4 (JA4.md, "ALPN Extension Value"). The python implementation in the
+/// same repository still substitutes `9` for a non-ASCII end character, and says so; the written
+/// rule is followed here. The output is always `00`, an alphanumeric pair or two hex digits, so
+/// bytes chosen by a server never reach the fingerprint as control characters.
+pub fn alpn_part(alpn: Option<&[u8]>) -> String {
+    let Some(a) = alpn.filter(|a| !a.is_empty()) else {
+        return "00".into();
+    };
+    let (first, last) = (a[0], a[a.len() - 1]);
+    if first.is_ascii_alphanumeric() && last.is_ascii_alphanumeric() {
+        format!("{}{}", char::from(first), char::from(last))
+    } else {
+        let text = hex(a);
+        format!("{}{}", &text[..1], &text[text.len() - 1..])
+    }
+}
+
 /// JA4S (FoxIO): `t<version><ext count><alpn>_<cipher>_<sha256(ext list)[..12]>`.
 /// version: 13/12/11/10/s3 (from supported_versions when present), ext count two digits,
-/// alpn the first and last character of the chosen protocol or `00` (a non-ASCII end
-/// character becomes `9`, as in the reference implementation), extension list lower-case
-/// 4-digit hex in wire order, comma-separated; with no extensions the hash part is twelve
-/// zeros. Checked against the published examples in the tests.
+/// alpn per [`alpn_part`], extension list lower-case 4-digit hex in wire order, comma-separated;
+/// with no extensions the hash part is twelve zeros. Checked against the published examples in
+/// the tests.
 pub fn ja4s(hello: &ServerHello) -> String {
     let version = match hello.selected_version.unwrap_or(hello.legacy_version) {
         0x0304 => "13",
@@ -216,15 +236,7 @@ pub fn ja4s(hello: &ServerHello) -> String {
         0x0300 => "s3",
         _ => "00",
     };
-    let alpn = match hello.alpn.as_deref() {
-        Some(a) if !a.is_empty() => {
-            let first = a.chars().next().unwrap_or('0');
-            let last = a.chars().last().unwrap_or('0');
-            let pick = |c: char| if c.is_ascii() { c } else { '9' };
-            format!("{}{}", pick(first), pick(last))
-        }
-        _ => "00".into(),
-    };
+    let alpn = alpn_part(hello.alpn.as_deref());
     let list = hello
         .extensions
         .iter()
@@ -335,7 +347,7 @@ mod tests {
             [2; 32],
         );
         let h = parse_server_hello(&body).unwrap();
-        assert_eq!(h.alpn.as_deref(), Some("h2"));
+        assert_eq!(h.alpn.as_deref(), Some(&b"h2"[..]));
         assert!(ja4s(&h).starts_with("t1203h2_c030_"));
         // A hello without extensions, and a HelloRetryRequest.
         let mut bare = hello_body(0x0301, 0x002F, &[], [3; 32]);
@@ -401,32 +413,43 @@ mod tests {
         assert_eq!((&a[..12], &b[..12]), ("a56c5b993250", "234ea6891581"));
     }
 
-    // The ALPN part: the cases of the reference implementation's unit test for its
-    // first/last-character rule (non-ASCII end characters become 9, other ASCII is kept).
+    // The ALPN part: the written rule of the FoxIO JA4 technical details (JA4.md, "ALPN Extension
+    // Value"), with its examples, and the alphanumeric cases of the python unit test.
     #[test]
-    fn ja4s_alpn_part_follows_the_reference_rule() {
-        let alpn_part = |name: &str| {
+    fn ja4s_alpn_part_follows_the_written_rule() {
+        let alpn_in_hello = |name: &[u8]| {
             let mut data = ((name.len() + 1) as u16).to_be_bytes().to_vec();
             data.push(name.len() as u8);
-            data.extend(name.as_bytes());
+            data.extend(name);
             let body = hello_body(0x0303, 0xc02f, &[(16, &data)], [5; 32]);
             ja4s(&parse_server_hello(&body).unwrap())[5..7].to_string()
         };
         for (alpn, want) in [
-            ("h2", "h2"),
-            ("http/1.1", "h1"),
-            ("x", "xx"),
-            ("7", "77"),
-            ("\u{e9}", "99"),
-            ("\u{e9}x", "9x"),
-            ("\u{e9}xy", "9y"),
-            ("x\u{e9}", "x9"),
-            ("xy\u{e9}", "x9"),
-            ("x\u{e9}y", "xy"),
-            ("-a-", "--"),
+            (&b"h2"[..], "h2"),
+            (b"http/1.1", "h1"),
+            (b"x", "xx"),
+            (b"7", "77"),
+            // The examples of the specification.
+            (&[0xAB], "ab"),
+            (&[0x20], "20"),
+            (&[0xAB, 0xCD], "ad"),
+            (&[0x20, 0x61], "21"),
+            (&[0x30, 0xAB], "3b"),
+            (&[0x61, 0x20], "60"),
+            (&[0x30, 0x31, 0xAB, 0xCD], "3d"),
+            (&[0x30, 0xAB, 0xCD, 0x31], "01"),
+            // Punctuation and control characters never reach the fingerprint.
+            (b"-a-", "2d"),
+            (b"\x1b[31m", "1d"),
+            (b"a_b\n", "6a"),
+            ("\u{e9}x".as_bytes(), "c8"),
         ] {
-            assert_eq!(alpn_part(alpn), want, "{alpn:?}");
+            let got = alpn_in_hello(alpn);
+            assert_eq!(got, want, "{alpn:?}");
+            assert!(got.bytes().all(|b| b.is_ascii_alphanumeric()), "{got:?}");
         }
+        assert_eq!(alpn_part(None), "00");
+        assert_eq!(alpn_part(Some(&[])), "00");
         // No ALPN extension: 00.
         let body = hello_body(0x0303, 0xc02f, &[(0xff01, &[0])], [5; 32]);
         assert_eq!(&ja4s(&parse_server_hello(&body).unwrap())[5..7], "00");

@@ -532,7 +532,8 @@ pub const TLS13_SUITES: [(u16, &str, Option<&str>); 5] = [
 ];
 
 /// A TLS 1.3-only ClientHello: supported_versions offers only 0x0304 and the key_share carries
-/// a random 32-byte x25519 value. No key is ever derived: only the ServerHello is read.
+/// a fresh x25519 public value (see `x25519_share`). No shared secret is ever derived: only the
+/// ServerHello is read.
 pub fn client_hello13(
     suites: &[u16],
     random: [u8; 32],
@@ -1512,13 +1513,26 @@ mod tests {
             "Get-TlsCipherSuite listed no TLS 1.3 suite"
         );
 
-        struct Server(std::process::Child);
+        // Stopped through a file so that the script exits normally and deletes the temporary key
+        // container of its certificate; killing is only the fallback.
+        struct Server(std::process::Child, std::path::PathBuf);
         impl Drop for Server {
             fn drop(&mut self) {
+                let _ = std::fs::write(&self.1, b"stop");
+                for _ in 0..100 {
+                    if matches!(self.0.try_wait(), Ok(Some(_))) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
                 let _ = self.0.kill();
                 let _ = self.0.wait();
+                let _ = std::fs::remove_file(&self.1);
             }
         }
+        let stop_file =
+            std::env::temp_dir().join(format!("ns-schannel-stop-{}", std::process::id()));
+        let _ = std::fs::remove_file(&stop_file);
         let mut child = std::process::Command::new("pwsh")
             .args([
                 "-NoProfile",
@@ -1527,6 +1541,8 @@ mod tests {
                 script,
                 "-Seconds",
                 "90",
+                "-StopFile",
+                stop_file.to_str().unwrap(),
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -1534,7 +1550,7 @@ mod tests {
             .spawn()
             .expect("pwsh starts");
         let stdout = child.stdout.take().unwrap();
-        let _guard = Server(child);
+        let _guard = Server(child, stop_file);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
