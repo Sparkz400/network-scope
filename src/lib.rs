@@ -10,9 +10,9 @@ pub(crate) mod ui;
 // (`crate::scan::Host`, `crate::risk::analyze_host`, ...).
 pub(crate) use network_scope_core::{
     alertscript, baseline, capture, changes, core, devices, evidence, feeds, import, incremental,
-    interfaces, mcp, monitor, nmap, notify, nvd, observations, otpassive, passive, plan, presets,
-    report, risk, scan, schema, scope, score, script, search, sendlog, service, store,
-    store_stream, syn, sync, targets, topology, trace, update, wol,
+    interfaces, ipv6, mcp, monitor, nmap, notify, nvd, observations, otpassive, passive, plan,
+    presets, report, risk, scan, schema, scope, score, script, search, sendlog, service, snmp,
+    store, store_stream, syn, sync, targets, topology, trace, update, wol,
 };
 // Research and security-research modules (ROADMAP section L).
 pub(crate) use network_scope_core::{csaf, otmodel, pivot, provenance, research, segmentation};

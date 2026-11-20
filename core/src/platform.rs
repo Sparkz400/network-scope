@@ -406,6 +406,69 @@ mod win {
             })
         }
     }
+    /// One ICMPv6 echo to `ff02::1` with the interface index as scope. The ICMP API returns every
+    /// reply it received before the timeout (`ipv6` joins them to hosts).
+    pub fn multicast_echo6(
+        group: std::net::Ipv6Addr,
+        scope: u32,
+        timeout: u32,
+    ) -> Result<Vec<std::net::Ipv6Addr>, String> {
+        unsafe {
+            let raw = Icmp6CreateFile();
+            if raw.is_null() || raw as isize == -1 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            let h = OwnedHandle(raw);
+            let payload = [0u8; 32];
+            let mut buffer = [0u64; 1024];
+            let source = Sock6 {
+                family: 23,
+                port: 0,
+                flow: 0,
+                address: [0; 16],
+                scope: 0,
+            };
+            let dest = Sock6 {
+                address: group.octets(),
+                scope,
+                ..source
+            };
+            let count = Icmp6SendEcho2(
+                h.0,
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                &source,
+                &dest,
+                payload.as_ptr().cast(),
+                32,
+                ptr::null(),
+                buffer.as_mut_ptr().cast(),
+                std::mem::size_of_val(&buffer) as u32,
+                timeout,
+            );
+            // No reply is a timeout (11000..=11050 are IP status codes), not a local failure.
+            if count == 0 {
+                let error = std::io::Error::last_os_error();
+                let code = error.raw_os_error().unwrap_or(0);
+                if code != 0 && !(11000..=11050).contains(&code) {
+                    return Err(error.to_string());
+                }
+            }
+            let size = std::mem::size_of::<Reply6>();
+            let mut out: Vec<std::net::Ipv6Addr> = vec![];
+            for i in 0..(count as usize).min(std::mem::size_of_val(&buffer) / size) {
+                let reply = ptr::read_unaligned(
+                    buffer.as_ptr().cast::<u8>().add(i * size).cast::<Reply6>(),
+                );
+                let address = std::net::Ipv6Addr::from(reply.address.address);
+                if reply.status == 0 && !out.contains(&address) {
+                    out.push(address);
+                }
+            }
+            Ok(out)
+        }
+    }
     struct OwnedHandle(Handle);
     impl Drop for OwnedHandle {
         fn drop(&mut self) {
@@ -1170,6 +1233,16 @@ pub fn echo(ip: IpAddr, timeout: u32) -> Echo {
     {
         unix::echo(ip, timeout)
     }
+}
+/// One ICMPv6 echo to a multicast group on the interface with this index (Windows ICMP API; the
+/// other platforms use a socket, see `ipv6`). Returns the source of every reply.
+#[cfg(windows)]
+pub fn multicast_echo6(
+    group: std::net::Ipv6Addr,
+    scope: u32,
+    timeout: u32,
+) -> Result<Vec<std::net::Ipv6Addr>, String> {
+    win::multicast_echo6(group, scope, timeout)
 }
 /// Neighbor lookup with liveness evidence (see [`Neighbor::fresh`]).
 pub fn neighbor(ip: IpAddr) -> Option<Neighbor> {

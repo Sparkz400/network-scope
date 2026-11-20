@@ -74,7 +74,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `ot-assets ID [--format json\|csv]` | OT asset inventory from a passive capture |
 | `devices ID [--format json\|csv]` | One record per device (active and passive merged), with its stable device key |
 | `devices --history MAC\|IP [--format text\|json]` | Timeline of one device across saved scans |
-| `topology ID [--format ascii\|dot]` | Network path map from traceroute data |
+| `topology ID [--format ascii\|dot]` | Network path map from traceroute data, plus LLDP links when the scan used [`--snmp-community` or `--snmp-v3`](snmp.md) |
 | `trace TARGET [--max-hops 20] [--timeout 1000] [--fast --trace-method udp\|tcp --trace-port N]` | Traceroute to one IP |
 | `probes [--probes FILE]` | List the TCP and UDP probe database |
 | `probes validate FILE` | Load a probe file like a scan with `--probes` would, then lint it; exit 1 on an error |
@@ -109,7 +109,7 @@ These apply to `scan` and `monitor`.
 | `--preset NAME` | | A named bundle of settings: `quick`, `office`, `plant` or `full`; options given explicitly still win. See [Presets](#presets) |
 | `--targets-file FILE` | | `scan` only: more targets from a list file, one entry per line (`#` and `;` start a comment); it adds to the targets on the command line. At most 4 MiB |
 | `--randomize` | off | `scan` only: probe the addresses in random order (the order only; which addresses and probes stay the same). Up to 1,048,576 addresses |
-| `--ports LIST` | `80,443,8080`; with `--ot` and no `--ports`: `80,443,102,502,4840,44818` | TCP ports; `top:N` adds the N most common ports |
+| `--ports LIST` | `80,443,8080`; with `--ot` and no `--ports`: `80,443,102,502,1883,1911,4840,9600,44818` | TCP ports; `top:N` adds the N most common ports |
 | `--top-ports N` | | Add the N most common TCP ports (1-100) |
 | `--workers N` | 1024 | Hosts scanned concurrently (1-4096; Safe Mode caps at 8) |
 | `--timeout MS` | 2000 | Port and ping timeout (1-10000 ms) |
@@ -138,6 +138,9 @@ These apply to `scan` and `monitor`.
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
 | `--jarm` | off | JARM-style TLS fingerprint: ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode; not verified against the reference JARM, see [Detection](detection.md)) |
+| `--snmp-community STRING` / `--snmp-version 2c\|1` | off / 2c | Read every responding host over [SNMP](snmp.md) with this community (system group, interfaces, addresses, LLDP neighbours): read-only requests, the community is never guessed and never `public` unless you type it; allowed in Safe Mode (with tighter limits) |
+| `--snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]` | off | SNMPv3 (USM): `AUTH` is `sha` or `sha256`, `PRIV` is `aes`; `AUTH_ENV` and `PRIV_ENV` are the **names of environment variables** holding the passphrases (at least 8 characters), never the passphrases themselves |
+| `--ipv6-discover` | off | Find hosts on the local link over IPv6: one ICMPv6 echo to `ff02::1` per interface (`--interface` picks one by index or name), the OS neighbour cache, joined to scanned hosts by MAC; one datagram per interface, also in Safe Mode; see [IPv6 discovery](ipv6-discovery.md) |
 | `--no-backoff` | off | Turn off the [automatic back-off](scanning-engine.md#automatic-back-off) (on by default; it only ever slows a host down) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
@@ -213,7 +216,7 @@ ipv4 2 host(s), 192.168.1.1 ... 192.168.1.2
   ...
 ```
 
-The packet kinds are `icmp-echo`, `arp-request`, `neighbor-lookup`, `tcp-connect`, `tcp-syn`, `udp-probe`, `service-probe`, `http-request`, `tls-client-hello`, `smb-negotiate`, `rdp-negotiate`, `ssh-banner`, `ot-request` (with the protocol, service and function code), `dcp-identify`, `traceroute`, `dhcp-discover`, `wake-on-lan` (only from `wol`, never from a scan) and `dns-ptr` (the reverse lookup goes to your resolver, not to the host). `--format json` prints the same plan as JSON (`dry_run`, `packets_sent: 0`, `groups`, and the scope verdict). The plan is built from the same conditions and allow-lists the scanner uses (a test runs a real scan and checks that everything it sent was in the plan), and a dry run does not need scope confirmation: it prints what a real run would ask instead.
+The packet kinds are `icmp-echo`, `arp-request`, `neighbor-lookup`, `tcp-connect`, `tcp-syn`, `udp-probe`, `service-probe`, `http-request`, `tls-client-hello`, `smb-negotiate`, `rdp-negotiate`, `ssh-banner`, `ot-request` (with the protocol, service and function code), `dcp-identify`, `traceroute`, `dhcp-discover`, `wake-on-lan` (only from `wol`, never from a scan), `ipv6-echo` (the multicast echo of `--ipv6-discover`), `snmp-request` (the read-only SNMP PDU and version) and `dns-ptr` (the reverse lookup goes to your resolver, not to the host). `--format json` prints the same plan as JSON (`dry_run`, `packets_sent: 0`, `groups`, and the scope verdict). The plan is built from the same conditions and allow-lists the scanner uses (a test runs a real scan and checks that everything it sent was in the plan), and a dry run does not need scope confirmation: it prints what a real run would ask instead.
 
 Every scan also keeps a **sent log**: a counter per `(kind, detail)` of the packets it really sent (a port scan counts under `tcp-connect` / `port scan`, a UDP probe under `udp-probe` / `dns/53`, an OT request under its protocol and function code). It is stored with the scan (the `sent` array of the JSON export, `export ID --format json`), shown in the desktop by hovering the status line after a scan, and printed by `--sent-log`:
 

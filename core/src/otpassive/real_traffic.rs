@@ -545,6 +545,16 @@ fn profinet_dcp_identify_response_names_the_device() {
         (field(&dcp, "subnet"), field(&dcp, "gateway")),
         ("255.255.255.0", "192.168.0.1")
     );
+    // the device role and option list are decoded too (the capture has no instance or OEM block)
+    assert_eq!(field(&dcp, "role"), "IO-Device");
+    let options = field(&dcp, "options");
+    for pair in ["1/2", "2/1", "2/2", "2/3", "2/4", "2/5", "3/61"] {
+        assert!(
+            options.split(", ").any(|p| p == pair),
+            "{pair} in {options}"
+        );
+    }
+    assert!(!dcp.fields.contains_key("instance") && !dcp.fields.contains_key("oem_vendor_id"));
     // The DCP "Set IP" request that follows is not decoded, but the device then answers ARP
     // from its new address: the inventory merges both addresses under its MAC.
     let all = assets(&t.observations());
@@ -666,40 +676,249 @@ fn opcua_chunks_are_reassembled_and_the_server_answers_decode() {
     );
 }
 
+/// The payloads of one capture file for which `keep(&packet)` holds, in order.
+fn payloads(name: &str, keep: impl Fn(&super::packet::Packet<'_>) -> bool) -> Vec<Vec<u8>> {
+    let mut reader =
+        crate::pcapfile::Reader::new(std::fs::File::open(path(name)).unwrap()).unwrap();
+    let mut out = vec![];
+    while let Some((_, frame)) = reader.next_frame().unwrap() {
+        if let Some(p) = parse_ip(&frame)
+            && !p.payload.is_empty()
+            && keep(&p)
+        {
+            out.push(p.payload.to_vec());
+        }
+    }
+    out
+}
+
 #[test]
-fn captures_without_a_decoder_yet_produce_no_ot_observations() {
-    // Omron FINS, Niagara Fox and MELSEC have no decoder in this module. Nothing is invented
-    // and nothing is flagged.
+fn omron_fins_controller_data_read_names_the_cp1l() {
+    // FINS/TCP (node address handshake, then a frame) and FINS/UDP: both ask Controller Data
+    // Read (0x0501) and the CP1L-EL answers with its model and versions.
+    let t = track("omron_test.pcap");
+    let server = one(&t, "Omron FINS server (observed)");
+    assert_eq!(
+        (ip(&server).as_str(), field(&server, "clients")),
+        ("10.1.1.164", "10.1.1.173")
+    );
+    assert_eq!(field(&server, "model"), "CP1L-EL20DR-D");
+    assert_eq!(field(&server, "firmware"), "01.00");
+    assert_eq!(field(&server, "versions"), "01.00, 01.06");
+    assert_eq!(field(&server, "node"), "200");
+    assert_eq!(field(&server, "functions"), "Controller Data Read x2");
+    assert_eq!(field(&server, "control_traffic"), "");
+    assert_eq!(field(&server, "packets"), "6");
+    assert!(findings(&t).is_empty());
+    let all = assets(&t.observations());
+    let a = asset_of(&all, "10.1.1.164");
+    assert_eq!(
+        (a.protocols.as_slice(), a.roles.as_slice()),
+        (&["Omron FINS".to_string()][..], &["server".to_string()][..])
+    );
+    assert_eq!(a.product, "CP1L-EL20DR-D");
+    assert_eq!(a.firmware, "01.00");
+    assert_eq!(asset_of(&all, "10.1.1.173").roles, ["client"]);
+
+    // The active request is the frame the captured client sent over UDP, byte for byte (the node
+    // number is the capture's 0x63).
+    use crate::ot_readonly::{FinsCommand, FinsRequest, ReadOnlyRequest};
+    let sent = payloads("omron_test.pcap", |p| !p.tcp && p.dport == 9600);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        FinsRequest::new(0x63, FinsCommand::ControllerDataRead).encode(),
+        sent[0]
+    );
+    assert_eq!(
+        FinsCommand::of_frame(&sent[0]),
+        Some(FinsCommand::ControllerDataRead)
+    );
+    // and the active parser reads the captured UDP reply the same way
+    let reply = payloads("omron_test.pcap", |p| !p.tcp && p.sport == 9600);
+    assert_eq!(
+        ot::extra::parse_fins_controller_data(&reply[0]).unwrap()["model"],
+        "CP1L-EL20DR-D"
+    );
+}
+
+#[test]
+fn niagara_fox_hello_exchange_names_the_station_and_the_workbench() {
+    let t = track("fox_info.pcap");
+    let server = one(&t, "Niagara Fox server (observed)");
+    assert_eq!(
+        (ip(&server).as_str(), field(&server, "clients")),
+        ("106.68.88.119", "10.1.3.4")
+    );
+    for (key, want) in [
+        ("app_name", "Station"),
+        ("app_version", "3.5.41.1"),
+        ("os_name", "QNX"),
+        ("os_version", "6.3.2"),
+        ("vm_name", "J9"),
+        ("station_name", "Legion_HQ_V4"),
+        ("host_name", "192.168.2.15"),
+        ("host_id", "Qnx-NPM6-0000-1490-C30C"),
+        ("brand_id", "vykon"),
+    ] {
+        assert_eq!(field(&server, key), want, "{key}");
+    }
+    assert_eq!(field(&server, "functions"), "fox hello x1");
+    assert_eq!(field(&server, "control_traffic"), "");
+    let client = one(&t, "Niagara Fox client (observed)");
+    assert_eq!(
+        (
+            field(&client, "app_name"),
+            field(&client, "os_name"),
+            field(&client, "host_name")
+        ),
+        ("Workbench", "Windows XP", "xpvm-0omdc01xmy")
+    );
+    assert!(findings(&t).is_empty());
+
+    // The active hello has the layout of the captured client hello: same first line, same keys
+    // in the same order, same terminator.
+    use crate::ot_readonly::{FoxMessage, FoxRequest, ReadOnlyRequest};
+    let captured = payloads("fox_info.pcap", |p| p.tcp && p.dport == 1911);
+    let hello = String::from_utf8(captured[0].clone()).unwrap();
+    assert_eq!(
+        FoxMessage::of_frame(hello.as_bytes()),
+        Some(FoxMessage::Hello)
+    );
+    let ours = String::from_utf8(FoxRequest::new(FoxMessage::Hello).encode()).unwrap();
+    let layout = |text: &str| -> Vec<String> {
+        text.lines()
+            .map(|l| match l.split_once('=') {
+                Some((k, v)) => format!("{k}={}", &v[..2]),
+                None => l.to_string(),
+            })
+            .collect()
+    };
+    assert_eq!(layout(&ours), layout(&hello));
+    // the station's captured hello parses with the active parser
+    let reply = payloads("fox_info.pcap", |p| p.tcp && p.sport == 1911);
+    let fields = ot::extra::parse_fox_hello(&reply[0]).unwrap();
+    assert_eq!(fields["station_name"], "Legion_HQ_V4");
+}
+
+#[test]
+fn melsoft_udp_capture_names_the_iq_f_cpu() {
+    // GX Works talking to an FX5U over the MELSOFT direct connection (UDP 5560); the request
+    // frames go to the broadcast address, the PLC answers to it as well.
+    let t = track("melsec_melsoft_udp.pcap");
+    let server = one(&t, "MELSEC server (observed)");
+    assert_eq!(ip(&server), "192.168.3.250");
+    assert_eq!(field(&server, "model"), "FX5U-32MT/ES");
+    assert_eq!(field(&server, "protocol"), "MELSOFT direct connection");
+    assert_eq!(field(&server, "packets"), "216");
+    assert_eq!(
+        field(&server, "clients"),
+        "",
+        "a reply to a broadcast address names no client"
+    );
+    let client = one(&t, "MELSEC client (observed)");
+    assert_eq!(ip(&client), "192.168.3.101");
+    // nothing is invented about what the frames do
+    assert!(!server.fields.contains_key("functions"));
+    assert!(findings(&t).is_empty());
+    let a = asset_of(&assets(&t.observations()), "192.168.3.250");
+    assert_eq!(a.product, "FX5U-32MT/ES");
+    assert_eq!(a.protocols, ["MELSEC"]);
+}
+
+#[test]
+fn iec61850_mms_is_told_from_s7comm_and_a_stop_is_flagged() {
+    // MMS shares TCP port 102 with S7comm. These two captures (bare MMS PDUs in TPKT/COTP) are
+    // MMS, not S7comm.
+    let t = track("mms_read_request.pcap");
+    assert!(obs(&t, "S7comm server (observed)").is_empty());
+    let server = one(&t, "IEC 61850 MMS server (observed)");
+    assert_eq!(
+        (ip(&server).as_str(), field(&server, "clients")),
+        ("127.0.0.1", "127.0.0.1")
+    );
+    assert_eq!(field(&server, "functions"), "Initiate x1, Read x1");
+    assert_eq!(field(&server, "control_traffic"), "");
+    // the connection request and confirm that came before the first data are counted too
+    assert_eq!(field(&server, "packets"), "6");
+    assert!(findings(&t).is_empty());
+
+    let t = track("mms_stop_request.pcap");
+    assert!(obs(&t, "S7comm server (observed)").is_empty());
+    let server = one(&t, "IEC 61850 MMS server (observed)");
+    assert_eq!(
+        field(&server, "control_traffic"),
+        "Start Program Invocation x1, Stop Program Invocation x1"
+    );
+    assert_eq!(
+        field(&server, "functions"),
+        "Conclude x1, Initiate x1, Start Program Invocation x1, Stop Program Invocation x1"
+    );
+    assert_eq!(
+        field(
+            &one(&t, "IEC 61850 MMS client (observed)"),
+            "control_traffic"
+        ),
+        "Start Program Invocation x1, Stop Program Invocation x1"
+    );
+    let f = findings(&t);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!((f[0].0, f[0].1.as_str()), (Severity::High, "127.0.0.1"));
+    assert!(
+        f[0].2
+            .starts_with("IEC 61850 MMS server: control traffic observed"),
+        "{}",
+        f[0].2
+    );
+    let a = asset_of(&assets(&t.observations()), "127.0.0.1");
+    assert_eq!(a.protocols, ["IEC 61850 MMS"]);
+    assert_eq!(a.control_traffic.len(), 2);
+    // the S7 captures on the same port stay S7, including S7CommPlus and a PLC stop
     for name in [
-        "omron_test.pcap",
-        "fox_info.pcap",
-        "melsec_melsoft_udp.pcap",
+        "s7_1200_hmi.pcap",
+        "s7comm_reading_plc_status.pcap",
+        "s7comm_downloading_block_db1.pcap",
+        "snap7_s300_stop.pcapng",
     ] {
         let t = track(name);
         assert!(
-            t.observations()
-                .iter()
-                .all(|o| !o.protocol.contains("(observed)")),
+            obs(&t, "IEC 61850 MMS server (observed)").is_empty(),
             "{name}"
         );
-        assert!(findings(&t).is_empty(), "{name}");
+        assert_eq!(obs(&t, "S7comm server (observed)").len(), 1, "{name}");
     }
 }
 
 #[test]
-fn iec61850_mms_captures_do_not_crash_or_flag_control_traffic() {
-    // MMS shares TCP port 102 with S7comm and has no decoder of its own yet. The tracker
-    // currently labels these conversations "S7comm" (any TPKT/COTP traffic on port 102 counts
-    // as presence). That label is deliberately not asserted, so that an MMS decoder can claim
-    // the captures; only "no control traffic" is.
-    for name in ["mms_read_request.pcap", "mms_stop_request.pcap"] {
-        let t = track(name);
-        assert!(findings(&t).is_empty(), "{name}");
-        assert!(
-            t.observations()
-                .iter()
-                .all(|o| !o.fields.contains_key("control_traffic")),
-            "{name}"
-        );
+fn dnp3_link_addresses_come_from_the_data_link_header() {
+    let t = track("dnp3_read_and_response.pcap");
+    let server = one(&t, "DNP3 server (observed)");
+    assert_eq!(field(&server, "link_address"), "10");
+    assert_eq!(
+        field(&one(&t, "DNP3 client (observed)"), "link_address"),
+        "1"
+    );
+    // the outstation's reply carries internal indications; none of the interesting ones is set
+    assert_eq!(field(&server, "iin"), "");
+    let t = track("dnp3_write_binary_output.pcap");
+    assert_eq!(
+        field(&one(&t, "DNP3 server (observed)"), "link_address"),
+        "3"
+    );
+    assert_eq!(
+        field(&one(&t, "DNP3 client (observed)"), "link_address"),
+        "4"
+    );
+}
+
+#[test]
+fn no_fixture_is_reported_by_a_decoder_that_is_port_only() {
+    // CODESYS is recognised by port only and no capture of it is among the fixtures: none of
+    // them may be reported as CODESYS.
+    for entry in std::fs::read_dir(DIR).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        if name.ends_with(".pcap") || name.ends_with(".pcapng") {
+            let t = track(&name);
+            assert!(obs(&t, "CODESYS server (observed)").is_empty(), "{name}");
+        }
     }
 }

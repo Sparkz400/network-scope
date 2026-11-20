@@ -100,6 +100,13 @@ pub struct Settings {
     /// so a consumer that only reads final results never sees one; not saved with a scan.
     #[serde(skip)]
     pub partial_events: bool,
+    /// SNMP credentials (`--snmp-community`, `--snmp-v3`): when set, responding hosts are read
+    /// over SNMP (system group, interfaces, LLDP). Never serialised: it holds secrets.
+    #[serde(skip)]
+    pub snmp: Option<crate::snmp::SnmpConfig>,
+    /// IPv6 discovery of the local link (`--ipv6-discover`): one ICMPv6 echo to `ff02::1` per
+    /// interface, the OS neighbour cache, joined to hosts by MAC (see `ipv6`).
+    pub ipv6_discover: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -149,6 +156,8 @@ impl Default for Settings {
             record: false,
             early_stop: false,
             partial_events: false,
+            snmp: None,
+            ipv6_discover: false,
         }
     }
 }

@@ -58,6 +58,40 @@ pub fn service_ports(ports: &[u16]) -> Vec<u16> {
 pub fn udp_ports(ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
     ports.iter().partition(|p| !service::is_ot_udp_port(**p))
 }
+/// What the IPv6 discovery (`--ipv6-discover`, `scan` only) sends once per scan: one echo per
+/// interface. `None` when it is off.
+pub fn ipv6_discovery(s: &Settings) -> Option<HostPlan> {
+    if !crate::ipv6::enabled(s) {
+        return None;
+    }
+    let mut plan = HostPlan {
+        packets: vec![],
+        notes: vec![],
+    };
+    plan.push(
+        PacketKind::Ipv6Echo,
+        crate::ipv6::DETAIL,
+        format!(
+            "ff02::1 on each selected interface (at most {})",
+            crate::ipv6::MAX_INTERFACES
+        ),
+        if s.safe {
+            "once per interface, one datagram, hop limit 1; also in Safe Mode (a single echo request per interface)"
+        } else {
+            "once per interface, one datagram, hop limit 1"
+        },
+    );
+    plan.notes
+        .push("reading the OS neighbour cache and decoding NDP in a capture send nothing".into());
+    Some(plan)
+}
+
+/// The SNMP read (`--snmp-community`, `--snmp-v3`) runs for hosts that answered something when
+/// credentials were given. Safe Mode allows it (every request is a read through the rate gate)
+/// with tighter limits.
+pub fn snmp_read(responding: bool, s: &Settings) -> bool {
+    crate::snmp::enabled(s) && responding
+}
 /// OT identification runs for hosts that answered something (a host with an open or closed TCP
 /// port is responding, so ICMP-silent devices with OT TCP ports qualify) and, when
 /// non-responders are scanned, for silent hosts too. A silent host has no open TCP port, so the
@@ -375,6 +409,33 @@ pub fn host(
         }
     }
 
+    // SNMP with user-supplied credentials.
+    if let Some(config) = &s.snmp {
+        let (requests, seconds) = if s.safe {
+            (
+                crate::snmp::SAFE_MAX_REQUESTS,
+                crate::snmp::SAFE_MAX_SECONDS,
+            )
+        } else {
+            (crate::snmp::MAX_REQUESTS, crate::snmp::MAX_SECONDS)
+        };
+        for label in config.catalog() {
+            plan.push(
+                PacketKind::SnmpRequest,
+                &label,
+                format!("udp/{}", config.port),
+                &format!(
+                    "only if the host answered; credentials were given ({}); at most {requests} requests and {seconds} s per host, read-only: sysDescr/sysName/sysObjectID/sysUpTime, ifTable, ipAddrTable, LLDP remote table",
+                    config.credentials_summary()
+                ),
+            );
+        }
+        plan.notes.push(
+            "SNMP never sends a SetRequest, never tries other communities and never guesses credentials"
+                .into(),
+        );
+    }
+
     // Read-only OT identification.
     if s.ot {
         let when_silent = if s.scan_nonresponders {
@@ -390,14 +451,21 @@ pub fn host(
                     PacketKind::TcpConnect,
                     "OT identification",
                     format!("tcp/{port}"),
-                    &format!("only if tcp/{port} was found open"),
+                    &if port == 1883 {
+                        format!("only if tcp/{port} was found open and --services is off (with --services the MQTT service probe sends the same CONNECT)")
+                    } else {
+                        format!("only if tcp/{port} was found open")
+                    },
                 );
             }
             for e in catalog.iter().filter(|e| e.port == port) {
                 let when = if e.tcp {
                     format!("only if tcp/{port} was found open")
-                } else {
+                } else if port == 47808 {
                     when_silent.to_string()
+                } else {
+                    // FINS and KNX: never to a host that answered nothing
+                    "only if the host answered".to_string()
                 };
                 plan.push(
                     PacketKind::OtRequest,
@@ -934,6 +1002,7 @@ mod tests {
             "plan::syn_engine(",
             "plan::udp_ports(",
             "plan::ot_identification(",
+            "plan::snmp_read(",
             "plan::probes_ports(",
         ] {
             assert!(code.contains(call), "the scheduler must use {call}");
@@ -951,6 +1020,7 @@ mod tests {
             ("core.rs", include_str!("core.rs")),
             ("jarm.rs", include_str!("jarm.rs")),
             ("ot.rs", include_str!("ot.rs")),
+            ("snmp/client.rs", include_str!("snmp/client.rs")),
             ("syn.rs", include_str!("syn.rs")),
             ("tls.rs", include_str!("tls.rs")),
             ("trace.rs", include_str!("trace.rs")),
@@ -1032,6 +1102,13 @@ mod tests",
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
+        // an SNMP agent that is not there: the request goes out, nothing answers
+        let snmp = {
+            let free = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let mut c = crate::snmp::SnmpConfig::community("2c", "lab-community").unwrap();
+            c.port = free.local_addr().unwrap().port();
+            c
+        };
         for safe in [true, false] {
             let s = Settings {
                 safe,
@@ -1040,6 +1117,7 @@ mod tests",
                 os_detect: true,
                 ot: true,
                 jarm: true,
+                snmp: Some(snmp.clone()),
                 trace: false,
                 dns: false,
                 tcp_only: false,
@@ -1088,6 +1166,7 @@ mod tests",
                 PacketKind::IcmpEcho,
                 PacketKind::TcpConnect,
                 PacketKind::UdpProbe,
+                PacketKind::SnmpRequest,
             ] {
                 assert!(
                     sent_kinds.contains(&k),

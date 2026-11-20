@@ -56,6 +56,11 @@ pub enum PacketKind {
     Traceroute,
     /// A DHCPDISCOVER broadcast (`monitor --dhcp-discover`).
     DhcpDiscover,
+    /// The ICMPv6 echo request to `ff02::1` of the IPv6 discovery (`--ipv6-discover`).
+    Ipv6Echo,
+    /// A read-only SNMP request (GetRequest, GetNextRequest or GetBulkRequest) with
+    /// user-supplied credentials (see `snmp`).
+    SnmpRequest,
     /// A reverse DNS lookup; it goes to the system resolver, not to the scanned host.
     #[serde(rename = "dns-ptr")]
     DnsLookup,
@@ -84,12 +89,14 @@ impl PacketKind {
             Self::DcpIdentify => "dcp-identify",
             Self::Traceroute => "traceroute",
             Self::DhcpDiscover => "dhcp-discover",
+            Self::Ipv6Echo => "ipv6-echo",
+            Self::SnmpRequest => "snmp-request",
             Self::DnsLookup => "dns-ptr",
             Self::WakeOnLan => "wake-on-lan",
         }
     }
     /// Every kind, in the order of the enum (used by tests and documentation).
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::IcmpEcho,
         Self::ArpRequest,
         Self::NeighborLookup,
@@ -106,6 +113,8 @@ impl PacketKind {
         Self::DcpIdentify,
         Self::Traceroute,
         Self::DhcpDiscover,
+        Self::Ipv6Echo,
+        Self::SnmpRequest,
         Self::DnsLookup,
         Self::WakeOnLan,
     ];

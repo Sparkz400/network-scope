@@ -21,6 +21,7 @@
 //! | BACnet/IP | unicast Who-Is (BVLC 0x0A, unconfirmed request, service 8) |
 //! | OPC UA | HEL, OpenSecureChannel (446), GetEndpoints (428), FindServers (422), CloseSecureChannel (452), SecurityPolicy None |
 //! | Profinet DCP | Identify All (frame ID 0xFEFE, service ID 5, request, option/suboption 0xFF/0xFF), layer 2 multicast, sent only through [`DcpFrameTx`] |
+//! | Omron FINS/UDP, Niagara Fox, MQTT, KNXnet/IP | Controller Data Read (0x0501), the Fox hello, MQTT CONNECT and DISCONNECT, a unicast KNX DESCRIPTION_REQUEST; see the `more` module |
 //!
 //! A Modbus write cannot be constructed; this does not compile:
 //!
@@ -105,7 +106,12 @@
 //!     }
 //! }
 //! ```
+mod more;
 use crate::sendlog::{PacketKind, SentLog};
+pub use more::{
+    FinsCommand, FinsRequest, FoxMessage, FoxRequest, KnxRequest, KnxService, MqttPacket,
+    MqttRequest,
+};
 use std::{
     io,
     net::SocketAddr,
@@ -228,6 +234,10 @@ impl OtUdp {
             log.capture(self.2, true, false, &buf[..n], "OT reply");
         }
         Ok(n)
+    }
+    /// The local address the datagrams leave from (known once the socket is connected).
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.0.local_addr()
     }
 }
 
@@ -989,6 +999,9 @@ pub fn catalog() -> Vec<CatalogEntry> {
     for s in BacnetService::ALLOWED {
         add(BacnetRequest::new(s).info(), 47808, false);
     }
+    for (info, port, tcp) in more::catalog_entries() {
+        add(info, port, tcp);
+    }
     out
 }
 
@@ -1157,9 +1170,24 @@ mod tests {
         has("OPC UA: CloseSecureChannel (node 452)", 4840);
         has("EtherNet/IP: List Identity (command 0x0063)", 44818);
         has("BACnet/IP: unicast Who-Is (unconfirmed service 8)", 47808);
-        assert_eq!(labels.len(), 12, "{labels:?}");
-        // Only BACnet is UDP.
-        assert!(labels.iter().all(|(_, p, tcp)| *tcp == (*p != 47808)));
+        has(
+            "Omron FINS/UDP: Controller Data Read (command 0x0501)",
+            9600,
+        );
+        has("Niagara Fox: hello (fox a 1 -1 fox hello)", 1911);
+        has("MQTT: CONNECT (packet type 1", 1883);
+        has("MQTT: DISCONNECT (packet type 14)", 1883);
+        has(
+            "KNXnet/IP: DESCRIPTION_REQUEST (service type 0x0203, unicast)",
+            3671,
+        );
+        assert_eq!(labels.len(), 17, "{labels:?}");
+        // BACnet, FINS and KNX are UDP.
+        assert!(
+            labels
+                .iter()
+                .all(|(_, p, tcp)| *tcp == !matches!(*p, 47808 | 9600 | 3671))
+        );
         // Labels are unique, so the sent log keys them apart.
         let unique: std::collections::BTreeSet<_> = labels.iter().map(|l| &l.0).collect();
         assert_eq!(unique.len(), labels.len());
@@ -1745,6 +1773,7 @@ mod tests {
         for (name, source) in [
             ("ot.rs", include_str!("../ot.rs")),
             ("ot/opcua.rs", include_str!("opcua.rs")),
+            ("ot/extra.rs", include_str!("extra.rs")),
         ] {
             let code = source.split("#[cfg(test)]").next().unwrap();
             for forbidden in [

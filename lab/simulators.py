@@ -19,6 +19,8 @@ Scenarios (--scenario) make the network or the devices behave badly; lab/verify.
 import argparse
 import collections
 import functools
+import hashlib
+import hmac
 import json
 import os
 import random
@@ -472,8 +474,404 @@ def bacnet(bind, port):
             sock.sendto(reply, addr)
 
 
+# ---- SNMP agent: v1/v2c with a community, v3 authNoPriv (HMAC-SHA-1-96), read-only -------------
+# A switch with three ports, two addresses and two LLDP neighbours. It answers only GetRequest,
+# GetNextRequest and GetBulkRequest; any other PDU (a SetRequest, say) is counted and ignored, and
+# `--snmp-stats FILE` records the PDU tags it saw, so lab/verify.py can show the scanner sent no
+# write. Like a real agent it stays silent for a wrong community: the community "public" is NOT
+# accepted, so the accuracy checks (and the snmp-public finding) are unchanged by this agent.
+# Written independently of the Rust implementation (BER, key localisation and HMAC here come from
+# the standard library) so that the lab cross-checks the scanner's SNMPv3 message layout.
+SNMP_COMMUNITY = b"lab-community"
+SNMP_USER = b"labuser"
+SNMP_AUTH_PASSPHRASE = b"lab-snmp-auth-pass"
+SNMP_ENGINE_ID = bytes.fromhex("80001f88801a2b3c4d5e6f7081")
+SNMP_STATS = {"datagrams": 0, "pdu_tags": {}, "other_pdus": 0}
+
+
+def ber(tag, content):
+    n = len(content)
+    if n < 128:
+        length = bytes([n])
+    elif n < 256:
+        length = bytes([0x81, n])
+    else:
+        length = bytes([0x82, n >> 8, n & 255])
+    return bytes([tag]) + length + content
+
+
+def ber_read(data, i=0):
+    tag, n, i = data[i], data[i + 1], i + 2
+    if n & 0x80:
+        count = n & 0x7F
+        n, i = int.from_bytes(data[i:i + count], "big"), i + count
+    if i + n > len(data):
+        raise ValueError("truncated")
+    return tag, data[i:i + n], i + n
+
+
+def ber_int(value):
+    length = ((value if value >= 0 else ~value).bit_length() // 8) + 1
+    return ber(2, value.to_bytes(length, "big", signed=True))
+
+
+def oid_encode(arcs):
+    body = bytearray([arcs[0] * 40 + arcs[1]])
+    for arc in arcs[2:]:
+        parts = [arc & 0x7F]
+        arc >>= 7
+        while arc:
+            parts.append((arc & 0x7F) | 0x80)
+            arc >>= 7
+        body += bytes(reversed(parts))
+    return ber(6, bytes(body))
+
+
+def oid_decode(body):
+    arcs, n = [body[0] // 40, body[0] % 40], 0
+    for byte in body[1:]:
+        n = (n << 7) | (byte & 0x7F)
+        if not byte & 0x80:
+            arcs.append(n)
+            n = 0
+    return tuple(arcs)
+
+
+def snmp_value(kind, value):
+    if kind == "s":
+        return ber(4, value)
+    if kind == "i":
+        return ber_int(value)
+    if kind == "oid":
+        return oid_encode(value)
+    if kind == "ticks":
+        return ber(0x43, value.to_bytes(4, "big").lstrip(b"\x00").rjust(1, b"\x00") if value < 0x80000000 else b"\x00" + value.to_bytes(4, "big"))
+    if kind == "ip":
+        return ber(0x40, value)
+    raise ValueError(kind)
+
+
+def snmp_mib():
+    def o(text):
+        return tuple(int(part) for part in text.split("."))
+
+    mib = {
+        o("1.3.6.1.2.1.1.1.0"): ("s", b"Lab Switch 24G (LabOS 3.1.4)"),
+        o("1.3.6.1.2.1.1.2.0"): ("oid", o("1.3.6.1.4.1.8072.3.2.10")),
+        o("1.3.6.1.2.1.1.3.0"): ("ticks", 12345600),
+        o("1.3.6.1.2.1.1.4.0"): ("s", b"lab@example.invalid"),
+        o("1.3.6.1.2.1.1.5.0"): ("s", b"lab-sw1"),
+        o("1.3.6.1.2.1.1.6.0"): ("s", b"Rack 4"),
+        o("1.3.6.1.2.1.1.7.0"): ("i", 72),
+    }
+    for n, (name, mac, status) in enumerate([("Gi1/0/1", "001b210a0b01", 1), ("Gi1/0/2", "001b210a0b02", 2), ("Vlan1", "001b210a0bff", 1)], 1):
+        mib[o(f"1.3.6.1.2.1.2.2.1.1.{n}")] = ("i", n)
+        mib[o(f"1.3.6.1.2.1.2.2.1.2.{n}")] = ("s", name.encode())
+        mib[o(f"1.3.6.1.2.1.2.2.1.6.{n}")] = ("s", bytes.fromhex(mac))
+        mib[o(f"1.3.6.1.2.1.2.2.1.8.{n}")] = ("i", status)
+    for address, index, mask in (("10.77.0.2", 3, bytes([255, 255, 255, 0])), ("192.168.77.1", 3, bytes([255, 255, 255, 128]))):
+        mib[o(f"1.3.6.1.2.1.4.20.1.1.{address}")] = ("ip", bytes(int(p) for p in address.split(".")))
+        mib[o(f"1.3.6.1.2.1.4.20.1.2.{address}")] = ("i", index)
+        mib[o(f"1.3.6.1.2.1.4.20.1.3.{address}")] = ("ip", mask)
+    for row, chassis, port, name in (("0.1.1", "001b21770001", b"Gi0/24", b"dist-sw2"), ("0.2.1", "525400123456", b"eth0", b"lab-ap")):
+        mib[o(f"1.0.8802.1.1.2.1.4.1.1.4.{row}")] = ("i", 4)
+        mib[o(f"1.0.8802.1.1.2.1.4.1.1.5.{row}")] = ("s", bytes.fromhex(chassis))
+        mib[o(f"1.0.8802.1.1.2.1.4.1.1.6.{row}")] = ("i", 5)
+        mib[o(f"1.0.8802.1.1.2.1.4.1.1.7.{row}")] = ("s", port)
+        mib[o(f"1.0.8802.1.1.2.1.4.1.1.8.{row}")] = ("s", port + b" uplink")
+        mib[o(f"1.0.8802.1.1.2.1.4.1.1.9.{row}")] = ("s", name)
+    return mib
+
+
+SNMP_MIB = snmp_mib()
+SNMP_OIDS = sorted(SNMP_MIB)
+
+
+def snmp_walk(tag, oids, non_repeaters, max_repetitions, v1):
+    """The variable bindings for a Get (0xA0), GetNext (0xA1) or GetBulk (0xA5); None = noSuchName."""
+    def after(oid):
+        return next((o for o in SNMP_OIDS if o > oid), None)
+
+    out = []
+    if tag == 0xA0:
+        for oid in oids:
+            if oid in SNMP_MIB:
+                out.append((oid, SNMP_MIB[oid]))
+            elif v1:
+                return None
+            else:
+                out.append((oid, ("raw", b"\x81\x00")))  # noSuchInstance
+    elif tag == 0xA1:
+        for oid in oids:
+            nxt = after(oid)
+            if nxt is not None:
+                out.append((nxt, SNMP_MIB[nxt]))
+            elif v1:
+                return None
+            else:
+                out.append((oid, ("raw", b"\x82\x00")))  # endOfMibView
+    else:
+        cursors = list(oids[non_repeaters:])
+        for oid in oids[:non_repeaters]:
+            nxt = after(oid)
+            out.append((nxt, SNMP_MIB[nxt]) if nxt else (oid, ("raw", b"\x82\x00")))
+        for _ in range(min(max_repetitions, 50)):
+            moved = False
+            for i, cursor in enumerate(cursors):
+                nxt = after(cursor)
+                if nxt is None:
+                    out.append((cursor, ("raw", b"\x82\x00")))
+                else:
+                    cursors[i] = nxt
+                    out.append((nxt, SNMP_MIB[nxt]))
+                    moved = True
+            if not moved:
+                break
+    return out
+
+
+def snmp_varbinds(binds):
+    items = b""
+    for oid, (kind, value) in binds:
+        encoded = ber(value[0], value[1:]) if kind == "raw" else snmp_value(kind, value)
+        items += ber(0x30, oid_encode(oid) + encoded)
+    return ber(0x30, items)
+
+
+def snmp_request(pdu):
+    """(request-id, a, b, [oids]) of a request PDU body."""
+    _, rid, i = ber_read(pdu, 0)
+    _, a, i = ber_read(pdu, i)
+    _, b, i = ber_read(pdu, i)
+    _, binds, _ = ber_read(pdu, i)
+    oids, j = [], 0
+    while j < len(binds):
+        _, vb, j = ber_read(binds, j)
+        _, name, _ = ber_read(vb, 0)
+        oids.append(oid_decode(name))
+    return (int.from_bytes(rid, "big", signed=True), int.from_bytes(a, "big", signed=True),
+            int.from_bytes(b, "big", signed=True), oids)
+
+
+def snmp_count(tag):
+    SNMP_STATS["pdu_tags"][hex(tag)] = SNMP_STATS["pdu_tags"].get(hex(tag), 0) + 1
+    if tag not in (0xA0, 0xA1, 0xA5):
+        SNMP_STATS["other_pdus"] += 1
+
+
+def snmp_localized_key(passphrase, engine_id):
+    block = (passphrase * (1048576 // len(passphrase) + 1))[:1048576]
+    ku = hashlib.sha1(block).digest()
+    return hashlib.sha1(ku + engine_id + ku).digest()
+
+
+def snmp_v3(data, started):
+    _, msg, _ = ber_read(data)
+    _, _, i = ber_read(msg, 0)
+    _, glob, i = ber_read(msg, i)
+    _, sec, i = ber_read(msg, i)
+    _, scoped, _ = ber_read(msg, i)
+    _, msg_id, j = ber_read(glob, 0)
+    _, _, j = ber_read(glob, j)
+    _, flags, _ = ber_read(glob, j)
+    flags = flags[0]
+    _, params, _ = ber_read(sec, 0)
+    _, engine, j = ber_read(params, 0)
+    _, _, j = ber_read(params, j)
+    _, _, j = ber_read(params, j)
+    _, user, j = ber_read(params, j)
+    _, auth, j = ber_read(params, j)
+    msg_id = int.from_bytes(msg_id, "big", signed=True)
+    now = int(time.monotonic() - started) + 1000
+    key = snmp_localized_key(SNMP_AUTH_PASSPHRASE, SNMP_ENGINE_ID)
+
+    def message(flags_byte, rid, tag, status, binds, user_name, authenticated):
+        pdu = ber(tag, ber_int(rid) + ber_int(status) + ber_int(0) + binds)
+        scoped_pdu = ber(0x30, ber(4, SNMP_ENGINE_ID) + ber(4, b"") + pdu)
+
+        def build(auth_bytes):
+            usm = ber(4, ber(0x30, ber(4, SNMP_ENGINE_ID) + ber_int(7) + ber_int(now) + ber(4, user_name) + ber(4, auth_bytes) + ber(4, b"")))
+            head = ber(0x30, ber_int(msg_id) + ber_int(1472) + ber(4, bytes([flags_byte])) + ber_int(3))
+            return ber(0x30, ber_int(3) + head + usm + scoped_pdu)
+        if not authenticated:
+            return build(b"")
+        zeroed = build(b"\x00" * 12)
+        return build(hmac.new(key, zeroed, hashlib.sha1).digest()[:12])
+
+    def report(counter):
+        binds = ber(0x30, ber(0x30, oid_encode((1, 3, 6, 1, 6, 3, 15, 1, 1, counter, 0)) + ber(0x41, b"\x01")))
+        return message(0, 0, 0xA8, 0, binds, b"", False)
+
+    if engine != SNMP_ENGINE_ID:
+        return report(4)  # usmStatsUnknownEngineIDs: how a manager discovers the engine
+    if user != SNMP_USER:
+        return report(3)  # usmStatsUnknownUserNames
+    if flags & 0x03 == 0x01:  # authNoPriv
+        zeroed = bytearray(data)
+        at = data.find(auth)
+        if len(auth) != 12 or at < 0:
+            return report(5)
+        zeroed[at:at + 12] = b"\x00" * 12
+        if not hmac.compare_digest(hmac.new(key, bytes(zeroed), hashlib.sha1).digest()[:12], auth):
+            return report(5)  # usmStatsWrongDigests
+    else:
+        return report(1)  # the user needs authentication, and there is no privacy: usmStatsUnsupportedSecLevels
+    _, ctx_engine, j = ber_read(scoped, 0)
+    _, _, j = ber_read(scoped, j)
+    tag, pdu, _ = ber_read(scoped, j)
+    snmp_count(tag)
+    if tag not in (0xA0, 0xA1, 0xA5):
+        return None
+    rid, a, b, oids = snmp_request(pdu)
+    binds = snmp_walk(tag, oids, a, b, False)
+    return message(flags & 0x01, rid, 0xA2, 0, snmp_varbinds(binds), SNMP_USER, bool(flags & 1))
+
+
+def snmp_handle(data, started):
+    try:
+        _, msg, _ = ber_read(data)
+        _, version, i = ber_read(msg, 0)
+        version = version[0]
+        if version == 3:
+            return snmp_v3(data, started)
+        _, community, i = ber_read(msg, i)
+        if community != SNMP_COMMUNITY:
+            return None  # silence, like a real agent
+        tag, pdu, _ = ber_read(msg, i)
+        snmp_count(tag)
+        if tag not in (0xA0, 0xA1, 0xA5):
+            return None
+        rid, a, b, oids = snmp_request(pdu)
+        binds = snmp_walk(tag, oids, a, b, version == 0)
+        if binds is None:
+            body = ber_int(rid) + ber_int(2) + ber_int(1) + snmp_varbinds([(o, ("raw", b"\x05\x00")) for o in oids])
+        else:
+            body = ber_int(rid) + ber_int(0) + ber_int(0) + snmp_varbinds(binds)
+        return ber(0x30, ber(2, bytes([version])) + ber(4, community) + ber(0xA2, body))
+    except (ValueError, IndexError):
+        return None
+
+
+def snmp_agent(bind, port, stats_path=None):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((bind, port))
+    started = time.monotonic()
+    while True:
+        data, addr = sock.recvfrom(9000)
+        SNMP_STATS["datagrams"] += 1
+        reply = snmp_handle(data, started)
+        if stats_path:
+            try:
+                with open(stats_path + ".tmp", "w") as handle:
+                    json.dump(SNMP_STATS, handle)
+                os.replace(stats_path + ".tmp", stats_path)
+            except OSError:
+                pass
+        if reply is not None and not SCENARIO.drop(port):
+            SCENARIO.pause()
+            sock.sendto(reply, addr)
+
+
+# ---- FINS/UDP, MQTT, KNXnet/IP and Niagara Fox: identification only -----------------------------
+# Each device answers only the one read-only request Network Scope sends (FINS Controller Data
+# Read, MQTT CONNECT, KNX DESCRIPTION_REQUEST, the Fox hello) and counts what it receives, so
+# lab/verify.py can show that nothing else arrives (`--ot-stats FILE`). Anything else is counted
+# under "other" and ignored.
+OT_STATS = {"fins": {}, "mqtt": {}, "knx": {}, "fox": {}}
+OT_STATS_PATH = None
+
+
+def ot_count(protocol, key):
+    OT_STATS[protocol][key] = OT_STATS[protocol].get(key, 0) + 1
+    if OT_STATS_PATH:
+        try:
+            with open(OT_STATS_PATH + ".tmp", "w") as handle:
+                json.dump(OT_STATS, handle)
+            os.replace(OT_STATS_PATH + ".tmp", OT_STATS_PATH)
+        except OSError:
+            pass
+
+
+def fins_reply(request):
+    """Controller Data Read response: model, version, system use and area data (92 bytes)."""
+    header = bytes([0xC0, 0, 2, 0, request[7], 0, 0, 0xC8, 0, request[9], 5, 1, 0, 0])
+    data = b"LabPLC-FINS".ljust(20, b" ") + b"01.00".ljust(20, b"\x00") + bytes(40) + bytes(12)
+    return header + data
+
+
+def fins_agent(bind, port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((bind, port))
+    while True:
+        data, addr = sock.recvfrom(2048)
+        if len(data) == 13 and data[0] == 0x80 and data[10:12] == b"\x05\x01":
+            ot_count("fins", "0501")
+            if not SCENARIO.drop(port):
+                SCENARIO.pause()
+                sock.sendto(fins_reply(data), addr)
+        else:
+            ot_count("fins", "other")
+
+
+def mqtt(conn):
+    """Answers a CONNECT with a CONNACK "not authorized" (like a broker that wants credentials)."""
+    data = read_some(conn)
+    if not data:
+        return
+    ot_count("mqtt", str(data[0] >> 4))
+    if data[0] == 0x10:
+        conn.sendall(bytes([0x20, 2, 0, 5]))
+        while True:  # the DISCONNECT, then the end of the stream
+            more = read_some(conn)
+            if not more:
+                return
+            ot_count("mqtt", str(more[0] >> 4))
+
+
+def fox(conn):
+    """Answers the Fox hello with a station hello."""
+    data = b""
+    conn.settimeout(IDLE_TIMEOUT)
+    try:
+        while b"};;" not in data and len(data) < 4096:
+            chunk = conn.recv(1024)
+            if not chunk:
+                return
+            data += chunk
+    except OSError:
+        return
+    ot_count("fox", "hello" if data.startswith(b"fox a 1 -1 fox hello\n") else "other")
+    if not data.startswith(b"fox a 1 -1 fox hello\n"):
+        return
+    body = ("fox.version=s:1.0\nid=i:2\nhostName=s:lab-jace\nhostAddress=s:127.0.0.1\napp.name=s:Station\n"
+            "app.version=s:4.8.0.1\nvm.name=s:J9\nvm.version=s:2.9\nos.name=s:QNX\nos.version=s:6.5\n"
+            "station.name=s:LabStation\nlang=s:en\nhostId=s:Qnx-LAB-0000-0000-0001\nbrandId=s:lab\n")
+    conn.sendall(("fox a 0 -1 fox hello\n{\n" + body + "};;\n").encode())
+
+
+def knx_description():
+    """A DESCRIPTION_RESPONSE: device information DIB (54 bytes) and supported service families."""
+    dib = bytes([54, 1, 0x02, 0]) + bytes([0x11, 0xFA]) + bytes([0, 1]) + bytes.fromhex("008300112233")
+    dib += bytes([224, 0, 23, 12]) + bytes.fromhex("001b21aabbcc") + b"Lab KNX IP Router".ljust(30, b"\x00")
+    families = bytes([10, 2, 2, 1, 3, 1, 4, 1, 5, 1])
+    body = dib + families
+    return bytes([6, 0x10, 2, 4]) + struct.pack(">H", 6 + len(body)) + body
+
+
+def knx_agent(bind, port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((bind, port))
+    while True:
+        data, addr = sock.recvfrom(2048)
+        service = struct.unpack(">H", data[2:4])[0] if len(data) >= 4 and data[:2] == b"\x06\x10" else None
+        ot_count("knx", hex(service) if service is not None else "other")
+        if service == 0x0203 and not SCENARIO.drop(port):
+            SCENARIO.pause()
+            sock.sendto(knx_description(), addr)
+
+
 def main():
-    global SCENARIO
+    global SCENARIO, OT_STATS_PATH
     ap = argparse.ArgumentParser()
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--offset", type=int, default=0, help="added to every port")
@@ -485,10 +883,14 @@ def main():
     ap.add_argument("--delay-max-ms", type=int, default=300, help="slow-wan: longest reply delay")
     ap.add_argument("--conn-limit", type=int, default=4, help="fragile-ot: new connections per second that crash a device")
     ap.add_argument("--stats", help="fragile-ot: JSON file for the device counters")
+    ap.add_argument("--snmp-stats", help="JSON file for the SNMP agent's counters (the PDU tags it received)")
+    ap.add_argument("--ot-stats", help="JSON file for the counters of the FINS, MQTT, KNX and Fox devices (what they received)")
     args = ap.parse_args()
     SCENARIO = Scenario(args.scenario, args.seed, args.loss, (args.delay_min_ms / 1000, args.delay_max_ms / 1000))
 
     tcp = {port: (handler, None) for port, handler in TCP.items()}
+    tcp[1883] = (mqtt, None)
+    tcp[1911] = (fox, None)
     if args.scenario == "fragile-ot":
         stats = Stats(args.stats)
         for port, (name, handler) in FRAGILE.items():
@@ -500,7 +902,11 @@ def main():
             continue
         threading.Thread(target=serve_tcp, args=(args.bind, port + args.offset, handler, device), daemon=True).start()
     threading.Thread(target=bacnet, args=(args.bind, 47808 + args.offset), daemon=True).start()
-    print("lab simulators listening on", args.bind, "ports", sorted(p + args.offset for p in tcp if p not in args.skip), "and udp", 47808 + args.offset, "scenario", args.scenario, flush=True)
+    threading.Thread(target=snmp_agent, args=(args.bind, 161 + args.offset, args.snmp_stats), daemon=True).start()
+    OT_STATS_PATH = args.ot_stats
+    threading.Thread(target=fins_agent, args=(args.bind, 9600 + args.offset), daemon=True).start()
+    threading.Thread(target=knx_agent, args=(args.bind, 3671 + args.offset), daemon=True).start()
+    print("lab simulators listening on", args.bind, "ports", sorted(p + args.offset for p in tcp if p not in args.skip), "and udp", 47808 + args.offset, 161 + args.offset, 9600 + args.offset, 3671 + args.offset, "scenario", args.scenario, flush=True)
     threading.Event().wait()
 
 

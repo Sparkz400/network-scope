@@ -3,6 +3,7 @@
 //! Requests are built and sent only through [`readonly`]: its allow-listed request types are
 //! the only values the socket wrappers accept, so a write or control service is a type error
 //! (see the module documentation there).
+pub(crate) mod extra;
 pub(crate) mod opcua;
 pub mod readonly;
 use crate::sendlog::{PacketKind, SentLog};
@@ -40,13 +41,20 @@ fn be16(b: &[u8], i: usize) -> Result<u16, String> {
 }
 /// The protocols `identify` talks to and their ports (BACnet over UDP, the rest over TCP).
 /// The dry run (`plan`) reads this table too.
-pub(crate) const TARGETS: [(&str, u16); 5] = [
+pub(crate) const TARGETS: [(&str, u16); 9] = [
     ("Modbus", 502),
     ("S7", 102),
     ("OPC UA", 4840),
     ("EtherNet/IP", 44818),
     ("BACnet", 47808),
+    ("Omron FINS", 9600),
+    ("Niagara Fox", 1911),
+    ("MQTT", 1883),
+    ("KNXnet/IP", 3671),
 ];
+/// The ports of `TARGETS` that are UDP. A silent host gets only the BACnet Who-Is; the other two
+/// are sent to hosts that answered something else.
+pub(crate) const UDP_TARGETS: [u16; 3] = [47808, 9600, 3671];
 /// Start of the error text when the TCP connection to the OT port could not be made (the port
 /// had been found open, so this is a device that stopped answering, not a protocol problem).
 pub(crate) const CONNECT_FAILED: &str = "connect: ";
@@ -61,11 +69,20 @@ pub(crate) fn connect_error(e: std::io::Error) -> String {
 pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
     let mut unreachable = vec![];
     for (protocol, port) in TARGETS {
-        if port != 47808 && !h.open.contains(&port) {
+        let udp = UDP_TARGETS.contains(&port);
+        if !udp && !h.open.contains(&port) {
+            continue;
+        }
+        // FINS and KNX over UDP only go to hosts that answered something else.
+        if udp && port != 47808 && !h.responding {
+            continue;
+        }
+        // With --services the probes.json MQTT probe has already sent the same CONNECT.
+        if port == 1883 && s.services {
             continue;
         }
         // The requests themselves are counted by the logged sockets; the TCP connect here.
-        if port == 47808 {
+        if udp {
             gate.wait().await;
         } else {
             gate.wait_for(PacketKind::TcpConnect, "OT identification")
@@ -78,11 +95,15 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
                 102 => s7(h.ip, s.s7_rack, s.s7_slot, gate).await.map(Some),
                 4840 => opcua::discover(h.ip, gate).await.map(Some),
                 44818 => enip(h.ip, log).await.map(Some),
+                9600 => extra::fins(SocketAddr::new(h.ip, 9600), log).await,
+                1911 => extra::fox(h.ip, log).await.map(Some),
+                1883 => extra::mqtt(h.ip, log).await.map(Some),
+                3671 => extra::knx(SocketAddr::new(h.ip, 3671), log).await,
                 _ => bacnet(SocketAddr::new(h.ip, 47808), log).await,
             }
         };
         match tokio::time::timeout(identify_timeout(port, s.port_timeout), task).await {
-            // BACnet: no answer or an ICMP "port unreachable" simply means no BACnet device.
+            // UDP: no answer or an ICMP "port unreachable" simply means no such device.
             Ok(Ok(None)) => {}
             Ok(Ok(Some(fields))) => {
                 h.responding = true;
@@ -91,13 +112,13 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
                 }
             }
             Ok(Err(e)) => {
-                if port != 47808 && e.starts_with(CONNECT_FAILED) {
+                if !udp && e.starts_with(CONNECT_FAILED) {
                     unreachable.push(port);
                 }
                 h.errors.push(format!("{protocol}: {e}"));
             }
             Err(_) => {
-                if port != 47808 {
+                if !udp {
                     h.errors
                         .push(format!("{protocol}: identification timed out"));
                 }
@@ -109,7 +130,7 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
 /// How long one identification exchange may take. The BACnet Who-Is is sent to every host,
 /// open port or not, so a silent host must not cost more than one port timeout (at most 2 s).
 fn identify_timeout(port: u16, port_timeout: u32) -> Duration {
-    if port == 47808 {
+    if UDP_TARGETS.contains(&port) {
         Duration::from_millis(u64::from(port_timeout.clamp(200, 2000)))
     } else {
         Duration::from_millis(u64::from(port_timeout.clamp(500, 10000)) * 4)

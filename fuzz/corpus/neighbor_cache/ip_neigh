@@ -1,0 +1,3 @@
+fe80::1 dev eth0 lladdr aa:bb:cc:dd:ee:ff router REACHABLE
+2001:db8::5 dev eth0 lladdr 00:11:22:33:44:55 STALE
+fe80::9 dev eth0  FAILED

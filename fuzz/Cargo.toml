@@ -320,8 +320,57 @@ doc = false
 bench = false
 
 [[bin]]
+name = "snmp_response"
+path = "fuzz_targets/snmp_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "target_list"
 path = "fuzz_targets/target_list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fins_reply"
+path = "fuzz_targets/fins_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fox_hello"
+path = "fuzz_targets/fox_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mqtt_connack"
+path = "fuzz_targets/mqtt_connack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "knx_description"
+path = "fuzz_targets/knx_description.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ndp_message"
+path = "fuzz_targets/ndp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "neighbor_cache"
+path = "fuzz_targets/neighbor_cache.rs"
 test = false
 doc = false
 bench = false
