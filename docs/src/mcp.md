@@ -50,7 +50,7 @@ All results are JSON with a `schema` identifier (see [JSON output and schemas](j
 
 `findings_gained` is a comparison of two saved scans, so it can only answer for scopes that were scanned before and after the date. When no complete scan of a scope exists before the date, the hosts that have the finding are listed anyway, with `baseline_scan_id: null` and a note that when it appeared is unknown. Scans that did not complete are never used. A host the baseline scan did not cover counts as "gained".
 
-The query tools only read. They never send traffic and never write to the inventory; asking against a database that does not exist reports an empty inventory and does not create the file.
+The query tools only read. They never send traffic and never write to the inventory; asking against a database that does not exist reports an empty inventory and does not create the file. They open the inventory read-only, so a write-protected file works too. An inventory saved by an older version is read as it is and is not upgraded (the app upgrades it the next time it saves a scan). `device_history` counts saved scans it could not read in `unreadable`, so a damaged inventory is not mistaken for "not seen".
 
 ## The scan tool
 
