@@ -1,3 +1,4 @@
+mod a11y;
 mod controls;
 mod convenience;
 mod demo;

@@ -1,7 +1,7 @@
 //! Passive OT asset discovery in the GUI. A pcap file, or a live capture through
 //! `capture::PassiveCapture` (which has no transmit call), is fed to `otpassive::Tracker` on a
 //! thread of its own: a long capture must not hold up the inventory worker or the window.
-use super::{Job, Scanner, i18n::tr};
+use super::{Job, Scanner, a11y, i18n::tr};
 use crate::{capture, otpassive, passive, store};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -424,11 +424,14 @@ impl Scanner {
                 && self.listening.is_none()
                 && self.run.is_none()
                 && !self.saved.settings.interface.is_empty();
-            ui.add_enabled(
-                !running,
-                egui::DragValue::new(&mut self.ot.seconds)
-                    .range(1..=604_800)
-                    .suffix(" s"),
+            a11y::named(
+                ui.add_enabled(
+                    !running,
+                    egui::DragValue::new(&mut self.ot.seconds)
+                        .range(1..=604_800)
+                        .suffix(" s"),
+                ),
+                tr!("Duration"),
             );
             if ui
                 .add_enabled(can_listen, egui::Button::new(tr!("Listen (OT)")))
