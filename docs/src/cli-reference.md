@@ -137,7 +137,7 @@ These apply to `scan` and `monitor`.
 | `--syn` | off | IPv4 SYN scan via Npcap/libpcap (routed targets via the gateway MAC); else TCP connect |
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
-| `--jarm` | off | JARM-style TLS fingerprint: ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode; not verified against the reference JARM, see [Detection](detection.md)) |
+| `--jarm` | off | JARM TLS fingerprint (the same hash as the reference `jarm.py`, see [Detection](detection.md#jarm-style-tls-fingerprint---jarm)): ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode) |
 | `--snmp-community STRING` / `--snmp-version 2c\|1` | off / 2c | Read every responding host over [SNMP](snmp.md) with this community (system group, interfaces, addresses, LLDP neighbours): read-only requests, the community is never guessed and never `public` unless you type it; allowed in Safe Mode (with tighter limits) |
 | `--snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]` | off | SNMPv3 (USM): `AUTH` is `sha` or `sha256`, `PRIV` is `aes`; `AUTH_ENV` and `PRIV_ENV` are the **names of environment variables** holding the passphrases (at least 8 characters), never the passphrases themselves |
 | `--ipv6-discover` | off | Find hosts on the local link over IPv6: one ICMPv6 echo to `ff02::1` per interface (`--interface` picks one by index or name), the OS neighbour cache, joined to scanned hosts by MAC; one datagram per interface, also in Safe Mode; see [IPv6 discovery](ipv6-discovery.md) |
