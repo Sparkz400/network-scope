@@ -18,11 +18,13 @@ mod ot;
 mod probes;
 pub(in crate::ui) mod scan;
 mod scripts;
+mod search;
 mod service;
 #[cfg(windows)]
 mod service_scm;
 mod trace;
 mod update;
+mod wol;
 
 use super::Ctx;
 
@@ -59,6 +61,8 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("probes", probes::run),
     ("fingerprints", fingerprints::run),
     ("update", update::run),
+    ("search", search::run),
+    ("wol", wol::run),
     ("completions", completions::run),
 ];
 

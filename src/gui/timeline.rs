@@ -125,7 +125,7 @@ fn tone_color(tone: Tone) -> Option<Color32> {
         Tone::Info => None,
         Tone::Good => Some(Color32::from_rgb(30, 130, 70)),
         Tone::Warn => Some(Color32::from_rgb(170, 100, 15)),
-        Tone::Bad => Some(Color32::from_rgb(180, 40, 40)),
+        Tone::Bad => Some(Color32::from_rgb(205, 70, 70)),
     }
 }
 
@@ -189,7 +189,7 @@ impl Scanner {
                         ui.label("Reading the saved inventory…");
                     }
                     Some(Err(e)) => {
-                        ui.colored_label(Color32::from_rgb(180, 40, 40), e);
+                        ui.colored_label(Color32::from_rgb(205, 70, 70), e);
                     }
                     Some(Ok(h)) => {
                         for line in summary(h) {

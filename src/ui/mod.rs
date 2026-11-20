@@ -164,6 +164,12 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
             "--sent-log applies to scan, trace and dcp (monitor stores the log with each scan: see export --format json)".into(),
         );
     }
+    if (opts.contains_key("randomize") || opts.contains_key("targets-file")) && command != "scan" {
+        return Err("--randomize and --targets-file apply to the scan command only".into());
+    }
+    if opts.contains_key("broadcast") && command != "wol" {
+        return Err("--broadcast applies to the wol command only".into());
+    }
     if !global.is_empty() {
         opts.insert("quiet".into(), "true".into());
     }

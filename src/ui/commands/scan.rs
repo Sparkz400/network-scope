@@ -9,7 +9,16 @@ use std::{collections::BTreeMap, sync::atomic::Ordering};
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let (opts, pos, db) = (ctx.opts.clone(), ctx.pos.clone(), ctx.db.clone());
     let (opts, db) = (&opts, &db);
-    let targets = pos.join(" ");
+    let mut targets = pos.join(" ");
+    // --targets-file FILE: more targets from a list file (one entry per line, # comments).
+    if let Some(file) = opts.get("targets-file") {
+        let listed = crate::targets::read_file(std::path::Path::new(file))?;
+        targets = if targets.is_empty() {
+            listed
+        } else {
+            format!("{targets} {listed}")
+        };
+    }
     let s = scan_settings(opts)?;
     let format = opts.get("format").map(String::as_str).unwrap_or("json");
     if !["json", "csv", "html", "nmap", "md", "jsonl"].contains(&format) {
@@ -26,7 +35,14 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         return Ok(());
     }
     let total = hosts.count() as usize;
-    let run = scan::start_stream(Box::new(hosts.iter()), total, ports, s.clone());
+    // --randomize: the same addresses in random order (the order of probing only).
+    let order: Box<dyn Iterator<Item = std::net::IpAddr> + Send> = if opts.contains_key("randomize")
+    {
+        Box::new(crate::targets::randomized(&hosts, crate::targets::fresh_seed())?.into_iter())
+    } else {
+        Box::new(hosts.iter())
+    };
+    let run = scan::start_stream(order, total, ports, s.clone());
     let (results, complete, errors) = if opts.contains_key("tui") {
         tui::tui(&run)
     } else {

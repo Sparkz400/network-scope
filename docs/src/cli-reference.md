@@ -46,6 +46,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `dcp --interface ID --source-mac MAC [--seconds 60]` | Read-only Profinet DCP Identify |
 | `interfaces` | List capture interfaces |
 | `history [--db FILE]` | List saved scans as JSON |
+| `search QUERY [--top N] [--format text\|json]` | Where an IP address, MAC address (or vendor prefix), host name, vendor, device type or finding id appeared in the saved scans, newest scan first; see [Search across all scans](#search-across-all-scans) |
+| `wol MAC [--broadcast IPV4] [--dry-run]` | Wake-on-LAN: one magic packet to the broadcast address, only on request; see [Wake-on-LAN](#wake-on-lan) |
 | `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
 | `changes [--since last\|7d\|DATE] [--format text\|json]` | New, gone and changed devices and new and resolved risks, see [Inventory](inventory-diff-reports.md#what-changed) |
 | `baseline approve [SCAN_ID]` / `enable` / `set DEVICE [...]` / `show` / `remove DEVICE` / `clear` | Approved baseline of expected devices, see [Inventory](inventory-diff-reports.md#approved-baseline) |
@@ -91,6 +93,9 @@ These apply to `scan` and `monitor`.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `--preset NAME` | | A named bundle of settings: `quick`, `office`, `plant` or `full`; options given explicitly still win. See [Presets](#presets) |
+| `--targets-file FILE` | | `scan` only: more targets from a list file, one entry per line (`#` and `;` start a comment); it adds to the targets on the command line. At most 4 MiB |
+| `--randomize` | off | `scan` only: probe the addresses in random order (the order only; which addresses and probes stay the same). Up to 1,048,576 addresses |
 | `--ports LIST` | `80,443,8080`; with `--ot` and no `--ports`: `80,443,102,502,4840,44818` | TCP ports; `top:N` adds the N most common ports |
 | `--top-ports N` | | Add the N most common TCP ports (1-100) |
 | `--workers N` | 1024 | Hosts scanned concurrently (1-4096; Safe Mode caps at 8) |
@@ -127,7 +132,7 @@ These apply to `scan` and `monitor`.
 | `--tui` | off | Live terminal view |
 | `--format FMT` / `--output FILE` | json | Also write an export of the finished scan |
 | `--db FILE` | | Inventory database |
-| `--dry-run` | off | Print, per host, exactly which packet types the command would send, and send nothing (see [Dry run and sent log](#dry-run-and-sent-log)); `scan`, `monitor`, `trace`, `dcp` |
+| `--dry-run` | off | Print, per host, exactly which packet types the command would send, and send nothing (see [Dry run and sent log](#dry-run-and-sent-log)); `scan`, `monitor`, `trace`, `dcp`, `wol` |
 | `--sent-log` | off | Print the packets the run actually sent, by kind and detail, on stderr; `scan`, `trace`, `dcp` |
 | `--scope CIDR[,CIDR...]` | | Declared scope: CIDR blocks, addresses or ranges that may be scanned (see [Scope guard](#scope-guard)) |
 | `--scope-file FILE` | `scope.txt` in the config folder | Read the declared scope from a file instead |
@@ -145,9 +150,36 @@ Before `scan`, `monitor`, `trace` or the desktop Start button send anything, the
 
 On a terminal the CLI describes what it found and asks `Scan anyway? Type yes to continue`. Anything else (a script, a pipe, `monitor` under a service manager) refuses with exit status 2 unless the flags are given: `--yes-public` for public addresses, `--allow-out-of-scope` for addresses outside the declared scope (it covers public addresses too). The desktop shows a confirmation dialog before the scan starts; it reads the same scope file. A refusal sends nothing and saves nothing.
 
+## Presets
+
+`--preset NAME` (and the preset picker of the desktop app, which uses the same definitions) starts from a named bundle of settings. An option you type still wins over what the preset sets, so `--preset office --ports 22,445` keeps the office settings with your ports.
+
+| Preset | Traffic | What it turns on |
+| --- | --- | --- |
+| `quick` | active, Safe Mode | Ping and TCP connect to ports 80, 443 and 8080; nothing else. This is what a plain `scan` does in the desktop app |
+| `office` | active, Safe Mode | The common office and server ports (21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 389, 443, 445, 631, 993, 1433, 3306, 3389, 5900, 8080, 8443), service identification (banners, HTTP, TLS, SMB, RDP), OS, manufacturer and device-type guess, MAC lookup. No UDP, OT or traceroute probes |
+| `plant` | **passive only** | No active packet at all, so `scan --preset plant` refuses and points to `ot-listen --interface NAME` (live listening) and `ot-listen --pcap FILE` (a capture file). `ot-listen --preset plant` is accepted and means the same as no preset |
+| `full` | active, Safe Mode **off** | Up to 256 hosts at a time, ports 1-1024 plus the 100 most common, two probes, ping and TCP connect, the SYN engine with adaptive timing and the ARP sweep (both need `--interface`, `--source-ip` and `--source-mac`; without them they fall back to the TCP connect scan), services, UDP services, OS guess, read-only OT identification, JARM, ICMP traceroute, DNS names and MAC lookup |
+
+`full` is the only preset that leaves Safe Mode, so it has to be chosen on purpose. It is still subject to the scope guard (public and out-of-scope targets need confirmation), to the automatic back-off (`--no-backoff` is the only way to turn that off), and to the rule that generic probes never go to OT or printer ports. Capture interface, source addresses, script and probe file come from your options, not from the preset. The preset only sets scan options; the data it needs from the network is whatever those options send, which `--dry-run` lists.
+
+## Search across all scans
+
+`search QUERY` answers "where did 10.0.5.17 last appear?" from the saved scans. The query is taken for:
+
+- a full IP address: that address, exactly; digits and dots (`10.0.5`): the start of addresses;
+- a full MAC address in any notation (`00:0c:29:aa:bb:cc`, `000c.29aa.bbcc`): exactly that MAC; 6 to 11 hex digits written with `:` or `-` (`00:0c:29`): the start of a MAC, so a vendor prefix;
+- anything else: a case-insensitive fragment of a host name, vendor, device type, finding id (`telnet-open`) or CVE id.
+
+It reads the newest 200 scans (finding ids only in the newest 20, because they need the risk analysis of every scan) and prints the hits newest scan first, with `Last seen in scan #N` on top. `--top N` limits the hits (default 100). `--format json` prints the `search` schema (`schema: network-scope/search/v1`, with `hits` and `last_seen`). It only reads the inventory. The desktop app's command palette (`Ctrl+K`) uses the same function.
+
+## Wake-on-LAN
+
+`wol MAC [--broadcast IPV4]` sends one magic packet (6 bytes of `FF`, then the MAC 16 times; UDP, port 9) to the limited broadcast address 255.255.255.255, or to `--broadcast` (the directed broadcast address of a network, for example `192.168.1.255` when the computer has several interfaces). It is a send, so it goes through the rate gate with the packet kind `wake-on-lan`, `--dry-run` lists it, `--sent-log` shows it, and a directed broadcast address goes through the scope guard. Public addresses are refused outright. Nothing sends it except this command and the desktop's Wake-on-LAN dialog; a scan never does. It only wakes a device that is set up for it, and nothing is read back.
+
 ## Dry run and sent log
 
-`--dry-run` (on `scan`, `monitor`, `trace` and `dcp`) lists what the command would send and stops: no socket is opened, no capture driver is loaded, nothing is saved, and the exit status is 0. Hosts with the same plan are grouped (IPv4 and IPv6 hosts differ), so a /8 is described in a few lines. Each line is `kind  detail -> where [when]`:
+`--dry-run` (on `scan`, `monitor`, `trace`, `dcp` and `wol`) lists what the command would send and stops: no socket is opened, no capture driver is loaded, nothing is saved, and the exit status is 0. Hosts with the same plan are grouped (IPv4 and IPv6 hosts differ), so a /8 is described in a few lines. Each line is `kind  detail -> where [when]`:
 
 ```text
 $ network-scope-cli scan 192.168.1.0/30 --ports 22,445,502 --deep --ot --fast --dry-run
@@ -162,7 +194,7 @@ ipv4 2 host(s), 192.168.1.1 ... 192.168.1.2
   ...
 ```
 
-The packet kinds are `icmp-echo`, `arp-request`, `neighbor-lookup`, `tcp-connect`, `tcp-syn`, `udp-probe`, `service-probe`, `http-request`, `tls-client-hello`, `smb-negotiate`, `rdp-negotiate`, `ssh-banner`, `ot-request` (with the protocol, service and function code), `dcp-identify`, `traceroute`, `dhcp-discover` and `dns-ptr` (the reverse lookup goes to your resolver, not to the host). `--format json` prints the same plan as JSON (`dry_run`, `packets_sent: 0`, `groups`, and the scope verdict). The plan is built from the same conditions and allow-lists the scanner uses (a test runs a real scan and checks that everything it sent was in the plan), and a dry run does not need scope confirmation: it prints what a real run would ask instead.
+The packet kinds are `icmp-echo`, `arp-request`, `neighbor-lookup`, `tcp-connect`, `tcp-syn`, `udp-probe`, `service-probe`, `http-request`, `tls-client-hello`, `smb-negotiate`, `rdp-negotiate`, `ssh-banner`, `ot-request` (with the protocol, service and function code), `dcp-identify`, `traceroute`, `dhcp-discover`, `wake-on-lan` (only from `wol`, never from a scan) and `dns-ptr` (the reverse lookup goes to your resolver, not to the host). `--format json` prints the same plan as JSON (`dry_run`, `packets_sent: 0`, `groups`, and the scope verdict). The plan is built from the same conditions and allow-lists the scanner uses (a test runs a real scan and checks that everything it sent was in the plan), and a dry run does not need scope confirmation: it prints what a real run would ask instead.
 
 Every scan also keeps a **sent log**: a counter per `(kind, detail)` of the packets it really sent (a port scan counts under `tcp-connect` / `port scan`, a UDP probe under `udp-probe` / `dns/53`, an OT request under its protocol and function code). It is stored with the scan (the `sent` array of the JSON export, `export ID --format json`), shown in the desktop by hovering the status line after a scan, and printed by `--sent-log`:
 

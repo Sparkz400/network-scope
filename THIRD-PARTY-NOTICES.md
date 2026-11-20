@@ -9,6 +9,7 @@ Licenses as declared by each crate's metadata for the versions in `Cargo.lock` (
 | Crate | Used for | License |
 | --- | --- | --- |
 | eframe, egui_extras | Desktop GUI | MIT OR Apache-2.0 |
+| accesskit and its platform adapters (via eframe's `accesskit` feature) | Screen reader integration of the desktop GUI | Apache-2.0 OR MIT |
 | winit (macOS only) | Windowing | Apache-2.0 |
 | image | PNG encoding (screenshot mode) | MIT OR Apache-2.0 |
 | rfd | File dialogs | MIT |

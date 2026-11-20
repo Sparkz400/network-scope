@@ -59,6 +59,9 @@ pub enum PacketKind {
     /// A reverse DNS lookup; it goes to the system resolver, not to the scanned host.
     #[serde(rename = "dns-ptr")]
     DnsLookup,
+    /// A Wake-on-LAN magic packet (UDP broadcast); only ever sent on explicit request
+    /// (`wol`, or the desktop button), never by a scan.
+    WakeOnLan,
 }
 
 impl PacketKind {
@@ -82,10 +85,11 @@ impl PacketKind {
             Self::Traceroute => "traceroute",
             Self::DhcpDiscover => "dhcp-discover",
             Self::DnsLookup => "dns-ptr",
+            Self::WakeOnLan => "wake-on-lan",
         }
     }
     /// Every kind, in the order of the enum (used by tests and documentation).
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::IcmpEcho,
         Self::ArpRequest,
         Self::NeighborLookup,
@@ -103,6 +107,7 @@ impl PacketKind {
         Self::Traceroute,
         Self::DhcpDiscover,
         Self::DnsLookup,
+        Self::WakeOnLan,
     ];
 }
 

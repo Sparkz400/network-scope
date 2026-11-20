@@ -22,7 +22,8 @@
         "scan",
         "monitor",
         "trace",
-        "dcp"
+        "dcp",
+        "wol"
       ]
     },
     "packets_sent": {

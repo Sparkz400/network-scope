@@ -1,8 +1,11 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
-//! (main, findings, devices, settings, ot, script, timeline; append "-small" for the default 800x450 window). Screenshot runs never save to the inventory or preferences.
+//! (main, findings, devices, settings, ot, script, timeline, home, home-empty, map, map-large,
+//! quick, palette, palette-actions, appearance, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
+//! "-dark" for the dark theme and "-de" for German, e.g. "home-dark" or "main-de"). Screenshot
+//! runs never save to the inventory or preferences.
 use super::*;
 
-fn demo_host(ip: &str, open: &[u16], identity: &[(&str, &str)]) -> scan::Host {
+pub(super) fn demo_host(ip: &str, open: &[u16], identity: &[(&str, &str)]) -> scan::Host {
     scan::Host {
         ip: ip.parse().unwrap_or(IpAddr::from([10, 0, 0, 1])),
         responding: true,
@@ -35,17 +38,62 @@ type DemoHost = (
     &'static [(&'static str, &'static str)],
 );
 
+/// Marks some findings as known exploited with EPSS data, so the screenshots show those
+/// columns. Used in screenshot mode only (the real feeds come from `feeds import`).
+pub(super) fn decorate_findings(findings: &mut [risk::Finding]) {
+    let mut n = 0;
+    for f in findings
+        .iter_mut()
+        .filter(|f| !f.cve.is_empty() || f.id == "telnet-open")
+    {
+        n += 1;
+        f.exploit.kev = n % 2 == 1;
+        f.exploit.kev_ransomware = n == 1;
+        f.exploit.kev_added = Some("2023-06-14".into());
+        f.exploit.epss = crate::feeds::Score::from_f64([0.9754, 0.12, 0.034, 0.5][n % 4]);
+    }
+}
+
+/// The path of a demo host: the core switch, then one of two distribution routers.
+fn demo_trace(ip: IpAddr, via: &str) -> Vec<crate::trace::Hop> {
+    let hop = |ttl, ip: Option<IpAddr>| crate::trace::Hop {
+        ttl,
+        ip,
+        rtt: Some(1),
+    };
+    vec![
+        hop(1, Some(IpAddr::from([10, 20, 0, 1]))),
+        hop(2, via.parse().ok()),
+        hop(3, Some(ip)),
+    ]
+}
+
 impl Scanner {
     pub(super) fn seed_demo(&mut self, state: &str) {
-        // "-fast" renders the window with Safe Mode off (e.g. "main-small-fast").
-        let state = match state.strip_suffix("-fast") {
-            Some(rest) => {
-                self.saved.settings.safe = false;
-                rest
+        // Suffixes in any order: "-fast" renders the window with Safe Mode off, "-dark" the
+        // dark theme, "-de" German ("main-small-fast").
+        let mut state = state;
+        // Screenshots are English unless the state says "-de", whatever the system language is.
+        self.saved.language = "en".into();
+        loop {
+            let before = state;
+            for suffix in ["-fast", "-dark", "-de", "-small"] {
+                if let Some(rest) = state.strip_suffix(suffix) {
+                    state = rest;
+                    match suffix {
+                        "-fast" => self.saved.settings.safe = false,
+                        "-dark" => self.saved.dark = true,
+                        "-de" => self.saved.language = "de".into(),
+                        _ => {}
+                    }
+                }
             }
-            None => state,
-        };
+            if state == before {
+                break;
+            }
+        }
         self.filter = Filter::All;
+        self.view = MainView::Hosts;
         self.targets = "10.20.0.0/24".into();
         // A small plant network: controllers, HMI, infrastructure and office hosts.
         let plant: [DemoHost; 12] = [
@@ -204,8 +252,135 @@ impl Scanner {
             .collect();
         self.recount();
         self.data_changed();
-        // "-small" keeps the default window size.
-        match state.trim_end_matches("-small") {
+        match state {
+            "home" => {
+                self.view = MainView::Home;
+                self.home.data = Some(Ok(Box::new(self.demo_home())));
+            }
+            "home-empty" => {
+                self.view = MainView::Home;
+                let mut changes = self.demo_home().changes;
+                self.results.clear();
+                self.recount();
+                changes.current = None;
+                changes.previous = None;
+                changes.summary = Default::default();
+                changes.new_devices.clear();
+                changes.gone_devices.clear();
+                changes.changed_devices.clear();
+                changes.new_risks.clear();
+                changes.resolved_risks.clear();
+                changes.unconfirmed_risks.clear();
+                changes.unknown_devices = None;
+                changes.notice = Some("The inventory has no scans yet.".into());
+                self.home.data = Some(Ok(Box::new(home::HomeData {
+                    changes,
+                    assessment: crate::score::assess(&[], 5),
+                    scans: 0,
+                })));
+            }
+            "map" | "map-large" => {
+                // Paths: the core switch, then two distribution routers.
+                for h in self
+                    .results
+                    .iter_mut()
+                    .filter(|h| h.ip != IpAddr::from([10, 20, 0, 1]))
+                {
+                    let via = if h
+                        .open
+                        .iter()
+                        .any(|p| [102, 502, 44818, 47808, 4840].contains(p))
+                    {
+                        "10.20.0.3"
+                    } else {
+                        "10.20.0.2"
+                    };
+                    h.trace = demo_trace(h.ip, via);
+                }
+                if state == "map-large" {
+                    for i in 0..300u32 {
+                        let ip = IpAddr::from([10, 30, (i / 250) as u8, (i % 250) as u8 + 1]);
+                        let open: &[u16] = match i % 7 {
+                            0 => &[502],
+                            1 => &[80, 443],
+                            2 => &[9100],
+                            3 => &[3389, 445],
+                            _ => &[22],
+                        };
+                        let mut h = demo_host(&ip.to_string(), open, &[]);
+                        let via = format!("10.31.{}.1", i % 5);
+                        h.trace = demo_trace(ip, &via);
+                        self.results.push(h);
+                    }
+                    self.recount();
+                }
+                self.data_changed();
+                self.topology_open = true;
+            }
+            "quick" => {
+                let net = |name: &str, ip: &str, prefix| crate::localnets::LocalNet {
+                    interface: name.into(),
+                    ip: ip.parse().unwrap(),
+                    prefix,
+                };
+                self.quick.candidates = crate::localnets::classify(&[
+                    net("Ethernet", "192.168.178.20", 24),
+                    net("Ethernet 2", "10.20.0.31", 16),
+                    net("vEthernet (WSL)", "172.28.16.1", 20),
+                    net("OpenVPN Wintun", "10.8.0.6", 32),
+                    net("Loopback Pseudo-Interface 1", "127.0.0.1", 8),
+                    net("Ethernet", "169.254.9.9", 16),
+                ]);
+                self.quick.dialog = true;
+                self.view = MainView::Home;
+                self.home.data = Some(Ok(Box::new(self.demo_home())));
+            }
+            "palette" => {
+                self.palette.open = true;
+                self.palette.query = "10.20.0.5".into();
+                self.palette.asked = "10.20.0.5".into();
+                let hit = |scan_id, days: i64, source, detail: &str| crate::search::Hit {
+                    scan_id,
+                    timestamp: 1_790_000_000 + days * 86_400,
+                    targets: "10.20.0.0/24".into(),
+                    source,
+                    ip: Some("10.20.0.5".parse().unwrap()),
+                    mac: "00:1B:1B:7C:22:05".into(),
+                    hostname: "plc-line-1".into(),
+                    vendor: "Siemens AG".into(),
+                    detail: detail.into(),
+                };
+                let hits = vec![
+                    hit(9, 21, "host", "open 21, 102, 502"),
+                    hit(7, 14, "host", "open 21, 23, 102, 502"),
+                    hit(3, 0, "host", "open 23, 102"),
+                ];
+                self.palette.results = Some(Ok(Box::new(crate::search::Results {
+                    query: "10.20.0.5".into(),
+                    scans_checked: 9,
+                    scans_total: 9,
+                    truncated: false,
+                    last_seen: hits.first().cloned(),
+                    hits,
+                })));
+            }
+            "appearance" => {
+                self.settings_open = true;
+                self.scroll_to_appearance = true;
+            }
+            "palette-actions" => {
+                self.palette.open = true;
+                self.palette.query = "sc".into();
+            }
+            "wake" => {
+                let host = self.results[1].clone();
+                self.wake = Some(convenience::WakeRequest {
+                    label: format!("{} ({})", host.hostname, host.ip),
+                    mac: host.mac.clone(),
+                    destination: "10.20.0.255".into(),
+                });
+                self.saved.starred.insert(convenience::favorite_key(&host));
+            }
             "findings" => self.findings_open = true,
             "devices" => self.devices_open = true,
             "settings" => {
@@ -289,6 +464,125 @@ impl Scanner {
                 });
             }
             _ => {}
+        }
+    }
+
+    /// "What changed" for the demo network: invented, never read from the inventory.
+    fn demo_home(&self) -> home::HomeData {
+        use crate::changes::{
+            ChangedDevice, Changes, DeviceChange, DeviceRef, RiskChange, ScanRef, Summary,
+        };
+        let device = |h: &scan::Host, baseline: Option<bool>| DeviceRef {
+            key: h.mac.clone(),
+            label: if h.hostname.is_empty() {
+                h.ip.to_string()
+            } else {
+                h.hostname.clone()
+            },
+            ips: vec![h.ip],
+            mac: h.mac.clone(),
+            vendor: h.identity.get("mac.vendor").cloned().unwrap_or_default(),
+            device_type: h.identity.get("device.type").cloned().unwrap_or_default(),
+            hostnames: vec![h.hostname.clone()],
+            in_baseline: baseline,
+        };
+        let r = &self.results;
+        let snapshot = store::Snapshot {
+            sent: vec![],
+            targets: String::new(),
+            complete: true,
+            settings: Default::default(),
+            hosts: r.clone(),
+            observations: vec![],
+            notes: Default::default(),
+        };
+        let mut findings = risk::analyze_snapshot(&snapshot);
+        decorate_findings(&mut findings);
+        let risk_of = |f: &risk::Finding| RiskChange {
+            device_key: None,
+            finding: f.clone(),
+        };
+        let new_risks: Vec<RiskChange> = findings
+            .iter()
+            .filter(|f| f.severity >= risk::Severity::Medium)
+            .take(4)
+            .map(risk_of)
+            .collect();
+        let resolved: Vec<RiskChange> = findings
+            .iter()
+            .filter(|f| f.severity <= risk::Severity::Low)
+            .take(2)
+            .map(risk_of)
+            .collect();
+        let day = 86_400;
+        let changes = Changes {
+            since: "last".into(),
+            now: 1_790_000_000 + 30 * day,
+            current: Some(ScanRef {
+                id: 9,
+                timestamp: 1_790_000_000 + 29 * day,
+                targets: "10.20.0.0/24".into(),
+                hosts: r.len(),
+            }),
+            previous: Some(ScanRef {
+                id: 8,
+                timestamp: 1_790_000_000 + 22 * day,
+                targets: "10.20.0.0/24".into(),
+                hosts: r.len() - 2,
+            }),
+            notice: None,
+            summary: Summary {
+                new_devices: 2,
+                gone_devices: 1,
+                changed_devices: 2,
+                new_risks: new_risks.len(),
+                resolved_risks: resolved.len(),
+                unconfirmed_risks: 1,
+            },
+            new_devices: vec![device(&r[11], Some(false)), device(&r[10], Some(false))],
+            gone_devices: vec![DeviceRef {
+                key: "00:11:22:33:44:55".into(),
+                label: "old-plotter".into(),
+                ips: vec!["10.20.0.93".parse().unwrap()],
+                mac: "00:11:22:33:44:55".into(),
+                vendor: "HP".into(),
+                device_type: "Printer".into(),
+                hostnames: vec![],
+                in_baseline: Some(true),
+            }],
+            changed_devices: vec![
+                ChangedDevice {
+                    device: device(&r[1], Some(true)),
+                    changes: vec![
+                        DeviceChange {
+                            kind: "port-opened",
+                            detail: "TCP 21 open (not in the previous scan)".into(),
+                        },
+                        DeviceChange {
+                            kind: "hostname",
+                            detail: "hostname plc-line-1 changed to plc-line-1a".into(),
+                        },
+                    ],
+                    more: 0,
+                },
+                ChangedDevice {
+                    device: device(&r[6], Some(true)),
+                    changes: vec![DeviceChange {
+                        kind: "identity",
+                        detail: "nginx 1.14.0 changed to 1.18.0".into(),
+                    }],
+                    more: 0,
+                },
+            ],
+            new_risks,
+            resolved_risks: resolved,
+            unconfirmed_risks: vec![risk_of(&findings[findings.len() - 1])],
+            unknown_devices: Some(2),
+        };
+        home::HomeData {
+            changes,
+            assessment: crate::score::assess(&findings, 5),
+            scans: 9,
         }
     }
 }
