@@ -316,10 +316,10 @@ pub fn favicon_response(data: &[u8]) {
     }
 }
 
-/// The first handshake message of a TLS 1.3 server, and its JA4S.
+/// The first handshake message of a TLS 1.3 server, and its JA3S.
 pub fn tls13_server_hello(data: &[u8]) {
     if let tls::First::Hello(hello) = tls::first_server_hello(data) {
-        std::hint::black_box(fingerprint::ja4s(&hello));
+        std::hint::black_box(fingerprint::ja3s(&hello));
     }
 }
 
@@ -328,10 +328,10 @@ pub fn tls_certificate(data: &[u8]) {
     std::hint::black_box(tls::describe_cert(data).ok());
 }
 
-/// A ServerHello body and its JA4S fingerprint.
+/// A ServerHello body and its JA3S fingerprint.
 pub fn fingerprint_server_hello(data: &[u8]) {
     if let Some(hello) = fingerprint::parse_server_hello(data) {
-        std::hint::black_box(fingerprint::ja4s(&hello));
+        std::hint::black_box(fingerprint::ja3s(&hello));
     }
 }
 

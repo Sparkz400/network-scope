@@ -13,10 +13,10 @@ server itself, independently of Network Scope:
 
   - HASSHServer: the server's SSH_MSG_KEXINIT is read over a raw socket and hashed with
     hashlib.md5 as the HASSH definition says (kex;enc_s2c;mac_s2c;comp_s2c).
-  - JA4S: a TLS 1.3 ClientHello is sent and the ServerHello hashed with hashlib.sha256 as the
-    JA4S definition says. This is a re-implementation written from the documented algorithm,
-    not FoxIO's reference implementation (which needs tshark and pcaps); the Rust unit tests
-    check the algorithm against the published FoxIO examples.
+  - JA3S: a TLS 1.3 ClientHello is sent and the ServerHello's version, cipher and extension
+    types are hashed with hashlib.md5 as the JA3S definition says (Salesforce, python/ja3s.py).
+    This is a re-implementation of that definition; the Rust unit tests check the algorithm
+    against vectors confirmed with the reference ja3s.py.
 """
 import argparse
 import hashlib
@@ -131,7 +131,7 @@ def client_hello13():
 
 
 def parse_server_hello(record):
-    """(legacy_version, cipher, [extension types], selected_version or None, alpn or None)."""
+    """(legacy_version, cipher, [extension types]) of a ServerHello record."""
     if record[0] != 22 or record[5] != 2:
         raise ValueError("not a ServerHello")
     body = record[9:]
@@ -140,49 +140,30 @@ def parse_server_hello(record):
     pos += 1 + body[pos]
     (cipher,) = struct.unpack(">H", body[pos:pos + 2])
     pos += 3
-    exts, selected, alpn = [], None, None
+    exts = []
     if pos < len(body):
         (total,) = struct.unpack(">H", body[pos:pos + 2])
         data, i = body[pos + 2:pos + 2 + total], 0
         while i + 4 <= len(data):
             kind, n = struct.unpack(">HH", data[i:i + 4])
-            value = data[i + 4:i + 4 + n]
             exts.append(kind)
-            if kind == 0x002B and len(value) >= 2:
-                selected = struct.unpack(">H", value[:2])[0]
-            if kind == 0x0010 and len(value) >= 3:
-                alpn = bytes(value[3:3 + value[2]])
             i += 4 + n
-    return version, cipher, exts, selected, alpn
+    return version, cipher, exts
 
 
-def alpn_part(alpn):
-    """The JA4 ALPN part from the written rule (FoxIO technical_details/JA4.md): 00 for none, the
-    first and last character when both are ASCII alphanumeric, else the first and last hex digit
-    of the whole value. `alpn` is bytes (or None)."""
-    if not alpn:
-        return "00"
-    if chr(alpn[0]).isascii() and chr(alpn[0]).isalnum() and chr(alpn[-1]).isascii() and chr(alpn[-1]).isalnum():
-        return chr(alpn[0]) + chr(alpn[-1])
-    text = alpn.hex()
-    return text[0] + text[-1]
+def ja3s(version, cipher, exts):
+    """JA3S from the documented algorithm: (md5 hex, "version,cipher,ext-ext-..." in decimal)."""
+    text = f"{version},{cipher},{'-'.join(str(e) for e in exts)}"
+    return hashlib.md5(text.encode()).hexdigest(), text
 
 
-def ja4s(version, cipher, exts, selected, alpn):
-    """JA4S from the documented algorithm: t<ver><ext count><alpn>_<cipher>_<sha256(exts)[:12]>."""
-    ver = {0x0304: "13", 0x0303: "12", 0x0302: "11", 0x0301: "10", 0x0300: "s3"}.get(selected or version, "00")
-    a = alpn_part(alpn)
-    digest = hashlib.sha256(",".join(f"{e:04x}" for e in exts).encode()).hexdigest()[:12] if exts else "000000000000"
-    return f"t{ver}{min(len(exts), 99):02}{a}_{cipher:04x}_{digest}"
-
-
-def server_ja4s(host, port, timeout=10):
+def server_ja3s(host, port, timeout=10):
     with socket.create_connection((host, port), timeout=timeout) as s:
         s.settimeout(timeout)
         s.sendall(client_hello13())
         head = _read_exact(s, 5)
         record = head + _read_exact(s, struct.unpack(">H", head[3:5])[0])
-    return ja4s(*parse_server_hello(record))
+    return ja3s(*parse_server_hello(record))
 
 
 # ---- expectations -------------------------------------------------------------------------
@@ -235,7 +216,7 @@ def tls_suites(identity, port):
     return out
 
 
-def expect_tls(identity, port, fail, label, want13, want12=None, ordered=False, ja4s_value=None):
+def expect_tls(identity, port, fail, label, want13, want12=None, ordered=False, ja3s_value=None):
     """`want13` and `want12` are the exact suites the server was configured with."""
     got13 = split(identity.get(f"tls.{port}.tls13_suites", "").replace(", ", ":"))
     ok = got13 == want13 if ordered else sorted(got13) == sorted(want13)
@@ -260,15 +241,16 @@ def expect_tls(identity, port, fail, label, want13, want12=None, ordered=False, 
     weak = identity.get(f"tls.{port}.weak")
     if weak:
         fail(f"{label}: unexpected weak-suite note {weak!r}")
-    ja4s_got = identity.get(f"tls.{port}.ja4s")
-    if ja4s_value is not None and ja4s_got != ja4s_value:
-        fail(f"{label}: JA4S is {ja4s_got!r}, the independent computation gives {ja4s_value!r}")
+    if ja3s_value is not None:
+        got = (identity.get(f"tls.{port}.ja3s"), identity.get(f"tls.{port}.ja3s_string"))
+        if got != ja3s_value:
+            fail(f"{label}: JA3S is {got!r}, the independent computation gives {ja3s_value!r}")
     self_signed = identity.get(f"tls.{port}.self_signed")
     if self_signed != "true":
         fail(f"{label}: the lab certificate is self-signed, got {self_signed!r}")
 
 
-def check_scan(host, cfg, only, ssh_hassh=None, ja4s_a=None):
+def check_scan(host, cfg, only, ssh_hassh=None, ja3s_a=None):
     """Failure messages (empty: all checks passed) for the scan result of one host."""
     failures = []
     fail = failures.append
@@ -283,7 +265,7 @@ def check_scan(host, cfg, only, ssh_hassh=None, ja4s_a=None):
     if "ssh" in only:
         expect_ssh(identity, cfg, fail, ssh_hassh)
     if "tls" in only:
-        expect_tls(identity, cfg["TLS_A_PORT"], fail, "s_server A", split(cfg["TLS_A_SUITES"]), ordered=True, ja4s_value=ja4s_a)
+        expect_tls(identity, cfg["TLS_A_PORT"], fail, "s_server A", split(cfg["TLS_A_SUITES"]), ordered=True, ja3s_value=ja3s_a)
         expect_tls(identity, cfg["TLS_B_PORT"], fail, "s_server B", split(cfg["TLS_B_13"]), [cfg["TLS_B_12"]])
         pa = cfg["TLS_A_PORT"]
         for key, want in ((f"tls.{pa}.cn", cfg["CERT_CN"]), (f"tls.{pa}.key", "RSA 2048")):
@@ -322,14 +304,14 @@ def main(argv=None):
     if host is None:
         print(f"FAIL: {args.host} is not in the scan result", file=sys.stderr)
         return 1
-    hassh = ja4s_a = None
+    hassh = ja3s_a = None
     if "ssh" in only:
         hassh = server_hassh(args.host, LAB["SSH_PORT"])
         print(f"reference HASSHServer of {args.host}:{LAB['SSH_PORT']}: {hassh[0]} ({hassh[1][:60]}...)")
     if "tls" in only:
-        ja4s_a = server_ja4s(args.host, LAB["TLS_A_PORT"])
-        print(f"independent JA4S of {args.host}:{LAB['TLS_A_PORT']}: {ja4s_a}")
-    failures = check_scan(host, LAB, only, hassh, ja4s_a)
+        ja3s_a = server_ja3s(args.host, LAB["TLS_A_PORT"])
+        print(f"independent JA3S of {args.host}:{LAB['TLS_A_PORT']}: {ja3s_a[0]} ({ja3s_a[1]})")
+    failures = check_scan(host, LAB, only, hassh, ja3s_a)
     for line in failures:
         print("FAIL:", line, file=sys.stderr)
     print(f"{'FAILED' if failures else 'OK'}: {len(failures)} problem(s) in {', '.join(only)}")

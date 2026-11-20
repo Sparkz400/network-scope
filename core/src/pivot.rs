@@ -1,24 +1,16 @@
 //! Fingerprints that can be pivoted on across scans and sites (ROADMAP L70): the Shodan-compatible
-//! favicon hash (with the MurmurHash3 it needs) and the JA4X certificate fingerprint.
+//! favicon hash, with the MurmurHash3 it needs.
 //!
-//! The other pivots already exist next to them: the SHA-256 of the certificate's public key
-//! (`tls.<port>.spki_sha256`, see [`crate::tls`]), JA4S and JARM for the TLS stack, HASSH for the
+//! The other pivots already exist next to it: the SHA-256 of the certificate's public key
+//! (`tls.<port>.spki_sha256`, see [`crate::tls`]), JA3S and JARM for the TLS stack, HASSH for the
 //! SSH stack. [`crate::research::groups`] clusters devices that share one of them.
 //!
 //! Nothing here sends traffic. [`favicon_hash`] works on bytes: a file the user gives
 //! (`fingerprints favicon FILE`) or the icon that [`crate::favicon`] fetched under `--favicon`.
 //!
-//! # JA4H
-//!
-//! JA4H (FoxIO) fingerprints the headers of an HTTP *request*, which only a client sends; the
-//! scanner is the client and a device's response has no JA4H. No server-side variant is defined,
-//! so none is implemented here.
-//!
-//! # Licensing
-//!
-//! JA4X belongs to the JA4+ family, whose methods other than JA4 are under the FoxIO License 1.1
-//! (see `data/README.md`). Network Scope computes JA4X from the published description and does
-//! not use FoxIO code.
+//! The JA4+ methods (JA4S, JA4X, JA4H) are not implemented: they are under the FoxIO License 1.1,
+//! which does not allow monetization and does not fit this project's MIT licence (see
+//! `data/README.md`).
 
 /// MurmurHash3, x86 32-bit variant (Austin Appleby, public domain), as used by Shodan.
 pub fn murmur3_32(data: &[u8], seed: u32) -> u32 {
@@ -84,67 +76,6 @@ pub fn favicon_hash(data: &[u8]) -> i32 {
     murmur3_32(base64_wrapped(data).as_bytes(), 0) as i32
 }
 
-/// Twelve zeros: the value of a JA4X part with nothing to hash.
-const EMPTY_PART: &str = "000000000000";
-
-fn part(oids: &[Vec<u8>]) -> String {
-    if oids.is_empty() {
-        return EMPTY_PART.into();
-    }
-    let text = oids
-        .iter()
-        .map(|o| crate::fingerprint::hex(o))
-        .collect::<Vec<_>>()
-        .join(",");
-    crate::fingerprint::hex(&crate::fingerprint::sha256(text.as_bytes()))[..12].to_string()
-}
-
-/// JA4X from the object identifiers of the issuer's name attributes, the subject's name attributes
-/// and the extensions, each as the DER content bytes of the OID, in the order they appear in the
-/// certificate: `<issuer>_<subject>_<extensions>`, each the first 12 hex digits of the SHA-256 of
-/// the comma-separated lower-case hex of the OIDs (twelve zeros for an empty list).
-///
-/// Implemented from the JA4X description in the JA4+ documentation, then compared on 2026-11-20
-/// with the values in FoxIO's own test data (github.com/FoxIO-LLC/ja4, commit 7388fa0,
-/// `wireshark/test/testdata`): the 60 certificates of 11 captures, extracted with `tshark` 4.6.10,
-/// give 60 of 60 equal JA4X values and equal raw OID lists. The vectors are not in this repository
-/// (FoxIO License 1.1, non-commercial use only).
-pub fn ja4x_from_oids(issuer: &[Vec<u8>], subject: &[Vec<u8>], extensions: &[Vec<u8>]) -> String {
-    format!("{}_{}_{}", part(issuer), part(subject), part(extensions))
-}
-
-/// The three OID lists JA4X hashes: issuer attributes, subject attributes, extensions.
-pub type Ja4xOids = (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>);
-
-/// The three OID lists JA4X hashes, of a parsed certificate: the issuer's name attributes, the
-/// subject's name attributes and the extensions, each the DER content bytes of the OID.
-pub fn ja4x_oids(cert: &x509_parser::certificate::X509Certificate<'_>) -> Ja4xOids {
-    // A certificate has a few dozen attributes and extensions at most; bound them anyway.
-    let attributes = |name: &x509_parser::x509::X509Name<'_>| -> Vec<Vec<u8>> {
-        name.iter_attributes()
-            .take(64)
-            .map(|a| a.attr_type().as_bytes().to_vec())
-            .collect()
-    };
-    let extensions: Vec<Vec<u8>> = cert
-        .extensions()
-        .iter()
-        .take(64)
-        .map(|e| e.oid.as_bytes().to_vec())
-        .collect();
-    (
-        attributes(cert.issuer()),
-        attributes(cert.subject()),
-        extensions,
-    )
-}
-
-/// JA4X of a parsed certificate (see [`ja4x_from_oids`]).
-pub fn ja4x(cert: &x509_parser::certificate::X509Certificate<'_>) -> String {
-    let (issuer, subject, extensions) = ja4x_oids(cert);
-    ja4x_from_oids(&issuer, &subject, &extensions)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,59 +139,5 @@ mod tests {
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         png.extend([0u8; 100]);
         assert_eq!(favicon_hash(&png), -120_113_347);
-    }
-
-    #[test]
-    fn ja4x_parts_are_twelve_hex_digits_of_a_sha256() {
-        let cn = vec![0x55, 0x04, 0x03];
-        let org = vec![0x55, 0x04, 0x0a];
-        let id = ja4x_from_oids(std::slice::from_ref(&cn), &[cn.clone(), org], &[]);
-        let parts: Vec<&str> = id.split('_').collect();
-        assert_eq!(parts.len(), 3);
-        // sha256("550403")[..12] and sha256("550403,55040a")[..12], computed independently
-        assert_eq!(parts[0], "7022c563de38");
-        assert_eq!(parts[1], "711618dec96d");
-        assert_eq!(parts[2], "000000000000", "no extensions");
-        // order matters, and so does every OID
-        let swapped = ja4x_from_oids(
-            std::slice::from_ref(&cn),
-            &[vec![0x55, 0x04, 0x0a], cn.clone()],
-            &[],
-        );
-        assert_ne!(id, swapped);
-    }
-
-    /// A real DER certificate: the JA4X is the three parts of its OID lists, and a self-signed
-    /// certificate has the same issuer and subject part. (FoxIO's own vectors are not in the
-    /// repository, see the module documentation; this pins the plumbing from a certificate.)
-    #[test]
-    fn ja4x_of_a_certificate_follows_its_oid_lists() {
-        let der = include_bytes!("../../tests/fixtures/self-signed-rsa2048-sha256.der");
-        let (_, cert) = x509_parser::parse_x509_certificate(der).unwrap();
-        let (issuer, subject, extensions) = ja4x_oids(&cert);
-        assert!(!issuer.is_empty() && !subject.is_empty());
-        assert_eq!(issuer, subject, "self-signed");
-        assert!(
-            issuer.iter().all(|o| o.starts_with(&[0x55, 0x04])),
-            "name attributes are under 2.5.4"
-        );
-        let id = ja4x(&cert);
-        assert_eq!(id, ja4x_from_oids(&issuer, &subject, &extensions));
-        let parts: Vec<&str> = id.split('_').collect();
-        assert_eq!(parts[0], parts[1]);
-        assert_eq!(parts.len(), 3);
-        assert!(parts.iter().all(|p| p.len() == 12));
-        // the extension part is the hash of the dotted-free hex list in certificate order
-        let listed: Vec<String> = extensions
-            .iter()
-            .map(|o| crate::fingerprint::hex(o))
-            .collect();
-        if extensions.is_empty() {
-            assert_eq!(parts[2], "000000000000");
-        } else {
-            let want =
-                crate::fingerprint::hex(&crate::fingerprint::sha256(listed.join(",").as_bytes()));
-            assert_eq!(parts[2], &want[..12]);
-        }
     }
 }
