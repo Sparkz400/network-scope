@@ -16,6 +16,7 @@ mod mcp;
 mod monitor;
 mod ot;
 mod probes;
+mod research;
 pub(in crate::ui) mod scan;
 mod scripts;
 mod service;
@@ -58,6 +59,7 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("trace", trace::run),
     ("probes", probes::run),
     ("fingerprints", fingerprints::run),
+    ("research", research::run),
     ("update", update::run),
     ("completions", completions::run),
 ];

@@ -13,6 +13,8 @@ pub(crate) use network_scope_core::{
     nmap, notify, nvd, observations, otpassive, passive, plan, report, risk, scan, schema, scope,
     score, script, sendlog, service, store, syn, sync, topology, trace, update,
 };
+// Research and security-research modules (ROADMAP section L).
+pub(crate) use network_scope_core::research;
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::{pcapfile, schedule};
 

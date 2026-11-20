@@ -16,6 +16,7 @@
 - [JSON output and schemas](json-output.md)
 - [MCP server for AI assistants](mcp.md)
 - [Import, export and sync](import-export.md)
+- [Research data layer](research.md)
 - [Monitoring and alerts](monitoring-alerts.md)
 - [Service and scheduling](service-and-scheduling.md)
 - [Scripting](scripting.md)
