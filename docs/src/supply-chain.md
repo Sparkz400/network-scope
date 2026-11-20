@@ -4,7 +4,7 @@ Three checks let you confirm that a release file is what the project says it is 
 
 | Check | Answers | Release file |
 | --- | --- | --- |
-| Signed provenance (Sigstore and SLSA level 3) | Which workflow, repository and commit built this file? | `network-scope-<version>.sigstore.json`, `network-scope-<version>.intoto.jsonl` |
+| Signed SLSA build provenance (Sigstore) | Which workflow, repository and commit built this file? | `network-scope-<version>.sigstore.json`, `network-scope-<version>.intoto.jsonl` |
 | SBOM (CycloneDX) | Which crates, at which versions, went into it? | `network-scope-<version>.cdx.json`, attestation `network-scope-<version>.sbom.sigstore.json` |
 | Rebuild and compare | Does the source at this tag produce the same binary? | none, you build it |
 
@@ -14,7 +14,7 @@ Status: the SBOM step, the SBOM attestation and the `reproducible` workflow were
 
 ## Provenance
 
-Every release file carries a signed build provenance. See [Verifying downloads and the image](installation.md#verifying-downloads-and-the-image) for the commands (`gh attestation verify` and `slsa-verifier`). `network-scope-cli update check` and the opt-in desktop setting tell you when a newer release exists and print these commands for it; they never download or replace the program ([Checking for updates](installation.md#checking-for-updates)).
+Every release file carries a signed build provenance. See [Verifying downloads and the image](installation.md#verifying-downloads-and-the-image) for the commands (`gh attestation verify`). `network-scope-<version>.intoto.jsonl` and `.sigstore.json` are the same bundle; releases up to v0.5.1 also carried SLSA level 3 provenance from slsa-github-generator under the `.intoto.jsonl` name, verified with `slsa-verifier` as described in SECURITY.md. `network-scope-cli update check` and the opt-in desktop setting tell you when a newer release exists and print these commands for it; they never download or replace the program ([Checking for updates](installation.md#checking-for-updates)).
 
 ## SBOM
 
