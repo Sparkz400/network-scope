@@ -33,7 +33,8 @@ median is more than --tolerance above lab/speed_baseline.json for this platform 
 value passes with a notice). Other tools are reported, never gated. Exit 2: the lab or Network
 Scope could not be run (not a measurement).
 
-Only loopback addresses (127.0.0.0/8) are ever contacted.
+Only loopback addresses (127.0.0.0/8) are ever contacted, unless --lan names a real private /24
+(or smaller) to time Network Scope on, in Safe Mode, with the network owner's permission.
 """
 import argparse
 import importlib.util
@@ -201,6 +202,15 @@ def expected_open(listening, hosts, ports):
     return exact | {(h, p) for h in hosts for p in wildcard}
 
 
+def lan_network(text):
+    """The --lan range, refused unless it is a private IPv4 network of at most 256 addresses."""
+    lan = ipaddress.IPv4Network(text)
+    # is_private excludes 100.64.0.0/10 (shared address space, e.g. Tailscale): it reaches other sites.
+    if not lan.is_private or lan.is_loopback or lan.is_link_local or lan.prefixlen < 24:
+        raise ValueError(f"{text} is not a private IPv4 network of at most 256 addresses (e.g. 192.168.1.0/24)")
+    return str(lan)
+
+
 def ns_open(snapshot):
     return {(h["ip"], p) for h in snapshot.get("hosts", []) for p in h.get("open", [])}
 
@@ -269,14 +279,18 @@ def tool_commands(args, work):
         for path in (db, out):
             if os.path.exists(path):
                 os.remove(path)
-        cmd = [args.cli, "scan", cidr, "--fast", "--tcp-only", "--ports", ",".join(map(str, ports)),
-               "--scope", "127.0.0.0/8", "--quiet", "--db", db, "--output", out]
+        # On a real LAN Network Scope stays in Safe Mode (no --fast): the owner's devices are real.
+        mode = [] if args.lan else ["--fast"]
+        cmd = [args.cli, "scan", cidr] + mode + ["--tcp-only", "--ports", ",".join(map(str, ports)),
+               "--scope", args.lan or "127.0.0.0/8", "--quiet", "--db", db, "--output", out]
 
         def parse(_stdout):
             with open(out, encoding="utf-8") as f:
                 return ns_open(json.load(f))
         return cmd, parse
     tools["Network Scope"] = ns
+    if args.lan:  # shortcut: other tools need polite settings agreed with the LAN's owner; add them then
+        return tools
 
     def nmap_with(prefix, scan_type):
         def make(cidr, ports, i):
@@ -329,7 +343,10 @@ def markdown(result):
                 timing += f"; stopped after {result['limit_s']} s"
             peak = f"{r['peak_mb']} MB" if "peak_mb" in r else "n/a"
             correct = {True: "yes", False: "no", None: "n/a"}[r.get("correct")]
-            if r.get("correct") is None:
+            if data.get("lan") and "open" in r:
+                lab, extra = "n/a (real LAN)", "n/a"
+                other = f"{r['open']} open in every run, {r['open_any']} in any run"
+            elif r.get("correct") is None:
                 lab = other = extra = "n/a"
             else:
                 lab = f"{data['lab_open'] - r['lab_missed']}/{data['lab_open']}"
@@ -353,12 +370,21 @@ def main():
     ap.add_argument("--check", action="store_true", help="fail on a wrong or regressed Network Scope result")
     ap.add_argument("--baseline", default=os.path.join(HERE, "speed_baseline.json"))
     ap.add_argument("--tolerance", type=float, default=0.5, help="allowed slowdown over the baseline (default 0.5 = +50%%)")
+    ap.add_argument("--lan", help="time Network Scope (Safe Mode, no other tool) on this real private /24 or smaller "
+                    "instead of the loopback lab; only with the network owner's permission. No correctness check, no gate")
     ap.add_argument("--out-dir", help="write speed.json, speed.md and baseline-candidate.json here")
     args = ap.parse_args()
     cells = [c.strip() for c in args.cells.split(",") if c.strip()]
     unknown = [c for c in cells if c not in CELLS]
     if unknown:
         ap.error(f"unknown cell(s): {', '.join(unknown)}")
+    if args.lan:
+        try:
+            args.lan = lan_network(args.lan)
+        except ValueError as e:
+            ap.error(f"--lan: {e}")
+        if any(not c.startswith("24-") for c in cells):
+            ap.error("--lan takes only the 24-* cells")
     # A developer's own scope file must not change the run (see lab/nmap_compare.py).
     os.environ["LOCALAPPDATA"] = os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="ns-config-")
     sys.stdout.reconfigure(encoding="utf-8")
@@ -386,10 +412,12 @@ def main():
         except (SpeedError, ValueError) as e:
             print(f"speed comparison error: top {n} ports from nmap: {e}", file=sys.stderr)
             return 2
+    lab_tcp = []
     try:
-        truth, addresses = bench.load_truth(os.path.join(HERE, "ground_truth.json"))
-        lab_ports = sorted({s["port"] for h in truth["hosts"] for s in h["tcp"]})
-        lab_tcp, _ = bench.start_lab(truth, addresses, lab_ports)
+        if not args.lan:
+            truth, addresses = bench.load_truth(os.path.join(HERE, "ground_truth.json"))
+            lab_ports = sorted({s["port"] for h in truth["hosts"] for s in h["tcp"]})
+            lab_tcp, _ = bench.start_lab(truth, addresses, lab_ports)
     except bench.LabError as e:
         print(f"speed comparison error: {e}", file=sys.stderr)
         return 2
@@ -399,12 +427,13 @@ def main():
     ns_medians, failures = {}, []
     for cell in cells:
         cidr, n = CELLS[cell]
+        cidr = args.lan or cidr
         ports = port_lists[n]
         if ports is None:
             print(f"{cell}: skipped (the top 1000 list needs nmap)")
             continue
         hosts = {str(h) for h in ipaddress.ip_network(cidr).hosts()}
-        listening = listeners()
+        listening = set() if args.lan else listeners()
         expected = expected_open(listening, hosts, ports)
         lab_in_cell = {(a, p) for a, p in lab_tcp if a in hosts and p in set(ports)}
         if not lab_in_cell <= expected:  # the listener table must at least see the lab
@@ -446,7 +475,7 @@ def main():
                     peaks[label].append(peak)
                 print(f"  {label}: run {i + 1} {seconds:.2f} s, {len(got)} open", flush=True)
         cell_result = {"range": cidr, "ports": len(ports), "port_list": ports, "hosts": len(hosts),
-                       "expected_open": len(expected), "lab_open": len(lab_in_cell), "tools": {}}
+                       "expected_open": len(expected), "lab_open": len(lab_in_cell), "lan": bool(args.lan), "tools": {}}
         for label in tools:
             r = summarize(times[label], peaks[label])
             if label in errors and not times[label]:
@@ -455,7 +484,10 @@ def main():
                 r["error"] = f"> {args.limit} s"
             if label in timed_out:
                 r["timed_out"] = True
-            if label in found:
+            if label in found and args.lan:  # nothing to compare with: report how stable the result was
+                r.update(open=len(found[label][0]), open_any=len(found[label][1]), correct=None,
+                         unstable_sample=[f"{a}:{p}" for a, p in sorted(found[label][1] - found[label][0])[:10]])
+            elif label in found:
                 # Correct: every lab port found and nothing reported open that does not listen. A missed
                 # connection to another listener is reported only: a system service's wildcard listener
                 # can refuse when hundreds of connections arrive at once (its backlog), which is the OS.
@@ -469,7 +501,9 @@ def main():
                 r["correct"] = None
             cell_result["tools"][label] = r
         ns = cell_result["tools"]["Network Scope"]
-        if ns.get("error") or ns.get("timed_out"):
+        if args.lan:
+            pass  # a real network is not a regression signal
+        elif ns.get("error") or ns.get("timed_out"):
             failures.append(f"{cell}: Network Scope {ns.get('error') or 'timed out'}")
         elif not ns["correct"]:
             failures.append(f"{cell}: Network Scope reported a wrong open set ({ns['lab_missed']} lab port(s) missed "

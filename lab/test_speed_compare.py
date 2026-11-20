@@ -66,6 +66,16 @@ class Parsers(unittest.TestCase):
         self.assertEqual(sc.ns_open(snapshot), {("127.0.10.1", 21), ("127.0.10.1", 22)})
 
 
+class Lan(unittest.TestCase):
+    def test_only_small_private_ranges(self):
+        self.assertEqual(sc.lan_network("192.168.178.0/24"), "192.168.178.0/24")
+        self.assertEqual(sc.lan_network("10.1.2.0/28"), "10.1.2.0/28")
+        for bad in ("100.64.0.0/24", "8.8.8.0/24", "192.168.0.0/16", "127.0.0.0/24", "169.254.1.0/24",
+                    "192.168.178.1/24", "nonsense"):
+            with self.assertRaises(ValueError, msg=bad):
+                sc.lan_network(bad)
+
+
 class Gate(unittest.TestCase):
     def test_regressions(self):
         failures, notices = sc.regressions({"24-top100": 1.4, "24-top1000": 3.1, "16-top100": 9.0},

@@ -92,6 +92,9 @@ WSL and Docker are not available on this machine and neither nmap nor RustScan i
 | Cell | Wall time, median (min to max) | Peak memory | Lab ports found | Other listeners found | Reported open but not listening |
 | --- | --- | --- | --- | --- | --- |
 | `127.0.10.0/24`, top 100, 5 runs | 1.68 s (1.66 to 2.96) | 30.5 MB | 8/8 | 1,166/1,524 | 0 |
+| `127.0.0.0/16`, top 100 | not measured: the first run had not finished when the measuring session ended, so there is no time to report | | | | |
+
+The /16 cell is 6.5 million connects per run. On this machine 393,204 of them (six wildcard listeners on 65,534 addresses) are open, and every open one ends in a full connection and a result entry. It is left to the Linux CI run.
 
 How to read it:
 
