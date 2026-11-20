@@ -243,6 +243,13 @@ impl Scanner {
                     .on_hover_text(tr!(
                         "Only the order changes, not which addresses or probes. Spreads the load over the network instead of walking it address by address."
                     ));
+                    ui.checkbox(
+                        &mut self.saved.record_traffic,
+                        tr!("Record the scan's traffic (pcapng in NetworkScope/recordings)"),
+                    )
+                    .on_hover_text(tr!(
+                        "A wire capture of the targets while the scan runs when the capture driver allows it (Npcap/libpcap, at most 256 targets); otherwise the scan's own requests and replies, labelled as an application-level record. Sends nothing extra."
+                    ));
                     ui.separator();
                     ui.checkbox(
                         &mut self.saved.check_updates,

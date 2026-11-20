@@ -10,6 +10,7 @@ mod ot;
 mod palette;
 mod preset_ui;
 mod quick;
+mod recording;
 mod scheduler;
 mod settings;
 mod tables;
@@ -52,6 +53,8 @@ struct Saved {
     preset: String,
     /// Probe the addresses in random order.
     randomize: bool,
+    /// Record each scan's traffic to `NetworkScope/recordings` (wire capture when possible).
+    record_traffic: bool,
     /// `auto` (or empty: follow the system), `en` or `de`.
     language: String,
     /// Dark theme (light is the default).
@@ -446,6 +449,8 @@ struct Scanner {
     haystacks: HashMap<IpAddr, String>,
     /// Rows of hosts still being scanned (`scan::Event::Partial`), by address: the row index.
     live: HashMap<IpAddr, usize>,
+    /// The traffic recording of the running scan (Settings: "Record the scan's traffic").
+    recording: Option<recording::Recording>,
     rows: Vec<usize>,
     rows_key: Option<(u64, u64, Filter, String)>,
     responding: usize,
@@ -575,6 +580,7 @@ impl Scanner {
             notes_generation: 0,
             haystacks: HashMap::new(),
             live: HashMap::new(),
+            recording: None,
             rows: vec![],
             rows_key: None,
             responding: 0,
@@ -952,8 +958,22 @@ impl Scanner {
                 self.data_changed();
                 let live_settings = scan::Settings {
                     partial_events: true,
+                    record: self.saved.record_traffic,
                     ..self.saved.settings.clone()
                 };
+                // The wire capture starts before the scan sends its first packet.
+                self.recording = self.saved.record_traffic.then(|| {
+                    let dir = saved_path().with_file_name("recordings");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    recording::start(
+                        recording::file_in(&dir, now),
+                        &self.saved.settings.interface,
+                        &hosts,
+                    )
+                });
                 self.run = Some(scan::start(hosts, ports, live_settings));
             }
             Err(e) => self.error = e,
@@ -1044,6 +1064,11 @@ impl Scanner {
                     run.started.elapsed().as_secs_f32(),
                     crate::sendlog::total(&self.scan_sent)
                 );
+                // The recording ends with the scan; its result follows the scan summary.
+                if let Some(rec) = self.recording.take() {
+                    let recorded = rec.finish(run.sent.recorder());
+                    self.status = format!("{} · {recorded}", self.status);
+                }
             }
         }
         if recount {

@@ -37,6 +37,23 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test --release --locked -p network-scope-core windows_schannel -- --ignored --nocapture
       - run: cargo build --release --locked
+      # Roadmap L72: the real wire capture of `scan --record-wire` with libpcap on the loopback
+      # interface (Linux only; capturing needs root, so the already built test binary and the CLI
+      # run under sudo). The test is ignored by default because it needs a capture driver.
+      - name: Wire capture with libpcap (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y libpcap0.8t64 || sudo apt-get install -y libpcap0.8
+          bin=$(cargo test --release --locked -p network-scope-core --lib --no-run --message-format=json \
+            | python3 -c 'import json,sys; print([m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason")=="compiler-artifact" and m.get("executable") and m["target"]["name"]=="network_scope_core"][-1])')
+          sudo "$bin" wire_capture --ignored --nocapture
+          python3 -m http.server 18080 --bind 127.0.0.1 >/dev/null 2>&1 &
+          sleep 1
+          sudo target/release/network-scope-cli scan 127.0.0.1 --ports 18080 --services --db "$RUNNER_TEMP/wire.sqlite" --record "$RUNNER_TEMP/wire.pcapng" --record-wire --output "$RUNNER_TEMP/wire.json" 2> "$RUNNER_TEMP/wire.log" || { cat "$RUNNER_TEMP/wire.log"; exit 1; }
+          cat "$RUNNER_TEMP/wire.log"
+          grep -q "from the wire" "$RUNNER_TEMP/wire.log"
+          kill %1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"

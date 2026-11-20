@@ -216,6 +216,8 @@ Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255) || Netz
 Resolve hostnames (system DNS) || Hostnamen auflösen (System-DNS)
 Look up MAC addresses (local IPv4 network) || MAC-Adressen nachschlagen (lokales IPv4-Netz)
 Probe the addresses in random order || Adressen in zufälliger Reihenfolge prüfen
+Record the scan's traffic (pcapng in NetworkScope/recordings) || Datenverkehr des Scans aufzeichnen (pcapng in NetworkScope/recordings)
+A wire capture of the targets while the scan runs when the capture driver allows it (Npcap/libpcap, at most 256 targets); otherwise the scan's own requests and replies, labelled as an application-level record. Sends nothing extra. || Ein Mitschnitt der Ziele während des Scans, wenn der Capture-Treiber es erlaubt (Npcap/libpcap, höchstens 256 Ziele); sonst die eigenen Anfragen und Antworten des Scans, als Aufzeichnung auf Anwendungsebene gekennzeichnet. Sendet nichts zusätzlich.
 Only the order changes, not which addresses or probes. Spreads the load over the network instead of walking it address by address. || Nur die Reihenfolge ändert sich, nicht welche Adressen oder Proben. Verteilt die Last über das Netz, statt es Adresse für Adresse abzulaufen.
 Check for updates on start (one request to GitHub; only tells you, never downloads) || Beim Start nach Updates suchen (eine Anfrage an GitHub; informiert nur, lädt nie herunter)
 Sends one HTTPS request to api.github.com with the user agent network-scope/<version> and no other data. Off by default. || Sendet eine HTTPS-Anfrage an api.github.com mit dem User-Agent network-scope/<Version> und keinen weiteren Daten. Standardmäßig aus.
