@@ -284,7 +284,8 @@ pub async fn discover(ip: IpAddr, gate: &Gate) -> Result<Fields, String> {
     );
     let s = OtStream::connect((ip, 4840))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(super::connect_error)?
+        .with_log(gate.log().clone());
     discover_stream(s, &url, gate).await
 }
 async fn discover_stream(s: impl Into<OtStream>, url: &str, gate: &Gate) -> Result<Fields, String> {

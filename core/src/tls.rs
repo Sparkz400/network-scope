@@ -2,7 +2,7 @@
 //! negotiated TLS 1.2/1.3 parameters; a hand-built ClientHello then asks which protocol
 //! versions (SSLv3 to TLS 1.2) and cipher suites the server accepts, including legacy and
 //! weak ones that rustls refuses to speak. Certificates are inventory data, never trusted.
-use crate::core::Gate;
+use crate::{core::Gate, sendlog::PacketKind};
 use rustls::{
     ClientConfig, DigitallySignedStruct, SignatureScheme,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
@@ -730,7 +730,8 @@ pub async fn enumerate13(
     let mut exhausted = false;
     while budget > 0 && !exhausted {
         budget -= 1;
-        gate.wait().await;
+        gate.wait_for(PacketKind::TlsClientHello, "TLS 1.3 suite enumeration")
+            .await;
         match hello13(ip, port, &offered, limit).await {
             First::Hello(h)
                 if h.selected_version == Some(0x0304) && offered.contains(&h.cipher) =>
@@ -812,7 +813,11 @@ pub async fn enumerate(
         let ask = |suites: Vec<u16>| {
             let version = *version;
             async move {
-                gate.wait().await;
+                gate.wait_for(
+                    PacketKind::TlsClientHello,
+                    "TLS version and cipher enumeration",
+                )
+                .await;
                 match hello(ip, port, version, &suites, limit).await {
                     Ok(Reply::Accepted {
                         version: v,
@@ -970,7 +975,8 @@ pub async fn inspect(
     rounds: usize,
     gate: &Gate,
 ) -> Result<Fields, String> {
-    gate.wait().await;
+    gate.wait_for(PacketKind::TcpConnect, "service identification")
+        .await;
     let tcp = timeout(limit, TcpStream::connect((ip, port)))
         .await
         .map_err(|_| "connect timed out".to_string())?

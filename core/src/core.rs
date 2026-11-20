@@ -1,8 +1,10 @@
 //! Bounded async scheduling shared by the desktop, CLI and TUI.
 use crate::{
+    backoff::{HostGovernor, Outcome},
     osfp::TcpFp,
     rtt::HostRtt,
     scan::{Event, Host, PortState, Settings},
+    sendlog::{PacketKind, SentLog},
     service::ProbeDb,
     syn::SynEngine,
 };
@@ -30,13 +32,44 @@ pub struct Gate {
     bucket: Option<Mutex<Bucket>>,
     /// Safe Mode: optional extra probes (NTLM session setup, TLS 1.3 enumeration) are skipped.
     safe: bool,
+    /// Every packet that takes a token (or is noted) is counted here, per scan.
+    log: Arc<SentLog>,
 }
 impl Gate {
     pub fn unlimited() -> Self {
         Self {
             bucket: None,
             safe: false,
+            log: Arc::new(SentLog::new()),
         }
+    }
+    /// Counts the packets of this gate in `log` (the scan's sent log) instead of a private one.
+    pub fn with_log(mut self, log: Arc<SentLog>) -> Self {
+        self.log = log;
+        self
+    }
+    /// The log of what this gate's senders transmitted.
+    pub fn log(&self) -> &Arc<SentLog> {
+        &self.log
+    }
+    /// Waits for a token and records the packet about to be sent (the form senders use).
+    pub async fn wait_for(&self, kind: PacketKind, detail: impl Into<String>) {
+        self.log.record(kind, detail);
+        self.wait().await;
+    }
+    /// Like [`Gate::try_take`], recording the packet when a token was taken.
+    pub fn try_take_for(
+        &self,
+        kind: PacketKind,
+        detail: impl Into<String>,
+    ) -> Result<(), Duration> {
+        self.try_take()?;
+        self.log.record(kind, detail);
+        Ok(())
+    }
+    /// Records a packet that leaves on an already-gated connection (no token taken).
+    pub fn note(&self, kind: PacketKind, detail: impl Into<String>) {
+        self.log.record(kind, detail);
     }
     /// Marks this gate as the Safe Mode traffic profile.
     pub fn with_safe(mut self, safe: bool) -> Self {
@@ -63,6 +96,7 @@ impl Gate {
                 burst: burst.max(1.0),
             })),
             safe: false,
+            log: Arc::new(SentLog::new()),
         }
     }
     pub async fn wait(&self) {
@@ -160,14 +194,14 @@ where
     Fut: std::future::Future<Output = PortState>,
 {
     let mut attempt = first;
-    gate.wait().await;
+    gate.wait_for(PacketKind::TcpConnect, "port scan").await;
     let mut state = connect(attempt).await;
     for _ in 0..retries.min(5) {
         if state != PortState::Unanswered {
             break;
         }
         attempt = (attempt * 2).min(cap.max(first));
-        gate.wait().await;
+        gate.wait_for(PacketKind::TcpConnect, "port scan").await;
         state = connect(attempt).await;
     }
     state
@@ -179,7 +213,7 @@ where
 /// port, so the only probe it gets is the single BACnet Who-Is (rate-gated, wait capped at
 /// 2 s): that finds devices that answer nothing but BACnet/IP.
 fn wants_ot(h: &Host, s: &Settings) -> bool {
-    s.ot && (h.responding || s.scan_nonresponders)
+    crate::plan::ot_identification(h.responding, s)
 }
 
 /// UDP ports the OT identification talks to over UDP. A parsed reply (`<protocol>.*`
@@ -221,16 +255,20 @@ pub async fn execute(
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
     tx: Sender<Event>,
+    sent: Arc<SentLog>,
 ) {
     let s = Arc::new(s);
-    let gate = Arc::new(if s.safe {
-        Gate::new(s.delay.max(100)).with_safe(true)
-    } else if s.max_rate > 0 {
-        let rate = f64::from(s.max_rate);
-        Gate::per_second(rate, (rate / 10.0).max(1.0))
-    } else {
-        Gate::unlimited()
-    });
+    let gate = Arc::new(
+        if s.safe {
+            Gate::new(s.delay.max(100)).with_safe(true)
+        } else if s.max_rate > 0 {
+            let rate = f64::from(s.max_rate);
+            Gate::per_second(rate, (rate / 10.0).max(1.0))
+        } else {
+            Gate::unlimited()
+        }
+        .with_log(sent),
+    );
     // UDP payload probes come from the same database (registered process-wide by `load`), so
     // `--probes FILE` also applies to a UDP-only scan; the value itself is only kept for TCP.
     let probes = if s.services || s.udp {
@@ -266,7 +304,7 @@ pub async fn execute(
     } else {
         vec![]
     };
-    let (syn, syn_error) = if s.syn && !s.safe {
+    let (syn, syn_error) = if crate::plan::syn_engine(&s) {
         match SynEngine::start(&s, gate.clone()) {
             Ok(engine) => (Some(engine), None),
             Err(e) => (None, Some(e)),
@@ -275,7 +313,7 @@ pub async fn execute(
         (None, None)
     };
     // Opt-in, and never in Safe Mode (the per-host OS lookup is used there).
-    let (arp, arp_error) = if s.arp_sweep && !s.safe {
+    let (arp, arp_error) = if crate::plan::arp_sweep(&s) {
         match crate::arp::ArpEngine::start(&s, gate.clone()) {
             Ok(engine) => (Some(engine), None),
             Err(e) => (None, Some(e)),
@@ -500,13 +538,34 @@ async fn traceroute(
 /// ports it never sends to (`service::is_ot_udp_port`). BACnet and the other OT protocols are
 /// identified only by the dedicated read-only path (`--ot`).
 fn udp_scan_ports(ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
-    ports
-        .iter()
-        .partition(|p| !crate::service::is_ot_udp_port(**p))
+    crate::plan::udp_ports(ports)
 }
 fn note(h: &mut Host, text: String) {
     if h.errors.len() < 8 && !h.errors.contains(&text) {
         h.errors.push(text);
+    }
+}
+/// Puts a back-off note first, so it is not lost when port errors already filled the list.
+fn note_first(h: &mut Host, text: String) {
+    if !h.errors.contains(&text) {
+        h.errors.insert(0, text);
+        h.errors.truncate(8);
+    }
+}
+/// Moves the notes the back-off controller recorded onto the host.
+fn flush_backoff_notes(gov: &HostGovernor, h: &mut Host) {
+    for text in gov.take_notes().into_iter().rev() {
+        note_first(h, text);
+    }
+}
+/// What a port probe tells the back-off controller (local errors are no evidence).
+fn outcome_of(port: u16, state: &PortState) -> Option<Outcome> {
+    match state {
+        PortState::Open => Some(Outcome::Open(port)),
+        PortState::Closed => Some(Outcome::Refused),
+        PortState::Unanswered => Some(Outcome::Timeout),
+        PortState::Reset => Some(Outcome::Reset),
+        PortState::Error(_) => None,
     }
 }
 
@@ -529,7 +588,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     };
     let mut fingerprint = None;
     // ARP is independent of ping: an ICMP-silent LAN device can still be found.
-    if s.arp || s.mac || s.os_detect || s.arp_sweep {
+    if crate::plan::arp_lookup(&s) {
         let swept = sweep_arp(ip, &s, &ctx).await;
         if let Some(text) = swept.note {
             note(&mut h, text);
@@ -538,7 +597,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             h.mac = mac;
             h.responding = true;
         } else if !swept.answered {
-            ctx.gate.wait().await;
+            ctx.gate
+                .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
+                .await;
             if let Some(Some(n)) =
                 run_blocking(&ctx.blocking, move || crate::platform::neighbor(ip)).await
             {
@@ -549,11 +610,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
     }
     let mut rtts = vec![];
-    if !s.tcp_only {
+    if crate::plan::icmp_echoes(&s) > 0 {
         let timeout = s.ping_timeout.clamp(1, 10000);
         let mut echoes = JoinSet::new();
-        for _ in 0..s.probes.clamp(1, 10) {
-            ctx.gate.wait().await;
+        for _ in 0..crate::plan::icmp_echoes(&s) {
+            ctx.gate
+                .wait_for(PacketKind::IcmpEcho, "echo request")
+                .await;
             let ctx = ctx.clone();
             echoes.spawn(async move {
                 run_blocking(&ctx.blocking, move || crate::platform::echo(ip, timeout)).await
@@ -577,15 +640,18 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
-    if h.responding || s.scan_nonresponders || s.tcp_only {
+    let parallel = if s.safe {
+        s.port_parallel.clamp(1, 4)
+    } else {
+        s.port_parallel.clamp(1, 1024)
+    };
+    // Per-host pacing: the device-type limits and the back-off (see `backoff`). It replaces the
+    // plain per-host semaphore; without a back-off it behaves exactly like one.
+    let gov = HostGovernor::new(parallel, s.backoff);
+    if crate::plan::probes_ports(h.responding, &s) {
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
-        let parallel = if s.safe {
-            s.port_parallel.clamp(1, 4)
-        } else {
-            s.port_parallel.clamp(1, 1024)
-        };
-        let slots = Arc::new(Semaphore::new(parallel));
+        let mut unprobed = 0;
         let mut probes = JoinSet::new();
         // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
         let host_rtt = (s.tcp_adaptive && ctx.syn.is_none()).then(|| Arc::new(HostRtt::default()));
@@ -595,7 +661,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             {
                 r.wait_for_sample(timeout.min(PILOT_WAIT)).await;
             }
-            let Ok(permit) = slots.clone().acquire_owned().await else {
+            let Some(permit) = gov.admit().await else {
+                // The host is paused: it gets no further probes in this scan.
+                unprobed = ports.len() - index;
                 break;
             };
             // Global in-flight bound taken before spawning: with many workers and a
@@ -603,9 +671,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             let Ok(socket) = ctx.sockets.clone().acquire_owned().await else {
                 break;
             };
-            let (s, ctx, rtt) = (s.clone(), ctx.clone(), host_rtt.clone());
+            let (s, ctx, rtt, gov) = (s.clone(), ctx.clone(), host_rtt.clone(), gov.clone());
             probes.spawn(async move {
                 let result = probe_port(ip, port, timeout, &s, &ctx, rtt.as_deref()).await;
+                if let Some(outcome) = outcome_of(port, &result.state) {
+                    gov.record(outcome);
+                }
                 drop(socket);
                 drop(permit);
                 (port, result)
@@ -635,6 +706,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                     h.responding = true;
                 }
                 PortState::Unanswered => h.unanswered += 1,
+                PortState::Reset => {
+                    if h.errors.len() < 8 {
+                        h.errors
+                            .push(format!("TCP {port}: connection reset by the host"));
+                    }
+                }
                 PortState::Error(e) => {
                     if h.errors.len() < 8 {
                         h.errors.push(format!("TCP {port}: {e}"));
@@ -642,16 +719,30 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 }
             }
         }
+        if unprobed > 0 {
+            // The unprobed ports are unknown, not closed: monitor and diff must not report them.
+            h.ports_checked = false;
+            gov.note_unprobed(unprobed);
+        }
     }
-    if s.services && !h.open.is_empty() {
+    flush_backoff_notes(&gov, &mut h);
+    if s.services && !h.open.is_empty() && !gov.paused() {
         let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
         let rounds = if s.safe { 6 } else { 12 };
-        let slots = Arc::new(Semaphore::new(if s.safe { 1 } else { 8 }));
+        let slots = Arc::new(Semaphore::new(
+            (if s.safe { 1 } else { 8 }).min(gov.limit()),
+        ));
         let mut tasks = JoinSet::new();
         for &port in h.open.iter().filter(|p| !crate::service::is_ot_port(**p)) {
+            if gov.paused() {
+                break;
+            }
             let Ok(permit) = slots.clone().acquire_owned().await else {
                 break;
             };
+            if !gov.delay().is_zero() {
+                sleep(gov.delay()).await;
+            }
             let ctx = ctx.clone();
             tasks.spawn(async move {
                 let found = match &ctx.probes {
@@ -676,12 +767,16 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 Some(o) => h
                     .identity
                     .extend(crate::service::identity_entries(port, &o)),
-                None => note(
-                    &mut h,
-                    format!("Service detection: port {port} stopped answering"),
-                ),
+                None => {
+                    note(
+                        &mut h,
+                        format!("Service detection: port {port} stopped answering"),
+                    );
+                    gov.known_open_failed(port);
+                }
             }
         }
+        flush_backoff_notes(&gov, &mut h);
     }
     // JARM: ten extra hellos per port that service detection found to speak TLS. Opt-in, never
     // in Safe Mode, one port at a time, every connection through the rate gate, and never on
@@ -703,10 +798,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if s.udp && !ctx.udp_ports.is_empty() && (h.responding || s.scan_nonresponders) {
+    if s.udp && !ctx.udp_ports.is_empty() && (h.responding || s.scan_nonresponders) && !gov.paused()
+    {
         let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(300, 2000)));
         let tries = (s.retries + 1).min(4);
-        let slots = Arc::new(Semaphore::new(if s.safe { 2 } else { 16 }));
+        let slots = Arc::new(Semaphore::new(
+            (if s.safe { 2 } else { 16 }).min(gov.limit()),
+        ));
         let mut tasks = JoinSet::new();
         let (ports, skipped) = udp_scan_ports(&ctx.udp_ports);
         if !skipped.is_empty() && h.responding {
@@ -723,9 +821,15 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             );
         }
         for port in ports {
+            if gov.paused() {
+                break;
+            }
             let Ok(permit) = slots.clone().acquire_owned().await else {
                 break;
             };
+            if !gov.delay().is_zero() {
+                sleep(gov.delay()).await;
+            }
             let ctx = ctx.clone();
             tasks.spawn(async move {
                 let _dhcp = if port == 67 {
@@ -765,11 +869,14 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if wants_ot(&h, &s) {
-        crate::ot::identify(&mut h, &s, &ctx.gate).await;
+    if wants_ot(&h, &s) && !gov.paused() {
+        for port in crate::ot::identify(&mut h, &s, &ctx.gate).await {
+            gov.known_open_failed(port);
+        }
+        flush_backoff_notes(&gov, &mut h);
         merge_ot_udp(&mut h);
     }
-    if s.trace && h.responding {
+    if s.trace && h.responding && !gov.paused() {
         let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
         for text in notes {
             note(&mut h, text);
@@ -777,6 +884,10 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.trace = hops;
     }
     if h.responding && s.dns {
+        ctx.gate.note(
+            PacketKind::DnsLookup,
+            "reverse lookup via the system resolver",
+        );
         let lookup = run_blocking(&ctx.blocking, move || {
             dns_lookup::lookup_addr(&ip).unwrap_or_default()
         });
@@ -853,6 +964,11 @@ fn analyze(h: &mut Host, fp: Option<&TcpFp>) {
         why.store(&mut h.identity, "device");
     }
 }
+/// Tests that talk to the fixed BACnet port (47808) on loopback take this lock, so a scan with
+/// `--ot` in one test cannot answer another test's simulated device.
+#[cfg(test)]
+pub(crate) static BACNET_PORT: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1057,6 +1173,52 @@ mod tests {
         assert_eq!(pool.available_permits(), 1);
     }
 
+    /// Every packet the scanner transmits is counted (ROADMAP H53): a sender takes its rate-gate
+    /// token with `wait_for`/`try_take_for` (which record the packet) or notes it with
+    /// `Gate::note`. A bare `gate.wait()` or `try_take()` in a sender would send unrecorded
+    /// packets. The OT senders take plain tokens because their requests record themselves
+    /// (`OtStream`/`OtUdp` with a log).
+    #[test]
+    fn senders_do_not_take_unrecorded_tokens() {
+        let sources = [
+            ("arp.rs", include_str!("arp.rs")),
+            ("syn.rs", include_str!("syn.rs")),
+            ("tls.rs", include_str!("tls.rs")),
+            ("trace.rs", include_str!("trace.rs")),
+            ("udp.rs", include_str!("udp.rs")),
+            ("service/mod.rs", include_str!("service/mod.rs")),
+            ("service/rdp.rs", include_str!("service/rdp.rs")),
+            ("service/smb/mod.rs", include_str!("service/smb/mod.rs")),
+        ];
+        for (name, source) in sources {
+            let code = source
+                .split(
+                    "#[cfg(test)]
+mod tests",
+                )
+                .next()
+                .unwrap();
+            for bare in [".wait().await", ".try_take()"] {
+                assert!(
+                    !code.contains(bare),
+                    "{name} takes a gate token without recording the packet ({bare}); use wait_for/try_take_for"
+                );
+            }
+        }
+        // The OT code records through its sockets: no raw send exists there (see ot::readonly).
+        let ot = include_str!("ot.rs")
+            .split(
+                "#[cfg(test)]
+mod tests",
+            )
+            .next()
+            .unwrap();
+        assert!(
+            ot.contains("with_log("),
+            "ot.rs must attach the sent log to its sockets"
+        );
+    }
+
     /// Scans 127.0.0.1 over TCP connect and returns (open ports, closed count, unanswered).
     fn loopback_scan(ports: Vec<u16>, adaptive: bool, safe: bool) -> (Vec<u16>, usize, usize) {
         let s = Settings {
@@ -1140,6 +1302,130 @@ mod tests {
         assert_eq!(plain.state, PortState::Closed);
     }
 
+    /// A "device" that accepts one connection and then stops listening: every later connect is
+    /// refused (or silently dropped, depending on the OS).
+    fn flaky_device() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((connection, _)) = listener.accept() {
+                drop(connection);
+            }
+            drop(listener);
+        });
+        port
+    }
+
+    fn scan_loopback(ports: Vec<u16>, backoff: bool, services: bool) -> Host {
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            services,
+            backoff,
+            retries: 0,
+            delay: 0,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        let run = crate::scan::start(vec!["127.0.0.1".parse().unwrap()], ports, s);
+        match run.receiver.recv_timeout(Duration::from_secs(60)).unwrap() {
+            Event::Host(h) => h,
+            _ => panic!("missing host"),
+        }
+    }
+
+    #[test]
+    fn a_device_that_stops_answering_after_it_was_found_open_gets_a_back_off_note() {
+        let port = flaky_device();
+        let h = scan_loopback(vec![port], true, true);
+        assert_eq!(h.open, [port]);
+        let note = h
+            .errors
+            .iter()
+            .find(|e| e.starts_with("backed off:"))
+            .unwrap_or_else(|| panic!("no back-off note in {:?}", h.errors));
+        assert!(
+            note.contains(&format!(
+                "port {port} stopped answering after it was found open"
+            )),
+            "{note}"
+        );
+        assert_eq!(h.errors[0], *note, "the back-off note comes first");
+        // --no-backoff: the same device, no note (the service note stays).
+        let port = flaky_device();
+        let h = scan_loopback(vec![port], false, true);
+        assert!(
+            h.errors.iter().all(|e| !e.starts_with("backed off:")),
+            "{:?}",
+            h.errors
+        );
+    }
+
+    #[test]
+    fn persisting_errors_pause_the_host_for_the_rest_of_the_scan() {
+        // Four open ports that each refuse the identification that follows: four strikes pause an
+        // unclassified host.
+        let ports: Vec<u16> = (0..4).map(|_| flaky_device()).collect();
+        let h = scan_loopback(ports.clone(), true, true);
+        for p in &ports {
+            assert!(h.open.contains(p), "{p} was found open: {:?}", h.open);
+        }
+        assert!(
+            h.errors
+                .iter()
+                .any(|e| e.contains("host paused for the rest of this scan")),
+            "{:?}",
+            h.errors
+        );
+        // Every port had been probed before the identification started.
+        assert!(h.ports_checked);
+    }
+
+    #[test]
+    fn a_healthy_host_with_closed_and_open_ports_is_not_backed_off() {
+        let listeners: Vec<std::net::TcpListener> = (0..5)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let open: Vec<u16> = listeners
+            .iter()
+            .map(|l| l.local_addr().unwrap().port())
+            .collect();
+        // Many closed ports (refused on Linux, silent after ~2 s on Windows loopback).
+        let closed: Vec<u16> = (0..60)
+            .map(|_| {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                l.local_addr().unwrap().port()
+            })
+            .collect();
+        let mut ports = [open.clone(), closed].concat();
+        ports.sort_unstable();
+        ports.dedup();
+        let h = scan_loopback(ports.clone(), true, false);
+        for p in &open {
+            assert!(h.open.contains(p), "{p}");
+        }
+        assert!(
+            h.errors.iter().all(|e| !e.starts_with("backed off:")),
+            "{:?}",
+            h.errors
+        );
+        assert!(h.ports_checked, "every port was probed");
+        assert_eq!(h.open.len() + h.closed + h.unanswered, ports.len());
+    }
+
+    #[test]
+    fn back_off_notes_survive_a_full_error_list() {
+        let mut h = host("10.0.0.1");
+        for i in 0..8 {
+            note(&mut h, format!("TCP {i}: some error"));
+        }
+        note_first(&mut h, "backed off: example".into());
+        assert_eq!(h.errors.len(), 8);
+        assert_eq!(h.errors[0], "backed off: example");
+        note_first(&mut h, "backed off: example".into());
+        assert_eq!(h.errors.len(), 8, "no duplicate");
+    }
+
     fn test_ctx() -> Ctx {
         Ctx {
             gate: Arc::new(Gate::unlimited()),
@@ -1208,6 +1494,7 @@ mod tests {
 
     #[test]
     fn ot_scan_lists_bacnet_port_in_udp_open() {
+        let _port = BACNET_PORT.lock().unwrap_or_else(|e| e.into_inner());
         // The fixed BACnet port may be taken (lab simulator, another test run): skip then.
         let Ok(device) = std::net::UdpSocket::bind("127.0.0.1:47808") else {
             return;
@@ -1238,6 +1525,7 @@ mod tests {
         let Event::Host(h) = event else {
             panic!("missing host")
         };
+        let sent = run.sent.snapshot();
         drop(run);
         let _ = server.join();
         assert_eq!(
@@ -1245,6 +1533,25 @@ mod tests {
             Some("42")
         );
         assert_eq!(h.udp_open, [47808]);
+        // The Who-Is is in the sent log under its service, and the plan lists exactly that.
+        let who_is = "BACnet/IP: unicast Who-Is (unconfirmed service 8)";
+        assert!(
+            sent.iter()
+                .any(|e| e.kind == PacketKind::OtRequest && e.detail == who_is && e.count == 1),
+            "{sent:?}"
+        );
+        let settings = Settings {
+            tcp_only: true,
+            ot: true,
+            scan_nonresponders: true,
+            ..Settings::default()
+        };
+        let planned = crate::plan::host("127.0.0.1".parse().unwrap(), &[1], &[], &settings, None);
+        assert!(
+            planned
+                .keys()
+                .contains(&(PacketKind::OtRequest, who_is.to_string()))
+        );
     }
 
     #[test]

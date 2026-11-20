@@ -17,6 +17,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -83,7 +84,9 @@ def scan(exe, work, name, *options):
     started = time.time()
     subprocess.run([exe, "scan", "127.0.0.1", *options, "--db", db, "--output", out], check=True, timeout=120)
     seconds = time.time() - started
-    host = json.load(open(out))["hosts"][0]
+    document = json.load(open(out))
+    host = document["hosts"][0]
+    host["sent_in_output"] = document.get("sent")
     found = subprocess.run([exe, "findings", "1", "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
     return host, {f["id"] for f in json.loads(found)["findings"]}, seconds
 
@@ -99,6 +102,11 @@ def missing_identity(host, expect=EXPECT_IDENTITY):
 def check_normal(exe, work, failures):
     with Sim():
         host, ids, _ = deep_scan(exe, work, "normal", "--timeout", "1500")
+        slowed = [e for e in host["errors"] if e.startswith("backed off:")]
+        if slowed:
+            failures.append(f"healthy lab host was backed off: {slowed}")
+        check_backoff(exe, work, failures)
+        check_dry_run_and_sent_log(exe, work, host, failures)
     for key, want in missing_identity(host).items():
         failures.append(f"identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
     for want in sorted(EXPECT_FINDINGS - ids):
@@ -250,6 +258,80 @@ def check_fragile_ot(exe, work, failures):
 
 
 CHECKS = {"normal": check_normal, "slow-wan": check_slow_wan, "lossy": check_lossy, "fragile-ot": check_fragile_ot}
+
+
+def flaky_device(accepts):
+    """A loopback 'device' that accepts `accepts` connections and then stops listening, so every
+    later connect is refused (or silently dropped, depending on the OS). Returns its port."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    port = server.getsockname()[1]
+
+    def serve():
+        for _ in range(accepts):
+            try:
+                connection, _ = server.accept()
+                connection.close()
+            except OSError:
+                break
+        server.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return port
+
+
+def backoff_notes(exe, work, name, port, extra):
+    out = os.path.join(work, f"{name}.json")
+    subprocess.run([exe, "scan", "127.0.0.1", "--fast", "--tcp-only", "--services", "--ports", str(port),
+                    "--timeout", "1500", "--retries", "0", "--db", os.path.join(work, f"{name}.sqlite"),
+                    "--output", out, "--quiet"] + extra, check=True, timeout=120)
+    host = json.load(open(out))["hosts"][0]
+    return host, [e for e in host["errors"] if e.startswith("backed off:")]
+
+
+def check_backoff(exe, work, failures):
+    """H52: a device that refuses after its first connection gets a 'backed off' note, and
+    --no-backoff turns that off. The healthy lab host (main scan) must not get one."""
+    port = flaky_device(1)
+    host, notes = backoff_notes(exe, work, "flaky", port, [])
+    if port not in host["open"]:
+        failures.append(f"back-off: the flaky port {port} was not found open")
+    if not any(f"port {port} stopped answering after it was found open" in n for n in notes):
+        failures.append(f"back-off: no note for a device that stops answering: {host['errors']}")
+    port = flaky_device(1)
+    _, notes = backoff_notes(exe, work, "flaky-off", port, ["--no-backoff"])
+    if notes:
+        failures.append(f"back-off: --no-backoff still backed off: {notes}")
+
+
+def check_dry_run_and_sent_log(exe, work, host, failures):
+    """H53: the real scan's JSON carries the sent log; --dry-run lists the plan and sends nothing
+    (a listener that counts connections is the target)."""
+    sent = host.get("sent_in_output")
+    kinds = {e["kind"] for e in sent or []}
+    for want in ("icmp-echo", "tcp-connect", "udp-probe", "ot-request"):
+        if want not in kinds:
+            failures.append(f"sent log: {want} missing from {sorted(kinds)}")
+    counter = socket.socket()
+    counter.bind(("127.0.0.1", 0))
+    counter.listen(8)
+    counter.settimeout(0.5)
+    port = counter.getsockname()[1]
+    db = os.path.join(work, "dry.sqlite")
+    out = subprocess.run([exe, "scan", "127.0.0.1", "--dry-run", "--fast", "--deep", "--ot", "--ports", str(port),
+                          "--db", db], check=True, capture_output=True, text=True, timeout=60).stdout
+    if "DRY RUN: nothing was sent." not in out or "tcp-connect" not in out:
+        failures.append(f"dry run output unexpected: {out[:200]!r}")
+    if os.path.exists(db):
+        failures.append("dry run saved a scan")
+    try:
+        counter.accept()
+        failures.append("dry run connected to the target")
+    except socket.timeout:
+        pass
+    finally:
+        counter.close()
 
 
 def main():

@@ -2,7 +2,7 @@
 //! request, SNMP get of sysDescr with the community "public", SSDP unicast M-SEARCH, mDNS
 //! service enumeration, NetBIOS node status and DHCPINFORM. Any reply from the probed address
 //! means "open"; an ICMP port-unreachable means "closed"; silence is "open or filtered".
-use crate::core::Gate;
+use crate::{core::Gate, sendlog::PacketKind};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
@@ -19,6 +19,38 @@ pub enum Kind {
     Ssdp,
     Mdns,
     Generic,
+}
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Dns => "dns",
+            Kind::Dhcp => "dhcp",
+            Kind::Ntp => "ntp",
+            Kind::NetBios => "netbios",
+            Kind::Snmp => "snmp",
+            Kind::Ssdp => "ssdp",
+            Kind::Mdns => "mdns",
+            Kind::Generic => "generic",
+        }
+    }
+}
+/// What a probe to `port` is, for the plan and the sent log: `dns/53`, `snmp/161`, or for a
+/// port without a built-in protocol `probe-name/5000` / `empty datagram/5000`.
+fn describe(kind: Kind, port: u16, data_probe: Option<&crate::service::Probe>) -> String {
+    match (kind, data_probe) {
+        (Kind::Generic, Some(p)) => format!("{}/{port}", p.name),
+        (Kind::Generic, None) => format!("empty datagram/{port}"),
+        _ => format!("{}/{port}", kind.name()),
+    }
+}
+/// [`describe`] for a port as the UDP scan would probe it.
+pub fn describe_port(port: u16) -> String {
+    let kind = kind_for_port(port);
+    describe(
+        kind,
+        port,
+        payload_probe(port, kind, &crate::service::udp_probes()),
+    )
 }
 pub fn kind_for_port(port: u16) -> Kind {
     match port {
@@ -516,7 +548,7 @@ pub fn parse_offer(m: &[u8], xid: u32) -> Option<Offer> {
 
 /// Broadcasts one DHCPDISCOVER and collects every OFFER for `wait`. No REQUEST is ever sent, so
 /// no lease is taken, but a server may briefly reserve the address it offered. Needs local UDP port 68.
-pub fn dhcp_discover(wait: Duration) -> Result<Vec<Offer>, String> {
+pub fn dhcp_discover(wait: Duration, log: &crate::sendlog::SentLog) -> Result<Vec<Offer>, String> {
     use std::time::Instant;
     let raw = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
         .map_err(|e| e.to_string())?;
@@ -527,6 +559,7 @@ pub fn dhcp_discover(wait: Duration) -> Result<Vec<Offer>, String> {
     let sock: std::net::UdpSocket = raw.into();
     let xid = rand32();
     let mac = [0x02, 0x4e, 0x53, 0x00, rand32() as u8, rand32() as u8];
+    log.record(PacketKind::DhcpDiscover, "DHCPDISCOVER broadcast");
     sock.send_to(&dhcp_discover_packet(xid, mac), (Ipv4Addr::BROADCAST, 67))
         .map_err(|e| format!("broadcast failed: {e}"))?;
     let end = Instant::now() + wait;
@@ -678,7 +711,8 @@ async fn probe_with(
             Kind::Dhcp => dhcp_inform(xid, local_v4, [0x02, 0x4e, 0x53, 0x00, 0x00, 0x01]),
             Kind::Generic => data_probe.map_or_else(Vec::new, |p| p.payload.clone()),
         };
-        gate.wait().await;
+        gate.wait_for(PacketKind::UdpProbe, describe(kind, port, data_probe))
+            .await;
         if let Err(e) = sock.send(&payload).await {
             return match e.kind() {
                 std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused => {

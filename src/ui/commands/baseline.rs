@@ -185,6 +185,7 @@ mod tests {
         let db = temp_db();
         let d = db.to_str().unwrap();
         let snapshot = store::Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete: true,
             settings: Settings::default(),

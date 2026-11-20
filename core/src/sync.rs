@@ -460,6 +460,7 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete: true,
             settings: Settings::default(),

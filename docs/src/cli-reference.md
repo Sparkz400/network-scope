@@ -19,12 +19,12 @@ General rules:
 | --- | --- |
 | 0 | Success |
 | 1 | Error: bad arguments, I/O, database (also: nothing was saved because the scan or capture failed before collecting anything) |
-| 2 | Partial result: a scan or capture stopped early and its results were saved (marked partial in the inventory) |
+| 2 | Partial result: a scan or capture stopped early and its results were saved (marked partial in the inventory). Also: the [scope guard](#scope-guard) refused to start because the targets are public or outside the declared scope and nothing confirmed them (nothing was sent or saved; the message on stderr says which) |
 | 3 | `findings` / `diff` found something at or above `--min-severity`, **only** when `--fail-on-findings` is given |
 
 Without `--fail-on-findings`, `findings` and `diff` exit 0 however much they report. The flag is an error on any other command (status 1).
 
-What counts as partial (2): `scan` stopped with Q/Esc in the `--tui` view, or ended after errors (for example a terminal failure or a worker that disconnected) with at least some results; `listen` and `dcp` that hit a capture error after observing something. In each case the snapshot is saved with `complete = false` (shown as `partial`), the result is still written to stdout or `--output`, and an error line is printed on stderr. `listen --seconds N` running to the end is a normal, complete run (0). `ot-listen` and `monitor` are not covered by code 2: `monitor` reports incomplete passive captures as `capture-incomplete` alerts and keeps running, and Ctrl+C or a process kill ends the process without saving (the shell's own status for the signal).
+What counts as partial (2): `scan` stopped with Q/Esc in the `--tui` view, or ended after errors (for example a terminal failure or a worker that disconnected) with at least some results; `listen` and `dcp` that hit a capture error after observing something. In each case the snapshot is saved with `complete = false` (shown as `partial`), the result is still written to stdout or `--output`, and an error line is printed on stderr. `listen --seconds N` running to the end is a normal, complete run (0). `ot-listen` and `monitor` are not covered by the partial-result code 2 (a scope-guard refusal does apply to `monitor`): `monitor` reports incomplete passive captures as `capture-incomplete` alerts and keeps running, and Ctrl+C or a process kill ends the process without saving (the shell's own status for the signal).
 
 `findings ID --fail-on-findings` exits 3 when at least one finding at or above `--min-severity` (default `info`) is listed. `diff OLD NEW --fail-on-findings` exits 3 when the comparison contains at least one **new** finding at or above `--min-severity` (default `info`). Other changes (hosts or ports appearing, changed identity), resolved findings and findings the new scan did not re-check do not count; use `--format json` and its `summary` for other gates. On `diff`, `--min-severity` only sets this threshold and never filters the output. The output is written in full before the process exits with 3, so stdout still carries the structured result.
 
@@ -116,14 +116,58 @@ These apply to `scan` and `monitor`.
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
 | `--jarm` | off | JARM-style TLS fingerprint: ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode; not verified against the reference JARM, see [Detection](detection.md)) |
+| `--no-backoff` | off | Turn off the [automatic back-off](scanning-engine.md#automatic-back-off) (on by default; it only ever slows a host down) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
 | `--source-ip IPV4` / `--source-mac MAC` | | Source addresses of that interface |
 | `--tui` | off | Live terminal view |
 | `--format FMT` / `--output FILE` | json | Also write an export of the finished scan |
 | `--db FILE` | | Inventory database |
+| `--dry-run` | off | Print, per host, exactly which packet types the command would send, and send nothing (see [Dry run and sent log](#dry-run-and-sent-log)); `scan`, `monitor`, `trace`, `dcp` |
+| `--sent-log` | off | Print the packets the run actually sent, by kind and detail, on stderr; `scan`, `trace`, `dcp` |
+| `--scope CIDR[,CIDR...]` | | Declared scope: CIDR blocks, addresses or ranges that may be scanned (see [Scope guard](#scope-guard)) |
+| `--scope-file FILE` | `scope.txt` in the config folder | Read the declared scope from a file instead |
+| `--yes-public` | off | Confirm that public addresses may be scanned |
+| `--allow-out-of-scope` | off | Confirm that addresses outside the declared scope may be scanned (also covers public ones) |
 
 TUI keys: Space pauses/resumes; Q, q or Escape stops and saves a partial result; Up/Down/PgUp/PgDn/Home/End select a row; Enter shows the host's ports, services, findings and identity fields (Enter or Backspace returns); S cycles the sort order (newest, address, open ports).
+
+## Scope guard
+
+Before `scan`, `monitor`, `trace` or the desktop Start button send anything, the targets are checked (nothing is expanded, a /8 is judged as a range):
+
+- **Public addresses** are everything except RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), carrier-grade NAT (`100.64/10`), loopback, link-local (`169.254/16`, `fe80::/10`), unique local (`fc00::/7`) and "this host" (`0/8`, `::`). An IPv4-mapped IPv6 address counts as its IPv4 address.
+- A **declared scope** is a list of CIDR blocks, addresses and ranges, from `--scope 10.0.0.0/8,192.168.1.0/24`, `--scope-file FILE` or the default file `scope.txt` in the config folder (`%LOCALAPPDATA%/NetworkScope/` on Windows, one entry per line or comma separated, `#` starts a comment). Without a scope only the public-address rule applies. With a scope, every address outside it needs confirmation, and a public address inside it does not.
+
+On a terminal the CLI describes what it found and asks `Scan anyway? Type yes to continue`. Anything else (a script, a pipe, `monitor` under a service manager) refuses with exit status 2 unless the flags are given: `--yes-public` for public addresses, `--allow-out-of-scope` for addresses outside the declared scope (it covers public addresses too). The desktop shows a confirmation dialog before the scan starts; it reads the same scope file. A refusal sends nothing and saves nothing.
+
+## Dry run and sent log
+
+`--dry-run` (on `scan`, `monitor`, `trace` and `dcp`) lists what the command would send and stops: no socket is opened, no capture driver is loaded, nothing is saved, and the exit status is 0. Hosts with the same plan are grouped (IPv4 and IPv6 hosts differ), so a /8 is described in a few lines. Each line is `kind  detail -> where [when]`:
+
+```text
+$ network-scope-cli scan 192.168.1.0/30 --ports 22,445,502 --deep --ot --fast --dry-run
+DRY RUN: nothing was sent.
+Mode: --fast
+
+ipv4 2 host(s), 192.168.1.1 ... 192.168.1.2
+  icmp-echo        echo request -> the host [1 per host]
+  tcp-connect      port scan -> tcp/22,445,502 [always; up to 2 attempt(s) per unanswered port]
+  smb-negotiate    NTLM SESSION_SETUP (no AUTHENTICATE) -> tcp/445 [not in Safe Mode]
+  ot-request       Modbus/TCP: function 0x2B, MEI type 0x0E (Read Device Identification) -> tcp/502 [only if tcp/502 was found open]
+  ...
+```
+
+The packet kinds are `icmp-echo`, `arp-request`, `neighbor-lookup`, `tcp-connect`, `tcp-syn`, `udp-probe`, `service-probe`, `http-request`, `tls-client-hello`, `smb-negotiate`, `rdp-negotiate`, `ssh-banner`, `ot-request` (with the protocol, service and function code), `dcp-identify`, `traceroute`, `dhcp-discover` and `dns-ptr` (the reverse lookup goes to your resolver, not to the host). `--format json` prints the same plan as JSON (`dry_run`, `packets_sent: 0`, `groups`, and the scope verdict). The plan is built from the same conditions and allow-lists the scanner uses (a test runs a real scan and checks that everything it sent was in the plan), and a dry run does not need scope confirmation: it prints what a real run would ask instead.
+
+Every scan also keeps a **sent log**: a counter per `(kind, detail)` of the packets it really sent (a port scan counts under `tcp-connect` / `port scan`, a UDP probe under `udp-probe` / `dns/53`, an OT request under its protocol and function code). It is stored with the scan (the `sent` array of the JSON export, `export ID --format json`), shown in the desktop by hovering the status line after a scan, and printed by `--sent-log`:
+
+```text
+Packets sent: 24
+          2  icmp-echo        echo request
+         14  tcp-connect      port scan
+          8  udp-probe        dns/53
+```
 
 ## Export formats
 

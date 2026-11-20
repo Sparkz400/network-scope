@@ -6,6 +6,7 @@ use crate::{
     ui::{
         Ctx,
         args::{number, scan_settings},
+        dryrun, guard,
     },
 };
 use std::{
@@ -23,14 +24,25 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
 /// another thread (the service control handler); `echo` prints each alert on stdout, which a
 /// service has no use for.
 pub(in crate::ui) fn run_monitor(
-    ctx: &Ctx,
+    ctx: &mut Ctx,
     stop: Option<Arc<AtomicBool>>,
     echo: bool,
 ) -> Result<(), String> {
-    let opts = &ctx.opts;
+    let opts = ctx.opts.clone();
+    let opts = &opts;
     let targets = ctx.pos.join(" ");
     let mut s = scan_settings(opts)?;
     s.scan_nonresponders = true;
+    // The same scope rule as `scan`; monitor runs unattended, so without a terminal it refuses
+    // unless --yes-public / --allow-out-of-scope is given.
+    let hosts = crate::scan::parse_targets(&targets, s.skip_edges, crate::scan::MAX_STREAM)?;
+    if dryrun::requested(opts) {
+        let ports = crate::scan::parse_ports(&s.ports)?;
+        return dryrun::scan_plan(opts, "monitor", &hosts, &ports, &s);
+    }
+    if !guard::enforce(ctx, &hosts)? {
+        return Ok(());
+    }
     let policy = monitor_policy(opts)?;
     let cfg = monitor::RunConfig {
         interval: Duration::from_secs(number(opts, "interval", 300u64)?.clamp(1, 86_400)),

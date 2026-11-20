@@ -6,7 +6,7 @@
 //! trait that only the request types of this module implement; none takes `&[u8]`. The request
 //! types have private fields, so the only way to obtain one is a constructor that takes the
 //! allow-list enums ([`ModbusFunction`], [`S7Szl`], [`EnipCommand`], [`BacnetService`],
-//! [`OpcUaMessage`]). A write or control service therefore has no value to pass: sending one
+//! [`OpcUaMessage`], [`DcpService`]). A write or control service therefore has no value to pass: sending one
 //! needs a new variant in one of those enums, which is a reviewed code change that the tests
 //! below (exhaustive over every function code byte) then fail until the allow-list is
 //! deliberately updated.
@@ -20,6 +20,7 @@
 //! | EtherNet/IP | encapsulation command 0x0063 (List Identity) |
 //! | BACnet/IP | unicast Who-Is (BVLC 0x0A, unconfirmed request, service 8) |
 //! | OPC UA | HEL, OpenSecureChannel (446), GetEndpoints (428), FindServers (422), CloseSecureChannel (452), SecurityPolicy None |
+//! | Profinet DCP | Identify All (frame ID 0xFEFE, service ID 5, request, option/suboption 0xFF/0xFF), layer 2 multicast, sent only through [`DcpFrameTx`] |
 //!
 //! A Modbus write cannot be constructed; this does not compile:
 //!
@@ -60,6 +61,30 @@
 //! assert_eq!(request.encode()[7..9], [0x32, 7]);
 //! ```
 //!
+//! The DCP Identify request is the only layer-2 frame; Set (which changes a device's name or
+//! address), Get and Hello have no value:
+//!
+//! ```compile_fail
+//! use network_scope_core::ot_readonly::{DcpRequest, DcpService};
+//! let _ = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::Set);
+//! let _ = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::Hello);
+//! ```
+//!
+//! ```
+//! use network_scope_core::ot_readonly::{DcpRequest, DcpService, ReadOnlyRequest};
+//! let request = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::IdentifyAll);
+//! assert_eq!(request.encode()[14..17], [0xfe, 0xfe, 5]);
+//! ```
+//!
+//! and the frame sender takes no raw bytes either:
+//!
+//! ```compile_fail
+//! use network_scope_core::{capture::Capture, ot_readonly::DcpFrameTx};
+//! fn raw(capture: &mut Capture) {
+//!     let _ = DcpFrameTx::new(capture).send(&[0u8; 60]);
+//! }
+//! ```
+//!
 //! The socket wrappers accept no raw bytes:
 //!
 //! ```compile_fail
@@ -80,10 +105,12 @@
 //!     }
 //! }
 //! ```
+use crate::sendlog::{PacketKind, SentLog};
 use std::{
     io,
     net::SocketAddr,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::{
@@ -95,28 +122,54 @@ mod sealed {
     pub trait Sealed {}
 }
 
+/// What a request is, for the dry run and the sent log: the protocol and the service with its
+/// function code. Built from the same allow-list values that build the bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestInfo {
+    pub protocol: &'static str,
+    pub service: String,
+}
+impl RequestInfo {
+    /// `"Modbus/TCP: function 0x2B, MEI type 0x0E (Read Device Identification)"`: the detail
+    /// under which the request is counted in the sent log and listed in the plan.
+    pub fn label(&self) -> String {
+        format!("{}: {}", self.protocol, self.service)
+    }
+}
+
 /// A request that is allowed on the wire. Sealed: only the types of this module implement it.
 pub trait ReadOnlyRequest: sealed::Sealed {
     /// The exact bytes of this request (one write per request).
     fn encode(&self) -> Vec<u8>;
+    /// The protocol and service of this request.
+    fn info(&self) -> RequestInfo;
 }
 
-/// A TCP connection that can read freely but only send [`ReadOnlyRequest`]s.
-pub struct OtStream(TcpStream);
+/// A TCP connection that can read freely but only send [`ReadOnlyRequest`]s. With a log
+/// attached ([`OtStream::with_log`]) every request it sends is counted there.
+pub struct OtStream(TcpStream, Option<Arc<SentLog>>);
 
 impl OtStream {
     pub async fn connect(addr: impl ToSocketAddrs) -> io::Result<Self> {
-        TcpStream::connect(addr).await.map(Self)
+        TcpStream::connect(addr).await.map(|s| Self(s, None))
+    }
+    /// Counts every request sent through this stream in `log`.
+    pub fn with_log(mut self, log: Arc<SentLog>) -> Self {
+        self.1 = Some(log);
+        self
     }
     /// Sends one request with a single `write_all`.
     pub async fn send<R: ReadOnlyRequest>(&mut self, request: &R) -> io::Result<()> {
+        if let Some(log) = &self.1 {
+            log.record(PacketKind::OtRequest, request.info().label());
+        }
         self.0.write_all(&request.encode()).await
     }
 }
 
 impl From<TcpStream> for OtStream {
     fn from(stream: TcpStream) -> Self {
-        Self(stream)
+        Self(stream, None)
     }
 }
 
@@ -131,16 +184,24 @@ impl AsyncRead for OtStream {
 }
 
 /// A connected UDP socket that can receive freely but only send [`ReadOnlyRequest`]s.
-pub struct OtUdp(UdpSocket);
+pub struct OtUdp(UdpSocket, Option<Arc<SentLog>>);
 
 impl OtUdp {
     /// Binds `local` and connects to `target`; datagrams go only to that one address.
     pub async fn connect(local: &str, target: SocketAddr) -> io::Result<Self> {
         let socket = UdpSocket::bind(local).await?;
         socket.connect(target).await?;
-        Ok(Self(socket))
+        Ok(Self(socket, None))
+    }
+    /// Counts every request sent through this socket in `log`.
+    pub fn with_log(mut self, log: Arc<SentLog>) -> Self {
+        self.1 = Some(log);
+        self
     }
     pub async fn send<R: ReadOnlyRequest>(&self, request: &R) -> io::Result<usize> {
+        if let Some(log) = &self.1 {
+            log.record(PacketKind::OtRequest, request.info().label());
+        }
         self.0.send(&request.encode()).await
     }
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -161,6 +222,11 @@ pub enum ModbusFunction {
 
 impl ModbusFunction {
     pub const ALLOWED: [Self; 1] = [Self::ReadDeviceIdentification];
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ReadDeviceIdentification => "Read Device Identification",
+        }
+    }
     const fn function_code(self) -> u8 {
         match self {
             Self::ReadDeviceIdentification => 0x2b,
@@ -205,6 +271,17 @@ impl ModbusRequest {
 
 impl sealed::Sealed for ModbusRequest {}
 impl ReadOnlyRequest for ModbusRequest {
+    fn info(&self) -> RequestInfo {
+        RequestInfo {
+            protocol: "Modbus/TCP",
+            service: format!(
+                "function {:#04X}, MEI type {:#04X} ({})",
+                self.function.function_code(),
+                self.function.mei_type(),
+                self.function.name()
+            ),
+        }
+    }
     fn encode(&self) -> Vec<u8> {
         // MBAP: transaction "NS", protocol 0, length 5, unit; PDU: function, MEI type,
         // read device ID code 1 (basic), object ID 0.
@@ -350,6 +427,19 @@ impl S7Request {
 
 impl sealed::Sealed for S7Request {}
 impl ReadOnlyRequest for S7Request {
+    fn info(&self) -> RequestInfo {
+        RequestInfo {
+            protocol: "S7comm",
+            service: match self.0 {
+                S7Kind::Connect { .. } => "COTP connection request (PDU type 0xE0)".into(),
+                S7Kind::Setup => "Setup communication (job function 0xF0)".into(),
+                S7Kind::ReadSzl { szl, .. } => format!(
+                    "Read SZL {:#06X} (userdata, group 0x44, subfunction 0x01)",
+                    szl.id()
+                ),
+            },
+        }
+    }
     fn encode(&self) -> Vec<u8> {
         match self.0 {
             S7Kind::Connect { tsap_slot } => {
@@ -452,6 +542,16 @@ impl EnipRequest {
 
 impl sealed::Sealed for EnipRequest {}
 impl ReadOnlyRequest for EnipRequest {
+    fn info(&self) -> RequestInfo {
+        RequestInfo {
+            protocol: "EtherNet/IP",
+            service: match self.command {
+                EnipCommand::ListIdentity => {
+                    format!("List Identity (command {:#06X})", self.command.code())
+                }
+            },
+        }
+    }
     fn encode(&self) -> Vec<u8> {
         let mut request = vec![0u8; 24];
         request[..2].copy_from_slice(&self.command.code().to_le_bytes());
@@ -512,6 +612,17 @@ impl BacnetRequest {
 
 impl sealed::Sealed for BacnetRequest {}
 impl ReadOnlyRequest for BacnetRequest {
+    fn info(&self) -> RequestInfo {
+        RequestInfo {
+            protocol: "BACnet/IP",
+            service: match self.service {
+                BacnetService::WhoIs => format!(
+                    "unicast Who-Is (unconfirmed service {})",
+                    self.service.unconfirmed_code()
+                ),
+            },
+        }
+    }
     fn encode(&self) -> Vec<u8> {
         // BVLC original-unicast-NPDU, length 8; NPDU version 1, no flags; APDU unconfirmed
         // request (type 1) and the service.
@@ -777,6 +888,28 @@ impl OpcUaRequest {
 
 impl sealed::Sealed for OpcUaRequest {}
 impl ReadOnlyRequest for OpcUaRequest {
+    fn info(&self) -> RequestInfo {
+        let message = self.message();
+        RequestInfo {
+            protocol: "OPC UA",
+            service: match message {
+                OpcUaMessage::Hello => "HEL (transport hello)".into(),
+                OpcUaMessage::OpenSecureChannel => format!(
+                    "OpenSecureChannel (node {}, SecurityPolicy None)",
+                    message.request_node()
+                ),
+                OpcUaMessage::GetEndpoints => {
+                    format!("GetEndpoints (node {})", message.request_node())
+                }
+                OpcUaMessage::FindServers => {
+                    format!("FindServers (node {})", message.request_node())
+                }
+                OpcUaMessage::CloseSecureChannel => {
+                    format!("CloseSecureChannel (node {})", message.request_node())
+                }
+            },
+        }
+    }
     fn encode(&self) -> Vec<u8> {
         // FILETIME: 100 ns ticks since 1601-01-01.
         let ticks = (std::time::SystemTime::now()
@@ -789,9 +922,371 @@ impl ReadOnlyRequest for OpcUaRequest {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Catalog
+
+/// One request the scanner may send to a port, for the dry run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogEntry {
+    pub info: RequestInfo,
+    /// The port the request goes to.
+    pub port: u16,
+    /// TCP or UDP.
+    pub tcp: bool,
+}
+
+/// Every request of every allow-list, built from the allow-list values themselves, with the port
+/// it is sent to. This is exactly the set `ot::identify` can send; the dry run lists it.
+pub fn catalog() -> Vec<CatalogEntry> {
+    let mut out = vec![];
+    let mut add =
+        |info: RequestInfo, port: u16, tcp: bool| out.push(CatalogEntry { info, port, tcp });
+    for f in ModbusFunction::ALLOWED {
+        add(ModbusRequest::new(1, f).info(), 502, true);
+    }
+    if let Some(cr) = S7Request::connection_request(0, 2) {
+        add(cr.info(), 102, true);
+    }
+    add(S7Request::setup_communication().info(), 102, true);
+    for szl in S7Szl::ALLOWED {
+        add(S7Request::read_szl(2, szl).info(), 102, true);
+    }
+    for m in OpcUaMessage::ALLOWED {
+        let request = match m {
+            OpcUaMessage::Hello => OpcUaRequest::hello(""),
+            OpcUaMessage::OpenSecureChannel => OpcUaRequest::open_secure_channel(),
+            OpcUaMessage::GetEndpoints => OpcUaRequest::get_endpoints(0, 0, ""),
+            OpcUaMessage::FindServers => OpcUaRequest::find_servers(0, 0, ""),
+            OpcUaMessage::CloseSecureChannel => OpcUaRequest::close_secure_channel(0, 0),
+        };
+        add(request.info(), 4840, true);
+    }
+    for c in EnipCommand::ALLOWED {
+        add(EnipRequest::new(c).info(), 44818, true);
+    }
+    for s in BacnetService::ALLOWED {
+        add(BacnetRequest::new(s).info(), 47808, false);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------------
+// Profinet DCP (Ethernet layer 2)
+
+/// The DCP services that may be sent: Identify (service ID 0x05, request) for "all devices"
+/// (option 0xFF, suboption 0xFF), the read-only discovery query. Get, Set (which changes a
+/// device's name or IP address), Hello and every other service ID, frame ID, option and
+/// suboption are not allowed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DcpService {
+    /// Identify All (frame ID 0xFEFE, service ID 5, request, option/suboption 0xFF/0xFF).
+    IdentifyAll,
+}
+
+impl DcpService {
+    pub const ALLOWED: [Self; 1] = [Self::IdentifyAll];
+    /// The multicast destination of an Identify request (01:0E:CF:00:00:00).
+    pub const MULTICAST: [u8; 6] = [1, 14, 207, 0, 0, 0];
+    /// Ethertype of Profinet (0x8892).
+    pub const ETHERTYPE: u16 = 0x8892;
+    const fn frame_id(self) -> u16 {
+        match self {
+            Self::IdentifyAll => 0xfefe,
+        }
+    }
+    const fn service_id(self) -> u8 {
+        match self {
+            Self::IdentifyAll => 5,
+        }
+    }
+    /// The allow-listed service for the Ethernet frame ID, DCP service ID, service type
+    /// (0 = request) and the option and suboption of the single block it carries. Everything
+    /// else (Get 3, Set 4, Hello 6, any response, any other block) is `None`.
+    pub const fn from_wire(
+        frame_id: u16,
+        service_id: u8,
+        service_type: u8,
+        option: u8,
+        suboption: u8,
+    ) -> Option<Self> {
+        match (frame_id, service_id, service_type, option, suboption) {
+            (0xfefe, 5, 0, 0xff, 0xff) => Some(Self::IdentifyAll),
+            _ => None,
+        }
+    }
+    /// The service of an encoded DCP frame (the 60-byte Ethernet frame of [`DcpRequest`]); the
+    /// source MAC, transaction ID and response delay are free, everything else must match.
+    pub fn of_frame(frame: &[u8]) -> Option<Self> {
+        if frame.len() != 60
+            || frame[..6] != Self::MULTICAST
+            || u16::from_be_bytes([frame[12], frame[13]]) != Self::ETHERTYPE
+            || frame[24..26] != [0, 4]
+            || frame[28..30] != [0, 0]
+            || frame[30..].iter().any(|b| *b != 0)
+        {
+            return None;
+        }
+        Self::from_wire(
+            u16::from_be_bytes([frame[14], frame[15]]),
+            frame[16],
+            frame[17],
+            frame[26],
+            frame[27],
+        )
+    }
+}
+
+/// One DCP request frame of an allow-listed service, from `source` (the interface MAC).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DcpRequest {
+    source: [u8; 6],
+    service: DcpService,
+}
+
+impl DcpRequest {
+    pub const fn new(source: [u8; 6], service: DcpService) -> Self {
+        Self { source, service }
+    }
+    pub const fn service(&self) -> DcpService {
+        self.service
+    }
+}
+
+impl sealed::Sealed for DcpRequest {}
+impl ReadOnlyRequest for DcpRequest {
+    fn info(&self) -> RequestInfo {
+        RequestInfo {
+            protocol: "Profinet DCP",
+            service: match self.service {
+                DcpService::IdentifyAll => format!(
+                    "Identify All (frame ID {:#06X}, service ID {})",
+                    self.service.frame_id(),
+                    self.service.service_id()
+                ),
+            },
+        }
+    }
+    fn encode(&self) -> Vec<u8> {
+        // Ethernet II (multicast destination, source, ethertype 0x8892), padded to 60 bytes;
+        // DCP header: frame ID, service ID, service type 0 (request), transaction ID "NS\0\x01",
+        // response delay 0x0080, data length 4; one block: option, suboption, length 0.
+        let mut frame = vec![0u8; 60];
+        frame[..6].copy_from_slice(&DcpService::MULTICAST);
+        frame[6..12].copy_from_slice(&self.source);
+        frame[12..14].copy_from_slice(&DcpService::ETHERTYPE.to_be_bytes());
+        frame[14..16].copy_from_slice(&self.service.frame_id().to_be_bytes());
+        frame[16] = self.service.service_id();
+        frame[18..24].copy_from_slice(&[0x4e, 0x53, 0, 1, 0, 0x80]);
+        frame[24..28].copy_from_slice(&[0, 4, 0xff, 0xff]);
+        frame
+    }
+}
+
+/// A capture handle that can send only [`DcpRequest`] frames. The capture it borrows can
+/// still receive through its owner; the only way to put a layer-2 OT frame on the wire is
+/// [`DcpFrameTx::send`], which takes nothing but an allow-listed request.
+pub struct DcpFrameTx<'a>(&'a mut crate::capture::Capture, Option<Arc<SentLog>>);
+
+impl<'a> DcpFrameTx<'a> {
+    pub fn new(capture: &'a mut crate::capture::Capture) -> Self {
+        Self(capture, None)
+    }
+    /// Counts every frame sent through this handle in `log`.
+    pub fn with_log(mut self, log: Arc<SentLog>) -> Self {
+        self.1 = Some(log);
+        self
+    }
+    /// Sends one request as a single frame.
+    pub fn send(&mut self, request: &DcpRequest) -> Result<(), String> {
+        if let Some(log) = &self.1 {
+            log.record(PacketKind::DcpIdentify, request.info().label());
+        }
+        self.0.send(&request.encode())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_catalog_lists_every_allow_listed_request_with_its_function_code() {
+        let labels: Vec<(String, u16, bool)> = catalog()
+            .into_iter()
+            .map(|e| (e.info.label(), e.port, e.tcp))
+            .collect();
+        let has = |text: &str, port: u16| {
+            assert!(
+                labels
+                    .iter()
+                    .any(|(l, p, _)| l.contains(text) && *p == port),
+                "{text} on {port} missing from {labels:?}"
+            );
+        };
+        has("Modbus/TCP: function 0x2B, MEI type 0x0E", 502);
+        has("S7comm: COTP connection request (PDU type 0xE0)", 102);
+        has("S7comm: Setup communication (job function 0xF0)", 102);
+        has("S7comm: Read SZL 0x0011", 102);
+        has("S7comm: Read SZL 0x001C", 102);
+        has("OPC UA: HEL", 4840);
+        has("OPC UA: OpenSecureChannel (node 446", 4840);
+        has("OPC UA: GetEndpoints (node 428)", 4840);
+        has("OPC UA: FindServers (node 422)", 4840);
+        has("OPC UA: CloseSecureChannel (node 452)", 4840);
+        has("EtherNet/IP: List Identity (command 0x0063)", 44818);
+        has("BACnet/IP: unicast Who-Is (unconfirmed service 8)", 47808);
+        assert_eq!(labels.len(), 12, "{labels:?}");
+        // Only BACnet is UDP.
+        assert!(labels.iter().all(|(_, p, tcp)| *tcp == (*p != 47808)));
+        // Labels are unique, so the sent log keys them apart.
+        let unique: std::collections::BTreeSet<_> = labels.iter().map(|l| &l.0).collect();
+        assert_eq!(unique.len(), labels.len());
+    }
+
+    #[tokio::test]
+    async fn logged_streams_count_every_request_they_send() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut c, _) = listener.accept().await.unwrap();
+            let mut b = [0u8; 64];
+            let _ = tokio::io::AsyncReadExt::read(&mut c, &mut b).await;
+        });
+        let log = Arc::new(SentLog::new());
+        let mut stream = OtStream::connect(addr).await.unwrap().with_log(log.clone());
+        stream
+            .send(&ModbusRequest::new(
+                1,
+                ModbusFunction::ReadDeviceIdentification,
+            ))
+            .await
+            .unwrap();
+        let entries = log.snapshot();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, PacketKind::OtRequest);
+        assert_eq!(
+            entries[0].detail,
+            "Modbus/TCP: function 0x2B, MEI type 0x0E (Read Device Identification)"
+        );
+        // Without a log nothing is counted (and nothing breaks).
+        let plain = OtStream::connect(addr).await;
+        drop(plain);
+    }
+
+    #[test]
+    fn dcp_constructor_accepts_exactly_the_allow_list() {
+        let mut accepted = vec![];
+        // Every (service ID, service type) pair with the Identify All frame ID and block.
+        for service_id in 0..=255u8 {
+            for service_type in 0..=255u8 {
+                if let Some(s) = DcpService::from_wire(0xfefe, service_id, service_type, 0xff, 0xff)
+                {
+                    accepted.push((service_id, service_type, s));
+                }
+            }
+        }
+        assert_eq!(accepted, vec![(5, 0, DcpService::IdentifyAll)]);
+        // Every frame ID.
+        let frames: Vec<u16> = (0..=u16::MAX)
+            .filter(|f| DcpService::from_wire(*f, 5, 0, 0xff, 0xff).is_some())
+            .collect();
+        assert_eq!(
+            frames,
+            [0xfefe],
+            "0xFEFD (Get/Set) and 0xFEFC (Hello) are out"
+        );
+        // Every option/suboption pair.
+        let blocks: Vec<(u8, u8)> = (0..=255u8)
+            .flat_map(|o| (0..=255u8).map(move |s| (o, s)))
+            .filter(|(o, s)| DcpService::from_wire(0xfefe, 5, 0, *o, *s).is_some())
+            .collect();
+        assert_eq!(blocks, [(0xff, 0xff)]);
+        assert_eq!(accepted.len(), DcpService::ALLOWED.len());
+        // Get (3), Set (4) and Hello (6) with their usual frame IDs.
+        for (frame, service) in [(0xfefd, 3), (0xfefd, 4), (0xfefc, 6)] {
+            assert_eq!(DcpService::from_wire(frame, service, 0, 0xff, 0xff), None);
+        }
+    }
+
+    #[test]
+    fn dcp_encoded_request_equals_the_previous_literal() {
+        // The frame the scanner sent before the type existed, byte for byte.
+        let source = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let mut legacy = vec![0u8; 60];
+        legacy[..6].copy_from_slice(&[1, 14, 207, 0, 0, 0]);
+        legacy[6..12].copy_from_slice(&source);
+        legacy[12..30].copy_from_slice(&[
+            0x88, 0x92, 0xfe, 0xfe, 5, 0, 0x4e, 0x53, 0, 1, 0, 0x80, 0, 4, 0xff, 0xff, 0, 0,
+        ]);
+        let request = DcpRequest::new(source, DcpService::IdentifyAll);
+        assert_eq!(request.encode(), legacy);
+        assert_eq!(request.service(), DcpService::IdentifyAll);
+    }
+
+    #[test]
+    fn dcp_every_encoded_request_decodes_to_the_allow_list() {
+        for byte in 0..=255u8 {
+            let source = [byte, 1, 2, 3, 4, byte ^ 0x55];
+            for s in DcpService::ALLOWED {
+                let bytes = DcpRequest::new(source, s).encode();
+                assert_eq!(bytes.len(), 60);
+                assert_eq!(bytes[6..12], source);
+                assert_eq!(DcpService::of_frame(&bytes), Some(s));
+            }
+        }
+    }
+
+    #[test]
+    fn dcp_changing_any_discriminator_byte_is_rejected() {
+        let frame = DcpRequest::new([2, 0, 0, 0, 0, 1], DcpService::IdentifyAll).encode();
+        // Free bytes: source MAC (6..12), transaction ID (18..22), response delay (22..24).
+        let free = |i: usize| (6..12).contains(&i) || (18..24).contains(&i);
+        for index in 0..frame.len() {
+            for value in 0..=255u8 {
+                if value == frame[index] {
+                    continue;
+                }
+                let mut changed = frame.clone();
+                changed[index] = value;
+                let decoded = DcpService::of_frame(&changed);
+                if free(index) {
+                    assert_eq!(decoded, Some(DcpService::IdentifyAll), "byte {index}");
+                } else {
+                    assert_eq!(decoded, None, "byte {index} -> {value:#x}");
+                }
+            }
+        }
+        // A truncated or extended frame is not a request either.
+        assert_eq!(DcpService::of_frame(&frame[..59]), None);
+        let mut longer = frame.clone();
+        longer.push(0);
+        assert_eq!(DcpService::of_frame(&longer), None);
+        assert_eq!(DcpService::of_frame(&[]), None);
+    }
+
+    /// The structural half for DCP: the capture send in `passive::start` goes through
+    /// [`DcpFrameTx`], not a raw `Capture::send` with hand-built bytes.
+    #[test]
+    fn dcp_send_in_passive_start_uses_the_typed_sender() {
+        let source = include_str!("../passive.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let sender = code.split("pub struct Listening").nth(1).unwrap();
+        assert!(
+            sender.contains("DcpFrameTx::new"),
+            "start must send through DcpFrameTx"
+        );
+        for forbidden in [
+            "cap.send(",
+            ".send(&frame",
+            "vec![0u8; 60]",
+            "pcap_sendpacket",
+        ] {
+            assert!(
+                !sender.contains(forbidden),
+                "passive.rs must not build or send raw frames ({forbidden})"
+            );
+        }
+    }
 
     #[test]
     fn modbus_constructor_accepts_exactly_the_allow_list() {

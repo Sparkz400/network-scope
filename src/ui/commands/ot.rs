@@ -42,6 +42,7 @@ pub(super) fn listen(ctx: &mut Ctx) -> Result<(), String> {
         format!("ot-passive:{interface}")
     };
     let snapshot = store::Snapshot {
+        sent: vec![],
         targets: label,
         complete: true,
         settings: scan::Settings::default(),

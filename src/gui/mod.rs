@@ -370,6 +370,13 @@ struct Scanner {
     schedule_note: String,
     /// Why the scheduled targets cannot be scanned; empty when they parse.
     schedule_error: String,
+    /// The scope guard wants a yes before this scan starts: what it found (public or
+    /// out-of-scope addresses). Shown as a dialog; `None` when nothing is pending.
+    scope_confirm: Option<(String, String)>,
+    /// What the last scan sent, by packet kind and detail (saved with the scan).
+    scan_sent: Vec<crate::sendlog::SentEntry>,
+    /// Set for one call of `start` after the user confirmed the dialog.
+    scope_consent: crate::scope::Consent,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -462,6 +469,9 @@ impl Scanner {
             schedule_anchor: None,
             schedule_note: String::new(),
             schedule_error: String::new(),
+            scope_confirm: None,
+            scan_sent: vec![],
+            scope_consent: Default::default(),
         };
         // A broken user CVE file is reported, not silently replaced by the built-in rules.
         if app.screenshot.is_none() {
@@ -630,6 +640,7 @@ impl Scanner {
         };
         self.scan_settings = snapshot.settings;
         self.scan_complete = snapshot.complete;
+        self.scan_sent = snapshot.sent;
         self.selected = None;
         self.script_test = None;
         self.previous.clear();
@@ -659,6 +670,7 @@ impl Scanner {
         self.selected = None;
         self.script_test = None;
         self.scan_scope.clear();
+        self.scan_sent.clear();
         self.capture_scope.clear();
         self.scan_complete = true;
         self.capture_complete = true;
@@ -677,12 +689,21 @@ impl Scanner {
             self.error = "Wait until the inventory scan has been opened.".into();
             return;
         }
+        // Consent counts for this call only, whichever way it ends.
+        let consent = std::mem::take(&mut self.scope_consent);
         let parsed =
             scan::parse_hosts(&self.targets, self.saved.settings.skip_edges).and_then(|hosts| {
                 scan::parse_ports(&self.saved.settings.ports).map(|ports| (hosts, ports))
             });
         match parsed {
             Ok((hosts, ports)) => {
+                // The same scope check as the CLI (ROADMAP H54): public or out-of-scope
+                // addresses need a yes in the confirmation dialog first.
+                if let Some(text) = self.scope_check(&hosts, consent) {
+                    // The dialog remembers the targets it was shown for.
+                    self.scope_confirm = Some((self.targets.clone(), text));
+                    return;
+                }
                 // Passive observations stay: the Devices window merges them with this scan.
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
                 self.haystacks.clear();
@@ -692,6 +713,7 @@ impl Scanner {
                 self.scan_scope = self.targets.clone();
                 self.scan_settings = self.saved.settings.clone();
                 self.opened_stamp = None;
+                self.scan_sent.clear();
                 self.error.clear();
                 self.status = format!("Scanning {} addresses", hosts.len());
                 self.recount();
@@ -699,6 +721,23 @@ impl Scanner {
                 self.run = Some(scan::start(hosts, ports, self.saved.settings.clone()));
             }
             Err(e) => self.error = e,
+        }
+    }
+    /// `Some(description)` when the scope guard needs the user's confirmation for `hosts`.
+    fn scope_check(&mut self, hosts: &[IpAddr], consent: crate::scope::Consent) -> Option<String> {
+        let declared = match crate::scope::declared(None, crate::scope::default_path().as_deref()) {
+            Ok(declared) => declared,
+            // An unreadable scope file blocks the scan until the user confirms once.
+            Err(_) if consent.out_of_scope => None,
+            Err(e) => {
+                return Some(format!(
+                    "The scope file is invalid ({e}), so nothing is known to be in scope."
+                ));
+            }
+        };
+        match crate::scope::enforce(hosts, declared.as_ref(), consent, None) {
+            Ok(_) => None,
+            Err(_) => Some(crate::scope::assess(hosts, declared.as_ref()).describe()),
         }
     }
     fn poll(&mut self) {
@@ -730,8 +769,9 @@ impl Scanner {
                 }
             }
             if done {
+                self.scan_sent = run.sent.snapshot();
                 self.status = format!(
-                    "{} · {} of {} addresses · {:.1}s",
+                    "{} · {} of {} addresses · {:.1}s · {} packets sent",
                     if run.cancel.load(Ordering::Relaxed) {
                         "Stopped"
                     } else {
@@ -739,7 +779,8 @@ impl Scanner {
                     },
                     self.results.len(),
                     run.total,
-                    run.started.elapsed().as_secs_f32()
+                    run.started.elapsed().as_secs_f32(),
+                    crate::sendlog::total(&self.scan_sent)
                 );
             }
         }
@@ -933,7 +974,11 @@ impl eframe::App for Scanner {
                     ui.spinner();
                     ui.label(busy);
                 }
-                ui.label(&self.status);
+                let status = ui.label(&self.status);
+                if !self.scan_sent.is_empty() {
+                    // The scan summary: every kind of packet the scan sent, with counts.
+                    status.on_hover_text(crate::sendlog::format_table(&self.scan_sent));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
                         "{} responding · {} with open ports",
@@ -1071,6 +1116,7 @@ impl eframe::App for Scanner {
         self.devices_window(ctx);
         self.findings_window(ctx);
         self.capture_window(ctx);
+        self.scope_dialog(ctx);
         self.save_prefs_debounced(ctx);
         if self.live() || self.ot.running() || self.screenshot.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
@@ -1147,6 +1193,7 @@ impl eframe::App for Scanner {
         }
         if let Some((label, observations)) = ot_partial.filter(|(_, o)| !o.is_empty()) {
             let snapshot = store::Snapshot {
+                sent: vec![],
                 targets: label,
                 complete: false,
                 settings: Default::default(),

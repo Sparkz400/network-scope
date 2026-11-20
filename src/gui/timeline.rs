@@ -400,6 +400,7 @@ mod tests {
                 h.identity.insert("svc.23".into(), "telnet".into());
             }
             store::Snapshot {
+                sent: vec![],
                 targets: "10.0.0.0/24".into(),
                 complete: true,
                 settings: scan::Settings {

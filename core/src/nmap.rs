@@ -706,6 +706,7 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
         };
     }
     Ok(Snapshot {
+        sent: vec![],
         targets,
         complete,
         settings,
@@ -769,6 +770,7 @@ mod tests {
         down.ip = "10.0.0.6".parse().unwrap();
         down.responding = false;
         Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete: true,
             settings: Settings {

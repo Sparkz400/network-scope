@@ -96,6 +96,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (db, out) = (dir.join("inv.sqlite"), dir.join("out.txt"));
         let snapshot = store::Snapshot {
+            sent: vec![],
             targets: "10.0.0.0/24".into(),
             complete: true,
             settings: Settings::default(),

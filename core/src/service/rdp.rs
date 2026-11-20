@@ -1,5 +1,5 @@
 //! RDP: the standard-security request that tells whether NLA is required.
-use super::{Gate, negotiate_once};
+use super::{Gate, PacketKind, negotiate_once};
 use std::{net::IpAddr, time::Duration};
 
 /// X.224 Connection Request with an RDP Negotiation Request for PROTOCOL_RDP only (0x00).
@@ -32,7 +32,17 @@ pub(super) async fn rdp_nla_check(
     limit: Duration,
     gate: &Gate,
 ) -> Option<&'static str> {
-    parse_rdp_standard_reply(&negotiate_once(ip, port, limit, gate, &rdp_standard_request()).await)
+    parse_rdp_standard_reply(
+        &negotiate_once(
+            ip,
+            port,
+            limit,
+            gate,
+            (PacketKind::RdpNegotiate, "standard security negotiation"),
+            &rdp_standard_request(),
+        )
+        .await,
+    )
 }
 
 #[cfg(test)]

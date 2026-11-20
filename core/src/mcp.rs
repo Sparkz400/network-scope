@@ -952,6 +952,7 @@ impl Server {
             complete = false;
         }
         let snapshot = store::Snapshot {
+            sent: vec![],
             targets: targets_text.clone(),
             complete,
             settings,

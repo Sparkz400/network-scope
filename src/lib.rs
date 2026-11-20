@@ -10,8 +10,8 @@ pub(crate) mod ui;
 // (`crate::scan::Host`, `crate::risk::analyze_host`, ...).
 pub(crate) use network_scope_core::{
     alertscript, baseline, capture, changes, core, devices, evidence, feeds, import, mcp, monitor,
-    nmap, notify, nvd, observations, otpassive, passive, report, risk, scan, schema, score, script,
-    service, store, syn, sync, topology, trace,
+    nmap, notify, nvd, observations, otpassive, passive, plan, report, risk, scan, schema, scope,
+    score, script, sendlog, service, store, syn, sync, topology, trace,
 };
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::{pcapfile, schedule};

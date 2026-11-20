@@ -80,14 +80,14 @@ fn uninstall(ctx: &mut Ctx) -> Result<(), String> {
 
 fn run_service(ctx: &mut Ctx) -> Result<(), String> {
     let name = service_name(&ctx.opts)?;
-    let ctx = monitor_ctx(ctx);
+    let mut ctx = monitor_ctx(ctx);
     let log = ctx.db.parent().unwrap_or(Path::new("")).join("service.log");
     scm_run(
         &name,
         log,
         Box::new(move |stop| {
             monitor::check(&ctx)?;
-            monitor::run_monitor(&ctx, Some(stop), false)
+            monitor::run_monitor(&mut ctx, Some(stop), false)
         }),
     )
 }

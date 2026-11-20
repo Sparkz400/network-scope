@@ -18,6 +18,10 @@ pub struct Snapshot {
     pub observations: Vec<Observation>,
     #[serde(default)]
     pub notes: BTreeMap<std::net::IpAddr, String>,
+    /// The packets the scan sent, by kind and detail (`Running::sent`); empty for passive
+    /// captures, imports and scans saved before this field existed.
+    #[serde(default)]
+    pub sent: Vec<crate::sendlog::SentEntry>,
 }
 #[derive(Clone, Serialize)]
 pub struct Entry {
@@ -806,8 +810,9 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
             }
         }
         // UDP silence means open|filtered, so only ports probed in both scans are compared and a
-        // port that stops answering is not called closed.
-        for &port in &udp_probed {
+        // port that stops answering is not called closed. A host the new scan did not finish
+        // (paused by the back-off, `ports_checked` false) was not probed for UDP either.
+        for &port in udp_probed.iter().filter(|_| h.ports_checked) {
             match (
                 previous.udp_open.contains(&port),
                 h.udp_open.contains(&port),
@@ -855,7 +860,8 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
                 Some((_, p)) => gone_tcp.contains(&p),
                 None => false,
             };
-            if !covered {
+            // Identity keys of a host that was not fully checked are missing, not removed.
+            if !covered && h.ports_checked {
                 changes.push(Change::IdentityRemoved {
                     ip,
                     key: key.clone(),
@@ -982,7 +988,8 @@ fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings)
         let Some(port) = f.port else { return true };
         let was_udp = old.get(&f.ip).is_some_and(|h| h.udp_open.contains(&port));
         let was_tcp = old.get(&f.ip).is_some_and(|h| h.open.contains(&port));
-        (!was_udp || udp_probed.contains(&port)) && (!was_tcp || now.ports_checked)
+        (!was_udp || (udp_probed.contains(&port) && now.ports_checked))
+            && (!was_tcp || now.ports_checked)
     };
     let new = fb.into_iter().filter(|f| !ka.contains(&f.key())).collect();
     let (mut resolved, mut unconfirmed) = (vec![], vec![]);
@@ -1095,8 +1102,56 @@ pub fn export_at(snapshot: &Snapshot, format: &str, timestamp: i64) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_that_was_not_fully_checked_does_not_lose_udp_ports_or_identity() {
+        let mut a = snapshot();
+        a.settings.udp = true;
+        a.settings.udp_ports = "161".into();
+        let h = &mut a.hosts[0];
+        h.responding = true;
+        h.ports_checked = true;
+        h.udp_open = vec![161];
+        h.identity.insert("svc.80".into(), "http".into());
+        // The new scan paused the host: nothing after the TCP phase was probed.
+        let mut b = a.clone();
+        let h = &mut b.hosts[0];
+        h.ports_checked = false;
+        h.udp_open.clear();
+        h.identity.clear();
+        let changes = diff(&a, &b).unwrap().join("\n");
+        assert!(!changes.contains("161"), "{changes}");
+        assert!(!changes.contains("svc.80"), "{changes}");
+        // The same data from a fully checked host is a real change.
+        b.hosts[0].ports_checked = true;
+        let changes = diff(&a, &b).unwrap().join("\n");
+        assert!(
+            changes.contains("161") && changes.contains("svc.80"),
+            "{changes}"
+        );
+    }
+
+    #[test]
+    fn the_sent_log_is_stored_and_old_snapshots_have_none() {
+        let mut s = snapshot();
+        s.sent = vec![crate::sendlog::SentEntry {
+            kind: crate::sendlog::PacketKind::UdpProbe,
+            detail: "dns/53".into(),
+            count: 3,
+        }];
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains(r#""kind":"udp-probe""#), "{text}");
+        let back: Snapshot = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.sent, s.sent);
+        // A snapshot saved before the field existed loads with an empty log (no migration needed).
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value.as_object_mut().unwrap().remove("sent");
+        let old: Snapshot = serde_json::from_value(value).unwrap();
+        assert!(old.sent.is_empty());
+    }
     fn snapshot() -> Snapshot {
         Snapshot {
+            sent: vec![],
             targets: "127.0.0.1".into(),
             complete: true,
             settings: Settings::default(),
