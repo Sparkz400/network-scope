@@ -19,6 +19,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     if !["json", "csv", "html", "nmap", "md", "jsonl"].contains(&format) {
         return Err("Choose json, csv, html, nmap, md or jsonl".into());
     }
+    // Several interfaces (--interface a,b) need a source address and MAC each.
+    crate::interfaces::specs(&s)?;
     let hosts = scan::parse_targets(&targets, s.skip_edges, scan::MAX_STREAM)?;
     let ports = scan::parse_ports(&s.ports)?;
     // --dry-run: print what would be sent and stop before anything is started or saved.
@@ -44,7 +46,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     } else {
         None
     };
-    let run = scan::start_stream(Box::new(hosts.iter()), total, ports, s.clone());
+    let run = scan::start_stream(Box::new(hosts.iter_interleaved()), total, ports, s.clone());
     let (results, complete, errors) = if tui_view {
         tui::tui(&run)
     } else if let Some(w) = writer.as_mut() {

@@ -232,6 +232,48 @@ fn merge_ot_udp(h: &mut Host) {
     }
 }
 
+/// A raw-packet engine with the interface it sends through.
+struct Raw<E> {
+    engine: Arc<E>,
+    spec: crate::interfaces::Spec,
+    source: std::net::Ipv4Addr,
+}
+
+/// The engine whose interface the routing table picks for `ip` (see `interfaces::choose`). With
+/// one engine nothing is asked: it behaves as before and the engine itself reports a route that
+/// leaves elsewhere. IPv6 targets have no raw engine.
+async fn pick<E: Send + Sync + 'static>(
+    blocking: &Arc<Semaphore>,
+    engines: &[Raw<E>],
+    ip: IpAddr,
+) -> Option<usize> {
+    let IpAddr::V4(v4) = ip else { return None };
+    match engines {
+        [] => None,
+        [_] => Some(0),
+        _ => {
+            let probes: Vec<(std::net::Ipv4Addr, String)> = engines
+                .iter()
+                .map(|e| (e.source, e.spec.interface.clone()))
+                .collect();
+            let routes = run_blocking(blocking, move || {
+                probes
+                    .iter()
+                    .map(|(source, interface)| {
+                        match crate::platform::next_hop(v4, *source, interface) {
+                            Ok(crate::platform::NextHop::OnLink) => Some(true),
+                            Ok(crate::platform::NextHop::Gateway(_)) => Some(false),
+                            Err(_) => None,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await?;
+            crate::interfaces::choose(&routes)
+        }
+    }
+}
+
 struct Ctx {
     gate: Arc<Gate>,
     blocking: Arc<Semaphore>,
@@ -239,9 +281,11 @@ struct Ctx {
     /// Taken before a probe task is spawned, so idle hosts cannot pile up tasks.
     sockets: Arc<Semaphore>,
     dhcp: Semaphore,
-    syn: Option<Arc<SynEngine>>,
+    /// One SYN engine per interface (`--interface a,b`); empty without `--syn`.
+    syn: Vec<Raw<SynEngine>>,
     syn_error: Option<String>,
-    arp: Option<Arc<crate::arp::ArpEngine>>,
+    /// One ARP engine per interface; empty without `--arp-sweep`.
+    arp: Vec<Raw<crate::arp::ArpEngine>>,
     arp_error: Option<String>,
     probes: Option<ProbeDb>,
     udp_ports: Vec<u16>,
@@ -308,23 +352,57 @@ pub async fn execute(
     } else {
         vec![]
     };
-    let (syn, syn_error) = if crate::plan::syn_engine(&s) {
-        match SynEngine::start(&s, gate.clone()) {
-            Ok(engine) => (Some(engine), None),
-            Err(e) => (None, Some(e)),
+    let interfaces = match crate::interfaces::specs(&s) {
+        Ok(list) => list,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("Interfaces: {e}")));
+            return;
         }
-    } else {
-        (None, None)
     };
+    // One engine per interface; the ones that cannot start are reported, the rest still work.
+    let start = |spec: &crate::interfaces::Spec| {
+        spec.source_ip
+            .parse::<std::net::Ipv4Addr>()
+            .ok()
+            .map(|source| (crate::interfaces::settings_for(&s, spec), source))
+    };
+    let (mut syn, mut syn_errors) = (vec![], vec![]);
+    if crate::plan::syn_engine(&s) {
+        for spec in &interfaces {
+            let Some((per, source)) = start(spec) else {
+                syn_errors.push("Set the interface's source IPv4".to_string());
+                continue;
+            };
+            match SynEngine::start(&per, gate.clone()) {
+                Ok(engine) => syn.push(Raw {
+                    engine,
+                    spec: spec.clone(),
+                    source,
+                }),
+                Err(e) => syn_errors.push(e),
+            }
+        }
+    }
+    let syn_error = (!syn_errors.is_empty()).then(|| syn_errors.join("; "));
     // Opt-in, and never in Safe Mode (the per-host OS lookup is used there).
-    let (arp, arp_error) = if crate::plan::arp_sweep(&s) {
-        match crate::arp::ArpEngine::start(&s, gate.clone()) {
-            Ok(engine) => (Some(engine), None),
-            Err(e) => (None, Some(e)),
+    let (mut arp, mut arp_errors) = (vec![], vec![]);
+    if crate::plan::arp_sweep(&s) {
+        for spec in &interfaces {
+            let Some((per, source)) = start(spec) else {
+                arp_errors.push("Set the interface's source IPv4".to_string());
+                continue;
+            };
+            match crate::arp::ArpEngine::start(&per, gate.clone()) {
+                Ok(engine) => arp.push(Raw {
+                    engine,
+                    spec: spec.clone(),
+                    source,
+                }),
+                Err(e) => arp_errors.push(e),
+            }
         }
-    } else {
-        (None, None)
-    };
+    }
+    let arp_error = (!arp_errors.is_empty()).then(|| arp_errors.join("; "));
     let ctx = Arc::new(Ctx {
         gate,
         blocking: Arc::new(Semaphore::new(256)),
@@ -402,6 +480,7 @@ async fn probe_port(
     s: &Settings,
     ctx: &Ctx,
     rtt: Option<&HostRtt>,
+    syn: Option<&Arc<SynEngine>>,
 ) -> PortProbe {
     // The caller already holds this probe's in-flight permit (`ctx.sockets`).
     let cap = timeout.max(Duration::from_millis(u64::from(s.port_timeout)));
@@ -409,7 +488,7 @@ async fn probe_port(
         .syn_error
         .as_ref()
         .map(|e| format!("SYN unavailable; TCP connect fallback: {e}"));
-    if let Some(engine) = &ctx.syn {
+    if let Some(engine) = syn {
         // The SYN engine takes one gate token per transmitted SYN (retransmits
         // included), so the rate is not applied a second time here.
         match engine.probe(ip, port, timeout, cap, s.retries).await {
@@ -526,14 +605,19 @@ async fn sweep_arp(ip: IpAddr, s: &Settings, ctx: &Ctx) -> Swept {
             ..Swept::default()
         };
     }
-    let (Some(engine), IpAddr::V4(v4)) = (&ctx.arp, ip) else {
+    let IpAddr::V4(v4) = ip else {
         return Swept::default();
     };
+    let Some(index) = pick(&ctx.blocking, &ctx.arp, ip).await else {
+        return Swept::default();
+    };
+    let engine = &ctx.arp[index].engine;
     let source = engine.source();
     if v4 == source {
         return Swept::default();
     }
-    let interface = s.interface.clone();
+    let _ = s;
+    let interface = ctx.arp[index].spec.interface.clone();
     let route = run_blocking(&ctx.blocking, move || {
         crate::platform::next_hop(v4, source, &interface)
     })
@@ -568,7 +652,12 @@ async fn traceroute(
     let mut notes: Vec<String> = plan.note.into_iter().collect();
     let attempt = match (plan.method, ip, plan.port) {
         (TraceMethod::Tcp, IpAddr::V4(v4), Some(port)) => {
-            let (settings, gate) = (s.clone(), ctx.gate.clone());
+            // The interface that routes the target, when several were given.
+            let settings = match pick(&ctx.blocking, &ctx.syn, ip).await {
+                Some(i) => Arc::new(crate::interfaces::settings_for(s, &ctx.syn[i].spec)),
+                None => s.clone(),
+            };
+            let gate = ctx.gate.clone();
             let done = run_blocking(&ctx.blocking, move || {
                 crate::syn::tcp_trace(&settings, v4, port, settings.trace_hops, timeout, &gate)
             })
@@ -732,7 +821,10 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         let mut early: Option<String> = None;
         let mut probes: JoinSet<(u16, PortProbe)> = JoinSet::new();
         // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
-        let host_rtt = (s.tcp_adaptive && ctx.syn.is_none()).then(|| Arc::new(HostRtt::default()));
+        let syn_index = pick(&ctx.blocking, &ctx.syn, ip).await;
+        let syn_engine: Option<Arc<SynEngine>> = syn_index.map(|i| ctx.syn[i].engine.clone());
+        let host_rtt =
+            (s.tcp_adaptive && syn_engine.is_none()).then(|| Arc::new(HostRtt::default()));
         // The likeliest ports first, and the order follows what the host turns out to be.
         let vendor = if h.mac.is_empty() || crate::oui::locally_administered(&h.mac) {
             ""
@@ -781,8 +873,18 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             launched += 1;
             let (s, ctx, rtt, gov) = (s.clone(), ctx.clone(), host_rtt.clone(), gov.clone());
             let (live, announced) = (live.clone(), announced.clone());
+            let syn_engine = syn_engine.clone();
             probes.spawn(async move {
-                let result = probe_port(ip, port, timeout, &s, &ctx, rtt.as_deref()).await;
+                let result = probe_port(
+                    ip,
+                    port,
+                    timeout,
+                    &s,
+                    &ctx,
+                    rtt.as_deref(),
+                    syn_engine.as_ref(),
+                )
+                .await;
                 if let Some(outcome) = outcome_of(port, &result.state) {
                     gov.record(outcome);
                 }
@@ -1406,7 +1508,7 @@ mod tests",
         for (port, want) in [(open, PortState::Open), (closed, PortState::Closed)] {
             let rtt = HostRtt::default();
             let timeout = Duration::from_millis(5000);
-            let got = probe_port(ip, port, timeout, &s, &ctx, Some(&rtt)).await;
+            let got = probe_port(ip, port, timeout, &s, &ctx, Some(&rtt), None).await;
             assert_eq!(got.state, want);
             assert!(rtt.has_sample(), "{want:?} is an RTT sample");
             let next = rtt.timeout(timeout, Duration::from_millis(100), timeout);
@@ -1418,7 +1520,16 @@ mod tests",
             }
         }
         // Without the estimator nothing changes.
-        let plain = probe_port(ip, closed, Duration::from_millis(5000), &s, &ctx, None).await;
+        let plain = probe_port(
+            ip,
+            closed,
+            Duration::from_millis(5000),
+            &s,
+            &ctx,
+            None,
+            None,
+        )
+        .await;
         assert_eq!(plain.state, PortState::Closed);
     }
 
@@ -1552,9 +1663,9 @@ mod tests",
             blocking: Arc::new(Semaphore::new(4)),
             sockets: Arc::new(Semaphore::new(4)),
             dhcp: Semaphore::new(1),
-            syn: None,
+            syn: vec![],
             syn_error: None,
-            arp: None,
+            arp: vec![],
             arp_error: None,
             probes: None,
             udp_ports: vec![],
