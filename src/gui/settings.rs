@@ -254,7 +254,6 @@ impl Scanner {
                     {
                         *s = standard_settings(s);
                         self.saved.preset.clear();
-                        ui.data_mut(|d| d.remove::<SnmpForm>(egui::Id::NULL));
                     }
                 });
                 if self.run.is_some() {
@@ -458,8 +457,12 @@ impl SnmpForm {
 /// user with the names of the variables that hold the passphrases.
 fn snmp_section(ui: &mut egui::Ui, s: &mut scan::Settings) {
     let id = egui::Id::NULL;
+    // The form remembers what it last wrote into the settings; when the settings changed by
+    // another way (a preset, Restore defaults) the form is read from them again.
     let mut form = ui
-        .data_mut(|d| d.get_temp::<SnmpForm>(id))
+        .data_mut(|d| d.get_temp::<(SnmpForm, Option<crate::snmp::SnmpRef>)>(id))
+        .filter(|(_, written)| *written == s.snmp_ref)
+        .map(|(form, _)| form)
         .unwrap_or_else(|| SnmpForm::from_ref(s.snmp_ref.as_ref()));
     let before = form.clone();
     ui.horizontal(|ui| {
@@ -569,7 +572,8 @@ fn snmp_section(ui: &mut egui::Ui, s: &mut scan::Settings) {
     } else {
         s.snmp_ref = None;
     }
-    ui.data_mut(|d| d.insert_temp(id, form));
+    let written = s.snmp_ref.clone();
+    ui.data_mut(|d| d.insert_temp(id, (form, written)));
 }
 /// A settings grid row: the label and the field, the label naming the field for screen readers.
 fn labelled_row(ui: &mut egui::Ui, label: &str, field: impl egui::Widget) {
