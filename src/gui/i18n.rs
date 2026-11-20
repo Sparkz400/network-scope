@@ -240,7 +240,8 @@ pub fn literals(source: &str) -> Vec<String> {
                     Some('n') => text.push('\n'),
                     Some('"') => text.push('"'),
                     Some('\\') => text.push('\\'),
-                    Some('\n') => {
+                    // `\r\n` too: a Windows checkout (git autocrlf) has CRLF line ends.
+                    Some('\n' | '\r') => {
                         // A line continuation swallows the next line's indentation.
                         let remaining = chars.as_str();
                         let skip = remaining.len() - remaining.trim_start().len();
@@ -401,6 +402,8 @@ mod tests {
 
     #[test]
     fn the_literal_scanner_unescapes_and_skips_look_alikes() {
+        // A CRLF checkout (git autocrlf on Windows): the continuation still joins the lines.
+        assert_eq!(literals("tr!(\"a \\\r\n    b\")"), ["a b"]);
         let src = r#"a(tr!("One")); b(tr!("Two \"quoted\" and {}", x)); c(str!("no")); d(tr!(
             "Three"
         )); e(tr!(variable)); f(tr!("a \
