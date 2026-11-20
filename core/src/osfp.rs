@@ -119,6 +119,7 @@ fn derived(key: &str) -> bool {
         || key.ends_with(".hassh")
         || key.ends_with(".ja4s")
         || key.ends_with(".jarm")
+        || key.ends_with(".favicon_mmh3")
 }
 
 /// Windows release for an NTLM version `major.minor.build` (builds shared by client and

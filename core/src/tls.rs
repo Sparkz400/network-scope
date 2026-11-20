@@ -290,7 +290,7 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
         "spki_sha256".into(),
         crate::fingerprint::hex(&crate::fingerprint::sha256(cert.public_key().raw)),
     );
-    // JA4X (self-derived, see `pivot`): groups certificates built from the same template.
+    // JA4X (see `pivot`: compared with FoxIO test data): groups certificates built from the same template.
     f.insert("ja4x".into(), crate::pivot::ja4x(&cert));
     Ok(f)
 }

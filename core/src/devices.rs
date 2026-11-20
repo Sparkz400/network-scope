@@ -95,7 +95,7 @@ pub fn is_virtual_mac(mac: &str) -> bool {
 
 /// Derived keys that describe software configuration, not the device: CPE names (user
 /// templates are free text), SSH HASSH and TLS JA4S fingerprints. Keyword rules skip them.
-const NON_EVIDENCE_SUFFIXES: [&str; 8] = [
+const NON_EVIDENCE_SUFFIXES: [&str; 9] = [
     ".cpe",
     ".hassh",
     ".hassh_algorithms",
@@ -103,6 +103,7 @@ const NON_EVIDENCE_SUFFIXES: [&str; 8] = [
     ".ja4x",
     ".confidence",
     ".jarm",
+    ".favicon_mmh3",
     ".self_signature",
 ];
 fn is_device_evidence(key: &str) -> bool {

@@ -250,6 +250,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "favicon_response"
+path = "fuzz_targets/favicon_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "jarm_response"
 path = "fuzz_targets/jarm_response.rs"
 test = false

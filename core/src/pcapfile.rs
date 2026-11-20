@@ -1,12 +1,14 @@
 //! Offline capture files: classic pcap (all four magic variants) and pcapng. Ethernet frames are
-//! returned as recorded; Linux cooked captures (SLL, SLL2) and raw IPv4/IPv6 are translated into
-//! Ethernet-style frames (synthesised 14-byte header) so the decoders see one format.
+//! returned as recorded; Linux cooked captures (SLL, SLL2), BSD loopback (Npcap's loopback adapter,
+//! `lo0`) and raw IPv4/IPv6 are translated into Ethernet-style frames (synthesised 14-byte
+//! header) so the decoders see one format.
 //! Pure Rust: no capture driver is needed to analyse a file recorded elsewhere.
 use std::io::Read;
 
 pub const MAX_FRAME: usize = 262_144;
 /// Largest pcapng block read into memory; bigger blocks are skipped (read and discarded).
 const MAX_BLOCK: usize = MAX_FRAME + 4096;
+const LINKTYPE_NULL: u32 = 0;
 const LINKTYPE_ETHERNET: u32 = 1;
 const LINKTYPE_RAW: u32 = 101;
 const LINKTYPE_LINUX_SLL: u32 = 113;
@@ -18,7 +20,8 @@ const LINKTYPE_LINUX_SLL2: u32 = 276;
 fn supported(link: u32) -> bool {
     matches!(
         link,
-        LINKTYPE_ETHERNET
+        LINKTYPE_NULL
+            | LINKTYPE_ETHERNET
             | LINKTYPE_RAW
             | LINKTYPE_LINUX_SLL
             | LINKTYPE_IPV4
@@ -92,6 +95,17 @@ fn to_ethernet(link: u32, data: &[u8]) -> Option<Vec<u8>> {
                 be16(0)?,
                 body,
             )
+        }
+        // BSD loopback: a 4-byte address family in the capturing host's byte order, then the IP
+        // packet. The family numbers differ between systems, so the packet's version decides.
+        LINKTYPE_NULL => {
+            let packet = data.get(4..)?;
+            let kind = match packet.first()? >> 4 {
+                4 => 0x0800,
+                6 => 0x86dd,
+                _ => return None,
+            };
+            Some(ethernet(false, false, [0; 6], kind, packet))
         }
         LINKTYPE_RAW | LINKTYPE_IPV4 | LINKTYPE_IPV6 => {
             let kind = match (link, data.first()? >> 4) {
@@ -185,7 +199,8 @@ impl Interface {
     }
 }
 
-const SUPPORTED_TEXT: &str = "only Ethernet, Linux cooked (SLL/SLL2) and raw IP captures are read";
+const SUPPORTED_TEXT: &str =
+    "only Ethernet, Linux cooked (SLL/SLL2), BSD loopback and raw IP captures are read";
 
 fn link_name(link: u32) -> &'static str {
     match link {
@@ -892,6 +907,40 @@ mod tests {
         assert_eq!(
             read_all(&with_link(write_pcap(&records), 229)).unwrap(),
             [(2, eth([0x86, 0xdd], &v6))]
+        );
+    }
+
+    #[test]
+    fn bsd_loopback_captures_become_ethernet() {
+        let mut v6 = vec![0x60, 0, 0, 0, 0, 0, 17, 64];
+        v6.extend([0; 32]);
+        // the family word is in the capturing host's byte order and differs between systems:
+        // 2 is IPv4 everywhere, 23 (Windows) and 30 (macOS) are IPv6
+        let null = |family: u32, ip: &[u8]| {
+            let mut f = family.to_le_bytes().to_vec();
+            f.extend(ip);
+            f
+        };
+        let eth = |kind: [u8; 2], ip: &[u8]| {
+            let mut f = vec![0; 12];
+            f.extend(kind);
+            f.extend(ip);
+            f
+        };
+        let records = vec![
+            (1, null(2, &IP_PACKET)),
+            (2, null(23, &v6)),
+            (3, null(30, &v6)),
+            (4, vec![2, 0, 0, 0]),     // no packet
+            (5, null(2, &[0x10; 20])), // not IP
+        ];
+        assert_eq!(
+            read_all(&with_link(write_pcap(&records), 0)).unwrap(),
+            [
+                (1, eth([8, 0], &IP_PACKET)),
+                (2, eth([0x86, 0xdd], &v6)),
+                (3, eth([0x86, 0xdd], &v6))
+            ]
         );
     }
 

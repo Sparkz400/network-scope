@@ -1198,6 +1198,32 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             Err(e) => note(&mut h, format!("SNMP: {e}")),
         }
     }
+    // Favicon: one GET /favicon.ico per web port that answered as HTTP(S). Opt-in, never in Safe
+    // Mode, never on industrial hosts (so after the OT identification), one request at a time
+    // through the rate gate.
+    if crate::favicon::enabled(&s) && !gov.paused() {
+        let limit = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 5000)));
+        for (port, secure) in crate::favicon::candidates(&h) {
+            if gov.paused() {
+                break;
+            }
+            if !gov.delay().is_zero() {
+                sleep(gov.delay()).await;
+            }
+            match crate::favicon::fetch(ip, port, secure, limit, &ctx.gate).await {
+                crate::favicon::Fetched::Hash(hash) => {
+                    h.identity
+                        .insert(format!("http.{port}.favicon_mmh3"), hash.to_string());
+                }
+                crate::favicon::Fetched::NoIcon => {}
+                crate::favicon::Fetched::Failed => {
+                    note(&mut h, format!("Favicon: port {port} stopped answering"));
+                    gov.known_open_failed(port);
+                }
+            }
+        }
+        flush_backoff_notes(&gov, &mut h);
+    }
     if s.trace
         && h.responding
         && let Some(b) = before.filter(|b| b.responding && !b.trace.is_empty())
@@ -1513,6 +1539,7 @@ mod tests {
     fn senders_do_not_take_unrecorded_tokens() {
         let sources = [
             ("arp.rs", include_str!("arp.rs")),
+            ("favicon.rs", include_str!("favicon.rs")),
             ("jarm.rs", include_str!("jarm.rs")),
             ("syn.rs", include_str!("syn.rs")),
             ("tls.rs", include_str!("tls.rs")),

@@ -1,8 +1,8 @@
 //! Exports of the research data: CSV and NDJSON per table (a layout DuckDB and pandas read
 //! directly), and a STIX 2.1 bundle or OCSF events for one scan.
 //!
-//! There is no Parquet writer (it would need a crate); DuckDB converts the NDJSON in one line,
-//! see `docs/src/research.md`. Nothing here sends traffic.
+//! Parquet files come from the in-house writer in [`super::parquet`] (uncompressed, PLAIN
+//! encoding, no library). Nothing here sends traffic.
 //!
 //! # STIX 2.1
 //!
@@ -12,16 +12,18 @@
 //! object and the infrastructure `has` it. Identifiers are UUIDv5, so exporting the same scan
 //! twice gives the same bundle: observables use the STIX namespace over the canonical JSON of
 //! their identifying properties, as the specification prescribes; the other objects use a
-//! namespace of this program ([`super::uuid::NETWORK_SCOPE_NAMESPACE`]). The identifiers were
-//! derived from the specification text, not checked against another implementation's output.
+//! namespace of this program ([`super::uuid::NETWORK_SCOPE_NAMESPACE`]). The bundle passes
+//! `stix2-validator`; its only warnings are that the identifiers of the non-observable objects
+//! are not UUIDv4 (they are deterministic on purpose).
 //!
 //! # OCSF
 //!
-//! Events follow the OCSF 1.3 class layouts for Device Inventory Info (5001) and Vulnerability
-//! Finding (2002), one JSON object per line. They were written from the published class
-//! definitions and are not validated against the OCSF validator; fields without a safe mapping
-//! go to `unmapped`.
-use super::{cell_text, open_read_only, uuid};
+//! Events follow the OCSF 1.3 class layouts, one JSON object per line: Device Inventory Info
+//! (5001) per host, Vulnerability Finding (2002) per finding that names a CVE (that class
+//! requires one) and Detection Finding (2004) per finding without. Fields without a safe mapping
+//! go to `unmapped`. `scripts/validate_research_exports.py` checks the events against the
+//! schema of OCSF 1.3.0.
+use super::{cell_text, open_read_only, parquet, uuid};
 use crate::{risk::Finding, store::Snapshot};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, path::Path};
@@ -43,14 +45,16 @@ pub struct ExportReport {
     pub tables: Vec<ExportedTable>,
 }
 
-/// Writes every research table to `dir` as `<table>.csv` or `<table>.ndjson` (`format` is `csv`
-/// or `ndjson`). CSV has a header row, numbers and text as they are, NULL as an empty cell, and
+/// Writes every research table to `dir` as `<table>.csv`, `<table>.ndjson` or `<table>.parquet`
+/// (`format` is `csv`, `ndjson` or `parquet`). Parquet columns follow the declared SQL types
+/// (INTEGER is a 64-bit integer, REAL a double, TEXT UTF-8; NOT NULL columns are required), one
+/// file per table, so `scan_time` stays Unix seconds. CSV has a header row, numbers and text as they are, NULL as an empty cell, and
 /// the formula-injection guard every CSV export of the program has. NDJSON is one JSON object per
 /// row with the column names as keys and NULL as `null`; it carries no `schema` member so that
 /// the files load as plain tables. A `manifest.json` lists the files.
 pub fn export_tables(db: &Path, dir: &Path, format: &str) -> Result<ExportReport, String> {
-    if !["csv", "ndjson"].contains(&format) {
-        return Err("Choose csv or ndjson".into());
+    if !["csv", "ndjson", "parquet"].contains(&format) {
+        return Err("Choose csv, ndjson or parquet".into());
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let c = open_read_only(db)?;
@@ -65,6 +69,16 @@ pub fn export_tables(db: &Path, dir: &Path, format: &str) -> Result<ExportReport
             .prepare(&format!("SELECT * FROM {} ORDER BY id", t.name))
             .map_err(|e| e.to_string())?;
         let columns: Vec<String> = statement.column_names().map(|n| n.to_string()).collect();
+        if format == "parquet" {
+            let rows = write_parquet(&mut statement, t, &columns, out)?;
+            tables.push(ExportedTable {
+                table: t.name.into(),
+                file,
+                rows,
+                columns,
+            });
+            continue;
+        }
         if format == "csv" {
             let header: Vec<String> = columns.iter().map(|c| format!("\"{c}\"")).collect();
             write!(out, "{}\r\n", header.join(",")).map_err(|e| e.to_string())?;
@@ -108,6 +122,71 @@ pub fn export_tables(db: &Path, dir: &Path, format: &str) -> Result<ExportReport
     let manifest = crate::schema::object("research-export", &report)?;
     std::fs::write(dir.join("manifest.json"), manifest).map_err(|e| e.to_string())?;
     Ok(report)
+}
+
+/// The Parquet schema of a table, from the declared SQL types.
+fn parquet_columns(t: &super::Table) -> Vec<parquet::Column> {
+    super::COMMON_COLUMNS
+        .iter()
+        .chain(t.columns)
+        .map(|(name, sql, _)| parquet::Column {
+            name: (*name).into(),
+            kind: if sql.starts_with("INTEGER") {
+                parquet::Kind::Int64
+            } else if sql.starts_with("REAL") {
+                parquet::Kind::Double
+            } else {
+                parquet::Kind::Text
+            },
+            nullable: !sql.contains("NOT NULL") && !sql.contains("PRIMARY KEY"),
+        })
+        .collect()
+}
+
+fn write_parquet(
+    statement: &mut rusqlite::Statement<'_>,
+    t: &super::Table,
+    columns: &[String],
+    out: impl Write,
+) -> Result<u64, String> {
+    use rusqlite::types::ValueRef;
+    let schema = parquet_columns(t);
+    if schema.iter().map(|c| &c.name).ne(columns.iter()) {
+        return Err(format!("table {}: columns differ from the schema", t.name));
+    }
+    let mut writer = parquet::Writer::new(out, schema.clone()).map_err(|e| e.to_string())?;
+    let mut rows = statement.query([]).map_err(|e| e.to_string())?;
+    let mut n = 0u64;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let mut cells = Vec::with_capacity(schema.len());
+        for (i, col) in schema.iter().enumerate() {
+            let value = row.get_ref(i).map_err(|e| e.to_string())?;
+            cells.push(match (value, col.kind) {
+                (ValueRef::Null, _) => parquet::Cell::Null,
+                (ValueRef::Integer(v), parquet::Kind::Int64) => parquet::Cell::Int(v),
+                (ValueRef::Integer(v), parquet::Kind::Double) => parquet::Cell::Double(v as f64),
+                (ValueRef::Real(v), parquet::Kind::Double) => parquet::Cell::Double(v),
+                (ValueRef::Text(t), parquet::Kind::Text) => {
+                    parquet::Cell::Text(String::from_utf8_lossy(t).into_owned())
+                }
+                (ValueRef::Blob(b), parquet::Kind::Text) => {
+                    parquet::Cell::Text(format!("x'{}'", crate::fingerprint::hex(b)))
+                }
+                (other, kind) => {
+                    return Err(format!(
+                        "table {}, column {}: a {:?} value in a {kind:?} column",
+                        t.name,
+                        col.name,
+                        other.data_type()
+                    ));
+                }
+            });
+        }
+        writer.row(cells)?;
+        n += 1;
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(n)
 }
 
 // ---- STIX 2.1 ------------------------------------------------------------------------------
@@ -326,8 +405,9 @@ fn ocsf_severity(s: crate::risk::Severity) -> (u8, &'static str) {
     }
 }
 
-/// OCSF events of one scan: a Device Inventory Info (5001, Collect) per responding host, then a
-/// Vulnerability Finding (2002, Create) per finding.
+/// OCSF events of one scan: a Device Inventory Info (5001, Collect) per responding host, then per
+/// finding a Vulnerability Finding (2002, Create) when it names a CVE, else a Detection Finding
+/// (2004, Create).
 pub fn ocsf_events(snapshot: &Snapshot, findings: &[Finding], timestamp: i64) -> Vec<Value> {
     let time_ms = timestamp.saturating_mul(1000);
     let mut out = vec![];
@@ -376,15 +456,22 @@ pub fn ocsf_events(snapshot: &Snapshot, findings: &[Finding], timestamp: i64) ->
             f.ip,
             f.port.map_or(String::new(), |p| p.to_string())
         );
+        // A Vulnerability Finding must list a vulnerability with a CVE or CWE; a finding without
+        // a CVE (an open Telnet port, a weak algorithm) is a Detection Finding.
+        let (class_uid, class_name) = if f.cve.is_empty() {
+            (2004, "Detection Finding")
+        } else {
+            (2002, "Vulnerability Finding")
+        };
         let mut event = json!({
-            "class_uid": 2002,
-            "class_name": "Vulnerability Finding",
+            "class_uid": class_uid,
+            "class_name": class_name,
             "category_uid": 2,
             "category_name": "Findings",
             "activity_id": 1,
             "activity_name": "Create",
-            "type_uid": 200201,
-            "type_name": "Vulnerability Finding: Create",
+            "type_uid": class_uid * 100 + 1,
+            "type_name": format!("{class_name}: Create"),
             "time": time_ms,
             "severity_id": severity_id,
             "severity": severity,
@@ -577,6 +664,18 @@ mod tests {
         assert_eq!(inventory[0]["time"], 1_700_000_000_000i64);
         assert_eq!(inventory[0]["type_uid"], 500102);
         assert!(!vulns.is_empty());
+        // OCSF: a Vulnerability Finding must list a vulnerability with a CVE; findings without one
+        // are Detection Findings (2004)
+        for e in &vulns {
+            assert!(e["vulnerabilities"][0]["cve"]["uid"].is_string(), "{e}");
+        }
+        let detections: Vec<_> = events.iter().filter(|e| e["class_uid"] == 2004).collect();
+        assert!(!detections.is_empty(), "the Modbus finding has no CVE");
+        for e in &detections {
+            assert!(e.get("vulnerabilities").is_none());
+            assert_eq!(e["type_uid"], 200401);
+            assert_eq!(e["class_name"], "Detection Finding");
+        }
         let heartbleed = vulns
             .iter()
             .find(|e| e["finding_info"]["types"][0] == "cve-cve-2014-0160")
@@ -634,8 +733,70 @@ mod tests {
         assert_eq!(csv.lines().count(), 3);
         assert!(csv.contains("1700000000,\"10.0.0.5\""), "{csv}");
         assert_eq!(csv_report.format, "csv");
-        assert!(export_tables(&path, &dir, "parquet").is_err());
+        assert!(export_tables(&path, &dir, "xml").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+        remove_db(&path);
+    }
+
+    #[test]
+    fn parquet_files_hold_the_same_rows_as_the_ndjson_export() {
+        let path = temp_db("export-parquet");
+        let s = scan();
+        store::save_at(&path, &s, 1_700_000_000).unwrap();
+        {
+            // a REAL value and a NULL in the same column, as feeds would leave them
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute(
+                "UPDATE findings SET epss = 0.25 WHERE id = (SELECT min(id) FROM findings)",
+                [],
+            )
+            .unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("ns-research-parquet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let report = export_tables(&path, &dir, "parquet").unwrap();
+        let ndjson = std::env::temp_dir().join(format!("ns-research-pq-nd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ndjson);
+        let reference = export_tables(&path, &ndjson, "ndjson").unwrap();
+        assert_eq!(report.format, "parquet");
+        assert_eq!(report.tables.len(), super::super::TABLES.len());
+        let mut checked_real = false;
+        for (table, wanted) in report.tables.iter().zip(&reference.tables) {
+            assert_eq!(table.file, format!("{}.parquet", table.table));
+            assert_eq!(table.rows, wanted.rows);
+            assert_eq!(table.columns, wanted.columns);
+            let columns =
+                parquet::tests::columns_of(&std::fs::read(dir.join(&table.file)).unwrap());
+            assert_eq!(columns.len(), table.columns.len(), "{}", table.table);
+            let text = std::fs::read_to_string(ndjson.join(&wanted.file)).unwrap();
+            let rows: Vec<Value> = text
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            for (name, cells) in table.columns.iter().zip(&columns) {
+                assert_eq!(cells.len(), rows.len(), "{}.{name}", table.table);
+                for (cell, row) in cells.iter().zip(&rows) {
+                    let want = &row[name];
+                    let same = match cell {
+                        parquet::Cell::Null => want.is_null(),
+                        parquet::Cell::Int(v) => want.as_i64() == Some(*v),
+                        parquet::Cell::Double(v) => {
+                            checked_real = true;
+                            want.as_f64() == Some(*v)
+                        }
+                        parquet::Cell::Text(v) => want.as_str() == Some(v.as_str()),
+                    };
+                    assert!(same, "{}.{name}: {cell:?} vs {want}", table.table);
+                }
+            }
+        }
+        assert!(checked_real, "a REAL cell was compared");
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["format"], "parquet");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&ndjson);
         remove_db(&path);
     }
 
