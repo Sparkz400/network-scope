@@ -17,7 +17,7 @@ The short version: so far only Network Scope has been timed, on one Windows mach
 
 All of `127.0.0.0/8` is loopback, so nothing leaves the machine and no real network is needed. Both ranges contain the lab hosts.
 
-- **Port lists.** The lists are taken from the installed nmap (`nmap -sT --top-ports N -v -oG -`), and every tool gets the same explicit list. Without nmap, the top 100 falls back to Network Scope's own `top:100` list (a different list) and the top 1000 is not run.
+- **Port lists.** The lists are taken from the installed nmap (`nmap -sT --top-ports N -v -oG -`), and every tool gets the same explicit list. Without nmap, the top 100 falls back to Network Scope's own `top:100` list (a different list) and the top 1000 to ports 1 to 1000. `speed.json` records which lists were used (`port_source`).
 - **Repetitions.** Each tool runs `--repeat` times (default 3). The tools take turns, so drift on the machine hits all of them alike.
 - **What is recorded.** Wall time is measured around the process, from start to exit, including writing the result file. Peak memory is the operating system's figure for the process: `ru_maxrss` from `wait4` on Linux, or the peak working set on Windows. The tool versions, the machine and the commit go into `speed.json`.
 - **Time limit.** A run longer than `--limit` seconds (default 1800) is stopped and reported as stopped.
@@ -101,6 +101,27 @@ How to read it:
 - **Other listeners.** This machine runs services on `0.0.0.0` (ports 80, 135, 445, 5357, 5432 and 5900), so each of those ports is open on all 254 addresses, which gives 1,524 pairs. Ports 80, 445, 5357 and 5432 were found on every address in every run. Ports 135 (Windows RPC) and 5900 (a VNC server) were refused on some addresses, a different number in each run (1,224 to 1,381 open pairs per run). In the table, a pair missed in any one of the five runs counts as missed.
 - **Why they were refused.** A plain Python test with no Network Scope involved sent 254 simultaneous non-blocking connects to port 5900: 13 were refused (WSAECONNREFUSED). The same test with port 135 was not refused, so for port 135 the cause is likely, not shown: the scanner sends about 25,000 connects within a second or two, far more than this test. Every lab port was found in every run, and nothing was reported open that does not listen.
 - **Closed ports.** An earlier measurement on another Windows machine ([Comparison with other tools](comparison.md#measured-on-the-lab)) saw a refused loopback connection take about 2 s. Here the whole /24 scan takes 1.7 s, so that wait did not show up on this machine.
+
+### Small home LAN, Network Scope only (`--fast`); nmap and RustScan not installed
+
+This is one real network: the owner's home LAN `192.168.178.0/24`, scanned with the owner's permission from the Windows machine above over wired Ethernet, on 2026-11-20. It is a small network of consumer devices behind one router; only a few dozen ports are open on the whole range. The script's `--lan` mode refuses anything but a private range of at most 256 addresses, and it has no ground truth. It reports how stable the result was across runs instead of whether it was correct.
+
+```sh
+python -I lab/speed_compare.py --cli <path>/network-scope-cli --lan 192.168.178.0/24 --fast --cells 24-top100 --repeat 3
+# runs: network-scope-cli scan 192.168.178.0/24 --fast --tcp-only --ports <top:100> --scope 192.168.178.0/24 --quiet --db ... --output ...
+```
+
+| Range and ports | Runs | Wall time, median (min to max) | Peak memory | Open ports |
+| --- | --- | --- | --- | --- |
+| `192.168.178.0/24`, Network Scope's `top:100` | 3 | 28.20 s (24.54 to 28.23) | 29.7 MB | 29 in every run, 30 in at least one |
+| `192.168.178.0/24`, ports 1 to 1000 | not run | | | |
+
+How to read it:
+
+- **Where the time goes.** The scan takes about 28 s here and 1.7 s on loopback for a range of the same size. The difference is the network. Most of the 254 addresses have no device, and a probe to an absent address most likely waits out the 2000 ms timeout. That was not measured separately.
+- **The extra port.** One device answered on one port in one run only. That run-to-run difference comes from a real device, which the loopback lab does not have.
+- **The 1000-port row.** It was not run: the measuring session's automatic permission check refused it, so it is not measured.
+- **Safe Mode.** The default Safe Mode was not timed to the end. It allows at most about 10 probes a second for the whole scan (at least 100 ms between probes), so 254 addresses × 100 ports take more than 40 minutes by design. A first Safe Mode run was stopped after 30 minutes.
 
 ### Cross-tool table
 
