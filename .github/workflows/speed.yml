@@ -1,0 +1,91 @@
+name: speed
+
+# Speed comparison (roadmap B10): Network Scope, nmap -sT -T4 and RustScan (plus nmap -sS as root,
+# reported separately) on the same loopback lab, a /24 and a /16 with nmap's top 100 and top 1000
+# ports (lab/speed_compare.py). The job fails only when Network Scope reports a wrong open set or
+# got more than 50 percent slower than its own baseline in lab/speed_baseline.json; the other tools
+# are reported, never gated, and a tool that cannot be installed is skipped with a warning.
+# The result (speed.json, speed.md, baseline-candidate.json) is uploaded as an artifact.
+# Pull requests that touch the comparison run only the /24 cells; the weekly and the manual run
+# add the /16. Runner and tool versions are pinned so numbers stay comparable over time.
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      cells:
+        description: "Cells (24-top100, 24-top1000, 16-top100, 16-top1000)"
+        default: "24-top100,24-top1000,16-top100"
+      repeat:
+        description: "Runs per tool and cell"
+        default: "3"
+  pull_request:
+    paths:
+      - lab/speed_compare.py
+      - lab/speed_baseline.json
+      - .github/workflows/speed.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speed-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  NMAP_VERSION: "7.94+git20230807.3be01efb1+dfsg-3build2"  # Ubuntu 24.04's package
+  RUSTSCAN_VERSION: "2.4.1"
+
+jobs:
+  speed:
+    name: speed comparison (loopback lab)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Unit tests of the comparison script
+        run: python -I -m unittest discover -s lab -p "test_speed_compare.py"
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The shipped release profile (fat LTO): ci.yml's faster test profile is not what users run.
+      - name: Build the CLI (release profile, no GUI)
+        run: cargo build --release --locked --no-default-features --bin network-scope-cli
+      - name: Install nmap (pinned)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "nmap=$NMAP_VERSION" \
+            || echo "::warning::nmap $NMAP_VERSION could not be installed; nmap is not measured"
+      - name: Install RustScan (pinned, built from crates.io)
+        run: |
+          if cargo install rustscan --version "$RUSTSCAN_VERSION" --locked; then
+            rustscan --help
+          else
+            echo "::warning::RustScan $RUSTSCAN_VERSION could not be installed; RustScan is not measured"
+          fi
+      # The simulators listen on the real service ports (21, 22, 23, ...), as in ci.yml.
+      - name: Free the lab ports
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+          sudo systemctl stop ssh.socket ssh.service || true
+      - name: Speed comparison
+        env:
+          CELLS: ${{ github.event_name == 'pull_request' && '24-top100,24-top1000' || inputs.cells || '24-top100,24-top1000,16-top100' }}
+          REPEAT: ${{ inputs.repeat || '3' }}
+        run: |
+          ulimit -n 65535 2>/dev/null || ulimit -n "$(ulimit -Hn)"
+          python -I lab/speed_compare.py --cli "$PWD/target/release/network-scope-cli" \
+            --syn-nmap "sudo -n nmap" --cells "$CELLS" --repeat "$REPEAT" --check --out-dir speed-results
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: speed-comparison
+          path: speed-results/
+          if-no-files-found: ignore

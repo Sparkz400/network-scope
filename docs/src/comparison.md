@@ -1,6 +1,6 @@
 # Comparison with other tools
 
-This page compares Network Scope with nmap, RustScan, Advanced IP Scanner and Lansweeper. The feature table is facts only. The measured section has numbers from one machine and one lab, and only for the tools that were actually run (Network Scope and nmap).
+This page compares Network Scope with nmap, RustScan, Advanced IP Scanner and Lansweeper. The feature table is facts only. The measured section has numbers from one machine and one lab, and only for the tools that were actually run (Network Scope and nmap). Port-scan speed on a /24 and a /16 with the top 100 and top 1000 ports, including RustScan, has its own page: [Speed comparison](speed.md).
 
 ## Features
 
@@ -29,7 +29,7 @@ Network Scope's rows are what this repository documents; the parts that have not
 
 ## Measured on the lab
 
-These are timings and accuracy for Network Scope and nmap on the loopback lab described in [Lab and testing](lab-and-testing.md#accuracy-benchmark): six simulated hosts on `127.0.10.1` to `127.0.10.6` and three addresses where nothing runs, each scanned on the same 11 TCP ports (the 11 open ones plus 25, 2222, 8081 and 9999, which are closed). RustScan, Advanced IP Scanner and Lansweeper were not measured: they are not installed on this machine.
+These are timings and accuracy for Network Scope and nmap on the loopback lab described in [Lab and testing](lab-and-testing.md#accuracy-benchmark): six simulated hosts on `127.0.10.1` to `127.0.10.6` and three addresses where nothing runs, each scanned on the same 11 TCP ports (the 11 open ones plus 25, 2222, 8081 and 9999, which are closed). RustScan, Advanced IP Scanner and Lansweeper were not measured here: they are not installed on this machine. RustScan is part of the [speed comparison](speed.md), which CI runs on Linux.
 
 Setup:
 
