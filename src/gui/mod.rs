@@ -349,6 +349,8 @@ struct Scanner {
     /// Bumped whenever a note changes.
     notes_generation: u64,
     haystacks: HashMap<IpAddr, String>,
+    /// Rows of hosts still being scanned (`scan::Event::Partial`), by address: the row index.
+    live: HashMap<IpAddr, usize>,
     rows: Vec<usize>,
     rows_key: Option<(u64, u64, Filter, String)>,
     responding: usize,
@@ -458,6 +460,7 @@ impl Scanner {
             generation: 0,
             notes_generation: 0,
             haystacks: HashMap::new(),
+            live: HashMap::new(),
             rows: vec![],
             rows_key: None,
             responding: 0,
@@ -740,6 +743,7 @@ impl Scanner {
                 // Passive observations stay: the Devices window merges them with this scan.
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
                 self.haystacks.clear();
+                self.live.clear();
                 self.selected = None;
                 self.script_test = None;
                 self.scan_complete = true;
@@ -751,7 +755,11 @@ impl Scanner {
                 self.status = format!("Scanning {} addresses", hosts.len());
                 self.recount();
                 self.data_changed();
-                self.run = Some(scan::start(hosts, ports, self.saved.settings.clone()));
+                let live_settings = scan::Settings {
+                    partial_events: true,
+                    ..self.saved.settings.clone()
+                };
+                self.run = Some(scan::start(hosts, ports, live_settings));
             }
             Err(e) => self.error = e,
         }
@@ -776,13 +784,39 @@ impl Scanner {
     fn poll(&mut self) {
         let mut done = false;
         let mut changed = false;
+        let mut recount = false;
         if let Some(run) = &self.run {
             for _ in 0..2048 {
                 match run.receiver.try_recv() {
+                    Ok(scan::Event::Partial(host)) => {
+                        // A host that answered, or a port found open, before the host is done.
+                        self.haystacks.remove(&host.ip);
+                        match self.live.get(&host.ip).copied() {
+                            Some(i) if self.results.get(i).is_some_and(|r| r.ip == host.ip) => {
+                                self.results[i] = host;
+                            }
+                            _ => {
+                                self.live.insert(host.ip, self.results.len());
+                                self.results.push(host);
+                            }
+                        }
+                        recount = true;
+                        changed = true;
+                    }
                     Ok(scan::Event::Host(host)) => {
-                        self.responding += usize::from(host.responding);
-                        self.with_open += usize::from(!host.open.is_empty());
-                        self.results.push(host);
+                        self.haystacks.remove(&host.ip);
+                        match self.live.remove(&host.ip) {
+                            Some(i) if self.results.get(i).is_some_and(|r| r.ip == host.ip) => {
+                                // Replaces the provisional row; the counters are redone below.
+                                self.results[i] = host;
+                                recount = true;
+                            }
+                            _ => {
+                                self.responding += usize::from(host.responding);
+                                self.with_open += usize::from(!host.open.is_empty());
+                                self.results.push(host);
+                            }
+                        }
                         changed = true;
                     }
                     Ok(scan::Event::Error(e)) => {
@@ -817,6 +851,9 @@ impl Scanner {
                 );
             }
         }
+        if recount {
+            self.recount();
+        }
         if changed {
             // Sorted once per batch of new hosts, never on idle frames.
             self.sort();
@@ -827,6 +864,7 @@ impl Scanner {
                 .as_ref()
                 .map(|r| !r.cancel.load(Ordering::Relaxed))
                 .unwrap_or(false);
+            self.live.clear();
             self.run = None;
             self.data_changed();
             let snapshot = self.scan_snapshot();
@@ -849,6 +887,17 @@ impl Scanner {
                 order
             }
         });
+        // Rows moved: the provisional ones are found again by address.
+        if !self.live.is_empty() {
+            let live: HashMap<IpAddr, usize> = self
+                .results
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| self.live.contains_key(&h.ip))
+                .map(|(i, h)| (h.ip, i))
+                .collect();
+            self.live = live;
+        }
         self.data_changed();
     }
     /// Recomputes the visible row list only when data, notes, filter or query changed.

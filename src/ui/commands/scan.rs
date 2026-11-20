@@ -4,7 +4,11 @@ use crate::{
     scan, store,
     ui::{Ctx, args::scan_settings, dryrun, guard, output, progress, saved_exit, tui},
 };
-use std::{collections::BTreeMap, sync::atomic::Ordering};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    net::IpAddr,
+    sync::atomic::Ordering,
+};
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let (opts, pos, db) = (ctx.opts.clone(), ctx.pos.clone(), ctx.db.clone());
@@ -27,8 +31,14 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     }
     let total = hosts.count() as usize;
     let run = scan::start_stream(Box::new(hosts.iter()), total, ports, s.clone());
+    let stream = opts.contains_key("stream");
+    if stream && opts.contains_key("tui") {
+        return Err("--stream and --tui both take the terminal; choose one".into());
+    }
     let (results, complete, errors) = if opts.contains_key("tui") {
         tui::tui(&run)
+    } else if stream {
+        collect_streaming(&run)
     } else {
         collect(&run)
     };
@@ -55,10 +65,13 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     if opts.contains_key("sent-log") {
         eprintln!("{}", crate::sendlog::format_table(&snapshot.sent));
     }
-    output(
-        &store::export_at(&snapshot, format, store::timestamp(db, id)?)?,
-        opts,
-    )?;
+    // With --stream stdout carries the live events; the report is written only to --output.
+    if !stream || opts.contains_key("output") {
+        output(
+            &store::export_at(&snapshot, format, store::timestamp(db, id)?)?,
+            opts,
+        )?;
+    }
     // Saved but stopped early (TUI stop, or errors): partial result, status 2.
     if !errors.is_empty() {
         eprintln!(
@@ -91,6 +104,72 @@ pub(in crate::ui) fn collect(run: &scan::Running) -> Collected {
     let complete = errors.is_empty() && !run.cancel.load(Ordering::Relaxed);
     (hosts, complete, errors)
 }
+/// Like [`collect`], and prints a `scan-event` line to stdout for every host that answers, every
+/// port found open and every responding host that finishes, at the moment the engine reports it.
+pub(in crate::ui) fn collect_streaming(run: &scan::Running) -> Collected {
+    use std::io::Write;
+    let mut hosts = vec![];
+    let mut errors = vec![];
+    let sparse = run.total > scan::MAX_HOSTS;
+    // Ports already announced per host still being scanned (dropped when the host finishes).
+    let mut announced: HashMap<IpAddr, BTreeSet<u16>> = HashMap::new();
+    let mut stdout = std::io::stdout().lock();
+    let mut line = |value: serde_json::Value| {
+        if let Ok(text) = crate::schema::line("scan-event", &value) {
+            // A closed pipe only ends the live output; the scan still completes and is saved.
+            let _ = writeln!(stdout, "{text}").and_then(|()| stdout.flush());
+        }
+    };
+    let elapsed = || run.started.elapsed().as_millis() as u64;
+    loop {
+        let event = match run.receiver.recv() {
+            Ok(event) => event,
+            Err(_) => {
+                errors.push("Scan worker disconnected".into());
+                break;
+            }
+        };
+        match &event {
+            scan::Event::Partial(h) => {
+                let seen = announced.entry(h.ip).or_insert_with(|| {
+                    line(serde_json::json!({"event": "host-up", "ip": h.ip.to_string(), "elapsed_ms": elapsed()}));
+                    BTreeSet::new()
+                });
+                for &port in &h.open {
+                    if seen.insert(port) {
+                        line(
+                            serde_json::json!({"event": "port-open", "ip": h.ip.to_string(), "port": port, "elapsed_ms": elapsed()}),
+                        );
+                    }
+                }
+            }
+            scan::Event::Host(h) => {
+                let before = announced.remove(&h.ip).unwrap_or_default();
+                if h.responding {
+                    if before.is_empty() && h.open.is_empty() {
+                        line(
+                            serde_json::json!({"event": "host-up", "ip": h.ip.to_string(), "elapsed_ms": elapsed()}),
+                        );
+                    }
+                    for &port in h.open.iter().filter(|p| !before.contains(p)) {
+                        line(
+                            serde_json::json!({"event": "port-open", "ip": h.ip.to_string(), "port": port, "elapsed_ms": elapsed()}),
+                        );
+                    }
+                    line(
+                        serde_json::json!({"event": "host-done", "ip": h.ip.to_string(), "open": h.open, "ports_checked": h.ports_checked, "elapsed_ms": elapsed()}),
+                    );
+                }
+            }
+            _ => {}
+        }
+        if accept(event, &mut hosts, sparse, &mut errors) {
+            break;
+        }
+    }
+    let complete = errors.is_empty() && !run.cancel.load(Ordering::Relaxed);
+    (hosts, complete, errors)
+}
 /// Applies one scan event and returns true on `Done`. Errors never discard results: they are
 /// recorded and mark the scan partial (the engine always follows with `Done`).
 pub(in crate::ui) fn accept(
@@ -106,6 +185,8 @@ pub(in crate::ui) fn accept(
             }
             false
         }
+        // Provisional hosts are for live views; the final `Host` event carries the result.
+        scan::Event::Partial(_) => false,
         scan::Event::Done => true,
         scan::Event::Error(e) => {
             errors.push(e);

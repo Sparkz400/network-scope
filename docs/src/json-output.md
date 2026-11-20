@@ -23,6 +23,7 @@ Every JSON document the program prints names its format in a top-level `schema` 
 | `unknown-banners` | `fingerprints export-unknown` | The unidentified banners for a [fingerprint contribution](contributing-fingerprints.md); keeps its own `format` and `version` members |
 | `import-summary` | `import KIND FILE --format json` | `kind`, `merged`, `skipped`, `notes` |
 | `dry-run` | `scan`, `monitor`, `trace` and `dcp` with `--dry-run --format json`; the MCP `scan` tool with `dry_run` | `command`, `packets_sent` (always 0), `groups` or `packets`, `scope` |
+| `scan-event` | `scan --stream` | One live event per line: `event` (`host-up`, `port-open`, `host-done`), `ip`, `port` or `open`, `elapsed_ms` |
 | `mcp-where-seen`, `mcp-findings-gained`, `mcp-scan` | The MCP tools `search_inventory`, `findings_gained` and `scan` ([MCP server](mcp.md)); the other MCP tools return the kinds above | Search matches, hosts that gained a finding, a scan summary |
 
 A list is wrapped in an object (`{"schema": "network-scope/findings/v1", "findings": [...]}`) because a bare array has no room for the identifier. Output that was a bare array before this format existed (`devices`, `findings`, `history`, `alerts`, `ot-assets`, `interfaces`, the default `diff`, `devices --history`) changed shape; scripts read the list from the named member (`jq '.findings[]'`). CSV, HTML, Markdown, nmap XML and text formats are not JSON and carry no identifier.

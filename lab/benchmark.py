@@ -36,6 +36,7 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+FIRST_RESULT_LIMIT_MS = 200  # roadmap B11; measured 35-42 ms on Windows, so five times the margin
 EPSILON = 1e-4  # baseline values are stored with 4 decimals
 PLATFORMS = {"win32": "windows", "linux": "linux", "darwin": "macos"}
 
@@ -204,6 +205,33 @@ def run_scan(cli, addresses, ports, timeout_ms, limit_s):
         # Versioned output (G44): {"schema": ..., "findings": [...]}; older builds wrote a bare list.
         scan["findings"] = loaded["findings"] if isinstance(loaded, dict) else loaded
     return scan, elapsed, options
+
+
+def first_result(cli, addresses, ports, timeout_ms, runs=5, limit_s=120):
+    """Time to the first live result (`scan --stream`, roadmap B11): milliseconds from starting the
+    CLI to its first line on stdout, which is the first host or open port the engine reports (the
+    process start is included). Returns (median, min, max) over `runs` scans of the lab."""
+    samples = []
+    for _ in range(runs):
+        work = tempfile.mkdtemp(prefix="ns-first-")
+        cmd = [cli, "scan", ",".join(addresses), "--fast", "--tcp-only", "--stream", "--quiet",
+               "--ports", ",".join(str(p) for p in ports), "--timeout", str(timeout_ms),
+               "--db", os.path.join(work, "first.sqlite")]
+        started = time.monotonic()
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            line = proc.stdout.readline()
+            first = time.monotonic() - started
+            proc.stdout.read()  # drain until the scan ends
+            proc.wait(timeout=limit_s)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise LabError(f"could not run the CLI (--stream): {e}") from None
+        if not line or proc.returncode != 0:
+            raise LabError(f"scan --stream printed no event or failed (exit {proc.returncode})")
+        samples.append(first * 1000)
+    samples.sort()
+    return {"median": round(samples[len(samples) // 2], 1), "min": round(samples[0], 1),
+            "max": round(samples[-1], 1), "runs": runs}
 
 
 def ratio(num, den):
@@ -394,6 +422,9 @@ def markdown(result, baseline, regressions, note):
     t = result["timing"]
     lines += ["", f"Scan wall time {t['scan_seconds']:.1f} s for {result['lab']['addresses']} addresses "
               f"x {result['lab']['ports_per_host']} ports (reported, not gated). "
+              f"First result {t['first_result_ms']['median']:.0f} ms (median of {t['first_result_ms']['runs']} runs, "
+              f"{t['first_result_ms']['min']:.0f}-{t['first_result_ms']['max']:.0f} ms; roadmap target under 200 ms, "
+              "from process start to the first `scan --stream` line). "
               f"Ground truth: {result['lab']['hosts']} hosts, {result['lab']['open_tcp']} open TCP ports, "
               f"{result['lab']['open_udp']} open UDP ports, {result['lab']['absent']} absent addresses."]
     if note:
@@ -448,6 +479,7 @@ def main():
         scan_ports = sorted(set(open_tcp) | set(truth["scan"]["closed_tcp_ports"]))
         start_lab(truth, addresses, scan_ports)
         scan, elapsed, cli_args = run_scan(cli, addresses, scan_ports, args.timeout, 600)
+        first = first_result(cli, addresses, scan_ports, args.timeout)
     except LabError as e:
         print(f"benchmark error: {e}", file=sys.stderr)
         return 2
@@ -459,7 +491,7 @@ def main():
         "commit": os.environ.get("GITHUB_SHA", ""),
         "ref": os.environ.get("GITHUB_REF_NAME", ""),
         "metrics": metrics,
-        "timing": {"scan_seconds": round(elapsed, 2)},
+        "timing": {"scan_seconds": round(elapsed, 2), "first_result_ms": first},
         "lab": {"hosts": len(truth["hosts"]), "absent": len(truth["absent_hosts"]), "addresses": len(addresses),
                 "ports_per_host": len(scan_ports), "open_tcp": sum(len(h["tcp"]) for h in truth["hosts"]),
                 "open_udp": sum(len(h["udp"]) for h in truth["hosts"])},
@@ -486,6 +518,9 @@ def main():
             f.write(text + "\n")
     if note and args.check:
         print("::warning::" + note if os.environ.get("GITHUB_ACTIONS") else note)
+    if args.check and first["median"] > FIRST_RESULT_LIMIT_MS:
+        regressions.append(f"first result {first['median']:.0f} ms (median) is above the limit of "
+                           f"{FIRST_RESULT_LIMIT_MS} ms")
     if args.check and args.max_scan_seconds is not None and elapsed > args.max_scan_seconds:
         regressions.append(f"scan wall time {elapsed:.1f} s is above the bound of {args.max_scan_seconds:.0f} s")
     if regressions:

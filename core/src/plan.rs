@@ -1044,7 +1044,7 @@ mod tests",
                 {
                     crate::scan::Event::Done => break,
                     crate::scan::Event::Error(e) => panic!("{e}"),
-                    crate::scan::Event::Host(_) => {}
+                    crate::scan::Event::Host(_) | crate::scan::Event::Partial(_) => {}
                 }
             }
             let db = ProbeDb::load("").unwrap();

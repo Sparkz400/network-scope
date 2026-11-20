@@ -128,6 +128,7 @@ These apply to `scan` and `monitor`.
 | `--format FMT` / `--output FILE` | json | Also write an export of the finished scan |
 | `--db FILE` | | Inventory database |
 | `--dry-run` | off | Print, per host, exactly which packet types the command would send, and send nothing (see [Dry run and sent log](#dry-run-and-sent-log)); `scan`, `monitor`, `trace`, `dcp` |
+| `--stream` | off | `scan` only: print each result to stdout as one JSON line the moment the engine finds it (`host-up` when a host answers, `port-open` for each open TCP port, `host-done` for a finished responding host; schema `scan-event`, see [JSON output](json-output.md)). The first line appears when the first port answers, not when the scan ends. The report is then written only to `--output FILE`; stdout carries the events. The scan is still saved. Not with `--tui` |
 | `--sent-log` | off | Print the packets the run actually sent, by kind and detail, on stderr; `scan`, `trace`, `dcp` |
 | `--scope CIDR[,CIDR...]` | | Declared scope: CIDR blocks, addresses or ranges that may be scanned (see [Scope guard](#scope-guard)) |
 | `--scope-file FILE` | `scope.txt` in the config folder | Read the declared scope from a file instead |

@@ -246,6 +246,8 @@ struct Ctx {
     probes: Option<ProbeDb>,
     udp_ports: Vec<u16>,
     scripts: Option<crate::script::Scripts>,
+    /// Where `Event::Partial` goes (the scan's event channel); `None` in unit tests.
+    partial: Option<Sender<Event>>,
 }
 
 pub async fn execute(
@@ -333,6 +335,7 @@ pub async fn execute(
         probes,
         udp_ports,
         scripts,
+        partial: s.partial_events.then(|| tx.clone()),
     });
     let limit = if s.safe {
         s.workers.clamp(1, 8)
@@ -440,6 +443,27 @@ async fn probe_port(
         note,
         fp: None,
     }
+}
+
+/// Sends a provisional host (`Event::Partial`); a closed channel is not an error here.
+fn send_partial(ctx: &Ctx, host: Host) {
+    if let Some(tx) = &ctx.partial {
+        let _ = tx.send(Event::Partial(host));
+    }
+}
+
+/// A port was found open: tell the consumer now, with every port found open so far.
+fn announce_open(ctx: &Ctx, base: &Host, live: &Mutex<Vec<u16>>, port: u16) {
+    let open = {
+        let mut list = live.lock().unwrap_or_else(|e| e.into_inner());
+        list.push(port);
+        list.sort_unstable();
+        list.clone()
+    };
+    let mut host = base.clone();
+    host.responding = true;
+    host.open = open;
+    send_partial(ctx, host);
 }
 
 /// Outcome of the ARP sweep for one host.
@@ -640,6 +664,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
+    // The host answered: show it now, the ports follow as they are found.
+    if h.responding {
+        send_partial(&ctx, h.clone());
+    }
+    let live = Arc::new(Mutex::new(Vec::<u16>::new()));
+    let announced = Arc::new(h.clone());
     let parallel = if s.safe {
         s.port_parallel.clamp(1, 4)
     } else {
@@ -672,10 +702,14 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 break;
             };
             let (s, ctx, rtt, gov) = (s.clone(), ctx.clone(), host_rtt.clone(), gov.clone());
+            let (live, announced) = (live.clone(), announced.clone());
             probes.spawn(async move {
                 let result = probe_port(ip, port, timeout, &s, &ctx, rtt.as_deref()).await;
                 if let Some(outcome) = outcome_of(port, &result.state) {
                     gov.record(outcome);
+                }
+                if result.state == PortState::Open {
+                    announce_open(&ctx, &announced, &live, port);
                 }
                 drop(socket);
                 drop(permit);
@@ -1440,6 +1474,7 @@ mod tests",
             probes: None,
             udp_ports: vec![],
             scripts: None,
+            partial: None,
         }
     }
 
