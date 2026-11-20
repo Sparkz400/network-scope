@@ -69,7 +69,7 @@ fn import_known(ctx: &mut Ctx, kind: import::Kind) -> Result<(), String> {
             "notes": parsed.notes,
         });
         return output(
-            &serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?,
+            &crate::schema::object("import-summary", &summary)?,
             &ctx.opts,
         );
     }

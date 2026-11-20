@@ -28,7 +28,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         let assessment = score::assess(&list, n);
         let text = match opts.get("format").map(String::as_str).unwrap_or("text") {
             "text" => top_text(&assessment),
-            "json" => serde_json::to_string_pretty(&assessment).map_err(|e| e.to_string())?,
+            "json" => schema::object("risk-score", &assessment)?,
             _ => return Err("Choose text or json".into()),
         };
         output(&text, opts)?;

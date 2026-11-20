@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:baseline:v1",
+  "title": "Approved baseline",
+  "description": "Output of baseline show --format json: the expected devices. approved_at is null while no baseline is active (unknown-device alerts are off).",
+  "type": "object",
+  "required": [
+    "schema",
+    "approved_at",
+    "entries"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/baseline/v1"
+    },
+    "approved_at": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Unix seconds of the last approval"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "owner",
+          "criticality",
+          "tags",
+          "expected",
+          "source",
+          "approved_at",
+          "updated_at"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "criticality": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "description": "approve, set or an import such as import:csv"
+          },
+          "approved_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

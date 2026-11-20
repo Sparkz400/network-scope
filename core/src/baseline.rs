@@ -568,7 +568,7 @@ fn find_in(c: &Connection, query: &str) -> Result<String, String> {
 /// `baseline show` output: `text` (default) or `json`.
 pub fn render(b: &Baseline, format: &str) -> Result<String, String> {
     match format {
-        "json" => serde_json::to_string_pretty(b).map_err(|e| e.to_string()),
+        "json" => crate::schema::object("baseline", b),
         "text" => Ok(text(b)),
         _ => Err("Choose text or json".into()),
     }

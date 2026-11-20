@@ -581,7 +581,7 @@ pub fn between(
 /// `changes` output: `text` (default) or `json` (the [`Changes`] struct).
 pub fn render(c: &Changes, format: &str) -> Result<String, String> {
     match format {
-        "json" => serde_json::to_string_pretty(c).map_err(|e| e.to_string()),
+        "json" => crate::schema::object("changes", c),
         "text" => Ok(text(c)),
         _ => Err("Choose text or json".into()),
     }

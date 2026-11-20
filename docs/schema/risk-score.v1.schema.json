@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:risk-score:v1",
+  "title": "Risk score",
+  "description": "Output of findings ID --top N --format json: the network score (0 to 100), the riskiest hosts and the fix-these-first list.",
+  "$defs": {
+    "severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "band": {
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "network",
+    "hosts",
+    "top_fixes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/risk-score/v1"
+    },
+    "network": {
+      "type": "object",
+      "required": [
+        "score",
+        "band",
+        "hosts",
+        "findings"
+      ],
+      "properties": {
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "band": {
+          "$ref": "#/$defs/band"
+        },
+        "hosts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "findings": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "hosts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ip",
+          "score",
+          "band",
+          "points",
+          "findings"
+        ],
+        "properties": {
+          "ip": {
+            "type": "string"
+          },
+          "score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "band": {
+            "$ref": "#/$defs/band"
+          },
+          "points": {
+            "type": "number"
+          },
+          "findings": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "worst": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Worst severity of the host's findings: info, low, medium, high or critical"
+          }
+        }
+      }
+    },
+    "top_fixes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "severity",
+          "hosts",
+          "findings",
+          "risk_reduction",
+          "kev",
+          "cve",
+          "advice"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/$defs/severity"
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "findings": {
+            "type": "integer"
+          },
+          "risk_reduction": {
+            "type": "number"
+          },
+          "kev": {
+            "type": "boolean"
+          },
+          "cve": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "advice": {
+            "type": "string"
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

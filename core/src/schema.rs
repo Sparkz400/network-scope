@@ -46,6 +46,11 @@ pub const KINDS: &[&str] = &[
     "mcp-where-seen",
     "mcp-findings-gained",
     "mcp-scan",
+    "changes",
+    "baseline",
+    "risk-score",
+    "import-summary",
+    "dry-run",
 ];
 
 /// The `schema` value of a kind at the current version.
