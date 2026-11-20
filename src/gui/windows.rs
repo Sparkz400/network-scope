@@ -242,6 +242,8 @@ impl Scanner {
                                 ui.label(format!("{}{}", f.ip, f.port.map_or(String::new(), |p| format!(":{p}"))));
                             });
                             row.col(|ui| {
+                                // The "?" first: the column clips long titles.
+                                super::explain_button(ui, &f.id);
                                 ui.label(&f.title).on_hover_text(&f.advice);
                             });
                             row.col(|ui| {

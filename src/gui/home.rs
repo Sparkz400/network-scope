@@ -221,6 +221,7 @@ fn risk_line(
         {
             *act = Some(Action::Open(scan, vec![f.ip]));
         }
+        super::explain_button(ui, &f.id);
         if f.exploit.kev {
             ui.label(
                 RichText::new("KEV")
@@ -520,6 +521,7 @@ fn home_body(ui: &mut egui::Ui, d: &HomeData, dark: bool, act: &mut Option<Actio
                         .color(severity_color(fix.severity, dark)),
                 );
                 ui.strong(&fix.title);
+                super::explain_button(ui, &fix.id);
                 if fix.kev {
                     ui.label(RichText::new("KEV").small().strong().color(severity_color(risk::Severity::Critical, dark)))
                         .on_hover_text(tr!("Known exploited vulnerability (CISA KEV)"));
