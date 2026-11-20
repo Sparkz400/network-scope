@@ -7,16 +7,19 @@
   imported key is a temporary key container of the current user that is deleted when the
   certificate object is disposed at the end of the run.
 
-  pwsh -NoProfile -File lab/schannel_server.ps1 [-Port 0] [-Seconds 60]
+  pwsh -NoProfile -File lab/schannel_server.ps1 [-Port 0] [-Seconds 60] [-StopFile PATH]
 
   Prints one line, "READY <port>", then answers every connection with an HTTP 200 and closes
-  it, until -Seconds have passed. The protocol versions and cipher suites are the ones the
+  it, until -Seconds have passed or the file -StopFile exists. Stop it that way (or let it run
+  out), not by killing the process: only a normal exit disposes the certificate and deletes its
+  temporary key container (%APPDATA%\Microsoft\Crypto\Keys); a killed process leaves it behind. The protocol versions and cipher suites are the ones the
   operating system enables for Schannel; nothing is configured here, on purpose: the test
   asserts what the machine does, and prints it.
 #>
 param(
   [int]$Port = 0,
-  [int]$Seconds = 60
+  [int]$Seconds = 60,
+  [string]$StopFile = ''
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
@@ -39,7 +42,9 @@ $listener.Start()
 Write-Output ("READY " + $listener.LocalEndpoint.Port)
 [Console]::Out.Flush()
 $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+try {
 while ([DateTime]::UtcNow -lt $deadline) {
+  if ($StopFile -ne '' -and (Test-Path -LiteralPath $StopFile)) { break }
   if (-not $listener.Pending()) { Start-Sleep -Milliseconds 20; continue }
   $client = $listener.AcceptTcpClient()
   try {
@@ -59,5 +64,9 @@ while ([DateTime]::UtcNow -lt $deadline) {
     $client.Close()
   }
 }
-$listener.Stop()
-$cert.Dispose()
+} finally {
+  $listener.Stop()
+  $cert.Dispose()
+  $rsa.Dispose()
+  $ephemeral.Dispose()
+}

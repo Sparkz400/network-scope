@@ -65,7 +65,7 @@ def server_hello(cipher, exts, version=0x0303, alpn=None):
     for kind in exts:
         data = {0x002B: b"\x03\x04", 0x0033: b"\x00\x1d\x00\x20" + b"\x01" * 32}.get(kind, b"")
         if kind == 0x0010:
-            data = struct.pack(">HB", len(alpn) + 1, len(alpn)) + alpn.encode()
+            data = struct.pack(">HB", len(alpn) + 1, len(alpn)) + (alpn if isinstance(alpn, bytes) else alpn.encode())
         ext_bytes += struct.pack(">HH", kind, len(data)) + data
     body = struct.pack(">H", version) + b"\x07" * 32 + b"\x20" + b"\x09" * 32 + struct.pack(">HB", cipher, 0)
     body += struct.pack(">H", len(ext_bytes)) + ext_bytes
@@ -95,8 +95,12 @@ class Independent(unittest.TestCase):
         self.assertEqual(rs.ja4s(0x0303, 0xC030, [0xFF01, 0x0023, 0x0017], None, None), "t120300_c030_5e2616a54c73")
         self.assertEqual(rs.ja4s(0x0303, 0x1301, [0x0033, 0x002B], 0x0304, None), "t130200_1301_234ea6891581")
         self.assertEqual(rs.ja4s(0x0303, 0x002F, [], None, None), "t120000_002f_000000000000")
-        for alpn, want in (("h2", "h2"), ("http/1.1", "h1"), ("x", "xx"), ("éx", "9x"), ("xé", "x9")):
-            self.assertEqual(rs.ja4s(0x0303, 0xC02F, [0x0010], None, alpn)[5:7], want)
+        # The examples of FoxIO's technical_details/JA4.md ("ALPN Extension Value").
+        cases = ((b"h2", "h2"), (b"http/1.1", "h1"), (b"x", "xx"), (b"\xab", "ab"), (b"\x20", "20"),
+                 (b"\xab\xcd", "ad"), (b"\x20\x61", "21"), (b"\x30\xab", "3b"), (b"\x61\x20", "60"),
+                 (b"\x30\x31\xab\xcd", "3d"), (b"\x30\xab\xcd\x31", "01"), (b"-a-", "2d"))
+        for alpn, want in cases:
+            self.assertEqual(rs.ja4s(0x0303, 0xC02F, [0x0010], None, alpn)[5:7], want, alpn)
 
     def test_a_server_hello_is_parsed_and_hashed_from_a_raw_connection(self):
         record = server_hello(0x1303, [0x002B, 0x0033])

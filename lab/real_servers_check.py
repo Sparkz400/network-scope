@@ -151,20 +151,27 @@ def parse_server_hello(record):
             if kind == 0x002B and len(value) >= 2:
                 selected = struct.unpack(">H", value[:2])[0]
             if kind == 0x0010 and len(value) >= 3:
-                alpn = value[3:3 + value[2]].decode("latin-1")
+                alpn = bytes(value[3:3 + value[2]])
             i += 4 + n
     return version, cipher, exts, selected, alpn
+
+
+def alpn_part(alpn):
+    """The JA4 ALPN part from the written rule (FoxIO technical_details/JA4.md): 00 for none, the
+    first and last character when both are ASCII alphanumeric, else the first and last hex digit
+    of the whole value. `alpn` is bytes (or None)."""
+    if not alpn:
+        return "00"
+    if chr(alpn[0]).isascii() and chr(alpn[0]).isalnum() and chr(alpn[-1]).isascii() and chr(alpn[-1]).isalnum():
+        return chr(alpn[0]) + chr(alpn[-1])
+    text = alpn.hex()
+    return text[0] + text[-1]
 
 
 def ja4s(version, cipher, exts, selected, alpn):
     """JA4S from the documented algorithm: t<ver><ext count><alpn>_<cipher>_<sha256(exts)[:12]>."""
     ver = {0x0304: "13", 0x0303: "12", 0x0302: "11", 0x0301: "10", 0x0300: "s3"}.get(selected or version, "00")
-    if alpn:
-        first = alpn[0] if ord(alpn[0]) < 128 else "9"
-        last = alpn[-1] if ord(alpn[-1]) < 128 else "9"
-        a = first + last
-    else:
-        a = "00"
+    a = alpn_part(alpn)
     digest = hashlib.sha256(",".join(f"{e:04x}" for e in exts).encode()).hexdigest()[:12] if exts else "000000000000"
     return f"t{ver}{min(len(exts), 99):02}{a}_{cipher:04x}_{digest}"
 
