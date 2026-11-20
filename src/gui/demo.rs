@@ -1,5 +1,5 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
-//! (main, findings, devices, settings, ot, script, timeline, home, home-empty, map, map-large,
+//! (main, findings, devices, settings, ot, script, timeline, scan-details, workbench, home, home-empty, map, map-large,
 //! quick, palette, palette-actions, appearance, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
 //! "-dark" for the dark theme and "-de" for German, e.g. "home-dark" or "main-de"). Screenshot
 //! runs never save to the inventory or preferences.
@@ -380,6 +380,24 @@ impl Scanner {
                     destination: "10.20.0.255".into(),
                 });
                 self.saved.starred.insert(convenience::favorite_key(&host));
+            }
+            "scan-details" => {
+                // The inventory window with the scan on screen and its provenance stamp (the
+                // hashes are those of the rules this build carries, not of the user's files).
+                self.history_open = true;
+                self.loaded_scan = Some(9);
+                self.scan_scope = self.targets.clone();
+                self.scan_settings = windows::settings_for_scan(&self.saved.settings);
+                self.history = [(9, 12), (8, 12), (7, 11)]
+                    .iter()
+                    .map(|&(id, hosts)| store::Entry {
+                        id,
+                        timestamp: 1_790_000_000 - (9 - id) * 86_400,
+                        targets: self.targets.clone(),
+                        complete: true,
+                        hosts,
+                    })
+                    .collect();
             }
             "findings" => self.findings_open = true,
             "devices" => self.devices_open = true,

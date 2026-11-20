@@ -905,7 +905,7 @@ impl Scanner {
                 self.script_test = None;
                 self.scan_complete = true;
                 self.scan_scope = self.targets.clone();
-                self.scan_settings = self.saved.settings.clone();
+                self.scan_settings = windows::settings_for_scan(&self.saved.settings);
                 self.opened_stamp = None;
                 self.scan_sent.clear();
                 self.error.clear();
