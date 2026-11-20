@@ -24,9 +24,10 @@ Comparisons are meaningful only between completed scans with matching scope and 
 
 ## Device history
 
-`devices --history MAC|IP [--format text|json]` gives the timeline of one device across all saved scans and captures: first/last seen, addresses, MACs, names, the open ports of the latest completed scan, and events (`first-seen`, `ip-changed`, `mac-changed`, `hostname-changed`, `port-opened`, `port-closed`, `udp-answering`, `udp-silent`).
+`devices --history MAC|IP [--format text|json]` gives the timeline of one device across all saved scans and captures: first/last seen, addresses, MACs, names, the open ports of the latest completed scan, and events (`first-seen`, `ip-changed`, `mac-changed`, `hostname-changed`, `port-opened`, `port-closed`, `udp-answering`, `udp-silent`, `finding-appeared`, `finding-resolved`).
 
 - Only sightings create events: a scan that does not mention the device produces no "not seen" event.
+- A finding appears or is resolved only between scans that both checked its port (the same TCP port list, or a UDP port probed in both); findings are matched without their address, so a device that moved keeps its findings.
 - Port events come only from **completed** active scans that checked the device's ports with the same TCP port set; UDP is compared only for ports probed in both; SMB-only names are not compared.
 
 ## What changed

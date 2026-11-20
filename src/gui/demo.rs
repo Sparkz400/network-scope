@@ -1,5 +1,5 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
-//! (main, findings, devices, settings, ot, script; append "-small" for the default 800x450 window). Screenshot runs never save to the inventory or preferences.
+//! (main, findings, devices, settings, ot, script, timeline; append "-small" for the default 800x450 window). Screenshot runs never save to the inventory or preferences.
 use super::*;
 
 fn demo_host(ip: &str, open: &[u16], identity: &[(&str, &str)]) -> scan::Host {
@@ -218,6 +218,58 @@ impl Scanner {
             "ot" => {
                 self.capture_open = true;
                 self.ot.demo();
+            }
+            "timeline" => {
+                // The details of a PLC and its timeline, from invented history (never the
+                // user's inventory).
+                let host = self.results[1].clone();
+                self.selected = Some(host.ip);
+                self.open_timeline(&host);
+                let event = |scan_id, days: i64, kind, detail: &str| crate::devices::HistoryEvent {
+                    scan_id,
+                    timestamp: 1_790_000_000 + days * 86_400,
+                    kind,
+                    detail: detail.into(),
+                };
+                if let Some(t) = self.timeline.as_mut() {
+                    t.result = Some(Ok(Box::new(crate::devices::DeviceHistory {
+                        query: t.query.clone(),
+                        key: "mac",
+                        first_seen: Some(1_790_000_000),
+                        first_scan: Some(3),
+                        last_seen: Some(1_790_000_000 + 21 * 86_400),
+                        last_scan: Some(9),
+                        sightings: 6,
+                        scans: 7,
+                        ips: vec![host.ip],
+                        macs: vec![host.mac.clone()],
+                        hostnames: vec![host.hostname.clone()],
+                        open_tcp: vec![21, 102, 502],
+                        events: vec![
+                            event(3, 0, "first-seen", &format!("{} ({})", host.ip, host.mac)),
+                            event(5, 7, "port-opened", "TCP 21 open (not in scan #3)"),
+                            event(
+                                5,
+                                7,
+                                "finding-appeared",
+                                "HIGH FTP sends credentials in clear text (ftp-cleartext) on port 21",
+                            ),
+                            event(7, 14, "hostname-changed", "plc-line-1 → plc-line-1a"),
+                            event(
+                                9,
+                                21,
+                                "port-closed",
+                                "TCP 23 no longer observed open (open in scan #7)",
+                            ),
+                            event(
+                                9,
+                                21,
+                                "finding-resolved",
+                                "HIGH Telnet exposes credentials in clear text (telnet-open) on port 23",
+                            ),
+                        ],
+                    })));
+                }
             }
             "script" => {
                 self.selected = Some(self.results[1].ip);

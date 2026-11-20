@@ -900,7 +900,7 @@ pub struct HistoryEvent {
     pub scan_id: i64,
     pub timestamp: i64,
     /// `first-seen`, `ip-changed`, `mac-changed`, `hostname-changed`, `port-opened`,
-    /// `port-closed`, `udp-answering` or `udp-silent`.
+    /// `port-closed`, `udp-answering`, `udp-silent`, `finding-appeared` or `finding-resolved`.
     pub kind: &'static str,
     pub detail: String,
 }
@@ -933,6 +933,8 @@ struct PortState {
     settings: crate::scan::Settings,
     tcp: BTreeSet<u16>,
     udp: BTreeSet<u16>,
+    /// The device's findings in that scan by `Finding::key`: (description, port).
+    findings: BTreeMap<String, (String, Option<u16>)>,
 }
 
 /// Builds a [`DeviceHistory`] from snapshots fed oldest first.
@@ -1073,6 +1075,27 @@ impl HistoryBuilder {
                     .iter()
                     .flat_map(|h| h.udp_open.iter().copied())
                     .collect(),
+                findings: crate::risk::analyze_snapshot(snapshot)
+                    .into_iter()
+                    .filter(|f| ips.contains(&f.ip))
+                    .map(|f| {
+                        let text = format!(
+                            "{} {} ({}) on {}{}",
+                            f.severity.name().to_ascii_uppercase(),
+                            f.title,
+                            f.id,
+                            f.ip,
+                            f.port.map_or(String::new(), |p| format!(":{p}"))
+                        );
+                        // Without the address, so a device that moved keeps its findings.
+                        let key = format!(
+                            "{}|{}",
+                            f.port.map_or(String::new(), |p| p.to_string()),
+                            f.id
+                        );
+                        (key, (text, f.port))
+                    })
+                    .collect(),
             };
             if let Some(prev) = &self.ports {
                 let scope = |s: &crate::scan::Settings| crate::scan::parse_ports(&s.ports).ok();
@@ -1093,7 +1116,30 @@ impl HistoryBuilder {
                         );
                     }
                 }
-                for p in crate::store::udp_probed_in_both(&prev.settings, &state.settings) {
+                // A finding appears or is resolved only between scans that both checked its
+                // port: the TCP port lists are the same, or the UDP port was probed in both.
+                let udp_both = crate::store::udp_probed_in_both(&prev.settings, &state.settings);
+                for (key, (text, port)) in &state.findings {
+                    let comparable = match port {
+                        None => true,
+                        Some(p) if state.udp.contains(p) => udp_both.contains(p),
+                        Some(_) => same_tcp,
+                    };
+                    if comparable && !prev.findings.contains_key(key) {
+                        event("finding-appeared", text.clone());
+                    }
+                }
+                for (key, (text, port)) in &prev.findings {
+                    let rechecked = match port {
+                        None => true,
+                        Some(p) if prev.udp.contains(p) => udp_both.contains(p),
+                        Some(_) => same_tcp,
+                    };
+                    if rechecked && !state.findings.contains_key(key) {
+                        event("finding-resolved", text.clone());
+                    }
+                }
+                for p in udp_both {
                     match (prev.udp.contains(&p), state.udp.contains(&p)) {
                         (false, true) => event("udp-answering", format!("UDP {p} answering")),
                         (true, false) => event(
