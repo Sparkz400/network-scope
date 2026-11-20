@@ -83,6 +83,10 @@ pub struct Settings {
     /// a host, and a slower pace (or a pause for the rest of the scan) when the host starts
     /// resetting connections. It only ever slows a host down; `--no-backoff` turns it off.
     pub backoff: bool,
+    /// Send [`Event::Partial`] while hosts are still being scanned (live views). Off by default,
+    /// so a consumer that only reads final results never sees one; not saved with a scan.
+    #[serde(skip)]
+    pub partial_events: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -128,6 +132,7 @@ impl Default for Settings {
             trace_port: 0,
             jarm: false,
             backoff: true,
+            partial_events: false,
         }
     }
 }
@@ -459,7 +464,15 @@ pub fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> PortState {
 }
 
 pub enum Event {
+    /// A host's final result.
     Host(Host),
+    /// What is already known about a host that is still being scanned: it answered (`ping`,
+    /// `ttl`, `mac` as far as known) and/or the ports found open so far. The final
+    /// [`Event::Host`] for the same address follows and replaces it. Sent only for hosts that
+    /// answered something, the moment the evidence arrives, so a consumer can show results long
+    /// before a slow host finishes its remaining ports. Consumers that only want final results
+    /// ignore it.
+    Partial(Host),
     Done,
     Error(String),
 }
@@ -649,6 +662,7 @@ mod tests {
                     hosts += 1;
                     assert!(h.open.contains(&addr.port()));
                 }
+                Event::Partial(_) => {}
                 Event::Done => break,
                 Event::Error(e) => panic!("{e}"),
             }
@@ -660,6 +674,41 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+    /// A port found open reaches the consumer as `Event::Partial` before the host is done, and
+    /// the final `Event::Host` carries the same ports (the provisional view never invents one).
+    #[test]
+    fn open_ports_stream_before_the_host_finishes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().port();
+        // Silent ports are not needed: the open port comes first even next to a slow one.
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            retries: 0,
+            port_timeout: 1500,
+            partial_events: true,
+            ..Settings::default()
+        };
+        let run = start(vec![listener.local_addr().unwrap().ip()], vec![open], s);
+        let (mut partial_at, mut host_at, mut open_in_partial) = (None, None, vec![]);
+        let begun = Instant::now();
+        loop {
+            match run.receiver.recv_timeout(Duration::from_secs(10)).unwrap() {
+                Event::Partial(h) => {
+                    partial_at.get_or_insert(begun.elapsed());
+                    open_in_partial = h.open;
+                }
+                Event::Host(h) => {
+                    host_at = Some(begun.elapsed());
+                    assert_eq!(h.open, vec![open]);
+                }
+                Event::Done => break,
+                Event::Error(e) => panic!("{e}"),
+            }
+        }
+        assert_eq!(open_in_partial, vec![open], "the open port was announced");
+        assert!(partial_at.unwrap() <= host_at.unwrap());
     }
     #[test]
     fn closed_port_is_reported_closed() {
@@ -722,6 +771,19 @@ mod tests {
         );
         // Without the option nothing is trimmed.
         assert_eq!(parse_hosts("10.0.0.0/30", false).unwrap().len(), 4);
+    }
+    #[test]
+    fn partial_events_are_off_by_default_and_never_saved() {
+        assert!(!Settings::default().partial_events);
+        let on = Settings {
+            partial_events: true,
+            ..Settings::default()
+        };
+        assert!(
+            !serde_json::to_string(&on)
+                .unwrap()
+                .contains("partial_events")
+        );
     }
     #[test]
     fn new_engine_options_are_off_in_old_snapshots() {
@@ -833,7 +895,7 @@ mod tests {
                 .unwrap()
             {
                 Event::Done => break,
-                Event::Host(_) => (),
+                Event::Host(_) | Event::Partial(_) => (),
                 Event::Error(e) => panic!("{e}"),
             }
         }

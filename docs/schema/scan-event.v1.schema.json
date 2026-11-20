@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:scan-event:v1",
+  "title": "Live scan event (JSON Lines)",
+  "description": "One line of `scan --stream`, printed the moment the engine learns it: a host answered (`host-up`), a TCP port was found open (`port-open`) or a host finished (`host-done`, responding hosts only).",
+  "type": "object",
+  "required": [
+    "schema",
+    "event",
+    "ip",
+    "elapsed_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/scan-event/v1"
+    },
+    "event": {
+      "enum": [
+        "host-up",
+        "port-open",
+        "host-done"
+      ]
+    },
+    "ip": {
+      "type": "string"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "port-open only"
+    },
+    "open": {
+      "type": "array",
+      "description": "host-done only: every TCP port found open",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535
+      }
+    },
+    "ports_checked": {
+      "type": "boolean",
+      "description": "host-done only: every requested port was probed"
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Milliseconds since the scan was started"
+    }
+  }
+}

@@ -737,6 +737,7 @@ pub fn run(
                         hosts.push(h)
                     }
                 }
+                scan::Event::Partial(_) => {}
                 scan::Event::Done => break,
                 scan::Event::Error(e) => return Err(e),
             }
