@@ -47,7 +47,19 @@ pub(crate) const TARGETS: [(&str, u16); 5] = [
     ("EtherNet/IP", 44818),
     ("BACnet", 47808),
 ];
-pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) {
+/// Start of the error text when the TCP connection to the OT port could not be made (the port
+/// had been found open, so this is a device that stopped answering, not a protocol problem).
+pub(crate) const CONNECT_FAILED: &str = "connect: ";
+/// A failed connection attempt as an identification error.
+pub(crate) fn connect_error(e: std::io::Error) -> String {
+    format!("{CONNECT_FAILED}{e}")
+}
+
+/// Identifies the OT protocols on the host's open ports (and BACnet). Returns the open TCP ports
+/// that could not be connected to this time: the back-off treats them like any open port that
+/// stops answering.
+pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) -> Vec<u16> {
+    let mut unreachable = vec![];
     for (protocol, port) in TARGETS {
         if port != 47808 && !h.open.contains(&port) {
             continue;
@@ -78,7 +90,12 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) {
                     h.identity.insert(format!("{protocol}.{key}"), value);
                 }
             }
-            Ok(Err(e)) => h.errors.push(format!("{protocol}: {e}")),
+            Ok(Err(e)) => {
+                if port != 47808 && e.starts_with(CONNECT_FAILED) {
+                    unreachable.push(port);
+                }
+                h.errors.push(format!("{protocol}: {e}"));
+            }
             Err(_) => {
                 if port != 47808 {
                     h.errors
@@ -87,6 +104,7 @@ pub async fn identify(h: &mut Host, s: &Settings, gate: &Gate) {
             }
         }
     }
+    unreachable
 }
 /// How long one identification exchange may take. The BACnet Who-Is is sent to every host,
 /// open port or not, so a silent host must not cost more than one port timeout (at most 2 s).
@@ -108,7 +126,7 @@ fn no_listener(e: &std::io::Error) -> bool {
 async fn modbus(ip: IpAddr, unit: u8, log: &Arc<SentLog>) -> Result<Fields, String> {
     let socket = OtStream::connect((ip, 502))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(connect_error)?
         .with_log(log.clone());
     modbus_stream(socket, unit).await
 }
@@ -174,7 +192,7 @@ pub(crate) fn parse_modbus(b: &[u8]) -> Result<Fields, String> {
 async fn enip(ip: IpAddr, log: &Arc<SentLog>) -> Result<Fields, String> {
     let socket = OtStream::connect((ip, 44818))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(connect_error)?
         .with_log(log.clone());
     enip_stream(socket).await
 }
@@ -398,7 +416,7 @@ async fn s7(ip: IpAddr, rack: u8, slot: u8, gate: &Gate) -> Result<Fields, Strin
         S7Request::connection_request(rack, slot).ok_or("S7 rack must be 0–7 and slot 0–31")?;
     let mut socket = OtStream::connect((ip, 102))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(connect_error)?
         .with_log(gate.log().clone());
     let response = tpkt(&mut socket, &cr).await?;
     if response.get(5) != Some(&0xd0) {
@@ -427,6 +445,58 @@ mod tests {
         io::AsyncWriteExt,
         net::{TcpStream, UdpSocket},
     };
+    /// An open OT port that refuses the identification connection is reported to the caller (the
+    /// back-off counts it); a protocol error on a connection that worked is not.
+    #[test]
+    fn identify_reports_open_ports_that_refuse_the_connection() {
+        assert!(connect_error(std::io::Error::other("x")).starts_with(CONNECT_FAILED));
+        // `identify` also sends the BACnet Who-Is to the fixed port: keep it away from the test
+        // that simulates a device there (a plain test, so the lock is not held across an await).
+        let _port = crate::core::BACNET_PORT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Nothing may listen on 502 here (the lab simulator does on some machines: skip then).
+        let Ok(free) = std::net::TcpListener::bind("127.0.0.1:502") else {
+            return;
+        };
+        drop(free);
+        let mut h = Host {
+            ip: "127.0.0.1".parse().unwrap(),
+            responding: true,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![502],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::new(),
+            udp_open: vec![],
+            trace: vec![],
+        };
+        let s = Settings {
+            ot: true,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        // Skip when something took the port after all.
+        if std::net::TcpStream::connect("127.0.0.1:502").is_ok() {
+            return;
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let failed = runtime.block_on(identify(&mut h, &s, &Gate::unlimited()));
+        assert_eq!(failed, [502], "{:?}", h.errors);
+        assert!(
+            h.errors[0].starts_with("Modbus: connect: "),
+            "{:?}",
+            h.errors
+        );
+    }
     #[tokio::test]
     async fn modbus_fragmented_tcp_response() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
