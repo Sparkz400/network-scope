@@ -14,7 +14,8 @@ range and a port list), every tool on exactly the same targets and ports:
 
 Cells: 24-top100, 24-top1000 (127.0.10.0/24), 16-top100, 16-top1000 (127.0.0.0/16). The port lists
 are nmap's own top 100 / top 1000 (`nmap --top-ports N -oG - -v`), so all tools scan the same
-ports. Without nmap the top 100 falls back to Network Scope's `top:100` list and top 1000 is not run.
+ports. Without nmap the top 100 falls back to Network Scope's `top:100` list and top 1000 to ports
+1-1000 (recorded as port_source; not comparable with nmap's lists).
 
 A fast wrong answer does not count: the open (address, port) pairs a tool reports are compared
 with what really listens, read from the operating system's table of listening sockets (Linux
@@ -279,8 +280,8 @@ def tool_commands(args, work):
         for path in (db, out):
             if os.path.exists(path):
                 os.remove(path)
-        # On a real LAN Network Scope stays in Safe Mode (no --fast): the owner's devices are real.
-        mode = [] if args.lan else ["--fast"]
+        # On a real LAN Network Scope stays in Safe Mode unless --fast: the owner's devices are real.
+        mode = ["--fast"] if args.fast or not args.lan else []
         cmd = [args.cli, "scan", cidr] + mode + ["--tcp-only", "--ports", ",".join(map(str, ports)),
                "--scope", args.lan or "127.0.0.0/8", "--quiet", "--db", db, "--output", out]
 
@@ -372,6 +373,7 @@ def main():
     ap.add_argument("--tolerance", type=float, default=0.5, help="allowed slowdown over the baseline (default 0.5 = +50%%)")
     ap.add_argument("--lan", help="time Network Scope (Safe Mode, no other tool) on this real private /24 or smaller "
                     "instead of the loopback lab; only with the network owner's permission. No correctness check, no gate")
+    ap.add_argument("--fast", action="store_true", help="with --lan: leave Safe Mode (only when the owner agreed)")
     ap.add_argument("--out-dir", help="write speed.json, speed.md and baseline-candidate.json here")
     args = ap.parse_args()
     cells = [c.strip() for c in args.cells.split(",") if c.strip()]
@@ -405,10 +407,11 @@ def main():
             print(f"note: {name} not found; it is not measured")
     work = tempfile.mkdtemp(prefix="ns-speed-")
     tools = tool_commands(args, work)
-    port_lists, port_source = {}, "nmap --top-ports" if args.nmap_version else "Network Scope top:100"
+    port_lists = {}
+    port_source = "nmap --top-ports" if args.nmap_version else "no nmap: Network Scope top:100, and ports 1-1000 for 1000"
     for n in sorted({CELLS[c][1] for c in cells}):
         try:
-            port_lists[n] = nmap_top_ports(args.nmap, n) if args.nmap_version else (builtin_top100() if n == 100 else None)
+            port_lists[n] = nmap_top_ports(args.nmap, n) if args.nmap_version else (builtin_top100() if n == 100 else list(range(1, 1001)))
         except (SpeedError, ValueError) as e:
             print(f"speed comparison error: top {n} ports from nmap: {e}", file=sys.stderr)
             return 2
@@ -429,9 +432,6 @@ def main():
         cidr, n = CELLS[cell]
         cidr = args.lan or cidr
         ports = port_lists[n]
-        if ports is None:
-            print(f"{cell}: skipped (the top 1000 list needs nmap)")
-            continue
         hosts = {str(h) for h in ipaddress.ip_network(cidr).hosts()}
         listening = set() if args.lan else listeners()
         expected = expected_open(listening, hosts, ports)
