@@ -232,6 +232,48 @@ fn merge_ot_udp(h: &mut Host) {
     }
 }
 
+/// A raw-packet engine with the interface it sends through.
+struct Raw<E> {
+    engine: Arc<E>,
+    spec: crate::interfaces::Spec,
+    source: std::net::Ipv4Addr,
+}
+
+/// The engine whose interface the routing table picks for `ip` (see `interfaces::choose`). With
+/// one engine nothing is asked: it behaves as before and the engine itself reports a route that
+/// leaves elsewhere. IPv6 targets have no raw engine.
+async fn pick<E: Send + Sync + 'static>(
+    blocking: &Arc<Semaphore>,
+    engines: &[Raw<E>],
+    ip: IpAddr,
+) -> Option<usize> {
+    let IpAddr::V4(v4) = ip else { return None };
+    match engines {
+        [] => None,
+        [_] => Some(0),
+        _ => {
+            let probes: Vec<(std::net::Ipv4Addr, String)> = engines
+                .iter()
+                .map(|e| (e.source, e.spec.interface.clone()))
+                .collect();
+            let routes = run_blocking(blocking, move || {
+                probes
+                    .iter()
+                    .map(|(source, interface)| {
+                        match crate::platform::next_hop(v4, *source, interface) {
+                            Ok(crate::platform::NextHop::OnLink) => Some(true),
+                            Ok(crate::platform::NextHop::Gateway(_)) => Some(false),
+                            Err(_) => None,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await?;
+            crate::interfaces::choose(&routes)
+        }
+    }
+}
+
 struct Ctx {
     gate: Arc<Gate>,
     blocking: Arc<Semaphore>,
@@ -239,15 +281,24 @@ struct Ctx {
     /// Taken before a probe task is spawned, so idle hosts cannot pile up tasks.
     sockets: Arc<Semaphore>,
     dhcp: Semaphore,
-    syn: Option<Arc<SynEngine>>,
+    /// One SYN engine per interface (`--interface a,b`); empty without `--syn`.
+    syn: Vec<Raw<SynEngine>>,
     syn_error: Option<String>,
-    arp: Option<Arc<crate::arp::ArpEngine>>,
+    /// One ARP engine per interface; empty without `--arp-sweep`.
+    arp: Vec<Raw<crate::arp::ArpEngine>>,
     arp_error: Option<String>,
     probes: Option<ProbeDb>,
     udp_ports: Vec<u16>,
     scripts: Option<crate::script::Scripts>,
+    /// The scan a repeat scan is based on (`--incremental`), if any.
+    previous: Option<Arc<crate::incremental::Previous>>,
+    /// Device classes for the probe order and the early stop.
+    classes: &'static crate::portorder::ClassTable,
+    /// Where `Event::Partial` goes (the scan's event channel); `None` in unit tests.
+    partial: Option<Sender<Event>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     hosts: Box<dyn Iterator<Item = IpAddr> + Send>,
     ports: Vec<u16>,
@@ -256,6 +307,7 @@ pub async fn execute(
     pause: Arc<AtomicBool>,
     tx: Sender<Event>,
     sent: Arc<SentLog>,
+    previous: Option<Arc<crate::incremental::Previous>>,
 ) {
     let s = Arc::new(s);
     let gate = Arc::new(
@@ -304,23 +356,57 @@ pub async fn execute(
     } else {
         vec![]
     };
-    let (syn, syn_error) = if crate::plan::syn_engine(&s) {
-        match SynEngine::start(&s, gate.clone()) {
-            Ok(engine) => (Some(engine), None),
-            Err(e) => (None, Some(e)),
+    let interfaces = match crate::interfaces::specs(&s) {
+        Ok(list) => list,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("Interfaces: {e}")));
+            return;
         }
-    } else {
-        (None, None)
     };
+    // One engine per interface; the ones that cannot start are reported, the rest still work.
+    let start = |spec: &crate::interfaces::Spec| {
+        spec.source_ip
+            .parse::<std::net::Ipv4Addr>()
+            .ok()
+            .map(|source| (crate::interfaces::settings_for(&s, spec), source))
+    };
+    let (mut syn, mut syn_errors) = (vec![], vec![]);
+    if crate::plan::syn_engine(&s) {
+        for spec in &interfaces {
+            let Some((per, source)) = start(spec) else {
+                syn_errors.push("Set the interface's source IPv4".to_string());
+                continue;
+            };
+            match SynEngine::start(&per, gate.clone()) {
+                Ok(engine) => syn.push(Raw {
+                    engine,
+                    spec: spec.clone(),
+                    source,
+                }),
+                Err(e) => syn_errors.push(e),
+            }
+        }
+    }
+    let syn_error = (!syn_errors.is_empty()).then(|| syn_errors.join("; "));
     // Opt-in, and never in Safe Mode (the per-host OS lookup is used there).
-    let (arp, arp_error) = if crate::plan::arp_sweep(&s) {
-        match crate::arp::ArpEngine::start(&s, gate.clone()) {
-            Ok(engine) => (Some(engine), None),
-            Err(e) => (None, Some(e)),
+    let (mut arp, mut arp_errors) = (vec![], vec![]);
+    if crate::plan::arp_sweep(&s) {
+        for spec in &interfaces {
+            let Some((per, source)) = start(spec) else {
+                arp_errors.push("Set the interface's source IPv4".to_string());
+                continue;
+            };
+            match crate::arp::ArpEngine::start(&per, gate.clone()) {
+                Ok(engine) => arp.push(Raw {
+                    engine,
+                    spec: spec.clone(),
+                    source,
+                }),
+                Err(e) => arp_errors.push(e),
+            }
         }
-    } else {
-        (None, None)
-    };
+    }
+    let arp_error = (!arp_errors.is_empty()).then(|| arp_errors.join("; "));
     let ctx = Arc::new(Ctx {
         gate,
         blocking: Arc::new(Semaphore::new(256)),
@@ -333,6 +419,9 @@ pub async fn execute(
         probes,
         udp_ports,
         scripts,
+        previous,
+        classes: crate::portorder::ClassTable::builtin(),
+        partial: s.partial_events.then(|| tx.clone()),
     });
     let limit = if s.safe {
         s.workers.clamp(1, 8)
@@ -396,6 +485,7 @@ async fn probe_port(
     s: &Settings,
     ctx: &Ctx,
     rtt: Option<&HostRtt>,
+    syn: Option<&Arc<SynEngine>>,
 ) -> PortProbe {
     // The caller already holds this probe's in-flight permit (`ctx.sockets`).
     let cap = timeout.max(Duration::from_millis(u64::from(s.port_timeout)));
@@ -403,7 +493,7 @@ async fn probe_port(
         .syn_error
         .as_ref()
         .map(|e| format!("SYN unavailable; TCP connect fallback: {e}"));
-    if let Some(engine) = &ctx.syn {
+    if let Some(engine) = syn {
         // The SYN engine takes one gate token per transmitted SYN (retransmits
         // included), so the rate is not applied a second time here.
         match engine.probe(ip, port, timeout, cap, s.retries).await {
@@ -442,6 +532,66 @@ async fn probe_port(
     }
 }
 
+/// Longest window of probes in flight per host with `--early-stop`: a smaller window means the
+/// first answers arrive while ports are still left to skip.
+const EARLY_WINDOW: usize = 16;
+
+/// Why the rest of the host's ports may be skipped (`--early-stop`), or `None`: the class is
+/// certain (`HostOrder::identified`) and the device classifier agrees on the ports found so far.
+fn early_stop_reason(
+    order: &crate::portorder::HostOrder,
+    h: &Host,
+    vendor: &str,
+) -> Option<String> {
+    let class = order.identified()?;
+    let open = order.open();
+    let identity = BTreeMap::new();
+    let facts = crate::devices::Facts {
+        mac: &h.mac,
+        vendor,
+        tcp: &open,
+        udp: &[],
+        identity: &identity,
+        hostnames: &[],
+        os: "",
+        ttl: h.ttl,
+        protocols: &[],
+    };
+    let (kind, evidence) = crate::devices::classify_detailed(&facts)?;
+    (evidence.confidence >= 40).then(|| {
+        format!(
+            "identified as {} ({kind}, {} %) from ports {}",
+            class.label,
+            evidence.confidence,
+            open.iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    })
+}
+
+/// Sends a provisional host (`Event::Partial`); a closed channel is not an error here.
+fn send_partial(ctx: &Ctx, host: Host) {
+    if let Some(tx) = &ctx.partial {
+        let _ = tx.send(Event::Partial(host));
+    }
+}
+
+/// A port was found open: tell the consumer now, with every port found open so far.
+fn announce_open(ctx: &Ctx, base: &Host, live: &Mutex<Vec<u16>>, port: u16) {
+    let open = {
+        let mut list = live.lock().unwrap_or_else(|e| e.into_inner());
+        list.push(port);
+        list.sort_unstable();
+        list.clone()
+    };
+    let mut host = base.clone();
+    host.responding = true;
+    host.open = open;
+    send_partial(ctx, host);
+}
+
 /// Outcome of the ARP sweep for one host.
 #[derive(Debug, Default)]
 struct Swept {
@@ -460,14 +610,19 @@ async fn sweep_arp(ip: IpAddr, s: &Settings, ctx: &Ctx) -> Swept {
             ..Swept::default()
         };
     }
-    let (Some(engine), IpAddr::V4(v4)) = (&ctx.arp, ip) else {
+    let IpAddr::V4(v4) = ip else {
         return Swept::default();
     };
+    let Some(index) = pick(&ctx.blocking, &ctx.arp, ip).await else {
+        return Swept::default();
+    };
+    let engine = &ctx.arp[index].engine;
     let source = engine.source();
     if v4 == source {
         return Swept::default();
     }
-    let interface = s.interface.clone();
+    let _ = s;
+    let interface = ctx.arp[index].spec.interface.clone();
     let route = run_blocking(&ctx.blocking, move || {
         crate::platform::next_hop(v4, source, &interface)
     })
@@ -502,7 +657,12 @@ async fn traceroute(
     let mut notes: Vec<String> = plan.note.into_iter().collect();
     let attempt = match (plan.method, ip, plan.port) {
         (TraceMethod::Tcp, IpAddr::V4(v4), Some(port)) => {
-            let (settings, gate) = (s.clone(), ctx.gate.clone());
+            // The interface that routes the target, when several were given.
+            let settings = match pick(&ctx.blocking, &ctx.syn, ip).await {
+                Some(i) => Arc::new(crate::interfaces::settings_for(s, &ctx.syn[i].spec)),
+                None => s.clone(),
+            };
+            let gate = ctx.gate.clone();
             let done = run_blocking(&ctx.blocking, move || {
                 crate::syn::tcp_trace(&settings, v4, port, settings.trace_hops, timeout, &gate)
             })
@@ -570,6 +730,22 @@ fn outcome_of(port: u16, state: &PortState) -> Option<Outcome> {
 }
 
 async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<Ctx>) -> Host {
+    // A repeat scan (`--incremental`) probes the ports that were open plus a sample, and carries
+    // over what it does not look at again; the host says so (`incremental::mark`).
+    let base = ctx.previous.clone();
+    let before: Option<&Host> = base.as_ref().and_then(|p| p.host(ip));
+    let (ports, sampled) = match &base {
+        Some(p) => {
+            let sample = crate::incremental::ports_for(before, &ports, p.id);
+            if sample.len() < ports.len() {
+                (Arc::new(sample), true)
+            } else {
+                (ports, false)
+            }
+        }
+        None => (ports, false),
+    };
+    let mut carried: Vec<String> = vec![];
     let mut h = Host {
         ip,
         responding: false,
@@ -640,30 +816,75 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
+    // The host answered: show it now, the ports follow as they are found.
+    if h.responding {
+        send_partial(&ctx, h.clone());
+    }
+    let live = Arc::new(Mutex::new(Vec::<u16>::new()));
+    let announced = Arc::new(h.clone());
     let parallel = if s.safe {
         s.port_parallel.clamp(1, 4)
     } else {
         s.port_parallel.clamp(1, 1024)
     };
+    let parallel = if s.early_stop {
+        parallel.min(EARLY_WINDOW)
+    } else {
+        parallel
+    };
     // Per-host pacing: the device-type limits and the back-off (see `backoff`). It replaces the
     // plain per-host semaphore; without a back-off it behaves exactly like one.
     let gov = HostGovernor::new(parallel, s.backoff);
+    let mut probed_sample: Option<Vec<u16>> = None;
     if crate::plan::probes_ports(h.responding, &s) {
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
         let mut unprobed = 0;
-        let mut probes = JoinSet::new();
+        let mut early: Option<String> = None;
+        let mut probes: JoinSet<(u16, PortProbe)> = JoinSet::new();
         // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
-        let host_rtt = (s.tcp_adaptive && ctx.syn.is_none()).then(|| Arc::new(HostRtt::default()));
-        for (index, &port) in ports.iter().enumerate() {
-            if index == PILOT_PORTS
+        let syn_index = pick(&ctx.blocking, &ctx.syn, ip).await;
+        let syn_engine: Option<Arc<SynEngine>> = syn_index.map(|i| ctx.syn[i].engine.clone());
+        let host_rtt =
+            (s.tcp_adaptive && syn_engine.is_none()).then(|| Arc::new(HostRtt::default()));
+        // The likeliest ports first, and the order follows what the host turns out to be.
+        let vendor = if h.mac.is_empty() || crate::oui::locally_administered(&h.mac) {
+            ""
+        } else {
+            crate::oui::vendor(&h.mac).unwrap_or("")
+        };
+        let mut order = crate::portorder::HostOrder::new(
+            ctx.classes,
+            &ports,
+            crate::portorder::Hints { vendor, ttl: h.ttl },
+        );
+        let mut results = vec![];
+        let mut launched = 0usize;
+        while let Some(port) = order.next_port() {
+            // Probes that finished since the last launch: their open ports steer the order, and
+            // with --early-stop they can end the scan of this host.
+            while let Some(done) = probes.try_join_next() {
+                if let Ok(item) = done {
+                    order.observe(item.0, item.1.state == PortState::Open);
+                    results.push(item);
+                }
+            }
+            if s.early_stop
+                && let Some(why) = early_stop_reason(&order, &h, vendor)
+            {
+                // `port` was taken from the order but not probed.
+                unprobed = order.remaining() + 1;
+                early = Some(why);
+                break;
+            }
+            if launched == PILOT_PORTS
                 && let Some(r) = &host_rtt
             {
                 r.wait_for_sample(timeout.min(PILOT_WAIT)).await;
             }
             let Some(permit) = gov.admit().await else {
                 // The host is paused: it gets no further probes in this scan.
-                unprobed = ports.len() - index;
+                unprobed = order.remaining() + 1;
                 break;
             };
             // Global in-flight bound taken before spawning: with many workers and a
@@ -671,18 +892,32 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             let Ok(socket) = ctx.sockets.clone().acquire_owned().await else {
                 break;
             };
+            launched += 1;
             let (s, ctx, rtt, gov) = (s.clone(), ctx.clone(), host_rtt.clone(), gov.clone());
+            let (live, announced) = (live.clone(), announced.clone());
+            let syn_engine = syn_engine.clone();
             probes.spawn(async move {
-                let result = probe_port(ip, port, timeout, &s, &ctx, rtt.as_deref()).await;
+                let result = probe_port(
+                    ip,
+                    port,
+                    timeout,
+                    &s,
+                    &ctx,
+                    rtt.as_deref(),
+                    syn_engine.as_ref(),
+                )
+                .await;
                 if let Some(outcome) = outcome_of(port, &result.state) {
                     gov.record(outcome);
+                }
+                if result.state == PortState::Open {
+                    announce_open(&ctx, &announced, &live, port);
                 }
                 drop(socket);
                 drop(permit);
                 (port, result)
             });
         }
-        let mut results = vec![];
         while let Some(result) = probes.join_next().await {
             if let Ok(item) = result {
                 results.push(item);
@@ -719,10 +954,21 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 }
             }
         }
+        if sampled && unprobed == 0 {
+            probed_sample = Some(ports.to_vec());
+        }
         if unprobed > 0 {
             // The unprobed ports are unknown, not closed: monitor and diff must not report them.
             h.ports_checked = false;
-            gov.note_unprobed(unprobed);
+            match early {
+                Some(why) => note(
+                    &mut h,
+                    format!(
+                        "early stop: {why}; {unprobed} port(s) were not probed in this scan; their state is unknown, not closed"
+                    ),
+                ),
+                None => gov.note_unprobed(unprobed),
+            }
         }
     }
     flush_backoff_notes(&gov, &mut h);
@@ -733,7 +979,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             (if s.safe { 1 } else { 8 }).min(gov.limit()),
         ));
         let mut tasks = JoinSet::new();
-        for &port in h.open.iter().filter(|p| !crate::service::is_ot_port(**p)) {
+        let ports: Vec<u16> = h
+            .open
+            .iter()
+            .copied()
+            .filter(|p| !crate::service::is_ot_port(*p))
+            .collect();
+        for port in ports {
             if gov.paused() {
                 break;
             }
@@ -744,15 +996,28 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 sleep(gov.delay()).await;
             }
             let ctx = ctx.clone();
+            // What the base scan knew about this port: its change detector.
+            let known_fp = before
+                .filter(|b| b.responding)
+                .and_then(|b| b.identity.get(&format!("incr.fp.{port}")))
+                .cloned();
+            let repeat = base.is_some();
             tasks.spawn(async move {
+                // A repeat scan first checks whether the service still says the same thing.
+                let fp = if repeat {
+                    crate::service::fingerprint(ip, port, limit, &ctx.gate).await
+                } else {
+                    None
+                };
+                let same = fp.is_some() && fp == known_fp;
                 let found = match &ctx.probes {
-                    Some(db) => {
+                    Some(db) if !same => {
                         crate::service::detect(ip, port, limit, db, &ctx.gate, rounds).await
                     }
-                    None => None,
+                    _ => None,
                 };
                 drop(permit);
-                (port, found)
+                (port, found, fp, same)
             });
         }
         let mut found = vec![];
@@ -761,8 +1026,20 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 found.push(item);
             }
         }
-        found.sort_by_key(|(port, _)| *port);
-        for (port, outcome) in found {
+        found.sort_by_key(|(port, ..)| *port);
+        let mut carried_ports: Vec<String> = vec![];
+        for (port, outcome, fp, same) in found {
+            if let Some(fp) = &fp {
+                h.identity.insert(format!("incr.fp.{port}"), fp.clone());
+            }
+            if same && let Some(b) = before {
+                // Unchanged since the base scan: keep its identification, and say it was kept.
+                for (k, v) in crate::incremental::port_entries(&b.identity, port) {
+                    h.identity.insert(k, v);
+                }
+                carried_ports.push(port.to_string());
+                continue;
+            }
             match outcome {
                 Some(o) => h
                     .identity
@@ -775,6 +1052,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                     gov.known_open_failed(port);
                 }
             }
+        }
+        if !carried_ports.is_empty() {
+            carried.push(format!("svc:{}", carried_ports.join(",")));
         }
         flush_backoff_notes(&gov, &mut h);
     }
@@ -798,7 +1078,25 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if s.udp && !ctx.udp_ports.is_empty() && (h.responding || s.scan_nonresponders) && !gov.paused()
+    let udp_before = before.filter(|b| b.responding && s.udp);
+    if let Some(b) = udp_before
+        && h.responding
+        && !gov.paused()
+    {
+        // Not probed again: the answers of the base scan, marked as carried over.
+        h.udp_open = b.udp_open.clone();
+        for (k, v) in &b.identity {
+            if k.starts_with("udp.") {
+                h.identity.insert(k.clone(), v.clone());
+            }
+        }
+        carried.push("udp".into());
+    }
+    if s.udp
+        && udp_before.is_none_or(|_| !h.responding)
+        && !ctx.udp_ports.is_empty()
+        && (h.responding || s.scan_nonresponders)
+        && !gov.paused()
     {
         let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(300, 2000)));
         let tries = (s.retries + 1).min(4);
@@ -876,7 +1174,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         flush_backoff_notes(&gov, &mut h);
         merge_ot_udp(&mut h);
     }
-    if s.trace && h.responding && !gov.paused() {
+    if s.trace
+        && h.responding
+        && let Some(b) = before.filter(|b| b.responding && !b.trace.is_empty())
+    {
+        h.trace = b.trace.clone();
+        carried.push("trace".into());
+    } else if s.trace && h.responding && !gov.paused() {
         let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
         for text in notes {
             note(&mut h, text);
@@ -898,6 +1202,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     }
     if s.os_detect && h.responding {
         analyze(&mut h, fingerprint.as_ref());
+    }
+    if let Some(p) = &base {
+        crate::incremental::mark(&mut h, p.id, probed_sample.as_deref(), &carried);
     }
     if ctx.scripts.is_some() {
         // Rhai may run up to its wall-time limit per script; keep it off the async workers.
@@ -1287,7 +1594,7 @@ mod tests",
         for (port, want) in [(open, PortState::Open), (closed, PortState::Closed)] {
             let rtt = HostRtt::default();
             let timeout = Duration::from_millis(5000);
-            let got = probe_port(ip, port, timeout, &s, &ctx, Some(&rtt)).await;
+            let got = probe_port(ip, port, timeout, &s, &ctx, Some(&rtt), None).await;
             assert_eq!(got.state, want);
             assert!(rtt.has_sample(), "{want:?} is an RTT sample");
             let next = rtt.timeout(timeout, Duration::from_millis(100), timeout);
@@ -1299,7 +1606,16 @@ mod tests",
             }
         }
         // Without the estimator nothing changes.
-        let plain = probe_port(ip, closed, Duration::from_millis(5000), &s, &ctx, None).await;
+        let plain = probe_port(
+            ip,
+            closed,
+            Duration::from_millis(5000),
+            &s,
+            &ctx,
+            None,
+            None,
+        )
+        .await;
         assert_eq!(plain.state, PortState::Closed);
     }
 
@@ -1433,14 +1749,300 @@ mod tests",
             blocking: Arc::new(Semaphore::new(4)),
             sockets: Arc::new(Semaphore::new(4)),
             dhcp: Semaphore::new(1),
-            syn: None,
+            syn: vec![],
             syn_error: None,
-            arp: None,
+            arp: vec![],
             arp_error: None,
             probes: None,
             udp_ports: vec![],
             scripts: None,
+            previous: None,
+            classes: crate::portorder::ClassTable::builtin(),
+            partial: None,
         }
+    }
+
+    /// Scans 127.0.0.1 through `scan_host` with the given class table.
+    async fn scan_with(
+        ports: Vec<u16>,
+        table: Option<&str>,
+        early_stop: bool,
+        parallel: usize,
+    ) -> Host {
+        let mut ctx = test_ctx();
+        ctx.sockets = Arc::new(Semaphore::new(64));
+        if let Some(json) = table {
+            ctx.classes = Box::leak(Box::new(crate::portorder::ClassTable::parse(json).unwrap()));
+        }
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            retries: 0,
+            port_timeout: 1500,
+            early_stop,
+            port_parallel: parallel,
+            ..Settings::default()
+        };
+        scan_host(
+            "127.0.0.1".parse().unwrap(),
+            Arc::new(ports),
+            Arc::new(s),
+            Arc::new(ctx),
+        )
+        .await
+    }
+
+    /// The order in which ports are probed never changes the result (ROADMAP B13): the same
+    /// host scanned with the frequency order and with a class that reverses it is identical.
+    #[tokio::test]
+    async fn the_probe_order_never_changes_the_result() {
+        let listeners: Vec<std::net::TcpListener> = (0..3)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let mut open: Vec<u16> = listeners
+            .iter()
+            .map(|l| l.local_addr().unwrap().port())
+            .collect();
+        open.sort_unstable();
+        let closed: Vec<u16> = (0..6)
+            .map(|_| {
+                std::net::TcpListener::bind("127.0.0.1:0")
+                    .unwrap()
+                    .local_addr()
+                    .unwrap()
+                    .port()
+            })
+            .collect();
+        let mut ports = [open.clone(), closed.clone()].concat();
+        ports.sort_unstable();
+        ports.dedup();
+        let reversed: Vec<u16> = ports.iter().rev().copied().collect();
+        let table = format!(
+            r#"{{"classes":[{{"id":"x","label":"X","ports":{reversed:?},"signature":{open:?},"vendors":[],"ttl":[]}}]}}"#
+        );
+        let default = scan_with(ports.clone(), None, false, 64).await;
+        // Sequential probes, so the class order really is the launch order.
+        let forced = scan_with(ports.clone(), Some(&table), false, 1).await;
+        for h in [&default, &forced] {
+            assert_eq!(h.open, open);
+            assert!(h.ports_checked, "every port was probed");
+            assert_eq!(h.open.len() + h.closed + h.unanswered, ports.len());
+        }
+        assert_eq!(
+            (
+                default.open,
+                default.closed,
+                default.unanswered,
+                default.errors
+            ),
+            (forced.open, forced.closed, forced.unanswered, forced.errors)
+        );
+    }
+
+    /// `--early-stop`: a host that is certainly a printer (two print ports open, the class's
+    /// priority ports probed) is not probed further, and says so; without the flag the same host
+    /// is scanned completely. The print ports are fixed numbers, so the test skips when this
+    /// machine already uses one of them.
+    #[tokio::test]
+    async fn early_stop_skips_the_rest_once_the_class_is_certain_and_says_so() {
+        let (Ok(_a), Ok(_b)) = (
+            std::net::TcpListener::bind("127.0.0.1:9100"),
+            std::net::TcpListener::bind("127.0.0.1:515"),
+        ) else {
+            return;
+        };
+        let mut ports = vec![9100, 515, 631];
+        ports.extend(40000..40040);
+        let full = scan_with(ports.clone(), None, false, 1).await;
+        assert!(full.ports_checked && full.open == [515, 9100], "{full:?}");
+        let stopped = scan_with(ports.clone(), None, true, 1).await;
+        assert_eq!(stopped.open, [515, 9100], "what was found is kept");
+        assert!(
+            !stopped.ports_checked,
+            "unprobed ports are unknown, not closed"
+        );
+        assert!(
+            stopped
+                .errors
+                .iter()
+                .any(|e| e.starts_with("early stop: identified as Printer")
+                    && e.contains("not probed")),
+            "{:?}",
+            stopped.errors
+        );
+        assert!(stopped.closed + stopped.unanswered < full.closed + full.unanswered);
+    }
+
+    /// One scan of 127.0.0.1 through `scan_host`, a repeat scan when `previous` is given.
+    async fn scan_repeat(
+        ports: Vec<u16>,
+        previous: Option<Arc<crate::incremental::Previous>>,
+    ) -> Host {
+        let mut ctx = test_ctx();
+        ctx.sockets = Arc::new(Semaphore::new(64));
+        ctx.probes = Some(ProbeDb::load("").unwrap());
+        ctx.previous = previous;
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            services: true,
+            retries: 0,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        scan_host(
+            "127.0.0.1".parse().unwrap(),
+            Arc::new(ports),
+            Arc::new(s),
+            Arc::new(ctx),
+        )
+        .await
+    }
+
+    fn scan_of(ports: &str, hosts: Vec<Host>) -> crate::store::Snapshot {
+        crate::store::Snapshot {
+            targets: "127.0.0.1".into(),
+            complete: true,
+            settings: Settings {
+                ports: ports.into(),
+                services: true,
+                ..Settings::default()
+            },
+            hosts,
+            observations: vec![],
+            notes: Default::default(),
+            sent: vec![],
+        }
+    }
+
+    /// A server that greets with an SSH banner until `stop` is set, then closes its port.
+    fn greeting_server(stop: Arc<std::sync::atomic::AtomicBool>) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            while !stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.write_all(b"SSH-2.0-OpenSSH_8.4\r\n");
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        port
+    }
+
+    /// Fast repeat scans (ROADMAP B14), end to end on loopback: the second scan probes a sample and
+    /// seeds the change detector, the third keeps the identification of the unchanged service and
+    /// says so, nothing it carried over counts as checked, and the diff against the full scan is
+    /// empty. When the server goes away, the repeat scan finds out (a known port is always probed)
+    /// and the diff reports exactly that.
+    #[tokio::test]
+    async fn a_repeat_scan_carries_over_what_did_not_change_and_says_so() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let port = greeting_server(stop.clone());
+        let mut ports: Vec<u16> = (33000..33020).collect();
+        ports.push(port);
+        let text = format!("33000-33019,{port}");
+        let full = scan_repeat(ports.clone(), None).await;
+        assert!(full.ports_checked && full.open == [port], "{full:?}");
+        assert!(full.identity.keys().all(|k| !k.starts_with("incr.")));
+        let base = |n, h: &Host| {
+            Some(Arc::new(crate::incremental::Previous::new(
+                n,
+                vec![h.clone()],
+            )))
+        };
+        // Second scan: a sample, identified in full (nothing to compare with), fingerprint stored.
+        let second = scan_repeat(ports.clone(), base(1, &full)).await;
+        assert_eq!(second.open, [port]);
+        assert!(!second.ports_checked, "a sample is not a full check");
+        assert!(crate::incremental::checked(&second, port));
+        // The sample is small: some requested port was not probed.
+        let sample = crate::incremental::ports_for(Some(&full), &ports, 1);
+        let unsampled = *ports.iter().find(|p| !sample.contains(p)).unwrap();
+        assert!(!crate::incremental::checked(&second, unsampled));
+        assert_eq!(second.identity["incr.base"], "scan #1");
+        assert!(second.identity.contains_key(&format!("incr.fp.{port}")));
+        assert!(!second.identity.contains_key("incr.carried"), "{second:?}");
+        assert_eq!(
+            second.identity[&format!("svc.{port}")],
+            full.identity[&format!("svc.{port}")]
+        );
+        // Third scan: the banner hashes the same, so the identification is kept and marked.
+        let third = scan_repeat(ports.clone(), base(2, &second)).await;
+        assert_eq!(third.identity["incr.carried"], format!("svc:{port}"));
+        assert_eq!(
+            third.identity[&format!("svc.{port}")],
+            full.identity[&format!("svc.{port}")]
+        );
+        assert_eq!(third.open, [port]);
+        // Full -> repeat of an unchanged host: nothing changed, nothing is reported.
+        let report = crate::store::diff_report(
+            &scan_of(&text, vec![full.clone()]),
+            &scan_of(&text, vec![third.clone()]),
+            &crate::store::IgnoreList::new(&[]),
+        )
+        .unwrap();
+        assert!(report.changes.is_empty(), "{:?}", report.changes);
+        // The server goes away: the repeat scan probes the known port and the diff says so.
+        stop.store(true, Ordering::Relaxed);
+        sleep(Duration::from_millis(100)).await;
+        let fourth = scan_repeat(ports, base(3, &third)).await;
+        assert!(fourth.open.is_empty(), "{fourth:?}");
+        let report = crate::store::diff_report(
+            &scan_of(&text, vec![full]),
+            &scan_of(&text, vec![fourth]),
+            &crate::store::IgnoreList::new(&[]),
+        )
+        .unwrap();
+        assert!(
+            report.changes.iter().any(
+                |c| matches!(c, crate::store::Change::PortClosed { port: p, .. } if *p == port)
+            ),
+            "{:?}",
+            report.changes
+        );
+    }
+
+    /// A port that opened since the base scan is found when it is in the sample.
+    #[tokio::test]
+    async fn a_repeat_scan_finds_a_newly_opened_port_in_its_sample() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut ports: Vec<u16> = (33000..33020).collect();
+        ports.push(port);
+        let text = format!("33000-33019,{port}");
+        let full = scan_repeat(ports.clone(), None).await;
+        assert!(!full.open.contains(&port));
+        let Ok(server) = std::net::TcpListener::bind(("127.0.0.1", port)) else {
+            return; // the port was taken meanwhile
+        };
+        // A base scan number whose rotating slice reaches the port (the sample moves every scan).
+        let id = (1..40)
+            .find(|g| crate::incremental::ports_for(Some(&full), &ports, *g).contains(&port))
+            .unwrap();
+        let prev = Arc::new(crate::incremental::Previous::new(id, vec![full.clone()]));
+        let again = scan_repeat(ports, Some(prev)).await;
+        assert!(again.open.contains(&port), "{again:?}");
+        let report = crate::store::diff_report(
+            &scan_of(&text, vec![full]),
+            &scan_of(&text, vec![again]),
+            &crate::store::IgnoreList::new(&[]),
+        )
+        .unwrap();
+        assert!(
+            report.changes.iter().any(
+                |c| matches!(c, crate::store::Change::PortOpened { port: p, .. } if *p == port)
+            ),
+            "{:?}",
+            report.changes
+        );
+        drop(server);
     }
 
     #[test]

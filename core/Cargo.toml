@@ -39,3 +39,10 @@ rustls-platform-verifier = "0.7"
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+# Benchmarks of the hot paths (benches/hot_paths.rs, roadmap B18). No plotting and no rayon: the
+# numbers and the baseline comparison need neither, and it keeps the dependency tree small.
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "hot_paths"
+harness = false

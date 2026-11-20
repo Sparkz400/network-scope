@@ -107,7 +107,9 @@ const NON_EVIDENCE_SUFFIXES: [&str; 8] = [
 ];
 fn is_device_evidence(key: &str) -> bool {
     // Passive hints are scored by their own rule; their reasons must not feed keyword matching.
-    !key.starts_with("passive.") && !NON_EVIDENCE_SUFFIXES.iter().any(|s| key.ends_with(s))
+    !key.starts_with("passive.")
+        && !crate::incremental::is_marker(key)
+        && !NON_EVIDENCE_SUFFIXES.iter().any(|s| key.ends_with(s))
 }
 
 /// (device type, evidence) when the combined evidence is strong enough.

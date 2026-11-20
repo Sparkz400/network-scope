@@ -166,6 +166,11 @@ pub fn host(
         notes: vec![],
     };
     let tcp = format!("tcp/{}", ports_text(ports));
+    if s.early_stop && probes_ports(true, s) {
+        plan.notes.push(
+            "--early-stop: the ports listed may be probed only in part (a host whose device class becomes certain is not probed further); the ports are probed likeliest first".into(),
+        );
+    }
     let ports_when = if s.scan_nonresponders || s.tcp_only {
         "always"
     } else {
@@ -1060,7 +1065,7 @@ mod tests",
                 {
                     crate::scan::Event::Done => break,
                     crate::scan::Event::Error(e) => panic!("{e}"),
-                    crate::scan::Event::Host(_) => {}
+                    crate::scan::Event::Host(_) | crate::scan::Event::Partial(_) => {}
                 }
             }
             let db = ProbeDb::load("").unwrap();

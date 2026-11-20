@@ -467,6 +467,30 @@ async fn detect_with(
     Some(out)
 }
 
+/// A cheap change detector for an open TCP port, for `--incremental`: one connection, and a hash
+/// of what the service says first (its greeting banner) or, for a web server that waits for the
+/// client, of its status line, `Server` header and title. `None` when there is nothing to hash (a
+/// TLS port, or a silent one): such a port is identified in full every time. Sends nothing beyond
+/// what service identification sends to the same port (the connection and, for web servers,
+/// `GET /`), and nothing at all to printer ports.
+pub async fn fingerprint(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> Option<String> {
+    let mut s = connect(ip, port, limit, gate).await?;
+    let banner = read_some(&mut s, Duration::from_millis(300), 4096).await;
+    if !banner.is_empty() {
+        return Some(format!("banner:{}", crate::incremental::hash(&banner)));
+    }
+    if send_policy(port) == SendPolicy::Normal && !TLS_PORTS.contains(&port) {
+        gate.note(PacketKind::HttpRequest, "GET /");
+        let h = http_get(&mut s, ip, port, limit, gate.log(), "HTTP GET /").await?;
+        let text = format!("{}|{}|{}|{}", h.status, h.server, h.powered_by, h.title);
+        return Some(format!(
+            "http:{}",
+            crate::incremental::hash(text.as_bytes())
+        ));
+    }
+    None
+}
+
 /// Identity entries for one port: `svc.<port>`, `http.<port>.server`, `tls.<port>.subject`, ...
 pub fn identity_entries(port: u16, out: &Outcome) -> Fields {
     let mut f = Fields::new();

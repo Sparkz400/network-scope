@@ -91,6 +91,15 @@ pub struct Settings {
     /// a stored scan.
     #[serde(skip)]
     pub record: bool,
+    /// Stop probing a host's remaining ports once its device class is certain
+    /// (`portorder`: two signature ports open, or one plus the MAC vendor, and the class's
+    /// priority ports probed). Opt-in: it trades completeness for speed, and such a host is
+    /// marked `ports_checked = false` with a note.
+    pub early_stop: bool,
+    /// Send [`Event::Partial`] while hosts are still being scanned (live views). Off by default,
+    /// so a consumer that only reads final results never sees one; not saved with a scan.
+    #[serde(skip)]
+    pub partial_events: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -138,6 +147,8 @@ impl Default for Settings {
             backoff: true,
             provenance: None,
             record: false,
+            early_stop: false,
+            partial_events: false,
         }
     }
 }
@@ -297,6 +308,34 @@ impl Targets {
             targets: self.clone_without_singles(),
         }
     }
+    /// The same addresses as [`Targets::iter`], but alternating between the ranges (and the
+    /// single addresses as one more part): one address of each in turn. A scan of several
+    /// subnets then works on all of them at once instead of finishing one before it starts the
+    /// next, so a slow or silent subnet cannot hold the others back.
+    pub fn iter_interleaved(&self) -> Interleaved {
+        let part = |singles: Vec<IpAddr>, ranges: Vec<(u32, u32)>| {
+            Targets {
+                singles,
+                ranges,
+                exact: self.exact.clone(),
+                skip_edges: self.skip_edges,
+            }
+            .iter()
+        };
+        let mut parts: Vec<TargetIter> =
+            self.ranges.iter().map(|&r| part(vec![], vec![r])).collect();
+        // A single address inside a range is scanned as part of the range.
+        let singles: Vec<IpAddr> = self
+            .singles
+            .iter()
+            .copied()
+            .filter(|ip| !matches!(ip, IpAddr::V4(v) if contains(&self.ranges, u32::from(*v)) && !self.skipped(u32::from(*v))))
+            .collect();
+        if !singles.is_empty() {
+            parts.push(part(singles, vec![]));
+        }
+        Interleaved { parts, cursor: 0 }
+    }
     fn clone_without_singles(&self) -> Targets {
         Targets {
             singles: vec![],
@@ -304,6 +343,31 @@ impl Targets {
             exact: self.exact.clone(),
             skip_edges: self.skip_edges,
         }
+    }
+}
+/// Targets of several ranges, one address of each in turn ([`Targets::iter_interleaved`]).
+pub struct Interleaved {
+    parts: Vec<TargetIter>,
+    cursor: usize,
+}
+impl Iterator for Interleaved {
+    type Item = IpAddr;
+    fn next(&mut self) -> Option<IpAddr> {
+        while !self.parts.is_empty() {
+            if self.cursor >= self.parts.len() {
+                self.cursor = 0;
+            }
+            match self.parts[self.cursor].next() {
+                Some(ip) => {
+                    self.cursor += 1;
+                    return Some(ip);
+                }
+                None => {
+                    self.parts.remove(self.cursor);
+                }
+            }
+        }
+        None
     }
 }
 pub struct TargetIter {
@@ -469,7 +533,15 @@ pub fn probe_port(ip: IpAddr, port: u16, timeout: Duration) -> PortState {
 }
 
 pub enum Event {
+    /// A host's final result.
     Host(Host),
+    /// What is already known about a host that is still being scanned: it answered (`ping`,
+    /// `ttl`, `mac` as far as known) and/or the ports found open so far. The final
+    /// [`Event::Host`] for the same address follows and replaces it. Sent only for hosts that
+    /// answered something, the moment the evidence arrives, so a consumer can show results long
+    /// before a slow host finishes its remaining ports. Consumers that only want final results
+    /// ignore it.
+    Partial(Host),
     Done,
     Error(String),
 }
@@ -499,6 +571,18 @@ pub fn start_stream(
     total: usize,
     ports: Vec<u16>,
     settings: Settings,
+) -> Running {
+    start_incremental(hosts, total, ports, settings, None)
+}
+
+/// [`start_stream`] as a repeat scan (`scan --incremental`): `previous` is the scan to base it on
+/// (see `incremental`); `None` is an ordinary full scan.
+pub fn start_incremental(
+    hosts: Box<dyn Iterator<Item = IpAddr> + Send>,
+    total: usize,
+    ports: Vec<u16>,
+    settings: Settings,
+    previous: Option<Arc<crate::incremental::Previous>>,
 ) -> Running {
     let (tx, receiver) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -531,6 +615,7 @@ pub fn start_stream(
                     pause,
                     tx.clone(),
                     sent,
+                    previous,
                 ));
                 rt.shutdown_timeout(Duration::from_secs(1));
             }
@@ -618,6 +703,70 @@ mod tests {
         assert!(parse_targets("10.0.0.0/7", true, MAX_STREAM).is_err());
     }
     #[test]
+    fn several_ranges_are_interleaved_without_losing_or_repeating_an_address() {
+        let t = parse_targets("10.0.1.1-3 10.0.2.1-5 10.0.2.2 ::1", true, 1 << 20).unwrap();
+        let order: Vec<String> = t.iter_interleaved().map(|ip| ip.to_string()).collect();
+        // One address of each range in turn; the ranges that run out drop out.
+        assert_eq!(
+            order[..9],
+            [
+                "10.0.1.1", "10.0.2.1", "::1", "10.0.1.2", "10.0.2.2", "10.0.1.3", "10.0.2.3",
+                "10.0.2.4", "10.0.2.5"
+            ]
+        );
+        let mut a: Vec<_> = t.iter().collect();
+        let mut b: Vec<_> = t.iter_interleaved().collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+        assert_eq!(b.len() as u64, t.count());
+        // One range: the same order as the plain iterator.
+        let one = parse_targets("10.0.0.0/29", true, 1 << 20).unwrap();
+        assert_eq!(
+            one.iter().collect::<Vec<_>>(),
+            one.iter_interleaved().collect::<Vec<_>>()
+        );
+        // The edge rule of CIDR blocks and dash ranges is kept.
+        let edges = parse_targets("10.0.0.250-10.0.1.2 10.0.5.0/30", true, 1 << 20).unwrap();
+        let mut x: Vec<_> = edges.iter().collect();
+        let mut y: Vec<_> = edges.iter_interleaved().collect();
+        x.sort();
+        y.sort();
+        assert_eq!(x, y);
+    }
+    /// Two subnets scanned at the same time (here two loopback ranges): both are found, and
+    /// the scan works on the second one while the first is still running.
+    #[test]
+    fn two_ranges_are_scanned_concurrently() {
+        let a = std::net::TcpListener::bind("127.0.1.1:0").unwrap();
+        let port = a.local_addr().unwrap().port();
+        let Ok(b) = std::net::TcpListener::bind(("127.0.2.1", port)) else {
+            return;
+        };
+        let targets = parse_targets("127.0.1.1-3 127.0.2.1-3", true, 1 << 20).unwrap();
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            retries: 0,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        let total = targets.count() as usize;
+        let run = start_stream(Box::new(targets.iter_interleaved()), total, vec![port], s);
+        let mut open = vec![];
+        loop {
+            match run.receiver.recv_timeout(Duration::from_secs(20)).unwrap() {
+                Event::Host(h) if !h.open.is_empty() => open.push(h.ip.to_string()),
+                Event::Done => break,
+                Event::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        open.sort();
+        assert_eq!(open, ["127.0.1.1", "127.0.2.1"]);
+        drop((a, b));
+    }
+    #[test]
     fn target_overlaps_merge_and_count_matches_iteration() {
         for (input, edges) in [
             ("10.0.0.0/24 10.0.0.128/25 10.0.1.0/24", true),
@@ -662,6 +811,7 @@ mod tests {
                     hosts += 1;
                     assert!(h.open.contains(&addr.port()));
                 }
+                Event::Partial(_) => {}
                 Event::Done => break,
                 Event::Error(e) => panic!("{e}"),
             }
@@ -673,6 +823,41 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+    /// A port found open reaches the consumer as `Event::Partial` before the host is done, and
+    /// the final `Event::Host` carries the same ports (the provisional view never invents one).
+    #[test]
+    fn open_ports_stream_before_the_host_finishes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().port();
+        // Silent ports are not needed: the open port comes first even next to a slow one.
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            retries: 0,
+            port_timeout: 1500,
+            partial_events: true,
+            ..Settings::default()
+        };
+        let run = start(vec![listener.local_addr().unwrap().ip()], vec![open], s);
+        let (mut partial_at, mut host_at, mut open_in_partial) = (None, None, vec![]);
+        let begun = Instant::now();
+        loop {
+            match run.receiver.recv_timeout(Duration::from_secs(10)).unwrap() {
+                Event::Partial(h) => {
+                    partial_at.get_or_insert(begun.elapsed());
+                    open_in_partial = h.open;
+                }
+                Event::Host(h) => {
+                    host_at = Some(begun.elapsed());
+                    assert_eq!(h.open, vec![open]);
+                }
+                Event::Done => break,
+                Event::Error(e) => panic!("{e}"),
+            }
+        }
+        assert_eq!(open_in_partial, vec![open], "the open port was announced");
+        assert!(partial_at.unwrap() <= host_at.unwrap());
     }
     #[test]
     fn closed_port_is_reported_closed() {
@@ -735,6 +920,19 @@ mod tests {
         );
         // Without the option nothing is trimmed.
         assert_eq!(parse_hosts("10.0.0.0/30", false).unwrap().len(), 4);
+    }
+    #[test]
+    fn partial_events_are_off_by_default_and_never_saved() {
+        assert!(!Settings::default().partial_events);
+        let on = Settings {
+            partial_events: true,
+            ..Settings::default()
+        };
+        assert!(
+            !serde_json::to_string(&on)
+                .unwrap()
+                .contains("partial_events")
+        );
     }
     #[test]
     fn new_engine_options_are_off_in_old_snapshots() {
@@ -846,7 +1044,7 @@ mod tests {
                 .unwrap()
             {
                 Event::Done => break,
-                Event::Host(_) => (),
+                Event::Host(_) | Event::Partial(_) => (),
                 Event::Error(e) => panic!("{e}"),
             }
         }

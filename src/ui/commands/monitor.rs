@@ -52,6 +52,8 @@ pub(in crate::ui) fn run_monitor(
         interface: opts.get("interface").cloned().unwrap_or_default(),
         listen_seconds: number(opts, "listen-seconds", 30)?,
         quiet: opts.contains_key("quiet"),
+        incremental: opts.contains_key("incremental"),
+        full_every: number(opts, "full-every", 10u32)?,
         stop,
     };
     let mut file = match opts.get("alerts") {

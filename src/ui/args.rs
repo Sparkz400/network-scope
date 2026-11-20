@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 31] = [
+pub(super) const FLAGS: [&str; 35] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -38,8 +38,12 @@ pub(super) const FLAGS: [&str; 31] = [
     "no-backoff",
     "sent-log",
     "randomize",
+    "stream",
+    "early-stop",
+    "no-report",
+    "incremental",
 ];
-pub(super) const VALUES: [&str; 72] = [
+pub(super) const VALUES: [&str; 73] = [
     "feeds",
     "top",
     "nvd",
@@ -112,6 +116,7 @@ pub(super) const VALUES: [&str; 72] = [
     "preset",
     "broadcast",
     "targets-file",
+    "full-every",
 ];
 pub(super) fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);
@@ -310,6 +315,8 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     s.s7_rack = number(opts, "rack", 0)?;
     s.s7_slot = number(opts, "slot", 2)?;
     s.scripts = opts.get("script").cloned().unwrap_or_default();
+    s.early_stop = opts.contains_key("early-stop");
+    s.partial_events = opts.contains_key("stream");
     Ok(s)
 }
 pub(super) fn trace_method(text: &str) -> Result<crate::trace::TraceMethod, String> {

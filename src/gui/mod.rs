@@ -419,6 +419,8 @@ struct Scanner {
     /// Bumped whenever a note changes.
     notes_generation: u64,
     haystacks: HashMap<IpAddr, String>,
+    /// Rows of hosts still being scanned (`scan::Event::Partial`), by address: the row index.
+    live: HashMap<IpAddr, usize>,
     rows: Vec<usize>,
     rows_key: Option<(u64, u64, Filter, String)>,
     responding: usize,
@@ -545,6 +547,7 @@ impl Scanner {
             generation: 0,
             notes_generation: 0,
             haystacks: HashMap::new(),
+            live: HashMap::new(),
             rows: vec![],
             rows_key: None,
             responding: 0,
@@ -899,6 +902,7 @@ impl Scanner {
                 // Passive observations stay: the Devices window merges them with this scan.
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
                 self.haystacks.clear();
+                self.live.clear();
                 self.selected = None;
                 self.script_test = None;
                 self.scan_complete = true;
@@ -910,7 +914,11 @@ impl Scanner {
                 self.status = tr!("Scanning {} addresses", hosts.len());
                 self.recount();
                 self.data_changed();
-                self.run = Some(scan::start(hosts, ports, self.saved.settings.clone()));
+                let live_settings = scan::Settings {
+                    partial_events: true,
+                    ..self.saved.settings.clone()
+                };
+                self.run = Some(scan::start(hosts, ports, live_settings));
             }
             Err(e) => self.error = e,
         }
@@ -935,13 +943,39 @@ impl Scanner {
     fn poll(&mut self) {
         let mut done = false;
         let mut changed = false;
+        let mut recount = false;
         if let Some(run) = &self.run {
             for _ in 0..2048 {
                 match run.receiver.try_recv() {
+                    Ok(scan::Event::Partial(host)) => {
+                        // A host that answered, or a port found open, before the host is done.
+                        self.haystacks.remove(&host.ip);
+                        match self.live.get(&host.ip).copied() {
+                            Some(i) if self.results.get(i).is_some_and(|r| r.ip == host.ip) => {
+                                self.results[i] = host;
+                            }
+                            _ => {
+                                self.live.insert(host.ip, self.results.len());
+                                self.results.push(host);
+                            }
+                        }
+                        recount = true;
+                        changed = true;
+                    }
                     Ok(scan::Event::Host(host)) => {
-                        self.responding += usize::from(host.responding);
-                        self.with_open += usize::from(!host.open.is_empty());
-                        self.results.push(host);
+                        self.haystacks.remove(&host.ip);
+                        match self.live.remove(&host.ip) {
+                            Some(i) if self.results.get(i).is_some_and(|r| r.ip == host.ip) => {
+                                // Replaces the provisional row; the counters are redone below.
+                                self.results[i] = host;
+                                recount = true;
+                            }
+                            _ => {
+                                self.responding += usize::from(host.responding);
+                                self.with_open += usize::from(!host.open.is_empty());
+                                self.results.push(host);
+                            }
+                        }
                         changed = true;
                     }
                     Ok(scan::Event::Error(e)) => {
@@ -976,6 +1010,9 @@ impl Scanner {
                 );
             }
         }
+        if recount {
+            self.recount();
+        }
         if changed {
             // Sorted once per batch of new hosts, never on idle frames.
             self.sort();
@@ -986,6 +1023,7 @@ impl Scanner {
                 .as_ref()
                 .map(|r| !r.cancel.load(Ordering::Relaxed))
                 .unwrap_or(false);
+            self.live.clear();
             self.run = None;
             self.data_changed();
             let snapshot = self.scan_snapshot();
@@ -1008,6 +1046,17 @@ impl Scanner {
                 order
             }
         });
+        // Rows moved: the provisional ones are found again by address.
+        if !self.live.is_empty() {
+            let live: HashMap<IpAddr, usize> = self
+                .results
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| self.live.contains_key(&h.ip))
+                .map(|(i, h)| (h.ip, i))
+                .collect();
+            self.live = live;
+        }
         self.data_changed();
     }
     /// Recomputes the visible row list only when data, notes, filter or query changed.
@@ -1910,5 +1959,124 @@ mod tests {
             filter_rows(&results, Filter::All, "basement", &mut hay, &notes, &stars),
             [1]
         );
+    }
+
+    /// GUI budget (ROADMAP B17): a table of 65,536 hosts stays within one 60 fps frame (16.6 ms).
+    /// The window itself needs a display, so this drives the same `TableBuilder` columns and cells
+    /// as the results table through a headless egui context, and times the two things that happen
+    /// to 65k rows while a scan runs: a frame that only draws (the rows are virtual, only the
+    /// visible ones are laid out), and a frame that also gets a new batch of hosts (sort by open
+    /// ports, then the filtered row list with a text query, which builds the search text of every
+    /// row once). A timing test, so it is ignored by default and runs in release mode:
+    /// `cargo test --release --lib frame_budget -- --ignored --nocapture`
+    /// (`scripts/resource_budget.py --gui`). It prints one `GUI_FRAME_MS` line.
+    #[test]
+    #[ignore = "timing test, run in release mode by scripts/resource_budget.py --gui"]
+    fn frame_budget_with_65k_rows() {
+        let mut results: Vec<scan::Host> = (0..65_536u32)
+            .map(|i| {
+                let ip = std::net::Ipv4Addr::from(0x0a00_0000 + i).to_string();
+                let open = if i % 5 == 0 { vec![80, 443] } else { vec![] };
+                host(&ip, i % 3 != 0, open, &format!("pc-{i}.example.net"))
+            })
+            .collect();
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let rows: Vec<usize> = (0..results.len()).collect();
+        let draw = |results: &[scan::Host], rows: &[usize]| {
+            ctx.run_ui(input(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(135.0).at_least(80.0))
+                        .column(Column::initial(110.0))
+                        .column(Column::initial(65.0))
+                        .column(Column::remainder().at_least(80.0))
+                        .column(Column::initial(140.0))
+                        .header(26.0, |mut row| {
+                            for name in
+                                ["IP address", "Status", "Ping", "Hostname", "Open TCP ports"]
+                            {
+                                row.col(|ui| {
+                                    let _ = ui.selectable_label(false, name);
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            body.rows(26.0, rows.len(), |mut row| {
+                                let host = &results[rows[row.index()]];
+                                row.col(|ui| {
+                                    let _ = ui.selectable_label(false, host.ip.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(host_status(host));
+                                });
+                                row.col(|ui| {
+                                    ui.label(ping_text(host.ping));
+                                });
+                                row.col(|ui| {
+                                    ui.label(&host.hostname);
+                                });
+                                row.col(|ui| {
+                                    ui.label(ports_text(&host.open));
+                                });
+                            });
+                        });
+                });
+            })
+            // Nothing is painted, so the font atlas upload is dropped on purpose.
+            .drop_without_applying_deltas();
+        };
+        let time = |mut f: Box<dyn FnMut() + '_>| {
+            f(); // warm-up: fonts, layout caches
+            let mut samples: Vec<f64> = (0..30)
+                .map(|_| {
+                    let t = Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            samples.sort_by(f64::total_cmp);
+            (samples[samples.len() / 2], samples[samples.len() - 1])
+        };
+        let (idle_median, idle_max) = time(Box::new(|| draw(&results, &rows)));
+        let mut haystacks = HashMap::new();
+        let notes = BTreeMap::new();
+        let (live_median, live_max) = time(Box::new(|| {
+            // The work of a frame that received hosts: the sort of `Scanner::sort` (column 4)...
+            results.sort_by(|a, b| a.open.cmp(&b.open).then_with(|| a.ip.cmp(&b.ip)));
+            // ...the visible row list for a search text (the cache of search texts is kept)...
+            let visible = filter_rows(
+                &results,
+                Filter::All,
+                "pc-1",
+                &mut haystacks,
+                &notes,
+                &BTreeSet::new(),
+            );
+            // ...and the draw.
+            draw(&results, &visible);
+        }));
+        println!(
+            "GUI_FRAME_MS idle_median={idle_median:.3} idle_max={idle_max:.3} live_median={live_median:.3} live_max={live_max:.3} rows=65536"
+        );
+        if !cfg!(debug_assertions) {
+            assert!(
+                idle_median < 1000.0 / 60.0,
+                "idle frame {idle_median:.2} ms"
+            );
+            assert!(
+                live_median < 1000.0 / 60.0,
+                "live frame {live_median:.2} ms"
+            );
+        }
     }
 }

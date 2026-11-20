@@ -393,16 +393,21 @@ pub fn evaluate_with(
             .copied()
             .collect();
         for h in cur.hosts.iter().filter(|h| h.responding) {
-            let Some(before) = old
-                .get(&h.ip)
-                .filter(|b| b.ports_checked && h.ports_checked)
-            else {
+            let Some(before) = old.get(&h.ip) else {
                 continue;
             };
+            // A port is compared when both scans looked at it: every port of a fully checked host,
+            // the probed ports of one that an incremental scan sampled.
+            let tcp_ok = |p: &u16| {
+                comparable.contains(p)
+                    && crate::incremental::checked(h, *p)
+                    && crate::incremental::checked(before, *p)
+            };
+            let udp_ok = before.ports_checked && h.ports_checked;
             for p in h
                 .open
                 .iter()
-                .filter(|p| comparable.contains(p) && !before.open.contains(p))
+                .filter(|p| tcp_ok(p) && !before.open.contains(p))
             {
                 let sev = if RISKY_PORTS.contains(p) {
                     Severity::High
@@ -420,7 +425,7 @@ pub fn evaluate_with(
             for p in before
                 .open
                 .iter()
-                .filter(|p| comparable.contains(p) && !h.open.contains(p))
+                .filter(|p| tcp_ok(p) && !h.open.contains(p))
             {
                 out.push(alert(
                     now,
@@ -436,7 +441,7 @@ pub fn evaluate_with(
             for p in h
                 .udp_open
                 .iter()
-                .filter(|p| udp_comparable.contains(p) && !before.udp_open.contains(p))
+                .filter(|p| udp_ok && udp_comparable.contains(p) && !before.udp_open.contains(p))
             {
                 out.push(alert(
                     now,
@@ -569,6 +574,11 @@ pub struct RunConfig {
     /// `--quiet`: no hint, per-cycle summary or capture warnings on stderr (the capture
     /// warning is still raised as a `capture-incomplete` alert; delivery failures still print).
     pub quiet: bool,
+    /// Repeat scans (`scan --incremental`): after a first full scan, a cycle probes the known open
+    /// ports and a sample and carries the rest over from the previous cycle.
+    pub incremental: bool,
+    /// With `incremental`: every Nth cycle (the first, then the N+1st, ...) is a full scan; 0 never.
+    pub full_every: u32,
     /// Set from another thread (a service control handler, a signal handler) to end the run
     /// cleanly: the cycle in progress is cancelled (a partial scan is saved as such), the wait
     /// between cycles is cut short and [`run`] returns `Ok`. `None`: runs until the process ends.
@@ -711,11 +721,26 @@ pub fn run(
             }
         }
         let total = targets.count() as usize;
-        let run = scan::start_stream(
-            Box::new(targets.iter()),
+        let full_cycle = cfg.full_every != 0 && (cycle - 1) % cfg.full_every == 0;
+        let previous = if cfg.incremental && !full_cycle {
+            match crate::incremental::load_base(db, targets_text, &settings)? {
+                Ok(base) => Some(base),
+                Err(why) => {
+                    if !cfg.quiet {
+                        eprintln!("Cycle {cycle}: full scan instead of an incremental one: {why}");
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let run = scan::start_incremental(
+            Box::new(targets.iter_interleaved()),
             total,
             ports.clone(),
             settings.clone(),
+            previous,
         );
         let mut hosts = vec![];
         let sparse = total > scan::MAX_HOSTS;
@@ -737,6 +762,7 @@ pub fn run(
                         hosts.push(h)
                     }
                 }
+                scan::Event::Partial(_) => {}
                 scan::Event::Done => break,
                 scan::Event::Error(e) => return Err(e),
             }
@@ -1812,8 +1838,52 @@ mod tests {
             interface: String::new(),
             listen_seconds: 1,
             quiet: true,
+            incremental: false,
+            full_every: 0,
             stop: Some(stop.clone()),
         }
+    }
+
+    /// An incremental cycle (ROADMAP B14) compares exactly the ports it looked at: a known port
+    /// that closed is reported, a port it did not probe is not, and a host that was not fully
+    /// checked and has no record of what it probed alerts about nothing.
+    #[test]
+    fn an_incremental_cycle_alerts_only_about_the_ports_it_probed() {
+        let all = Policy {
+            min_severity: Severity::Info,
+            ..Policy::default()
+        };
+        let mac = "AA:BB:CC:00:00:01";
+        let before = snap(vec![host("10.0.0.1", mac, &[22, 8081], &[])], vec![]);
+        let cycle = |open: &[u16], rechecked: Option<&str>| {
+            let mut h = host("10.0.0.1", mac, open, &[]);
+            if let Some(list) = rechecked {
+                h.ports_checked = false;
+                h.identity.insert("incr.rechecked".into(), list.into());
+            }
+            let after = snap(vec![h], vec![]);
+            evaluate(Some(&before), &after, &known(&[mac]), &all, 1)
+        };
+        // 22 was probed again and is gone; 8081 was not probed, so nothing is said about it.
+        let a = cycle(&[], Some("22,80,443"));
+        assert!(
+            a.iter()
+                .any(|a| a.kind == "port-closed" && a.message.contains("22")),
+            "{a:?}"
+        );
+        assert!(!a.iter().any(|a| a.message.contains("8081")), "{a:?}");
+        // A sampled port that opened is reported.
+        let a = cycle(&[22, 8081, 23], Some("22,23,8081"));
+        assert!(
+            a.iter()
+                .any(|a| a.kind == "port-opened" && a.message.contains("23"))
+        );
+        // Not fully checked and no record of what was probed: no port alert at all.
+        let a = cycle(&[], Some(""));
+        assert!(!a.iter().any(|a| a.kind.starts_with("port-")), "{a:?}");
+        // Bookkeeping keys are not facts: an unchanged host raises nothing.
+        let a = cycle(&[22, 8081], Some("22,8081"));
+        assert!(!a.iter().any(|a| a.kind.starts_with("port-")), "{a:?}");
     }
 
     #[test]

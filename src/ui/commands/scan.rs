@@ -1,10 +1,14 @@
 //! `scan TARGETS [options]`: an active scan, saved to the inventory and printed in the chosen
 //! format; with `--tui` the live terminal view (`ui::tui`) runs while it works.
 use crate::{
-    scan, store,
+    scan, store, store_stream,
     ui::{Ctx, args::scan_settings, dryrun, guard, output, progress, saved_exit, tui},
 };
-use std::{collections::BTreeMap, sync::atomic::Ordering};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    net::IpAddr,
+    sync::atomic::Ordering,
+};
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let (opts, pos, db) = (ctx.opts.clone(), ctx.pos.clone(), ctx.db.clone());
@@ -75,6 +79,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     } else if !["json", "csv", "html", "nmap", "md", "jsonl"].contains(&format) {
         return Err("Choose json, csv, html, nmap, md or jsonl".into());
     }
+    // Several interfaces (--interface a,b) need a source address and MAC each.
+    crate::interfaces::specs(&s)?;
     let hosts = scan::parse_targets(&targets, s.skip_edges, scan::MAX_STREAM)?;
     let ports = scan::parse_ports(&s.ports)?;
     // --dry-run: print what would be sent and stop before anything is started or saved.
@@ -86,32 +92,93 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         return Ok(());
     }
     let total = hosts.count() as usize;
-    // --randomize: the same addresses in random order (the order of probing only).
-    let order: Box<dyn Iterator<Item = std::net::IpAddr> + Send> = if opts.contains_key("randomize")
-    {
-        Box::new(crate::targets::randomized(&hosts, crate::targets::fresh_seed())?.into_iter())
+    let stream = opts.contains_key("stream");
+    let tui_view = opts.contains_key("tui");
+    if stream && tui_view {
+        return Err("--stream and --tui both take the terminal; choose one".into());
+    }
+    // A scan of more than MAX_HOSTS addresses never collects its hosts in memory: they go to the
+    // inventory in batches while the scan runs (ROADMAP B15). The terminal view needs them in
+    // memory to draw, so it keeps the old path.
+    let batched = total > scan::MAX_HOSTS && !tui_view;
+    let mut writer = if batched {
+        Some(store_stream::ScanWriter::begin(
+            db,
+            &targets,
+            &crate::provenance::stamped(&s),
+        )?)
     } else {
-        Box::new(hosts.iter())
+        None
     };
-    let run = scan::start_stream(order, total, ports, s.clone());
-    let (results, complete, errors) = if opts.contains_key("tui") {
+    // A repeat scan: the newest complete scan of the same targets is the base.
+    let previous = if opts.contains_key("incremental") {
+        match crate::incremental::load_base(db, &targets, &s)? {
+            Ok(base) => {
+                progress(
+                    opts,
+                    format_args!(
+                        "Incremental scan based on scan #{} ({} hosts): known open ports and a sample are probed again, the rest is carried over",
+                        base.id,
+                        base.len()
+                    ),
+                );
+                Some(base)
+            }
+            Err(why) => {
+                progress(
+                    opts,
+                    format_args!("Full scan instead of an incremental one: {why}"),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let run = scan::start_incremental(
+        // --randomize: the same addresses in random order (the order of probing only).
+        if opts.contains_key("randomize") {
+            Box::new(crate::targets::randomized(&hosts, crate::targets::fresh_seed())?.into_iter())
+        } else {
+            Box::new(hosts.iter_interleaved())
+        },
+        total,
+        ports,
+        s.clone(),
+        previous,
+    );
+    let (results, complete, errors) = if tui_view {
         tui::tui(&run)
+    } else if let Some(w) = writer.as_mut() {
+        let (complete, errors) = drive(&run, stream, &mut |h| w.push(&h));
+        (vec![], complete, errors)
+    } else if stream {
+        collect_streaming(&run)
     } else {
         collect(&run)
     };
-    if results.is_empty() && !errors.is_empty() {
+    let found = writer
+        .as_ref()
+        .map_or(results.len(), store_stream::ScanWriter::hosts);
+    if found == 0 && !errors.is_empty() {
         return Err(errors.join("; "));
     }
-    let snapshot = store::Snapshot {
-        targets,
-        complete,
-        settings: crate::provenance::stamped(&s),
-        hosts: results,
-        observations: vec![],
-        notes: BTreeMap::new(),
-        sent: run.sent.snapshot(),
+    let sent = run.sent.snapshot();
+    let (id, snapshot) = match writer {
+        Some(w) => (w.finish(complete, sent.clone())?, None),
+        None => {
+            let snapshot = store::Snapshot {
+                targets,
+                complete,
+                settings: crate::provenance::stamped(&s),
+                hosts: results,
+                observations: vec![],
+                notes: BTreeMap::new(),
+                sent: sent.clone(),
+            };
+            (store::save(db, &snapshot)?, Some(snapshot))
+        }
     };
-    let id = store::save(db, &snapshot)?;
     progress(
         opts,
         format_args!(
@@ -120,12 +187,16 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         ),
     );
     if opts.contains_key("sent-log") {
-        eprintln!("{}", crate::sendlog::format_table(&snapshot.sent));
+        eprintln!("{}", crate::sendlog::format_table(&sent));
     }
     if let Some(file) = opts.get("record") {
-        write_record(&run, file, &snapshot, opts)?;
+        write_record(&run, file, &sent, opts)?;
     }
     if let (Some(original), Some(original_id)) = (&original, replay_of) {
+        let snapshot = match snapshot {
+            Some(snapshot) => snapshot,
+            None => store::load(db, id)?,
+        };
         let check = crate::provenance::replay_check(original, original_id, &snapshot, id);
         match format {
             "json" => output(&crate::schema::object("replay-check", &check)?, opts)?,
@@ -144,10 +215,20 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         };
         return Ok(());
     }
-    output(
-        &store::export_at(&snapshot, format, store::timestamp(db, id)?)?,
-        opts,
-    )?;
+    // With --stream stdout carries the live events; the report is written only to --output.
+    let report = !opts.contains_key("no-report") && (!stream || opts.contains_key("output"));
+    if report {
+        // A batch-written scan is read back for the report: the scan itself ran in flat memory,
+        // the report needs the responding hosts (and only those) in memory.
+        let snapshot = match snapshot {
+            Some(snapshot) => snapshot,
+            None => store::load(db, id)?,
+        };
+        output(
+            &store::export_at(&snapshot, format, store::timestamp(db, id)?)?,
+            opts,
+        )?;
+    }
     // Saved but stopped early (TUI stop, or errors): partial result, status 2.
     if !errors.is_empty() {
         eprintln!(
@@ -162,7 +243,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
 fn write_record(
     run: &scan::Running,
     file: &str,
-    snapshot: &store::Snapshot,
+    sent: &[crate::sendlog::SentEntry],
     opts: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let recorder = run
@@ -181,7 +262,7 @@ fn write_record(
         opts,
         format_args!(
             "The sent log lists {} packets; the record covers the OT requests and replies and the service identification payloads (probes, HTTP, SMB and RDP negotiate), not the connects, ICMP, ARP, UDP probes, TLS, SSH, DNS or traceroute.",
-            crate::sendlog::total(&snapshot.sent)
+            crate::sendlog::total(sent)
         ),
     );
     if written.dropped > 0 {
@@ -199,24 +280,97 @@ fn write_record(
 /// Hosts, complete flag, errors.
 pub(in crate::ui) type Collected = (Vec<scan::Host>, bool, Vec<String>);
 pub(in crate::ui) fn collect(run: &scan::Running) -> Collected {
+    collect_with(run, false)
+}
+/// Like [`collect`], and prints a `scan-event` line to stdout for every host that answers, every
+/// port found open and every responding host that finishes, at the moment the engine reports it.
+pub(in crate::ui) fn collect_streaming(run: &scan::Running) -> Collected {
+    collect_with(run, true)
+}
+fn collect_with(run: &scan::Running, stream: bool) -> Collected {
     let mut hosts = vec![];
+    let (complete, errors) = drive(run, stream, &mut |h| {
+        hosts.push(h);
+        Ok(())
+    });
+    (hosts, complete, errors)
+}
+/// Runs the scan's events to the end: every host worth keeping (responding ones, or all when the
+/// scan is small) goes to `sink`, with `stream` the live events go to stdout. A failing sink
+/// stops the scan and is reported as an error. Returns (complete, errors); errors never discard
+/// results, they only mark the scan partial.
+fn drive(
+    run: &scan::Running,
+    stream: bool,
+    sink: &mut dyn FnMut(scan::Host) -> Result<(), String>,
+) -> (bool, Vec<String>) {
+    use std::io::Write;
     let mut errors = vec![];
     let sparse = run.total > scan::MAX_HOSTS;
+    // Ports already announced per host still being scanned (dropped when the host finishes).
+    let mut announced: HashMap<IpAddr, BTreeSet<u16>> = HashMap::new();
+    let mut stdout = std::io::stdout().lock();
+    let mut line = |value: serde_json::Value| {
+        if stream && let Ok(text) = crate::schema::line("scan-event", &value) {
+            // A closed pipe only ends the live output; the scan still completes and is saved.
+            let _ = writeln!(stdout, "{text}").and_then(|()| stdout.flush());
+        }
+    };
+    let elapsed = || run.started.elapsed().as_millis() as u64;
     loop {
-        match run.receiver.recv() {
-            Ok(event) => {
-                if accept(event, &mut hosts, sparse, &mut errors) {
-                    break;
-                }
-            }
+        let event = match run.receiver.recv() {
+            Ok(event) => event,
             Err(_) => {
                 errors.push("Scan worker disconnected".into());
                 break;
             }
+        };
+        match event {
+            scan::Event::Partial(h) => {
+                let seen = announced.entry(h.ip).or_insert_with(|| {
+                    line(serde_json::json!({"event": "host-up", "ip": h.ip.to_string(), "elapsed_ms": elapsed()}));
+                    BTreeSet::new()
+                });
+                for &port in &h.open {
+                    if seen.insert(port) {
+                        line(
+                            serde_json::json!({"event": "port-open", "ip": h.ip.to_string(), "port": port, "elapsed_ms": elapsed()}),
+                        );
+                    }
+                }
+            }
+            scan::Event::Host(h) => {
+                let before = announced.remove(&h.ip).unwrap_or_default();
+                if h.responding {
+                    if before.is_empty() && h.open.is_empty() {
+                        line(
+                            serde_json::json!({"event": "host-up", "ip": h.ip.to_string(), "elapsed_ms": elapsed()}),
+                        );
+                    }
+                    for &port in h.open.iter().filter(|p| !before.contains(p)) {
+                        line(
+                            serde_json::json!({"event": "port-open", "ip": h.ip.to_string(), "port": port, "elapsed_ms": elapsed()}),
+                        );
+                    }
+                    line(
+                        serde_json::json!({"event": "host-done", "ip": h.ip.to_string(), "open": h.open, "ports_checked": h.ports_checked, "elapsed_ms": elapsed()}),
+                    );
+                }
+                if (h.responding || !sparse)
+                    && let Err(e) = sink(h)
+                    && !errors.contains(&e)
+                {
+                    // The results cannot be kept: stop, the engine ends with `Done`.
+                    run.cancel.store(true, Ordering::Relaxed);
+                    errors.push(e);
+                }
+            }
+            scan::Event::Done => break,
+            scan::Event::Error(e) => errors.push(e),
         }
     }
     let complete = errors.is_empty() && !run.cancel.load(Ordering::Relaxed);
-    (hosts, complete, errors)
+    (complete, errors)
 }
 /// Applies one scan event and returns true on `Done`. Errors never discard results: they are
 /// recorded and mark the scan partial (the engine always follows with `Done`).
@@ -233,6 +387,8 @@ pub(in crate::ui) fn accept(
             }
             false
         }
+        // Provisional hosts are for live views; the final `Host` event carries the result.
+        scan::Event::Partial(_) => false,
         scan::Event::Done => true,
         scan::Event::Error(e) => {
             errors.push(e);
@@ -447,6 +603,7 @@ mod tests {
     }
 
     /// The sent log is saved with the scan, appears in the JSON output and in `--sent-log`.
+    /// The sent log is saved with the scan, appears in the JSON output and in `--sent-log`.
     #[test]
     fn a_real_scan_records_what_it_sent() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -487,6 +644,66 @@ mod tests {
         assert_eq!(stored.sent.len(), sent.len());
         assert!(crate::sendlog::total(&stored.sent) >= 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Events of a big scan (above MAX_HOSTS addresses): only responding hosts reach the sink, a
+    /// failing sink stops the scan, and nothing but the sink keeps a host.
+    #[test]
+    fn a_big_scan_keeps_responding_hosts_in_the_sink_only() {
+        let host = |n: u8, responding: bool| scan::Host {
+            ip: format!("10.0.0.{n}").parse().unwrap(),
+            responding,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::new(),
+            udp_open: vec![],
+            trace: vec![],
+        };
+        let running = |total: usize| {
+            let (tx, receiver) = std::sync::mpsc::channel();
+            for (n, up) in [(1, true), (2, false), (3, true)] {
+                tx.send(scan::Event::Host(host(n, up))).unwrap();
+            }
+            tx.send(scan::Event::Done).unwrap();
+            scan::Running {
+                receiver,
+                cancel: Default::default(),
+                pause: Default::default(),
+                total,
+                started: std::time::Instant::now(),
+                sent: Default::default(),
+            }
+        };
+        let mut kept = vec![];
+        let (complete, errors) = drive(&running(scan::MAX_HOSTS + 1), false, &mut |h| {
+            kept.push(h.ip.to_string());
+            Ok(())
+        });
+        assert!(complete && errors.is_empty());
+        assert_eq!(
+            kept,
+            ["10.0.0.1", "10.0.0.3"],
+            "the silent host is not kept"
+        );
+        // A small scan keeps every host.
+        let mut all = 0;
+        drive(&running(3), false, &mut |_| {
+            all += 1;
+            Ok(())
+        });
+        assert_eq!(all, 3);
+        // A sink that fails (disk full) cancels the scan and marks it partial.
+        let run = running(scan::MAX_HOSTS + 1);
+        let (complete, errors) = drive(&run, false, &mut |_| Err("disk full".into()));
+        assert!(!complete && errors == ["disk full"], "{errors:?}");
+        assert!(run.cancel.load(Ordering::Relaxed));
     }
 
     #[test]

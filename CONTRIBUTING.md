@@ -57,6 +57,8 @@ python -I lab/check_cpe.py                 # format of the CPE table only; --dow
 cargo test -p network-scope-core windows_schannel -- --ignored   # Windows with PowerShell 7
 ```
 
+Performance: `cargo bench -p network-scope-core` runs the criterion benchmarks of the hot paths (`core/benches`); pull requests are compared with the base branch by the `bench` workflow and fail above +15 %, see [Lab and testing](docs/src/lab-and-testing.md#performance-tests). Resource budgets (startup, memory, GUI frame): `python -I scripts/resource_budget.py --cli /absolute/path/to/network-scope-cli --check`.
+
 Dependency checks (RustSec advisories, licenses, sources), the same ones the `security` workflow runs:
 
 ```sh

@@ -88,7 +88,9 @@ Only loopback addresses (`127.0.0.0/8`) are ever contacted; a ground truth with 
 | Device type, OS accuracy | Correct / hosts with a known device type, or a known OS (named by their banners) |
 | Finding recall | Findings the ground truth expects (`findings` per host) that were raised / expected findings |
 | False alarms | Count, lower is better: findings raised on a host whose ground truth lists exactly which rule ids its lab condition warrants, but not that rule. Per-rule detail is in `benchmark.json` (`metrics.false_alarms.by_rule`) and in the deviations list. `--check` fails when the count rises above the baseline (a missing baseline value means 0) |
-| Wall time | Reported, not gated |
+| Back-off notes | Count, lower is better: `backed off:` notes on lab hosts (the [automatic back-off](scanning-engine.md#automatic-back-off) reacted to a reset connection or a port that stopped answering). A healthy lab never trips it; a note explains a long scan time that is not noise. `--check` fails when the count rises above the baseline (a missing baseline value means 0) |
+| First result | Milliseconds from starting `scan --stream` to its first output line (the first host or open port the engine reports, process start included), median of five runs. Reported always; gated at 200 ms with `--gate-first-result`, which CI sets (the roadmap target; measured 35-42 ms on an idle Windows machine and 235-557 ms while other builds ran on it, which is why it is not gated by default) |
+| Wall time | Reported. `--max-scan-seconds N` (CI uses 60) fails a gross slowdown only; finer gating would trip on shared machines: on a Windows laptop the same scan took 6.2 s idle and about 29 s while 70 busy processes competed for the CPU, with or without the back-off, and with no back-off note. Check the back-off notes row and the machine load before blaming a change |
 
 The risk rules run over the same scan (`findings 1`). A host that has a `findings` list in the ground truth states exactly which rule ids its simulators warrant (for example `redis-noauth` for the Redis host, nothing for the IIS host); everything else raised there is a false alarm. A host without the key states nothing and is skipped.
 
@@ -280,3 +282,57 @@ No industrial production network was scanned during development. Reports from re
 ## Screenshots
 
 `cargo run --release -- --screenshot screenshot.png` renders the desktop to a PNG without scanning or modifying preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|settings|ot|script|timeline` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, then `-fast` for Safe Mode off, e.g. `main-small-fast`).
+
+## Resource budgets
+
+`scripts/resource_budget.py` (Python standard library) checks the roadmap's budgets (B17) against a release build and runs in CI on Ubuntu (`--check` fails on a breach):
+
+```sh
+python -I scripts/resource_budget.py --cli /absolute/path/to/network-scope-cli --check --gui
+```
+
+| Budget | Limit | What is measured |
+| --- | --- | --- |
+| Startup | 150 ms | Median of 21 runs of `network-scope-cli --version`, process start to exit |
+| Memory, /16 dry run | 200 MB | Peak memory of `scan 10.0.0.0/16 --dry-run` |
+| Memory, /16 scan | 200 MB | Peak memory of a real scan of 127.0.0.0/16 on loopback (65,534 targets, `--fast --tcp-only --ports 1 --timeout 300`) |
+| Memory, batch-written scan | 200 MB | The same over 127.0.0.0/15 (131,070 targets): above 65,536 addresses the hosts go to the database in batches |
+| GUI frame | 16.6 ms | `cargo test --release --lib frame_budget -- --ignored`: a headless egui table of 65,536 hosts, an idle frame and a frame that also sorts and filters the rows |
+
+Loopback only; nothing leaves the machine. Peak memory is the operating system's figure for the process (`ru_maxrss` from `wait4`, or the peak working set on Windows).
+
+Measured on Windows 11, 22 logical cores, release build, 2026-11-20 (the CI limits are enforced on Ubuntu, where nothing was measured by the author):
+
+| Measurement | Result |
+| --- | --- |
+| Startup (`--version`) | 86 ms median (81.5 to 212 ms over 31 runs; 94 to 158 ms before `--version` and `--help` stopped loading the rule database). A trivial `cmd /c ver` takes 58 ms in the same harness, so most of it is the process start of this Windows machine |
+| `scan 10.0.0.0/16 --dry-run` | 12.2 MB, 0.2 s |
+| `scan 10.0.0.0/8 --dry-run` (`--dry-run-8`) | 12.2 MB, 0.23 s |
+| Scan of 127.0.0.0/16 | 69.6 MB, 14 s |
+| Scan of 127.0.0.0/15 (batch-written) | 26.0 MB, 29 s; 127.0.0.0/14: 26.1 MB, 52 s |
+| GUI frame, 65,536 rows | idle frame 0.40 ms median (the rows are virtual: only the visible ones are laid out); a frame with sort, filter and draw 10.95 ms median, worst of 30 frames 18.9 ms. The median meets 60 fps; one frame in 30 can miss it while a scan feeds the table |
+
+The GUI test cannot drive the real window (that needs a display): it draws the same `TableBuilder` columns and cells as the results table and repeats the sort and the row filter, so a change to the table code itself (not these helpers) is not covered.
+
+## Performance tests
+
+`core/benches/hot_paths.rs` holds [criterion](https://criterion-rs.github.io/book/) benchmarks of the hot paths: parsing a 2,000-frame pcap, decoding 2,000 passive frames, the risk analysis of a 1,000-host snapshot, the diff of two 1,000-host snapshots, expanding and parsing targets, and matching banners against every service probe. They touch no network.
+
+```sh
+cargo bench -p network-scope-core                                  # run them
+cargo bench -p network-scope-core -- --save-baseline before        # keep the numbers
+cargo bench -p network-scope-core -- --baseline before             # compare with them
+python -I scripts/bench_compare.py target/criterion --threshold 15 # exit 1 on a regression
+```
+
+The workflow `bench.yml` runs on every pull request: one job builds the base branch and saves its numbers as the baseline, runs the same benchmarks on the change on the same runner, and `scripts/bench_compare.py` fails the job when a benchmark's mean got more than 15 percent slower and criterion's confidence interval for the change excludes zero. A base branch without benchmarks (the pull request that adds them) has nothing to compare with and passes with a notice.
+
+Runner noise is real. On a shared workstation with other builds running, two runs of identical code differed by up to +25 % in the pcap and diff benchmarks (measured 2026-11-20, Windows 11, release build), so the comparison on a hosted runner can fail without a real slowdown: re-run the job once before believing a failure, and look at the interval in the job summary. Numbers on that workstation (middle value): pcap parse 82 microseconds, passive decode 1.17 ms (2,000 frames), risk analysis 2.8 ms, diff 8.3 ms, expanding a /16 138 microseconds, parsing mixed ranges 0.46 microseconds, probe matching 16 microseconds.
+
+`criterion` is a dev-dependency of the core crate only (version 0.8.2, no default features: no plotting, no rayon); `cargo deny check` reports no new advisory, licence or source problem (a pre-existing `wildcard` error for the path dependency `network-scope-core` shows with cargo-deny 0.21 with or without it).
+
+## Fast repeat scans
+
+`scan --incremental` ([Fast repeat scans](scanning-engine.md#fast-repeat-scans)) measured on the lab (9 loopback addresses, 11 ports each, `--fast --deep --ot --tcp-only --timeout 1500`, release build, Windows 11, 2026-11-20): the full scan took 6.5 s; three repeat scans of the same database took 1.32, 1.41 and 1.56 s, about a fifth. Every repeat scan diffed empty against the full scan and against each other (`diff 1 3`, `diff 1 4`, `diff 2 4`). The third scan carried over the identification of every unchanged banner or web service (`incr.carried`: for example `svc:21,22,23,8080;udp` on the weak Unix server) and the UDP answers of every host that answered before. On a busy machine the same full scan took 28.9 s and the repeat scans 2.5 s (see the note on machine load above).
+
+The saving in this lab comes from skipping the service identification and the UDP probes; with only 11 ports per host the port sample covers every port. On a real network the port probing of silent hosts is the larger part, and a repeat scan probes about 16 ports per host (plus the known open ones) instead of all of them. That figure was not measured on a real network.
