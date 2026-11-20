@@ -435,6 +435,7 @@ pub fn mcp_message(data: &[u8]) {
     let cfg = crate::mcp::Config {
         db: std::path::PathBuf::from("/nonexistent-network-scope-fuzz/inventory.sqlite"),
         allow_scan: false,
+        scope: None,
     };
     let mut out = Vec::new();
     let _ = crate::mcp::serve(cfg, std::io::Cursor::new(data), &mut out);

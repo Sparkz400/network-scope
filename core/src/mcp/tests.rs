@@ -62,6 +62,7 @@ fn config(db: &Path, allow_scan: bool) -> Config {
     Config {
         db: db.to_path_buf(),
         allow_scan,
+        scope: None,
     }
 }
 fn session(db: &Path) -> Server {
@@ -907,7 +908,7 @@ fn the_read_tools_never_change_the_inventory() {
 
 #[test]
 fn the_scope_check_works_on_parsed_addresses() {
-    let ok = |s: &str| scope_check(&[s.parse().unwrap()]);
+    let ok = |s: &str| scope_check(&[s.parse().unwrap()], None);
     for private in [
         "10.1.2.3",
         "172.16.0.1",
@@ -947,8 +948,8 @@ fn the_scope_check_works_on_parsed_addresses() {
         .iter()
         .map(|s| s.parse().unwrap())
         .collect();
-    assert!(scope_check(&mixed).is_err());
-    assert!(scope_check(&[]).is_ok());
+    assert!(scope_check(&mixed, None).is_err());
+    assert!(scope_check(&[], None).is_ok());
 }
 
 #[test]
@@ -1035,6 +1036,84 @@ fn the_scan_tool_refuses_public_oversized_and_unusual_requests() {
     assert!(!db.exists(), "a refused scan saves nothing");
 }
 
+/// A session whose server declares `scope`.
+fn scoped_session(db: &Path, scope: &str) -> Server {
+    let mut server = Server::new(Config {
+        scope: Some(crate::scope::Scope::parse(scope).unwrap()),
+        ..config(db, true)
+    });
+    send(
+        &mut server,
+        "initialize",
+        json!({"protocolVersion": LATEST_PROTOCOL}),
+    );
+    server
+}
+
+#[test]
+fn the_scan_tool_runs_the_scope_guard_without_consent() {
+    let db = temp_db("scope-guard");
+    let mut server = scoped_session(&db, "10.5.0.0/16");
+    // Private but outside the declared scope: refused, and nothing can override it.
+    let text = failed(&mut server, "scan", json!({"targets": "10.9.0.1"}));
+    assert!(
+        text.contains("Scope guard") && text.contains("cannot override"),
+        "{text}"
+    );
+    assert!(!text.contains("--yes-public"), "{text}");
+    // Consent-like arguments are not part of the tool.
+    for arguments in [
+        json!({"targets": "10.9.0.1", "yes_public": true}),
+        json!({"targets": "8.8.8.8", "allow_out_of_scope": true}),
+    ] {
+        let text = failed(&mut server, "scan", arguments);
+        assert!(
+            text.contains("unexpected member") || text.contains("not a private address"),
+            "{text}"
+        );
+    }
+    // The dry run is refused the same way.
+    let text = failed(
+        &mut server,
+        "scan",
+        json!({"targets": "10.9.0.1", "dry_run": true}),
+    );
+    assert!(text.contains("Scope guard"), "{text}");
+    assert!(!db.exists());
+    remove_db(&db);
+}
+
+#[test]
+fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let db = temp_db("dry-run");
+    let mut server = session(&db);
+    let plan = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": port.to_string(), "services": true, "dry_run": true}),
+        "dry-run",
+    );
+    assert_eq!(plan["dry_run"], true);
+    assert_eq!(plan["packets_sent"], 0);
+    assert_eq!(plan["command"], "scan");
+    let kinds: Vec<&str> = plan["groups"][0]["packets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    assert!(
+        kinds.contains(&"tcp-connect") && kinds.contains(&"icmp-echo"),
+        "{kinds:?}"
+    );
+    assert!(listener.accept().is_err(), "the dry run connected");
+    assert!(!db.exists(), "a dry run saves nothing");
+    remove_db(&db);
+}
+
 #[test]
 fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1069,6 +1148,10 @@ fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
     assert!(!s.syn && !s.arp_sweep && !s.arp && !s.ot && !s.udp && !s.trace && !s.os_detect);
     assert!(!s.syn_adaptive && !s.tcp_adaptive && s.scripts.is_empty() && s.probe_file.is_empty());
     assert!(s.interface.is_empty() && s.source_ip.is_empty() && s.max_rate == 0);
+    assert!(
+        !saved.sent.is_empty(),
+        "the sent log is saved with the scan"
+    );
     assert_eq!(saved.hosts.len(), 1);
     assert_eq!(saved.hosts[0].open, [port]);
     // The new scan is queryable like any other.

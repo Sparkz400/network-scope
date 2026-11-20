@@ -38,7 +38,9 @@ impl Scanner {
     fn start_scheduled(&mut self) {
         let targets = std::mem::replace(&mut self.targets, self.saved.schedule.targets.clone());
         let was_safe = crate::schedule::force_safe_mode(&mut self.saved.settings);
-        self.start();
+        // Through the scope guard like every scan, but without anyone to confirm: public and
+        // out-of-scope targets are refused, never asked about.
+        self.start_unattended();
         self.saved.settings.safe = was_safe;
         self.targets = targets;
         if self.run.is_some() {

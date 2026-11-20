@@ -3,10 +3,10 @@
 `network-scope-cli mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io) server on **stdin and stdout**, so an AI assistant (Claude Desktop, Claude Code and other MCP clients) can query your inventory: "which hosts gained SMBv1 since the first of the month?", "when did 192.168.1.20 first appear?", "what changed between scan 12 and 14?". There is no network listener: the client starts the program and talks to it through the pipes.
 
 ```sh
-network-scope-cli mcp [--db FILE] [--no-scan]
+network-scope-cli mcp [--db FILE] [--no-scan] [--scope CIDR[,CIDR] | --scope-file FILE]
 ```
 
-`--db` selects the inventory (default as for every command). `--no-scan` removes the `scan` tool, which leaves a server that only reads.
+`--db` selects the inventory (default as for every command). `--no-scan` removes the `scan` tool, which leaves a server that only reads. `--scope` / `--scope-file` (or the default `scope.txt` in the config folder) declare the scope the `scan` tool may touch; `--yes-public` and `--allow-out-of-scope` are refused, because an assistant can never confirm anything.
 
 ## Setting it up
 
@@ -57,7 +57,8 @@ The query tools only read. They never send traffic and never write to the invent
 `scan` is the only tool that sends network traffic, and it is deliberately narrow:
 
 - **Always Safe Mode.** The scan settings are built inside the server; no argument can switch Safe Mode off, and `fast`, `safe`, `syn`, `udp`, `ot` or any other unknown argument is refused. At most 8 hosts at a time, at least 100 ms between probes, TCP connect only (no SYN, no ARP sweep, no UDP, no OT queries, no traceroute, no scripts). `services` is optional and adds the read-only service identification Safe Mode allows. OT and printer ports are protected by the engine's deny lists as everywhere else.
-- **Private addresses only.** RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), loopback and IPv6 unique-local addresses. The check runs on the parsed addresses, not on the text, so every spelling (ranges, CIDR, IPv4-mapped IPv6) is checked; one public address refuses the whole request. Hostnames are not accepted at all. (This is a conservative check inside the MCP server; the scope guard planned in the roadmap (H54) will replace it.)
+- **Private addresses only.** RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), loopback and IPv6 unique-local addresses. The check runs on the parsed addresses, not on the text, so every spelling (ranges, CIDR, IPv4-mapped IPv6) is checked; one public address refuses the whole request. Hostnames are not accepted at all. On top of that the engine's [scope guard](safe-mode-and-ot-safety.md) runs in its non-interactive form: with a declared scope, a private address outside it is refused too, and there is no consent flag or prompt that could lift either refusal.
+- **`dry_run: true` returns the plan.** The result (schema `dry-run`) lists the packet kinds the scan would send, per group of hosts, and nothing is sent or saved. The scope and size limits apply to a dry run too.
 - **Small.** At most 256 addresses (a /24), 1,024 ports (`top:N` and ranges count after expansion), 4,000 probes in total (addresses times ports plus one ping each; Safe Mode spacing makes more than that take longer than a tool call should), and a time limit (`timeout_seconds`, default 240, at most 600): a scan still running then is cancelled and saved as partial, and the summary says so.
 - **A summary, not the data.** The result has the new scan ID, whether it completed, counts, the finding counts by severity and the ten most severe findings. Everything else is available through the query tools by scan ID.
 

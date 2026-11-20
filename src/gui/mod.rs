@@ -681,6 +681,15 @@ impl Scanner {
         self.data_changed();
     }
     fn start(&mut self) {
+        self.start_checked(false);
+    }
+    /// A scan nobody is watching (the scheduler): the same scope guard, but nobody can confirm,
+    /// so what needs a yes is refused (no dialog, no stored consent is used) and the reason goes
+    /// to the status line.
+    fn start_unattended(&mut self) {
+        self.start_checked(true);
+    }
+    fn start_checked(&mut self, unattended: bool) {
         if self.listening.is_some() || self.ot.capturing() {
             self.error = "Stop passive capture before starting an active scan.".into();
             return;
@@ -690,7 +699,11 @@ impl Scanner {
             return;
         }
         // Consent counts for this call only, whichever way it ends.
-        let consent = std::mem::take(&mut self.scope_consent);
+        let consent = if unattended {
+            crate::scope::Consent::default()
+        } else {
+            std::mem::take(&mut self.scope_consent)
+        };
         let parsed =
             scan::parse_hosts(&self.targets, self.saved.settings.skip_edges).and_then(|hosts| {
                 scan::parse_ports(&self.saved.settings.ports).map(|ports| (hosts, ports))
@@ -700,6 +713,10 @@ impl Scanner {
                 // The same scope check as the CLI (ROADMAP H54): public or out-of-scope
                 // addresses need a yes in the confirmation dialog first.
                 if let Some(text) = self.scope_check(&hosts, consent) {
+                    if unattended {
+                        self.error = format!("Scheduled scan not started. {text}");
+                        return;
+                    }
                     // The dialog remembers the targets it was shown for.
                     self.scope_confirm = Some((self.targets.clone(), text));
                     return;
