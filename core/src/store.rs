@@ -2,7 +2,7 @@ use crate::{
     passive::Observation,
     scan::{Host, Settings},
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -152,6 +152,50 @@ pub(crate) fn open(path: &Path) -> Result<Connection, String> {
     Ok(c)
 }
 
+/// Opens the inventory for reading only: the read paths the MCP query tools share with the CLI and
+/// GUI ([`list`], [`load`], [`device_history`], [`latest_complete_per_scope`],
+/// [`latest_complete_before_time`]). No directory is created, the journal mode is left alone and
+/// nothing is migrated, so reading never changes the file, and a read-only file can be read.
+/// An inventory saved by an older version is read as it is: a table a later version added stands
+/// in empty in the connection's TEMP schema, which is what it holds right after the upgrade. A
+/// missing file reads as an empty inventory.
+pub(crate) fn open_read(path: &Path) -> Result<Connection, String> {
+    let c = if path.exists() {
+        Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+    } else {
+        Connection::open_in_memory()
+    }
+    .map_err(|e| e.to_string())?;
+    c.busy_timeout(std::time::Duration::from_secs(3))
+        .map_err(|e| e.to_string())?;
+    for (table, columns) in [
+        (
+            "scans",
+            "id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL",
+        ),
+        (
+            "scan_hosts",
+            "scan_id INTEGER NOT NULL, seq INTEGER NOT NULL, host TEXT NOT NULL, PRIMARY KEY(scan_id,seq)",
+        ),
+    ] {
+        let present: bool = c
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !present {
+            c.execute_batch(&format!("CREATE TEMP TABLE {table}({columns})"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(c)
+}
+
 /// Brings a database at `from` up to [`SCHEMA_VERSION`] in one transaction; a failure rolls
 /// everything back and leaves the version unchanged.
 fn migrate(c: &Connection, from: i64) -> rusqlite::Result<()> {
@@ -225,7 +269,7 @@ pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, 
     Ok(id)
 }
 pub fn list(path: &Path) -> Result<Vec<Entry>, String> {
-    let c = open(path)?;
+    let c = open_read(path)?;
     let mut statement = c
         .prepare("SELECT id,timestamp,targets,complete,hosts FROM scans ORDER BY id DESC LIMIT 500")
         .map_err(|e| e.to_string())?;
@@ -244,7 +288,7 @@ pub fn list(path: &Path) -> Result<Vec<Entry>, String> {
         .map_err(|e| e.to_string())
 }
 pub fn load(path: &Path, id: i64) -> Result<Snapshot, String> {
-    load_on(&open(path)?, id)
+    load_on(&open_read(path)?, id)
 }
 /// [`load`] on an open connection, for callers that read many scans.
 pub(crate) fn load_on(c: &Connection, id: i64) -> Result<Snapshot, String> {
@@ -255,7 +299,7 @@ pub(crate) fn load_on(c: &Connection, id: i64) -> Result<Snapshot, String> {
 }
 /// The newest completed scan of every scope: (targets, id, timestamp), newest first.
 pub fn latest_complete_per_scope(path: &Path) -> Result<Vec<(String, i64, i64)>, String> {
-    let c = open(path)?;
+    let c = open_read(path)?;
     let mut s = c
         .prepare("SELECT targets,id,timestamp FROM scans WHERE id IN (SELECT MAX(id) FROM scans WHERE complete=1 GROUP BY targets) ORDER BY id DESC")
         .map_err(|e| e.to_string())?;
@@ -271,7 +315,7 @@ pub fn latest_complete_before_time(
     targets: &str,
     timestamp: i64,
 ) -> Result<Option<i64>, String> {
-    open(path)?
+    open_read(path)?
         .query_row(
             "SELECT id FROM scans WHERE complete=1 AND targets=?1 AND timestamp<?2 ORDER BY id DESC LIMIT 1",
             params![targets, timestamp],
@@ -1116,8 +1160,17 @@ fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings)
 /// completed scans. For the GUI and `devices --history`.
 pub fn device_history(path: &Path, query: &str) -> Result<crate::devices::DeviceHistory, String> {
     let key = crate::devices::HistoryKey::parse(query)?;
-    let needles = key.needles();
-    let c = open(path)?;
+    // Cheap pre-filter: a snapshot that never spells the address cannot contain the device.
+    let spelled = regex::bytes::Regex::new(&format!(
+        "(?i){}",
+        key.needles()
+            .iter()
+            .map(|n| regex::escape(n))
+            .collect::<Vec<_>>()
+            .join("|")
+    ))
+    .map_err(|e| e.to_string())?;
+    let c = open_read(path)?;
     let mut s = c
         .prepare("SELECT id,timestamp,snapshot FROM scans ORDER BY id ASC")
         .map_err(|e| e.to_string())?;
@@ -1128,28 +1181,23 @@ pub fn device_history(path: &Path, query: &str) -> Result<crate::devices::Device
             r.get(0).map_err(|e| e.to_string())?,
             r.get(1).map_err(|e| e.to_string())?,
         );
-        let data: String = r.get(2).map_err(|e| e.to_string())?;
-        // Cheap pre-filter: a snapshot that never spells the address cannot contain the device.
+        let Ok(data) = r.get_ref(2).and_then(|v| Ok(v.as_str()?)) else {
+            history.unreadable();
+            continue;
+        };
         // The hosts of a batch-written scan are not in the text, so those are never skipped.
-        let streamed = c
-            .query_row(
-                "SELECT 1 FROM scan_hosts WHERE scan_id=?1 LIMIT 1",
-                [id],
-                |_| Ok(()),
-            )
-            .is_ok();
-        let upper = data.to_ascii_uppercase();
-        if !streamed
-            && !needles
-                .iter()
-                .any(|n| upper.contains(&n.to_ascii_uppercase()))
-        {
+        let streamed = !matches!(
+            c.prepare_cached("SELECT 1 FROM scan_hosts WHERE scan_id=?1 LIMIT 1")
+                .and_then(|mut s| s.query_row([id], |_| Ok(()))),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        );
+        if !streamed && !spelled.is_match(data.as_bytes()) {
             history.skip();
             continue;
         }
-        match snapshot_of(&c, id, &data) {
+        match snapshot_of(&c, id, data) {
             Ok(snapshot) => history.add(id, ts, &snapshot),
-            Err(_) => history.skip(),
+            Err(_) => history.unreadable(),
         }
     }
     Ok(history.finish())
@@ -2160,7 +2208,35 @@ mod tests {
         assert!(text.contains("Seen in 2 of 4 saved scans"), "{text}");
         assert!(device_history(&path, "not-a-device").is_err());
         let none = device_history(&path, "10.9.9.9").unwrap();
-        assert_eq!((none.sightings, none.scans), (0, 4));
+        assert_eq!((none.sightings, none.scans, none.unreadable), (0, 4, 0));
+        remove_db(&path);
+    }
+
+    #[test]
+    fn device_history_counts_unreadable_scans() {
+        let path = temp_db("history-unreadable");
+        let mut s = snapshot();
+        s.hosts = vec![host("10.0.0.5", &[22], &[])];
+        for _ in 0..3 {
+            save(&path, &s).unwrap();
+        }
+        open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE scans SET snapshot='{\"10.0.0.5\": damaged' WHERE id=2",
+                [],
+            )
+            .unwrap();
+        let h = device_history(&path, "10.0.0.5").unwrap();
+        assert_eq!((h.sightings, h.scans, h.unreadable), (2, 3, 1));
+        let text = crate::devices::history_text(&h);
+        assert!(
+            text.contains("1 of the saved scans could not be read"),
+            "{text}"
+        );
+        // A damaged scan that never spells the address is skipped by the pre-filter, unread.
+        let none = device_history(&path, "10.9.9.9").unwrap();
+        assert_eq!((none.sightings, none.unreadable), (0, 0));
         remove_db(&path);
     }
 }

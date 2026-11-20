@@ -963,6 +963,9 @@ pub struct DeviceHistory {
     pub sightings: usize,
     /// Scans and captures in the inventory.
     pub scans: usize,
+    /// Scans that could not be read (damaged or unparseable), included in `scans`. Non-zero
+    /// means the history may be incomplete, not that the device was absent.
+    pub unreadable: usize,
     pub ips: Vec<IpAddr>,
     pub macs: Vec<String>,
     pub hostnames: Vec<String>,
@@ -1017,12 +1020,115 @@ impl HistoryBuilder {
         }
     }
 
-    /// A scan that was not loaded (filtered out or unreadable) still counts towards `scans`.
+    /// A scan the pre-filter left unread still counts towards `scans`.
     pub fn skip(&mut self) {
         self.out.scans += 1;
     }
 
+    /// A scan that could not be read: counts towards `scans` and `unreadable`.
+    pub fn unreadable(&mut self) {
+        self.out.scans += 1;
+        self.out.unreadable += 1;
+    }
+
     pub fn add(&mut self, scan_id: i64, timestamp: i64, snapshot: &crate::store::Snapshot) {
+        match self.related(snapshot) {
+            Some(related) => self.add_all(scan_id, timestamp, &related),
+            None => self.out.scans += 1,
+        }
+    }
+
+    /// The part of `snapshot` that can make up the device: the hosts and observations matching
+    /// the key and, to a fixpoint, every one sharing an IP, a MAC or an SMB server GUID with one
+    /// already taken (every way [`merge`] joins records), in their original order. Merging only
+    /// these gives the same device and findings as the whole scan, without merging and analysing
+    /// hundreds of unrelated hosts per scan. `None` when no record matches the key.
+    fn related(&self, snapshot: &crate::store::Snapshot) -> Option<crate::store::Snapshot> {
+        let guids = |h: &Host| -> Vec<String> {
+            h.identity
+                .iter()
+                .filter(|(k, v)| k.starts_with("smb.") && k.ends_with(".guid") && !v.is_empty())
+                .map(|(_, v)| v.to_ascii_lowercase())
+                .collect()
+        };
+        let host_keys: Vec<(String, Vec<String>)> = snapshot
+            .hosts
+            .iter()
+            .map(|h| (norm_mac(&h.mac), guids(h)))
+            .collect();
+        let observation_macs: Vec<String> = snapshot
+            .observations
+            .iter()
+            .map(|o| norm_mac(&o.mac))
+            .collect();
+        let (mut ips, mut macs, mut smb) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        match &self.key {
+            HistoryKey::Mac(m) => macs.insert(m.clone()),
+            HistoryKey::Ip(ip) => ips.insert(*ip),
+        };
+        let mut host_in = vec![false; snapshot.hosts.len()];
+        let mut observation_in = vec![false; snapshot.observations.len()];
+        loop {
+            let mut grew = false;
+            for (i, (h, (mac, guids))) in snapshot.hosts.iter().zip(&host_keys).enumerate() {
+                if !host_in[i]
+                    && (ips.contains(&h.ip)
+                        || (!mac.is_empty() && macs.contains(mac))
+                        || guids.iter().any(|g| smb.contains(g)))
+                {
+                    host_in[i] = true;
+                    grew = true;
+                    ips.insert(h.ip);
+                    if !mac.is_empty() {
+                        macs.insert(mac.clone());
+                    }
+                    smb.extend(guids.iter().cloned());
+                }
+            }
+            for (i, (o, mac)) in snapshot
+                .observations
+                .iter()
+                .zip(&observation_macs)
+                .enumerate()
+            {
+                if !observation_in[i]
+                    && (o.ip.is_some_and(|ip| ips.contains(&ip))
+                        || (!mac.is_empty() && macs.contains(mac)))
+                {
+                    observation_in[i] = true;
+                    grew = true;
+                    ips.extend(o.ip);
+                    if !mac.is_empty() {
+                        macs.insert(mac.clone());
+                    }
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        if !host_in.contains(&true) && !observation_in.contains(&true) {
+            return None;
+        }
+        Some(crate::store::Snapshot {
+            targets: String::new(),
+            complete: snapshot.complete,
+            settings: snapshot.settings.clone(),
+            hosts: (snapshot.hosts.iter().zip(&host_in))
+                .filter(|(_, taken)| **taken)
+                .map(|(h, _)| h.clone())
+                .collect(),
+            observations: (snapshot.observations.iter().zip(&observation_in))
+                .filter(|(_, taken)| **taken)
+                .map(|(o, _)| o.clone())
+                .collect(),
+            notes: BTreeMap::new(),
+            sent: vec![],
+        })
+    }
+
+    /// [`Self::add`] without narrowing the snapshot to the related records first.
+    fn add_all(&mut self, scan_id: i64, timestamp: i64, snapshot: &crate::store::Snapshot) {
         self.out.scans += 1;
         let devices: Vec<Device> = merge(&snapshot.hosts, &snapshot.observations)
             .into_iter()
@@ -1229,8 +1335,15 @@ pub fn history_text(h: &DeviceHistory) -> String {
     use crate::report::fmt_time;
     use std::fmt::Write as _;
     let mut o = format!("Device history for {} ({})\n", h.query, h.key);
+    let unreadable = match h.unreadable {
+        0 => String::new(),
+        n => format!("{n} of the saved scans could not be read; the history may be incomplete."),
+    };
     let (Some(first), Some(last)) = (h.first_scan, h.last_scan) else {
         let _ = write!(o, "Not seen in any of {} saved scans.", h.scans);
+        if !unreadable.is_empty() {
+            let _ = write!(o, "\n{unreadable}");
+        }
         return o;
     };
     let _ = writeln!(
@@ -1256,6 +1369,9 @@ pub fn history_text(h: &DeviceHistory) -> String {
         join(h.hostnames.clone()),
         join(h.open_tcp.iter().map(u16::to_string).collect())
     );
+    if !unreadable.is_empty() {
+        let _ = writeln!(o, "{unreadable}");
+    }
     o.push_str("Events:\n");
     for e in &h.events {
         let _ = writeln!(
@@ -1868,5 +1984,105 @@ mod tests {
         let bare = merge(&[host("10.0.0.10", "", &[], &[])], &[]);
         let json = serde_json::to_value(&bare[0]).unwrap();
         assert!(json.get("os_evidence").is_none() && json.get("device_type_evidence").is_none());
+    }
+
+    /// Narrowing each scan to the records related to the key gives exactly the history of the
+    /// full merge, over every way records join: IP change, MAC-only passive sighting, ports
+    /// opened and closed with findings, a MAC-less host claimed by a MAC, two MACs on one IP and
+    /// an SMB-joined pair.
+    #[test]
+    fn narrowed_history_equals_the_full_merge() {
+        let a = "AA:BB:CC:00:00:01";
+        let smb = [("smb.445.guid", "1111"), ("smb.445.netbios_name", "SRV1")];
+        let scan = |hosts: Vec<Host>, observations: Vec<Observation>| crate::store::Snapshot {
+            hosts,
+            observations,
+            settings: crate::scan::Settings {
+                ports: "22,23,80,445".into(),
+                ..Default::default()
+            },
+            ..history_snapshot("10.0.0.1", "", &[])
+        };
+        let mut scans = vec![
+            scan(
+                vec![
+                    host("10.0.0.5", a, &[22, 80], &[]),
+                    host("10.0.0.9", "02:00:00:00:00:09", &[80], &[]),
+                    host("10.0.0.10", "", &[22], &[]),
+                ],
+                vec![],
+            ),
+            scan(
+                vec![
+                    host("10.0.0.6", a, &[22, 23, 80], &[("svc.23", "telnet")]),
+                    host("10.0.0.20", "", &[80], &[]),
+                    host("10.0.0.30", "", &[445], &smb),
+                    host("10.0.0.31", "", &[445], &smb),
+                ],
+                vec![
+                    obs("LLDP", "aa-bb-cc-00-00-01", None, &[("name", "switch-a")]),
+                    obs("ARP", "02:00:00:00:00:66", Some("10.0.0.6"), &[]),
+                    obs("ARP", "02:00:00:00:00:20", Some("10.0.0.20"), &[]),
+                ],
+            ),
+            scan(vec![host("10.0.0.6", a, &[22], &[])], vec![]),
+        ];
+        scans.push(crate::store::Snapshot {
+            complete: false,
+            ..scan(vec![], vec![obs("ARP", a, Some("10.0.0.6"), &[])])
+        });
+        let queries = [
+            a,
+            "10.0.0.5",
+            "10.0.0.6",
+            "02:00:00:00:00:66",
+            "10.0.0.20",
+            "02:00:00:00:00:20",
+            "10.0.0.30",
+            "10.0.0.31",
+            "10.0.0.10",
+            "10.0.0.99",
+        ];
+        for q in queries {
+            let key = HistoryKey::parse(q).unwrap();
+            let (mut narrowed, mut full) = (
+                HistoryBuilder::new(key.clone(), q),
+                HistoryBuilder::new(key, q),
+            );
+            for (id, s) in scans.iter().enumerate() {
+                narrowed.add(id as i64 + 1, 100 * id as i64, s);
+                full.add_all(id as i64 + 1, 100 * id as i64, s);
+            }
+            assert_eq!(
+                serde_json::to_value(narrowed.finish()).unwrap(),
+                serde_json::to_value(full.finish()).unwrap(),
+                "{q}"
+            );
+        }
+        let key = HistoryKey::parse(a).unwrap();
+        let mut b = HistoryBuilder::new(key, a);
+        assert_eq!(
+            b.related(&scans[0]).unwrap().hosts.len(),
+            1,
+            "unrelated hosts left out"
+        );
+        for (id, s) in scans.iter().enumerate() {
+            b.add(id as i64 + 1, 100 * id as i64, s);
+        }
+        let h = b.finish();
+        let kinds: Vec<&str> = h.events.iter().map(|e| e.kind).collect();
+        for kind in [
+            "ip-changed",
+            "port-opened",
+            "port-closed",
+            "finding-appeared",
+            "finding-resolved",
+        ] {
+            assert!(kinds.contains(&kind), "{kind}: {kinds:?}");
+        }
+        assert_eq!(
+            (h.sightings, h.hostnames.clone()),
+            (4, vec!["switch-a".to_string()])
+        );
     }
 }

@@ -65,6 +65,11 @@
       "type": "integer",
       "minimum": 0
     },
+    "unreadable": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Saved scans that could not be read (damaged or unparseable), counted in scans; non-zero means the history may be incomplete"
+    },
     "ips": {
       "type": "array",
       "items": {
