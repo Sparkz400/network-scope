@@ -89,6 +89,9 @@ Scan options:
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
   --dry-run       scan, monitor, trace, dcp: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
+  --incremental   scan, monitor: a repeat scan of the same targets: known open ports plus a sample are probed again,
+                  unchanged services keep their identification (marked as carried over); needs an earlier scan
+  --full-every N  monitor with --incremental: every Nth cycle is a full scan (default 10, 0 never)
   --early-stop    Stop probing a host's remaining ports once its device class is certain (e.g. two print
                   ports open); such a host is marked as not fully checked. Off by default
   --no-report     scan: save the scan and print no report (for very large scans; read it with export ID)

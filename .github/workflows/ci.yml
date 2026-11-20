@@ -66,7 +66,7 @@ jobs:
       # above, so it runs on Linux only. Timing is reported, not gated (runners are noisy).
       - name: Accuracy benchmark (Linux)
         if: runner.os == 'Linux'
-        run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --max-scan-seconds 60 --out-dir benchmark-results
+        run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --max-scan-seconds 60 --gate-first-result --out-dir benchmark-results
       # Resource budgets (roadmap B17): startup under 150 ms, under 200 MB for a /16 (dry run and a real
       # loopback scan of 127.0.0.0/16) and for a batch-written /15, and a GUI frame under 16.6 ms with
       # 65,536 rows (a headless egui test, run in release mode). Linux only, like the benchmark: it

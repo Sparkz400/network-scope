@@ -290,12 +290,15 @@ struct Ctx {
     probes: Option<ProbeDb>,
     udp_ports: Vec<u16>,
     scripts: Option<crate::script::Scripts>,
+    /// The scan a repeat scan is based on (`--incremental`), if any.
+    previous: Option<Arc<crate::incremental::Previous>>,
     /// Device classes for the probe order and the early stop.
     classes: &'static crate::portorder::ClassTable,
     /// Where `Event::Partial` goes (the scan's event channel); `None` in unit tests.
     partial: Option<Sender<Event>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     hosts: Box<dyn Iterator<Item = IpAddr> + Send>,
     ports: Vec<u16>,
@@ -304,6 +307,7 @@ pub async fn execute(
     pause: Arc<AtomicBool>,
     tx: Sender<Event>,
     sent: Arc<SentLog>,
+    previous: Option<Arc<crate::incremental::Previous>>,
 ) {
     let s = Arc::new(s);
     let gate = Arc::new(
@@ -415,6 +419,7 @@ pub async fn execute(
         probes,
         udp_ports,
         scripts,
+        previous,
         classes: crate::portorder::ClassTable::builtin(),
         partial: s.partial_events.then(|| tx.clone()),
     });
@@ -725,6 +730,22 @@ fn outcome_of(port: u16, state: &PortState) -> Option<Outcome> {
 }
 
 async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<Ctx>) -> Host {
+    // A repeat scan (`--incremental`) probes the ports that were open plus a sample, and carries
+    // over what it does not look at again; the host says so (`incremental::mark`).
+    let base = ctx.previous.clone();
+    let before: Option<&Host> = base.as_ref().and_then(|p| p.host(ip));
+    let (ports, sampled) = match &base {
+        Some(p) => {
+            let sample = crate::incremental::ports_for(before, &ports, p.id);
+            if sample.len() < ports.len() {
+                (Arc::new(sample), true)
+            } else {
+                (ports, false)
+            }
+        }
+        None => (ports, false),
+    };
+    let mut carried: Vec<String> = vec![];
     let mut h = Host {
         ip,
         responding: false,
@@ -814,6 +835,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     // Per-host pacing: the device-type limits and the back-off (see `backoff`). It replaces the
     // plain per-host semaphore; without a back-off it behaves exactly like one.
     let gov = HostGovernor::new(parallel, s.backoff);
+    let mut probed_sample: Option<Vec<u16>> = None;
     if crate::plan::probes_ports(h.responding, &s) {
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
@@ -932,6 +954,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 }
             }
         }
+        if sampled && unprobed == 0 {
+            probed_sample = Some(ports.to_vec());
+        }
         if unprobed > 0 {
             // The unprobed ports are unknown, not closed: monitor and diff must not report them.
             h.ports_checked = false;
@@ -954,7 +979,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             (if s.safe { 1 } else { 8 }).min(gov.limit()),
         ));
         let mut tasks = JoinSet::new();
-        for &port in h.open.iter().filter(|p| !crate::service::is_ot_port(**p)) {
+        let ports: Vec<u16> = h
+            .open
+            .iter()
+            .copied()
+            .filter(|p| !crate::service::is_ot_port(*p))
+            .collect();
+        for port in ports {
             if gov.paused() {
                 break;
             }
@@ -965,15 +996,28 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 sleep(gov.delay()).await;
             }
             let ctx = ctx.clone();
+            // What the base scan knew about this port: its change detector.
+            let known_fp = before
+                .filter(|b| b.responding)
+                .and_then(|b| b.identity.get(&format!("incr.fp.{port}")))
+                .cloned();
+            let repeat = base.is_some();
             tasks.spawn(async move {
+                // A repeat scan first checks whether the service still says the same thing.
+                let fp = if repeat {
+                    crate::service::fingerprint(ip, port, limit, &ctx.gate).await
+                } else {
+                    None
+                };
+                let same = fp.is_some() && fp == known_fp;
                 let found = match &ctx.probes {
-                    Some(db) => {
+                    Some(db) if !same => {
                         crate::service::detect(ip, port, limit, db, &ctx.gate, rounds).await
                     }
-                    None => None,
+                    _ => None,
                 };
                 drop(permit);
-                (port, found)
+                (port, found, fp, same)
             });
         }
         let mut found = vec![];
@@ -982,8 +1026,20 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 found.push(item);
             }
         }
-        found.sort_by_key(|(port, _)| *port);
-        for (port, outcome) in found {
+        found.sort_by_key(|(port, ..)| *port);
+        let mut carried_ports: Vec<String> = vec![];
+        for (port, outcome, fp, same) in found {
+            if let Some(fp) = &fp {
+                h.identity.insert(format!("incr.fp.{port}"), fp.clone());
+            }
+            if same && let Some(b) = before {
+                // Unchanged since the base scan: keep its identification, and say it was kept.
+                for (k, v) in crate::incremental::port_entries(&b.identity, port) {
+                    h.identity.insert(k, v);
+                }
+                carried_ports.push(port.to_string());
+                continue;
+            }
             match outcome {
                 Some(o) => h
                     .identity
@@ -996,6 +1052,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                     gov.known_open_failed(port);
                 }
             }
+        }
+        if !carried_ports.is_empty() {
+            carried.push(format!("svc:{}", carried_ports.join(",")));
         }
         flush_backoff_notes(&gov, &mut h);
     }
@@ -1019,7 +1078,25 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if s.udp && !ctx.udp_ports.is_empty() && (h.responding || s.scan_nonresponders) && !gov.paused()
+    let udp_before = before.filter(|b| b.responding && s.udp);
+    if let Some(b) = udp_before
+        && h.responding
+        && !gov.paused()
+    {
+        // Not probed again: the answers of the base scan, marked as carried over.
+        h.udp_open = b.udp_open.clone();
+        for (k, v) in &b.identity {
+            if k.starts_with("udp.") {
+                h.identity.insert(k.clone(), v.clone());
+            }
+        }
+        carried.push("udp".into());
+    }
+    if s.udp
+        && udp_before.is_none_or(|_| !h.responding)
+        && !ctx.udp_ports.is_empty()
+        && (h.responding || s.scan_nonresponders)
+        && !gov.paused()
     {
         let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(300, 2000)));
         let tries = (s.retries + 1).min(4);
@@ -1097,7 +1174,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         flush_backoff_notes(&gov, &mut h);
         merge_ot_udp(&mut h);
     }
-    if s.trace && h.responding && !gov.paused() {
+    if s.trace
+        && h.responding
+        && let Some(b) = before.filter(|b| b.responding && !b.trace.is_empty())
+    {
+        h.trace = b.trace.clone();
+        carried.push("trace".into());
+    } else if s.trace && h.responding && !gov.paused() {
         let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
         for text in notes {
             note(&mut h, text);
@@ -1119,6 +1202,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     }
     if s.os_detect && h.responding {
         analyze(&mut h, fingerprint.as_ref());
+    }
+    if let Some(p) = &base {
+        crate::incremental::mark(&mut h, p.id, probed_sample.as_deref(), &carried);
     }
     if ctx.scripts.is_some() {
         // Rhai may run up to its wall-time limit per script; keep it off the async workers.
@@ -1670,6 +1756,7 @@ mod tests",
             probes: None,
             udp_ports: vec![],
             scripts: None,
+            previous: None,
             classes: crate::portorder::ClassTable::builtin(),
             partial: None,
         }
@@ -1784,6 +1871,178 @@ mod tests",
             stopped.errors
         );
         assert!(stopped.closed + stopped.unanswered < full.closed + full.unanswered);
+    }
+
+    /// One scan of 127.0.0.1 through `scan_host`, a repeat scan when `previous` is given.
+    async fn scan_repeat(
+        ports: Vec<u16>,
+        previous: Option<Arc<crate::incremental::Previous>>,
+    ) -> Host {
+        let mut ctx = test_ctx();
+        ctx.sockets = Arc::new(Semaphore::new(64));
+        ctx.probes = Some(ProbeDb::load("").unwrap());
+        ctx.previous = previous;
+        let s = Settings {
+            tcp_only: true,
+            safe: false,
+            services: true,
+            retries: 0,
+            port_timeout: 1500,
+            ..Settings::default()
+        };
+        scan_host(
+            "127.0.0.1".parse().unwrap(),
+            Arc::new(ports),
+            Arc::new(s),
+            Arc::new(ctx),
+        )
+        .await
+    }
+
+    fn scan_of(ports: &str, hosts: Vec<Host>) -> crate::store::Snapshot {
+        crate::store::Snapshot {
+            targets: "127.0.0.1".into(),
+            complete: true,
+            settings: Settings {
+                ports: ports.into(),
+                services: true,
+                ..Settings::default()
+            },
+            hosts,
+            observations: vec![],
+            notes: Default::default(),
+            sent: vec![],
+        }
+    }
+
+    /// A server that greets with an SSH banner until `stop` is set, then closes its port.
+    fn greeting_server(stop: Arc<std::sync::atomic::AtomicBool>) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            while !stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.write_all(b"SSH-2.0-OpenSSH_8.4\r\n");
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        port
+    }
+
+    /// Fast repeat scans (ROADMAP B14), end to end on loopback: the second scan probes a sample and
+    /// seeds the change detector, the third keeps the identification of the unchanged service and
+    /// says so, nothing it carried over counts as checked, and the diff against the full scan is
+    /// empty. When the server goes away, the repeat scan finds out (a known port is always probed)
+    /// and the diff reports exactly that.
+    #[tokio::test]
+    async fn a_repeat_scan_carries_over_what_did_not_change_and_says_so() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let port = greeting_server(stop.clone());
+        let mut ports: Vec<u16> = (33000..33020).collect();
+        ports.push(port);
+        let text = format!("33000-33019,{port}");
+        let full = scan_repeat(ports.clone(), None).await;
+        assert!(full.ports_checked && full.open == [port], "{full:?}");
+        assert!(full.identity.keys().all(|k| !k.starts_with("incr.")));
+        let base = |n, h: &Host| {
+            Some(Arc::new(crate::incremental::Previous::new(
+                n,
+                vec![h.clone()],
+            )))
+        };
+        // Second scan: a sample, identified in full (nothing to compare with), fingerprint stored.
+        let second = scan_repeat(ports.clone(), base(1, &full)).await;
+        assert_eq!(second.open, [port]);
+        assert!(!second.ports_checked, "a sample is not a full check");
+        assert!(crate::incremental::checked(&second, port));
+        // The sample is small: some requested port was not probed.
+        let sample = crate::incremental::ports_for(Some(&full), &ports, 1);
+        let unsampled = *ports.iter().find(|p| !sample.contains(p)).unwrap();
+        assert!(!crate::incremental::checked(&second, unsampled));
+        assert_eq!(second.identity["incr.base"], "scan #1");
+        assert!(second.identity.contains_key(&format!("incr.fp.{port}")));
+        assert!(!second.identity.contains_key("incr.carried"), "{second:?}");
+        assert_eq!(
+            second.identity[&format!("svc.{port}")],
+            full.identity[&format!("svc.{port}")]
+        );
+        // Third scan: the banner hashes the same, so the identification is kept and marked.
+        let third = scan_repeat(ports.clone(), base(2, &second)).await;
+        assert_eq!(third.identity["incr.carried"], format!("svc:{port}"));
+        assert_eq!(
+            third.identity[&format!("svc.{port}")],
+            full.identity[&format!("svc.{port}")]
+        );
+        assert_eq!(third.open, [port]);
+        // Full -> repeat of an unchanged host: nothing changed, nothing is reported.
+        let report = crate::store::diff_report(
+            &scan_of(&text, vec![full.clone()]),
+            &scan_of(&text, vec![third.clone()]),
+            &crate::store::IgnoreList::new(&[]),
+        )
+        .unwrap();
+        assert!(report.changes.is_empty(), "{:?}", report.changes);
+        // The server goes away: the repeat scan probes the known port and the diff says so.
+        stop.store(true, Ordering::Relaxed);
+        sleep(Duration::from_millis(100)).await;
+        let fourth = scan_repeat(ports, base(3, &third)).await;
+        assert!(fourth.open.is_empty(), "{fourth:?}");
+        let report = crate::store::diff_report(
+            &scan_of(&text, vec![full]),
+            &scan_of(&text, vec![fourth]),
+            &crate::store::IgnoreList::new(&[]),
+        )
+        .unwrap();
+        assert!(
+            report.changes.iter().any(
+                |c| matches!(c, crate::store::Change::PortClosed { port: p, .. } if *p == port)
+            ),
+            "{:?}",
+            report.changes
+        );
+    }
+
+    /// A port that opened since the base scan is found when it is in the sample.
+    #[tokio::test]
+    async fn a_repeat_scan_finds_a_newly_opened_port_in_its_sample() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut ports: Vec<u16> = (33000..33020).collect();
+        ports.push(port);
+        let text = format!("33000-33019,{port}");
+        let full = scan_repeat(ports.clone(), None).await;
+        assert!(!full.open.contains(&port));
+        let Ok(server) = std::net::TcpListener::bind(("127.0.0.1", port)) else {
+            return; // the port was taken meanwhile
+        };
+        // A base scan number whose rotating slice reaches the port (the sample moves every scan).
+        let id = (1..40)
+            .find(|g| crate::incremental::ports_for(Some(&full), &ports, *g).contains(&port))
+            .unwrap();
+        let prev = Arc::new(crate::incremental::Previous::new(id, vec![full.clone()]));
+        let again = scan_repeat(ports, Some(prev)).await;
+        assert!(again.open.contains(&port), "{again:?}");
+        let report = crate::store::diff_report(
+            &scan_of(&text, vec![full]),
+            &scan_of(&text, vec![again]),
+            &crate::store::IgnoreList::new(&[]),
+        )
+        .unwrap();
+        assert!(
+            report.changes.iter().any(
+                |c| matches!(c, crate::store::Change::PortOpened { port: p, .. } if *p == port)
+            ),
+            "{:?}",
+            report.changes
+        );
+        drop(server);
     }
 
     #[test]

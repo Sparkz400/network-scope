@@ -103,6 +103,7 @@ pub mod feeds;
 pub(crate) mod fingerprint;
 pub mod identity;
 pub mod import;
+pub mod incremental;
 pub mod interfaces;
 pub mod jarm;
 pub mod mcp;
