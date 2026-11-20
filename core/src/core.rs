@@ -876,6 +876,30 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         flush_backoff_notes(&gov, &mut h);
         merge_ot_udp(&mut h);
     }
+    // SNMP with the user's credentials: system group, interfaces, addresses, LLDP neighbours.
+    if let Some(config) = &s.snmp
+        && crate::plan::snmp_read(h.responding, &s)
+        && !gov.paused()
+    {
+        match crate::snmp::collect(ip, config, s.safe, s.port_timeout, &ctx.gate).await {
+            Ok(found) => {
+                h.responding = true;
+                for text in &found.notes {
+                    note(&mut h, format!("SNMP: {text}"));
+                }
+                h.identity.extend(found.identity());
+                if config.port == crate::snmp::SnmpConfig::DEFAULT_PORT
+                    && !h.udp_open.contains(&161)
+                {
+                    h.udp_open.push(161);
+                    h.udp_open.sort_unstable();
+                }
+            }
+            // most hosts run no agent: silence is not an error (as for BACnet)
+            Err(e) if e == crate::snmp::NO_ANSWER => {}
+            Err(e) => note(&mut h, format!("SNMP: {e}")),
+        }
+    }
     if s.trace && h.responding && !gov.paused() {
         let (hops, notes) = traceroute(ip, &h.open, &s, &ctx).await;
         for text in notes {

@@ -56,6 +56,9 @@ pub enum PacketKind {
     Traceroute,
     /// A DHCPDISCOVER broadcast (`monitor --dhcp-discover`).
     DhcpDiscover,
+    /// A read-only SNMP request (GetRequest, GetNextRequest or GetBulkRequest) with
+    /// user-supplied credentials (see `snmp`).
+    SnmpRequest,
     /// A reverse DNS lookup; it goes to the system resolver, not to the scanned host.
     #[serde(rename = "dns-ptr")]
     DnsLookup,
@@ -81,11 +84,12 @@ impl PacketKind {
             Self::DcpIdentify => "dcp-identify",
             Self::Traceroute => "traceroute",
             Self::DhcpDiscover => "dhcp-discover",
+            Self::SnmpRequest => "snmp-request",
             Self::DnsLookup => "dns-ptr",
         }
     }
     /// Every kind, in the order of the enum (used by tests and documentation).
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::IcmpEcho,
         Self::ArpRequest,
         Self::NeighborLookup,
@@ -102,6 +106,7 @@ impl PacketKind {
         Self::DcpIdentify,
         Self::Traceroute,
         Self::DhcpDiscover,
+        Self::SnmpRequest,
         Self::DnsLookup,
     ];
 }

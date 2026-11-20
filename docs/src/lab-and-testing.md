@@ -52,7 +52,7 @@ The parsers of untrusted input (capture files, Ethernet frames for the passive l
 
 ## Lab simulators
 
-[`lab/simulators.py`](https://github.com/Sparkz400/network-scope/blob/main/lab/simulators.py) (Python standard library only) emulates deliberately weak services: an FTP banner of vsFTPd 2.3.4, Telnet, SSH offering weak algorithms, Apache 2.4.49 with Basic auth, open Redis, Modbus/TCP, EtherNet/IP and BACnet/IP identity. They are fake: they only produce what a scanner observes and never execute anything received from the network.
+[`lab/simulators.py`](https://github.com/Sparkz400/network-scope/blob/main/lab/simulators.py) (Python standard library only) emulates deliberately weak services: an FTP banner of vsFTPd 2.3.4, Telnet, SSH offering weak algorithms, Apache 2.4.49 with Basic auth, open Redis, Modbus/TCP, EtherNet/IP and BACnet/IP identity, and an SNMP agent on UDP 161 (a switch with three ports, two addresses and two LLDP neighbours; SNMPv1/v2c with the community `lab-community` and SNMPv3 `labuser` with authNoPriv HMAC-SHA-1, passphrase `lab-snmp-auth-pass`; it stays silent for any other community, so the `snmp-public` check is unaffected, and it only answers Get, GetNext and GetBulk). They are fake: they only produce what a scanner observes and never execute anything received from the network.
 
 ```sh
 python lab/simulators.py --bind 127.0.0.1 --offset 20000   # unprivileged ports 20021, 20022, ...
@@ -65,7 +65,7 @@ cargo build --release --locked
 python lab/verify.py target/release/network-scope        # .exe on Windows
 ```
 
-`verify.py` starts the simulators on loopback, scans them with the built binary and asserts the expected identities and findings (exit code 0 = all passed). CI runs it on Windows, Linux and macOS. It also checks the safety features: a loopback device that accepts one connection and then stops listening must produce a `backed off:` host note (and none with `--no-backoff`), the healthy lab host must not be backed off, the scan's JSON must carry the sent log, and `scan --dry-run` against a counting listener must print the plan, save nothing and never connect.
+`verify.py` starts the simulators on loopback, scans them with the built binary and asserts the expected identities and findings (exit code 0 = all passed). CI runs it on Windows, Linux and macOS. It also checks the safety features: a loopback device that accepts one connection and then stops listening must produce a `backed off:` host note (and none with `--no-backoff`), the healthy lab host must not be backed off, the scan's JSON must carry the sent log, and `scan --dry-run` against a counting listener must print the plan, save nothing and never connect. The SNMP checks read the lab agent in Safe Mode with SNMPv2c, v1 and v3 (the passphrase comes from an environment variable) and assert the system group, the interfaces, an address and both LLDP neighbours; a wrong community reaches the agent as one request with two attempts and fills nothing; a wrong v3 passphrase is reported by the agent; and the agent, which counts the PDU tags it receives (`--snmp-stats FILE`), must have seen only GetRequest, GetNextRequest and GetBulkRequest. The agent is written independently of the Rust code (BER, key localisation and HMAC from the Python standard library), so this also cross-checks the SNMPv3 message layout.
 
 ### Accuracy benchmark
 

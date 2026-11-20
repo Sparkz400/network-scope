@@ -1977,6 +1977,7 @@ dependencies = [
  "pnet_packet",
  "regex",
  "rhai",
+ "ring",
  "roxmltree",
  "rusqlite",
  "rustls",
