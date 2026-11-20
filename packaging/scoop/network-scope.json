@@ -1,0 +1,34 @@
+{
+    "version": "@VERSION@",
+    "description": "Network scanner and analysis tool with service, TLS and passive OT discovery",
+    "homepage": "https://sparkz400.github.io/network-scope/",
+    "license": "MIT",
+    "notes": "Capture features (SYN scan, ARP sweep, listen) need Npcap, installed separately: https://npcap.com/",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Sparkz400/network-scope/releases/download/v@VERSION@/network-scope-@VERSION@-windows-x64.zip",
+            "hash": "@SHA256_WINDOWS_ZIP@"
+        }
+    },
+    "bin": "network-scope-cli.exe",
+    "shortcuts": [
+        [
+            "network-scope.exe",
+            "Network Scope"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/Sparkz400/network-scope"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Sparkz400/network-scope/releases/download/v$version/network-scope-$version-windows-x64.zip",
+                "hash": {
+                    "url": "$baseurl/SHA256SUMS",
+                    "regex": "$sha256\\s+$basename"
+                }
+            }
+        }
+    }
+}

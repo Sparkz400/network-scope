@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+PackageIdentifier: Sparkz400.NetworkScope
+PackageVersion: @VERSION@
+InstallerType: inno
+UpgradeBehavior: install
+# AppId of installer/network-scope.iss; Inno Setup appends "_is1".
+ProductCode: '{6F0B8C0E-6A0D-4E9B-8E52-3C1B1F6B7A41}_is1'
+ReleaseDate: @RELEASE_DATE@
+Installers:
+- Architecture: x64
+  Scope: user
+  InstallerUrl: https://github.com/Sparkz400/network-scope/releases/download/v@VERSION@/NetworkScope-@VERSION@-setup.exe
+  InstallerSha256: @SHA256_WINDOWS_SETUP@
+  InstallerSwitches:
+    Custom: /CURRENTUSER
+- Architecture: x64
+  Scope: machine
+  InstallerUrl: https://github.com/Sparkz400/network-scope/releases/download/v@VERSION@/NetworkScope-@VERSION@-setup.exe
+  InstallerSha256: @SHA256_WINDOWS_SETUP@
+  InstallerSwitches:
+    Custom: /ALLUSERS
+ManifestType: installer
+ManifestVersion: 1.10.0

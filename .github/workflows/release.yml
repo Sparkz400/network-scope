@@ -14,6 +14,17 @@ jobs:
   build:
     name: build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # The OIDC subject Azure's federated credential matches (`environment:release`; a tag subject
+    # would need one credential per tag). The signing secrets may live in this environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # Azure login (OIDC) for Windows code signing; unused when signing is off
+    # Code signing (roadmap I55) runs only when its secrets exist, so forks and repositories
+    # without them still release, unsigned. Secret names: docs/src/supply-chain.md#code-signing.
+    env:
+      SIGN_WINDOWS: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      SIGN_MACOS: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
     strategy:
       fail-fast: true
       matrix:
@@ -59,6 +70,87 @@ jobs:
 
       - run: cargo build --release --locked
 
+      # Signing happens here, before packaging: the zip, the installer and the tar.gz contain the
+      # signed binaries, and SHA256SUMS, the SBOM attestation and the provenance (release job)
+      # cover the signed files. The `reproducible` workflow compares unsigned builds; to compare a
+      # rebuild with a signed release file, strip the signature first (scripts/strip_authenticode.py).
+      - name: Azure login for code signing (Windows)
+        if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign the executables (Windows, Azure Artifact Signing)
+        if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\target\release\network-scope.exe
+            ${{ github.workspace }}\target\release\network-scope-cli.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Network Scope
+          description-url: https://sparkz400.github.io/network-scope/
+
+      # Hardened runtime and a secure timestamp (both required for notarization). notarytool takes
+      # zip, pkg or dmg, so the two binaries are submitted as a zip; the tar.gz below packs the
+      # same signed files. A bare Mach-O binary cannot be stapled: Gatekeeper fetches the
+      # notarization ticket online the first time it checks the binary.
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS' && env.SIGN_MACOS == 'true'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          mkdir -p "$RUNNER_TEMP/notarize"
+          for bin in network-scope network-scope-cli; do
+            codesign --force --options runtime --timestamp --keychain "$keychain" \
+              --sign "$APPLE_SIGNING_IDENTITY" "target/release/$bin"
+            codesign --verify --strict --verbose=2 "target/release/$bin"
+            cp "target/release/$bin" "$RUNNER_TEMP/notarize/"
+          done
+          ditto -c -k "$RUNNER_TEMP/notarize" "$RUNNER_TEMP/notarize.zip"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            | tee "$RUNNER_TEMP/notary.json"
+          status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary.json")"
+          if [ "$status" != "Accepted" ]; then
+            id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$RUNNER_TEMP/notary.json")"
+            xcrun notarytool log "$id" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" || true
+            echo "::error::Notarization status: $status"
+            exit 1
+          fi
+
+      - name: Remove the signing keychain and key (macOS)
+        if: always() && runner.os == 'macOS' && env.SIGN_MACOS == 'true'
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
+
       - name: Package (Windows zip and installer)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -73,6 +165,41 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" installer\network-scope.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
           Get-ChildItem dist
+
+      # The uninstaller inside the installer (unins000.exe) stays unsigned: Inno Setup signs it
+      # only through its own SignTool hook, which this action does not provide.
+      - name: Sign the installer (Windows, Azure Artifact Signing)
+        if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\NetworkScope-${{ steps.version.outputs.version }}-setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Network Scope setup
+          description-url: https://sparkz400.github.io/network-scope/
+
+      - name: Check the signatures (Windows)
+        if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          foreach ($f in "target\release\network-scope.exe", "target\release\network-scope-cli.exe", "dist\NetworkScope-$env:VERSION-setup.exe") {
+            $s = Get-AuthenticodeSignature $f
+            if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "$f signature: $($s.Status) $($s.StatusMessage)" }
+            "$f signed by $($s.SignerCertificate.Subject), timestamped by $($s.TimeStamperCertificate.Subject)"
+          }
+
+      - name: Installer smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/installer_smoke.ps1 "dist\NetworkScope-$env:VERSION-setup.exe" $env:VERSION
 
       - name: Package (tar.gz)
         if: runner.os != 'Windows'
@@ -163,6 +290,19 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
+
+      # winget, Scoop, Chocolatey, Homebrew and AUR manifests with this release's version and
+      # hashes (roadmap I56), as a release file: ready to submit, and covered by SHA256SUMS and
+      # the provenance like the binaries. Submitting them is a manual step (packaging/README.md).
+      - name: Package-manager manifests
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # The tag archive the Homebrew formula builds from.
+          curl -fsSL --retry 3 -o source.tar.gz "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          python3 -I scripts/render_packaging.py "$version" dist "$(sha256sum source.tar.gz | cut -d' ' -f1)" packaging-out
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --pretty=%ct)" \
+            -czf "dist/network-scope-${version}-packaging.tar.gz" -C packaging-out .
 
       - name: Checksums
         id: checksums

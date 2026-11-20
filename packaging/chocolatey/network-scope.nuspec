@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>network-scope</id>
+    <version>@VERSION@</version>
+    <packageSourceUrl>https://github.com/Sparkz400/network-scope/tree/main/packaging/chocolatey</packageSourceUrl>
+    <owners>Sparkz400</owners>
+    <title>Network Scope</title>
+    <authors>Network Scope contributors</authors>
+    <projectUrl>https://sparkz400.github.io/network-scope/</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/Sparkz400/network-scope/main/assets/logo-light.svg</iconUrl>
+    <licenseUrl>https://github.com/Sparkz400/network-scope/blob/main/LICENSE.txt</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/Sparkz400/network-scope</projectSourceUrl>
+    <docsUrl>https://sparkz400.github.io/network-scope/</docsUrl>
+    <bugTrackerUrl>https://github.com/Sparkz400/network-scope/issues</bugTrackerUrl>
+    <tags>network-scope network-scanner port-scanner inventory ot-security modbus pcap cli gui</tags>
+    <summary>Network scanner and analysis tool with service, TLS and passive OT discovery</summary>
+    <description>Network Scope scans networks (TCP, SYN, UDP), identifies services, TLS and SMB, keeps an inventory with change reports and monitoring, and discovers industrial (OT) devices passively. This package runs the official installer for all users; capture features need Npcap, installed separately.</description>
+    <releaseNotes>https://github.com/Sparkz400/network-scope/releases/tag/v@VERSION@</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

@@ -1,4 +1,4 @@
-# Supply chain: SBOM, provenance and reproducible builds
+# Supply chain: SBOM, provenance, signing and reproducible builds
 
 Three checks let you confirm that a release file is what the project says it is and what is inside it. None of them replaces reading the source; they make tampering with a release visible.
 
@@ -8,7 +8,7 @@ Three checks let you confirm that a release file is what the project says it is 
 | SBOM (CycloneDX) | Which crates, at which versions, went into it? | `network-scope-<version>.cdx.json`, attestation `network-scope-<version>.sbom.sigstore.json` |
 | Rebuild and compare | Does the source at this tag produce the same binary? | none, you build it |
 
-Dependency advisories, licenses and sources are checked separately by the `security` workflow (`cargo deny`, `cargo audit`). The binaries are not code-signed (see the [FAQ](faq.md)).
+Dependency advisories, licenses and sources are checked separately by the `security` workflow (`cargo deny`, `cargo audit`). Code signing of the Windows and macOS binaries is built into the release workflow but switched on only by the maintainer's signing secrets; until they are set, releases are unsigned (see [Code signing](#code-signing)).
 
 Status: the SBOM step, the SBOM attestation and the `reproducible` workflow were added together and have not run on GitHub yet; the first tagged release and the first scheduled run are their first real test. If either fails, that is a bug to report, not a sign of tampering.
 
@@ -112,3 +112,65 @@ sha256sum network-scope-0.5.1-linux-x86_64/network-scope-cli
 ```
 
 Equal hashes mean the release binary was built from this source with this toolchain. Run this in `bash` (the `<<<` is not POSIX `sh`). `scripts/repro_env.sh` only prints the variables, so you can read it first.
+
+## Code signing
+
+`release.yml` signs the Windows and macOS binaries when the signing secrets below exist in the repository, and skips signing when they do not: a fork, or this repository before the maintainer has set them up, still publishes a release, unsigned. **No release has been signed yet**; the signing steps have not run.
+
+Signing happens in the `build` job right after `cargo build`, before anything is packaged. The zip, the installer and the tar.gz therefore contain the signed binaries, and `SHA256SUMS`, the SBOM attestation and the build provenance (all made later, in the `release` job) cover the signed files.
+
+### Windows: Azure Artifact Signing
+
+`network-scope.exe`, `network-scope-cli.exe` and `NetworkScope-<version>-setup.exe` are signed with [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/) (formerly Trusted Signing), SHA-256 file digest, RFC 3161 timestamp from `http://timestamp.acs.microsoft.com`. The job checks each signature with `Get-AuthenticodeSignature` (valid and timestamped) and then installs, runs and uninstalls the signed installer (`scripts/installer_smoke.ps1`).
+
+Why Artifact Signing and not `signtool` with a PFX file in a secret: since June 2023 publicly trusted code signing keys must be generated and kept in hardware (CA/Browser Forum baseline requirements), so a new certificate cannot be exported to a PFX file at all. Artifact Signing keeps the key in Microsoft's HSM, costs a monthly fee instead of a yearly certificate, and the workflow logs in with GitHub's OIDC token (a federated credential), so no key or password is stored in GitHub.
+
+Limits:
+
+- Public trust identities are only validated for organizations in some countries and for **individual developers in the United States and Canada** (as of 2026). If the maintainer cannot get an identity, the alternatives are a certificate on a cloud HSM from a CA (DigiCert KeyLocker, SSL.com eSigner, Certum SimplySign) or [SignPath Foundation](https://signpath.org/) for open-source projects; each needs its own signing step in place of the two `azure/artifact-signing-action` steps.
+- The uninstaller inside the installer (`unins000.exe`) stays unsigned: Inno Setup signs it only through its own `SignTool` hook.
+
+Set them as repository secrets or as secrets of the `release` environment (which can then be limited to `v*` tags).
+
+| Secret | Value |
+| --- | --- |
+| `AZURE_CLIENT_ID` | Application (client) ID of the Entra ID app registration with a federated credential for this repository, entity type *Environment*, name `release` (the `build` job runs in that environment) and the role *Artifact Signing Certificate Profile Signer* on the signing account. **Its presence switches Windows signing on.** |
+| `AZURE_TENANT_ID` | Directory (tenant) ID |
+| `AZURE_SUBSCRIPTION_ID` | Subscription that holds the signing account |
+| `ARTIFACT_SIGNING_ENDPOINT` | Endpoint of the signing account's region, for example `https://weu.codesigning.azure.net/` |
+| `ARTIFACT_SIGNING_ACCOUNT` | Name of the Artifact Signing account |
+| `ARTIFACT_SIGNING_PROFILE` | Name of the certificate profile (Public Trust) |
+
+### macOS: Developer ID and notarization
+
+Both binaries in `network-scope-<version>-macos-arm64.tar.gz` are signed with a Developer ID Application certificate, with the hardened runtime and a secure timestamp, checked with `codesign --verify --strict`, and notarized with `xcrun notarytool` (App Store Connect API key); the job fails unless notarization returns `Accepted`. Notarization takes a zip, so the two binaries are submitted as one and the tar.gz is packed from the same signed files afterwards. A bare command-line binary cannot be stapled (`stapler` works on app bundles, disk images and installer packages only), so macOS fetches the notarization ticket online the first time Gatekeeper checks the binary.
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE_P12` | Base64 of the Developer ID Application certificate and its private key, exported as `.p12`. **Its presence switches macOS signing on.** |
+| `APPLE_CERTIFICATE_PASSWORD` | Password of that `.p12` file |
+| `APPLE_SIGNING_IDENTITY` | The certificate's name, for example `Developer ID Application: Jane Doe (TEAMID1234)` |
+| `APPLE_API_KEY_P8` | Base64 of the App Store Connect API key (`AuthKey_<id>.p8`, role Developer) |
+| `APPLE_API_KEY_ID` | Key ID of that API key |
+| `APPLE_API_ISSUER_ID` | Issuer ID shown on the App Store Connect API keys page |
+
+The certificate is imported into a temporary keychain that the job deletes at the end, and the key files are removed.
+
+Linux binaries and the container image are not code-signed; their proof of origin is the Sigstore provenance above.
+
+### Signatures and reproducible builds
+
+A signature changes the bytes of the file, and only the holder of the key can make it, so a rebuild can never be byte-identical to a signed release binary. The choice made here: **the reproducibility check compares unsigned builds**, and a signed release binary is compared after its signature is removed.
+
+- The `reproducible` workflow and `scripts/repro_check.sh` build twice from source and never sign, so nothing changes for them.
+- To compare your rebuild with a signed Windows release binary, remove the signature from the release file, and run the same script on your rebuild (it clears the PE checksum, which signing rewrites):
+
+  ```sh
+  python -I scripts/strip_authenticode.py network-scope-cli.exe release-unsigned.exe
+  python -I scripts/strip_authenticode.py target/release/network-scope-cli.exe rebuild-unsigned.exe
+  ```
+
+  Both commands print the SHA-256 of their output; equal hashes mean the signed binary is the reproducible build plus a signature. The script removes the certificate table, its data directory entry and the checksum, nothing else (checked with `signtool` and a throwaway test certificate on both binaries of a local release build).
+- macOS: `codesign --remove-signature` on a copy of the release binary and of your rebuild, then compare. The linker's ad-hoc signature is removed the same way, so both sides end up unsigned. Not tried yet, and macOS builds are not claimed to be reproducible (table above).
+
+`SHA256SUMS` lists the hashes of the signed files, which is what you download.
