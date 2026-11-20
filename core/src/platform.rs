@@ -447,6 +447,14 @@ mod win {
                 std::mem::size_of_val(&buffer) as u32,
                 timeout,
             );
+            // No reply is a timeout (11000..=11050 are IP status codes), not a local failure.
+            if count == 0 {
+                let error = std::io::Error::last_os_error();
+                let code = error.raw_os_error().unwrap_or(0);
+                if code != 0 && !(11000..=11050).contains(&code) {
+                    return Err(error.to_string());
+                }
+            }
             let size = std::mem::size_of::<Reply6>();
             let mut out: Vec<std::net::Ipv6Addr> = vec![];
             for i in 0..(count as usize).min(std::mem::size_of_val(&buffer) / size) {

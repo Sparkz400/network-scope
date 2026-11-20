@@ -77,7 +77,8 @@ pub(crate) fn parse_fins_controller_data(frame: &[u8]) -> Result<Fields, String>
 }
 
 /// `Ok(None)`: nothing listens on the port.
-pub(super) async fn fins(ip: IpAddr, log: &Arc<SentLog>) -> Result<Option<Fields>, String> {
+pub(super) async fn fins(target: SocketAddr, log: &Arc<SentLog>) -> Result<Option<Fields>, String> {
+    let ip = target.ip();
     if !ip.is_ipv4() {
         return Ok(None);
     }
@@ -86,7 +87,7 @@ pub(super) async fn fins(ip: IpAddr, log: &Arc<SentLog>) -> Result<Option<Fields
     } else {
         "0.0.0.0:0"
     };
-    let socket = OtUdp::connect(local, SocketAddr::new(ip, 9600))
+    let socket = OtUdp::connect(local, target)
         .await
         .map_err(|e| e.to_string())?
         .with_log(log.clone());
@@ -343,7 +344,8 @@ pub(crate) fn parse_knx_description(b: &[u8]) -> Result<Fields, String> {
     Ok(f)
 }
 
-pub(super) async fn knx(ip: IpAddr, log: &Arc<SentLog>) -> Result<Option<Fields>, String> {
+pub(super) async fn knx(target: SocketAddr, log: &Arc<SentLog>) -> Result<Option<Fields>, String> {
+    let ip = target.ip();
     if !ip.is_ipv4() {
         return Ok(None);
     }
@@ -353,7 +355,7 @@ pub(super) async fn knx(ip: IpAddr, log: &Arc<SentLog>) -> Result<Option<Fields>
         "0.0.0.0:0"
     };
     // Unicast only. The multicast search (224.0.23.12) is not in the allow-list.
-    let socket = OtUdp::connect(local, SocketAddr::new(ip, 3671))
+    let socket = OtUdp::connect(local, target)
         .await
         .map_err(|e| e.to_string())?
         .with_log(log.clone());
@@ -523,9 +525,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn fins_over_udp_against_a_loopback_device() {
-        let device = UdpSocket::bind("127.0.0.1:9600").await;
-        // the lab simulator may hold the port, or something else: then there is nothing to test
-        let Ok(device) = device else { return };
+        // an ephemeral port: other tests scan 127.0.0.1 and send to the real FINS port
+        let device = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = device.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut b = [0u8; 64];
             let (n, from) = device.recv_from(&mut b).await.unwrap();
@@ -536,10 +538,7 @@ pub(crate) mod tests {
             device.send_to(&hex(FINS_REPLY), from).await.unwrap();
         });
         let log = Arc::new(SentLog::new());
-        let f = fins("127.0.0.1".parse().unwrap(), &log)
-            .await
-            .unwrap()
-            .unwrap();
+        let f = fins(address, &log).await.unwrap().unwrap();
         assert_eq!(f["model"], "CP1L-EL20DR-D");
         server.await.unwrap();
         let sent = log.snapshot();

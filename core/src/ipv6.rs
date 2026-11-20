@@ -19,10 +19,7 @@
 //! record with the same MAC gets the IPv6 addresses in its identity (`ipv6.addresses`), and a MAC
 //! nothing else knows becomes a host of its own. [`devices::merge`](crate::devices::merge) joins
 //! them again, by the same MAC, into one device.
-use crate::{
-    core::Gate, passive::Observation, plan::HostPlan, scan::Host, scan::Settings,
-    sendlog::PacketKind,
-};
+use crate::{core::Gate, passive::Observation, scan::Host, scan::Settings, sendlog::PacketKind};
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6},
@@ -94,30 +91,6 @@ pub struct Found {
 /// `--ipv6-discover` was given.
 pub fn enabled(s: &Settings) -> bool {
     s.ipv6_discover
-}
-
-/// What the discovery sends, for the dry run.
-pub fn plan(s: &Settings) -> Option<HostPlan> {
-    if !enabled(s) {
-        return None;
-    }
-    let mut plan = HostPlan {
-        packets: vec![],
-        notes: vec![],
-    };
-    plan.packets.push(crate::plan::PlannedPacket {
-        kind: PacketKind::Ipv6Echo,
-        detail: DETAIL.into(),
-        to: format!("ff02::1 on each selected interface (at most {MAX_INTERFACES})"),
-        when: if s.safe {
-            "once per interface, one datagram, hop limit 1; also in Safe Mode (a single echo request per interface)".into()
-        } else {
-            "once per interface, one datagram, hop limit 1".into()
-        },
-    });
-    plan.notes
-        .push("reading the OS neighbour cache and decoding NDP in a capture send nothing".into());
-    Some(plan)
 }
 
 /// The gate of a discovery run: the same pacing as the scan's (Safe Mode spacing, `--rate`), and
@@ -486,8 +459,14 @@ pub fn discover(s: &Settings, gate: &Gate) -> Found {
 pub fn discover_with(s: &Settings, gate: &Gate, os: &Os<'_>) -> Found {
     let mut found = Found::default();
     let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(500, 3000)));
+    let mut local: Vec<Ipv6Addr> = vec![];
+    let mut seen = BTreeSet::new();
+    // What the cache held before the echo: an entry that appears afterwards is a host that
+    // answered, even if the ICMP API handed back fewer replies than there were.
+    let mut before: Option<BTreeSet<Ipv6Addr>> = None;
     match (os.interfaces)() {
-        Ok((all, local)) => {
+        Ok((all, addresses)) => {
+            local = addresses;
             let chosen = select(&all, &s.interface);
             if chosen.is_empty() {
                 found.notes.push(if all.is_empty() {
@@ -503,7 +482,13 @@ pub fn discover_with(s: &Settings, gate: &Gate, os: &Os<'_>) -> Found {
                     )
                 });
             }
-            let mut seen = BTreeSet::new();
+            if !chosen.is_empty() {
+                before = Some(
+                    (os.cache)()
+                        .map(|c| c.into_iter().map(|n| n.ip).collect())
+                        .unwrap_or_default(),
+                );
+            }
             for interface in chosen {
                 // one token per datagram, recorded in the sent log
                 loop {
@@ -533,6 +518,17 @@ pub fn discover_with(s: &Settings, gate: &Gate, os: &Os<'_>) -> Found {
     match (os.cache)() {
         Ok(mut neighbors) => {
             neighbors.truncate(MAX_NEIGHBORS);
+            if let Some(before) = &before {
+                for n in &neighbors {
+                    if !before.contains(&n.ip)
+                        && is_host_address(&n.ip)
+                        && !local.contains(&n.ip)
+                        && seen.insert(n.ip)
+                    {
+                        found.responders.push((n.ip, n.interface.clone()));
+                    }
+                }
+            }
             found.neighbors = neighbors;
         }
         Err(e) => found.notes.push(format!("IPv6 neighbor cache: {e}")),

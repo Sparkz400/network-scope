@@ -71,7 +71,7 @@ pub(super) fn scan_plan(
         )
     });
     // IPv6 discovery runs once per scan, not per host
-    if let Some(v6) = crate::ipv6::plan(s) {
+    if let Some(v6) = plan::ipv6_discovery(s).filter(|_| command == "scan") {
         match &mut extras {
             Some(e) => {
                 e.packets.extend(v6.packets);
