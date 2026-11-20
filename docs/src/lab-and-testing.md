@@ -80,7 +80,7 @@ Only loopback addresses (`127.0.0.0/8`) are ever contacted; a ground truth with 
 
 | Metric | Meaning |
 | --- | --- |
-| Host recall / precision | Real hosts found / real hosts; real hosts / hosts reported (an absent address that is reported counts against precision) |
+| Host recall / precision | Real hosts found / real hosts; real hosts / hosts reported with an open port or identity (an absent address reported that way counts against precision) |
 | Port recall | Open ports found / open ports; also split into TCP and UDP (`udp_open`) |
 | Port precision | Reported open ports that are real / reported open ports |
 | Service accuracy | Services named correctly / services served (`svc.<port>`, or the OT identity fields for Modbus, EtherNet/IP and BACnet) |
@@ -114,7 +114,7 @@ Numbers of the last local run (Windows 11, debug build of the 0.5.1 sources, 202
 What the numbers do not say:
 
 - The one miss is real: the BACnet simulator is identified through `--ot` (`BACnet.device_id`), but UDP 47808 is not listed in `udp_open`, which only reports the default UDP probe ports (DNS, DHCP, NTP, NetBIOS, SNMP, SSDP, mDNS). Nothing in the lab serves those, so the UDP check is a single port.
-- The lab is small and cooperative: every service answers its own protocol cleanly, nothing is firewalled, filtered, slow or lossy, and no real network or operating system is involved. 100% here means "no regression on these cases", not "100% in the field". Loopback also hides ICMP: every `127.x.x.x` address answers ping, so the gated run uses `--tcp-only`; with ICMP discovery the absent addresses would be reported as live hosts (a lab artefact, not a scanner bug).
+- The lab is small and cooperative: every service answers its own protocol cleanly, nothing is firewalled, filtered, slow or lossy, and no real network or operating system is involved. 100% here means "no regression on these cases", not "100% in the field". Loopback also hides ICMP: every `127.x.x.x` address answers ping, so the gated run uses `--tcp-only`; with ICMP discovery the absent addresses would be reported as live hosts (a lab artefact, not a scanner bug). The OS also answers every port of every `127.x` address with a RST, so the absent addresses respond to TCP too; host precision therefore counts only hosts reported with an open port or an identity.
 - Only OS and device types that the simulators' banners name are in the ground truth (Debian, IIS, a Redis server, a PLC). TTL-only OS guessing is not measured, and the simulators on `127.0.10.1` to `127.0.10.3` carry no OS evidence, so the tool correctly names none.
 - Only loopback addresses are used, so ARP, SYN scanning and routing are not covered.
 
