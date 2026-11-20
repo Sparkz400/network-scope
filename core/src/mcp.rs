@@ -935,7 +935,12 @@ impl Server {
             skip_edges: true,
             ..scan::Settings::default()
         };
+        // IPv6 discovery (a multicast echo to the whole link) and SNMP (credentials) are not part
+        // of this tool: it reaches only the private addresses the caller names.
         debug_assert!(settings.safe && !settings.syn && !settings.ot && !settings.udp);
+        debug_assert!(
+            !settings.ipv6_discover && settings.snmp.is_none() && settings.snmp_ref.is_none()
+        );
         if dry_run {
             // The same plan the CLI's `scan --dry-run` prints; nothing is sent or saved.
             let probe_db = if services {

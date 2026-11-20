@@ -359,19 +359,39 @@ fn rank(ip: &Ipv6Addr) -> u8 {
     }
 }
 
+/// Which neighbours become hosts of their own when they match no scanned host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddHosts {
+    /// Those that answered the echo, or whose cache entry is reachable, delay or probe: what
+    /// `scan` does.
+    Fresh,
+    /// Only those that answered **this run's** multicast echo (`monitor`). A cache entry that
+    /// flips between reachable and stale from one cycle to the next would otherwise make a host
+    /// appear and disappear; such a neighbour stays an observation.
+    Answered,
+}
+
+/// [`merge_with`] with [`AddHosts::Fresh`].
+pub fn merge(hosts: &mut Vec<Host>, found: &Found) -> usize {
+    merge_with(hosts, found, AddHosts::Fresh)
+}
+
 /// Joins what was found to the scanned hosts **by MAC address**. A host whose MAC a neighbour
 /// has gets its addresses in `ipv6.addresses` (and `ipv6.source`); a neighbour whose MAC no host
-/// has, and that answered recently (the multicast echo, or a reachable entry), is added as a host
-/// of its own with its best address. Stale entries and responders without a MAC are only
-/// observations. Returns how many hosts were added.
-pub fn merge(hosts: &mut Vec<Host>, found: &Found) -> usize {
+/// has, and that answered recently (see [`AddHosts`]), is added as a host of its own with its
+/// best address. Other entries and responders without a MAC are only observations. Returns how
+/// many hosts were added.
+pub fn merge_with(hosts: &mut Vec<Host>, found: &Found, add: AddHosts) -> usize {
     let responded: BTreeSet<Ipv6Addr> = found.responders.iter().map(|(ip, _)| *ip).collect();
     // MAC -> (addresses, fresh evidence, interface)
     let mut by_mac: BTreeMap<String, (BTreeSet<Ipv6Addr>, bool, String)> = BTreeMap::new();
     for n in &found.neighbors {
         let e = by_mac.entry(n.mac.clone()).or_default();
         e.0.insert(n.ip);
-        e.1 |= n.state.fresh() || responded.contains(&n.ip);
+        e.1 |= match add {
+            AddHosts::Fresh => n.state.fresh() || responded.contains(&n.ip),
+            AddHosts::Answered => responded.contains(&n.ip),
+        };
         e.2 = n.interface.clone();
     }
     let mut added = 0;
@@ -430,6 +450,74 @@ pub fn merge(hosts: &mut Vec<Host>, found: &Found) -> usize {
         added += 1;
     }
     added
+}
+
+/// What the IPv6 step after a scan produced.
+#[derive(Debug, Default)]
+pub struct Outcome {
+    pub found: Found,
+    /// Observations to save with the scan.
+    pub observations: Vec<Observation>,
+    /// Hosts added to the list.
+    pub added: usize,
+}
+impl Outcome {
+    /// One line for the status bar and the terminal.
+    pub fn summary(&self) -> String {
+        format!(
+            "IPv6: {} interface(s), {} answered the multicast echo, {} neighbor(s) in the cache, {} host(s) added",
+            self.found.interfaces.len(),
+            self.found.responders.len(),
+            self.found.neighbors.len(),
+            self.added
+        )
+    }
+}
+
+/// The IPv6 step after a finished scan, shared by `scan`, `monitor` and the desktop: one
+/// multicast echo per selected interface through the scan's own pacing and sent log (`sent`),
+/// then the OS neighbour cache, joined to `hosts` by MAC. It blocks for the echo's wait on every
+/// interface (up to [`MAX_INTERFACES`] times the port timeout), so a window runs it off its UI
+/// thread. Does nothing, and sends nothing, unless `--ipv6-discover` is on.
+pub fn after_scan(
+    s: &Settings,
+    sent: std::sync::Arc<crate::sendlog::SentLog>,
+    hosts: &mut Vec<Host>,
+    add: AddHosts,
+) -> Outcome {
+    after_scan_with(
+        s,
+        sent,
+        hosts,
+        add,
+        &Os {
+            interfaces: &os_interfaces,
+            echo: &|i, wait| os_echo(i, wait),
+            cache: &os_neighbor_cache,
+        },
+    )
+}
+
+/// [`after_scan`] with the operating system replaced (tests).
+pub fn after_scan_with(
+    s: &Settings,
+    sent: std::sync::Arc<crate::sendlog::SentLog>,
+    hosts: &mut Vec<Host>,
+    add: AddHosts,
+    os: &Os<'_>,
+) -> Outcome {
+    if !enabled(s) {
+        return Outcome::default();
+    }
+    let gate = gate(s, sent);
+    let found = discover_with(s, &gate, os);
+    let observations = observations(&found);
+    let added = merge_with(hosts, &found, add);
+    Outcome {
+        found,
+        observations,
+        added,
+    }
 }
 
 // ---- the run ---------------------------------------------------------------------------------

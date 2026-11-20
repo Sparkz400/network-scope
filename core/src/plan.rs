@@ -58,8 +58,8 @@ pub fn service_ports(ports: &[u16]) -> Vec<u16> {
 pub fn udp_ports(ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
     ports.iter().partition(|p| !service::is_ot_udp_port(**p))
 }
-/// What the IPv6 discovery (`--ipv6-discover`, `scan` only) sends once per scan: one echo per
-/// interface. `None` when it is off.
+/// What the IPv6 discovery (`--ipv6-discover`, `scan` and `monitor`) sends once per scan (once
+/// per cycle in `monitor`): one echo per interface. `None` when it is off.
 pub fn ipv6_discovery(s: &Settings) -> Option<HostPlan> {
     if !crate::ipv6::enabled(s) {
         return None;
