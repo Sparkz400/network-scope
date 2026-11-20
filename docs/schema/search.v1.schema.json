@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:search:v1",
+  "title": "Search across saved scans",
+  "description": "Output of search QUERY --format json: where an IP address, MAC address (or vendor prefix), host name, vendor, device type or finding id appeared in the saved scans, newest scan first.",
+  "$defs": {
+    "hit": {
+      "type": "object",
+      "required": [
+        "scan_id",
+        "timestamp",
+        "targets",
+        "source",
+        "ip",
+        "mac",
+        "hostname",
+        "vendor",
+        "detail"
+      ],
+      "properties": {
+        "scan_id": {
+          "type": "integer"
+        },
+        "timestamp": {
+          "type": "integer",
+          "description": "Unix seconds of the scan"
+        },
+        "targets": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "host",
+            "observation",
+            "finding"
+          ]
+        },
+        "ip": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mac": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "description": "Open ports of a host, the protocol of an observation, or the id and title of a finding"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema",
+    "query",
+    "scans_checked",
+    "scans_total",
+    "truncated",
+    "hits",
+    "last_seen"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/search/v1"
+    },
+    "query": {
+      "type": "string"
+    },
+    "scans_checked": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scans_total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "true when the hit limit or the number of scans read cut the result"
+    },
+    "hits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/hit"
+      }
+    },
+    "last_seen": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "The newest hit that shows a device (not a finding), same members as a hit; null when there is none"
+    }
+  }
+}
