@@ -70,9 +70,9 @@ fn session(db: &Path) -> Server {
     let reply = send(
         &mut server,
         "initialize",
-        json!({"protocolVersion": LATEST_PROTOCOL}),
+        json!({"protocolVersion": LATEST_LEGACY_PROTOCOL}),
     );
-    assert_eq!(reply["result"]["protocolVersion"], LATEST_PROTOCOL);
+    assert_eq!(reply["result"]["protocolVersion"], LATEST_LEGACY_PROTOCOL);
     server
 }
 fn line(id: i64, method: &str, params: Value) -> String {
@@ -125,11 +125,14 @@ fn failed(server: &mut Server, name: &str, arguments: Value) -> String {
 fn the_handshake_negotiates_the_protocol_version() {
     let db = temp_db("handshake");
     for (requested, answered) in [
+        ("2025-11-25", "2025-11-25"),
         ("2025-06-18", "2025-06-18"),
         ("2025-03-26", "2025-03-26"),
         ("2024-11-05", "2024-11-05"),
-        ("2099-01-01", LATEST_PROTOCOL),
-        ("garbage", LATEST_PROTOCOL),
+        // The stateless revision has no handshake: initialize falls back to the newest legacy one.
+        ("2026-07-28", LATEST_LEGACY_PROTOCOL),
+        ("2099-01-01", LATEST_LEGACY_PROTOCOL),
+        ("garbage", LATEST_LEGACY_PROTOCOL),
     ] {
         let mut server = Server::new(config(&db, true));
         let reply = send(
@@ -157,7 +160,212 @@ fn the_handshake_negotiates_the_protocol_version() {
         .handle_line(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
         .unwrap();
     assert!(reply.contains("-32602"));
-    assert_eq!(SUPPORTED_PROTOCOLS[0], LATEST_PROTOCOL);
+    assert_eq!(LEGACY_PROTOCOLS[0], LATEST_LEGACY_PROTOCOL);
+    // Legacy results stay as they were: no modern-only members.
+    let mut server = session(&db);
+    let list = send(&mut server, "tools/list", json!({}))["result"].clone();
+    for key in ["resultType", "_meta", "ttlMs", "cacheScope"] {
+        assert!(list.get(key).is_none(), "{key}");
+    }
+}
+
+// ---- The modern (stateless) era ----------------------------------------------------------------
+
+fn modern_meta(version: &str) -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "t", "version": "1"},
+    })
+}
+/// A modern request: `params` plus the per-request `_meta`.
+fn modern(server: &mut Server, method: &str, mut params: Value, meta: Value) -> Value {
+    params["_meta"] = meta;
+    send(server, method, params)
+}
+
+#[test]
+fn modern_clients_need_no_handshake() {
+    let db = fixture("modern");
+    // A fresh server: no initialize, no initialized notification.
+    let mut server = Server::new(config(&db, true));
+    let meta = modern_meta("2026-07-28");
+    let discover =
+        modern(&mut server, "server/discover", json!({}), meta.clone())["result"].clone();
+    assert_eq!(discover["resultType"], "complete");
+    assert_eq!(discover["supportedVersions"][0], "2026-07-28");
+    assert!(
+        discover["supportedVersions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("2025-11-25"))
+    );
+    assert!(discover["capabilities"]["tools"].is_object());
+    assert!(discover["capabilities"].get("resources").is_none());
+    assert_eq!(
+        discover["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "network-scope"
+    );
+    assert!(
+        discover["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Safe Mode")
+    );
+    assert!(discover["ttlMs"].as_u64().unwrap() > 0);
+
+    let list = modern(&mut server, "tools/list", json!({}), meta.clone())["result"].clone();
+    assert_eq!(list["resultType"], "complete");
+    assert_eq!(list["cacheScope"], "public");
+    assert!(list["ttlMs"].as_u64().unwrap() > 0);
+    assert_eq!(list["tools"].as_array().unwrap().len(), 8);
+
+    let call = modern(
+        &mut server,
+        "tools/call",
+        json!({"name": "list_scans", "arguments": {}}),
+        meta.clone(),
+    )["result"]
+        .clone();
+    assert_eq!(call["resultType"], "complete");
+    assert_eq!(call["isError"], false);
+    assert_eq!(call["structuredContent"]["scans"][0]["id"], 3);
+    // Tool errors stay results; unknown tools stay protocol errors.
+    let bad = modern(
+        &mut server,
+        "tools/call",
+        json!({"name": "list_scans", "arguments": {"limit": 0}}),
+        meta.clone(),
+    );
+    assert_eq!(bad["result"]["isError"], true);
+    assert_eq!(bad["result"]["resultType"], "complete");
+    let unknown = modern(
+        &mut server,
+        "tools/call",
+        json!({"name": "nope"}),
+        meta.clone(),
+    );
+    assert_eq!(unknown["error"]["code"], -32602);
+    // The scan tool's safety rules hold without a handshake too.
+    let public = modern(
+        &mut server,
+        "tools/call",
+        json!({"name": "scan", "arguments": {"targets": "8.8.8.8", "dry_run": true}}),
+        meta.clone(),
+    );
+    assert_eq!(public["result"]["isError"], true, "{public}");
+    // ping and initialize-era methods are not part of the stateless revision.
+    assert_eq!(
+        modern(&mut server, "ping", json!({}), meta)["error"]["code"],
+        -32601
+    );
+    // The modern requests did not open a legacy session.
+    assert_eq!(
+        send(&mut server, "tools/list", json!({}))["error"]["code"],
+        -32002
+    );
+    remove_db(&db);
+}
+
+#[test]
+fn modern_requests_with_an_unsupported_version_get_the_version_list() {
+    let db = temp_db("modern-version");
+    let mut server = Server::new(config(&db, false));
+    // An unknown version, and a handshake revision without the handshake.
+    for requested in ["1900-01-01", "2025-11-25", "2025-06-18"] {
+        for method in ["server/discover", "tools/list", "tools/call"] {
+            let reply = modern(
+                &mut server,
+                method,
+                json!({"name": "list_scans"}),
+                modern_meta(requested),
+            );
+            let error = &reply["error"];
+            assert_eq!(error["code"], -32022, "{requested} {method}: {reply}");
+            assert_eq!(error["data"]["requested"], requested);
+            let supported: Vec<&str> = error["data"]["supported"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(supported[0], "2026-07-28");
+            assert!(supported.contains(&LATEST_LEGACY_PROTOCOL));
+        }
+    }
+    // Malformed metadata: the version must be a string, the capabilities are required.
+    let reply = modern(
+        &mut server,
+        "tools/list",
+        json!({}),
+        json!({"io.modelcontextprotocol/protocolVersion": 2026, "io.modelcontextprotocol/clientCapabilities": {}}),
+    );
+    assert_eq!(reply["error"]["code"], -32602);
+    let reply = modern(
+        &mut server,
+        "tools/list",
+        json!({}),
+        json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"}),
+    );
+    assert_eq!(reply["error"]["code"], -32602);
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("clientCapabilities")
+    );
+    // server/discover without a version is not a legacy method either.
+    let reply = send(&mut server, "server/discover", json!({}));
+    assert_eq!(reply["error"]["code"], -32602);
+}
+
+#[test]
+fn legacy_sessions_are_unchanged_by_the_modern_era() {
+    let db = fixture("dual");
+    let mut server = session(&db);
+    // Legacy clients send `_meta` too (a progress token); that is not a modern request.
+    let reply = send(
+        &mut server,
+        "tools/call",
+        json!({"name": "list_scans", "arguments": {}, "_meta": {"progressToken": 5}}),
+    );
+    assert_eq!(reply["result"]["isError"], false);
+    assert!(reply["result"].get("resultType").is_none());
+    // initialize is always the handshake, even with modern metadata.
+    let reply = modern(
+        &mut server,
+        "initialize",
+        json!({"protocolVersion": "2025-11-25"}),
+        modern_meta("2026-07-28"),
+    );
+    assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
+    // Both eras on one process: a modern request in the middle of a legacy session.
+    let reply = modern(
+        &mut server,
+        "tools/list",
+        json!({}),
+        modern_meta("2026-07-28"),
+    );
+    assert_eq!(reply["result"]["resultType"], "complete");
+    assert!(send(&mut server, "ping", json!({}))["result"].is_object());
+    remove_db(&db);
+}
+
+#[test]
+fn tool_names_follow_the_2025_11_25_rules() {
+    let server = Server::new(config(&temp_db("names"), true));
+    for tool in server.tools() {
+        assert!((1..=128).contains(&tool.name.len()), "{}", tool.name);
+        assert!(
+            tool.name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')),
+            "{}",
+            tool.name
+        );
+        // No `$schema`: the input schemas use the default dialect (JSON Schema 2020-12).
+        assert!(tool.input_schema.get("$schema").is_none());
+    }
 }
 
 #[test]
@@ -350,7 +558,11 @@ fn long_lines_are_refused_and_the_session_continues() {
     );
     let input = format!(
         "{}\n{huge}\n{}\n",
-        line(1, "initialize", json!({"protocolVersion": LATEST_PROTOCOL})),
+        line(
+            1,
+            "initialize",
+            json!({"protocolVersion": LATEST_LEGACY_PROTOCOL})
+        ),
         line(2, "ping", json!({})),
     );
     let mut out = Vec::new();
@@ -482,7 +694,7 @@ fn tools_list_declares_proper_input_schemas() {
     send(
         &mut server,
         "initialize",
-        json!({"protocolVersion": LATEST_PROTOCOL}),
+        json!({"protocolVersion": LATEST_LEGACY_PROTOCOL}),
     );
     let tools = send(&mut server, "tools/list", json!({}))["result"]["tools"].clone();
     assert!(
@@ -542,6 +754,7 @@ fn unknown_tools_and_bad_arguments_are_distinguished() {
         ),
         ("diff_scans", json!({"old_id": 1}), "new_id"),
         ("search_inventory", json!({"query": ""}), "shorter than"),
+        ("device_history", json!({"query": ""}), "shorter than"),
         (
             "findings_gained",
             json!({"finding_id": "a", "since": []}),
@@ -554,6 +767,11 @@ fn unknown_tools_and_bad_arguments_are_distinguished() {
             "{tool} {args}: {text}"
         );
         assert!(text.contains(message), "{tool} {args}: {text}");
+    }
+    // Whitespace passes minLength but is no query: a clear tool error, nothing searched.
+    for tool in ["search_inventory", "device_history"] {
+        let text = failed(&mut server, tool, json!({"query": " \t "}));
+        assert!(text.starts_with("query is empty: give"), "{tool}: {text}");
     }
     remove_db(&db);
 }
@@ -574,15 +792,33 @@ fn the_read_tools_answer_from_the_inventory() {
     let one = ok(&mut server, "list_scans", json!({"limit": 1}), "scans");
     assert_eq!(one["scans"].as_array().unwrap().len(), 1);
 
-    let devices = ok(&mut server, "list_devices", json!({}), "devices");
+    let devices = ok(&mut server, "list_devices", json!({}), "mcp-devices");
     assert_eq!(devices["total"], 1);
     assert_eq!(devices["truncated"], false);
     assert_eq!(devices["devices"][0]["mac"], "00:0C:29:AA:BB:CC");
+    assert!(devices["devices"][0].get("observations").is_none());
+    // detail: the full `devices` records; ip: one device.
+    let full = ok(
+        &mut server,
+        "list_devices",
+        json!({"detail": true, "ip": "10.0.0.1"}),
+        "devices",
+    );
+    assert_eq!(full["total"], 1);
+    assert!(full["devices"][0]["observations"].is_object());
+    let other = ok(
+        &mut server,
+        "list_devices",
+        json!({"ip": "10.0.0.2"}),
+        "mcp-devices",
+    );
+    assert_eq!(other["total"], 0);
+    assert!(failed(&mut server, "list_devices", json!({"ip": "nope"})).contains("Invalid IP"));
     let old = ok(
         &mut server,
         "list_devices",
         json!({"scan_id": 1}),
-        "devices",
+        "mcp-devices",
     );
     assert!(
         !old["devices"][0]["open_tcp"]
@@ -594,7 +830,7 @@ fn the_read_tools_answer_from_the_inventory() {
         &mut server,
         "list_devices",
         json!({"scan_id": 3}),
-        "devices",
+        "mcp-devices",
     );
     assert!(
         newest["devices"][0]["open_tcp"]
@@ -885,6 +1121,63 @@ fn a_damaged_scan_is_reported_as_damaged_not_as_missing() {
     assert!(text.starts_with("Could not read scan 2: "), "{text}");
     let text = failed(&mut server, "list_findings", json!({"scan_id": 99}));
     assert_eq!(text, "No scan with ID 99");
+    // A search skips the damaged scan but says so: it does not look like "not seen there".
+    let found = ok(
+        &mut server,
+        "search_inventory",
+        json!({"query": "10.0.0.1"}),
+        "mcp-where-seen",
+    );
+    assert_eq!(found["matches"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        (
+            found["scans_checked"].clone(),
+            found["scans_skipped"].clone()
+        ),
+        (json!(2), json!(1))
+    );
+    assert_eq!(found["truncated"], true);
+    let note = found["notes"][0].as_str().unwrap();
+    assert!(
+        note.contains("1 scan(s) could not be read") && note.contains("scan 2"),
+        "{note}"
+    );
+    remove_db(&db);
+}
+
+#[test]
+fn default_results_stay_small_for_a_full_subnet() {
+    // A /24 with every address up and a few services: the default list_devices answer must be
+    // something an assistant can read, not hundreds of kilobytes.
+    let hosts: String = (1..=254)
+        .map(|i| {
+            format!(
+                r#"<host><status state="up"/><address addr="10.0.0.{i}" addrtype="ipv4"/>
+                <address addr="00:0C:29:00:00:{i:02X}" addrtype="mac"/>
+                <hostnames><hostname name="host-{i}.lab"/></hostnames><ports>
+                <port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="9.6"/></port>
+                <port protocol="tcp" portid="443"><state state="open"/><service name="https" product="nginx"/></port>
+                </ports></host>"#
+            )
+        })
+        .collect();
+    let snapshot = nmap::import(&format!(
+        r#"<nmaprun args="nmap 10.0.0.0/24" start="1700000000">{hosts}</nmaprun>"#
+    ))
+    .unwrap();
+    let db = temp_db("size");
+    store::save(&db, &snapshot).unwrap();
+    let mut server = session(&db);
+    let result = call(&mut server, "list_devices", json!({}));
+    let bytes = result.to_string().len();
+    assert!(bytes < 64 * 1024, "default list_devices is {bytes} bytes");
+    assert_eq!(result["structuredContent"]["total"], 254);
+    assert_eq!(result["structuredContent"]["truncated"], true);
+    let detail = call(&mut server, "list_devices", json!({"detail": true}));
+    assert!(
+        detail.to_string().len() > bytes,
+        "the summary is smaller than the full records"
+    );
     remove_db(&db);
 }
 
@@ -1089,7 +1382,7 @@ fn scoped_session(db: &Path, scope: &str) -> Server {
     send(
         &mut server,
         "initialize",
-        json!({"protocolVersion": LATEST_PROTOCOL}),
+        json!({"protocolVersion": LATEST_LEGACY_PROTOCOL}),
     );
     server
 }
@@ -1241,7 +1534,7 @@ fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
         &mut server,
         "list_devices",
         json!({"scan_id": id}),
-        "devices",
+        "mcp-devices",
     );
     assert_eq!(devices["total"], 1);
     drop(listener);
