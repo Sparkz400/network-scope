@@ -339,7 +339,14 @@ fn score(
     values: &BTreeMap<Kind, BTreeSet<&str>>,
     record: &Record,
 ) -> Option<(u32, Vec<&'static str>)> {
-    let exact = record.key == device.id;
+    // The same id as recorded: the device's own id is the record's key, or a MAC the record
+    // already holds (a device merged after it rotated its MAC keeps being recognised by the
+    // new one, instead of forking into a second device).
+    let exact = record.key == device.id
+        || (!device.mac.is_empty()
+            && [Kind::Mac, Kind::RandomMac]
+                .iter()
+                .any(|k| record.has(*k, &device.mac)));
     let global_mac = values.contains_key(&Kind::Mac);
     // A globally unique MAC is the strongest identifier: it is not vetoed by anything else (a
     // reinstalled system has a new SMB GUID). Any other match can be.
@@ -738,6 +745,42 @@ mod tests {
                 .map(|(d, _)| d.id.clone())
         };
         assert_eq!(winner(&now, &m), winner(&rev, &m2));
+    }
+
+    #[test]
+    fn a_device_merged_after_a_mac_rotation_is_not_forked_by_its_next_scan() {
+        let mut registry = Registry::new();
+        let r1 = devices_of(&[host("10.0.0.5", "02:00:00:00:00:01", "tablet", STRONG)]);
+        registry.learn("02:00:00:00:00:01", &r1[0]);
+        // Rotation: merged on strong identifiers, and the record learns the new MAC.
+        let r2 = devices_of(&[host("10.0.0.77", "06:11:22:33:44:55", "tablet", STRONG)]);
+        let m = resolve(&registry, &r2);
+        assert_eq!(m[0].key, "02:00:00:00:00:01");
+        registry.learn(&m[0].key, &r2[0]);
+        // A later scan sees the new MAC without any strong identifier (ports closed).
+        let bare = devices_of(&[host("10.0.0.77", "06:11:22:33:44:55", "", &[])]);
+        let m = resolve(&registry, &bare);
+        assert_eq!(
+            (m[0].new, m[0].key.as_str()),
+            (false, "02:00:00:00:00:01"),
+            "{m:?}"
+        );
+        // A different SMB GUID still rules it out.
+        let mut with_guid = registry.clone();
+        with_guid.add(
+            "02:00:00:00:00:01",
+            Identifier {
+                kind: Kind::SmbGuid,
+                value: "g-1".into(),
+            },
+        );
+        let other = devices_of(&[host(
+            "10.0.0.77",
+            "06:11:22:33:44:55",
+            "",
+            &[("smb.445.guid", "g-2")],
+        )]);
+        assert!(resolve(&with_guid, &other)[0].new);
     }
 
     #[test]

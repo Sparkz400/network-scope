@@ -50,7 +50,7 @@ Rows without an address, MAC or name; leases that are not active (ISC `free`, `e
 
 ### Starting the alerts
 
-Importing fills the expected list but does not turn on alerting: a partial list would make every other device "unknown". When the list is complete, run `baseline enable` (or `baseline approve` after a scan); from then on `monitor` raises `unknown-device` for devices that are not on it.
+Importing fills the expected list but does not turn on alerting: a partial list would make every other device "unknown". One effect to know about: imported devices are recorded in the inventory like seen devices, so on a database that has no devices yet the first `monitor` cycle is no longer a silent learning run. Devices that are not on the imported list then raise `new-device` (and, once the baseline is on, `unknown-device`); start the monitor with `--learn` for the first cycle if you want it to record them quietly. When the list is complete, run `baseline enable` (or `baseline approve` after a scan); from then on `monitor` raises `unknown-device` for devices that are not on it.
 
 ### Limits
 
