@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:mcp-devices:v1",
+  "title": "Device summaries (MCP list_devices)",
+  "description": "Default result of the MCP tool list_devices: one short record per device of a scan. With detail: true the tool returns the full `devices` kind instead.",
+  "type": "object",
+  "required": [
+    "schema",
+    "devices",
+    "total",
+    "truncated"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/mcp-devices/v1"
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "mac",
+          "vendor",
+          "ips",
+          "hostnames",
+          "device_type",
+          "os",
+          "open_tcp",
+          "open_udp",
+          "services"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "mac": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "ips": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "IPv4 or IPv6 address in text form"
+            }
+          },
+          "hostnames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "device_type": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "open_tcp": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          "open_udp": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          "services": {
+            "type": "object",
+            "description": "Service per open port, as in the `devices` kind"
+          }
+        }
+      }
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The number of matching devices before the limit was applied"
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "true when the list was cut at the limit"
+    }
+  }
+}

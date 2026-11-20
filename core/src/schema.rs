@@ -44,6 +44,7 @@ pub const KINDS: &[&str] = &[
     "feeds-status",
     "interfaces",
     "mcp-where-seen",
+    "mcp-devices",
     "mcp-findings-gained",
     "mcp-scan",
     "changes",
