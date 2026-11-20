@@ -57,6 +57,8 @@ pub const TARGETS: &[Target] = &[
     ("icmp_reply", icmp_reply),
     ("mcp_message", mcp_message),
     ("update_response", update_response),
+    ("local_networks", local_networks),
+    ("target_list", target_list),
 ];
 
 /// A pcap or pcapng file, read to the end as the capture-file import does.
@@ -468,6 +470,40 @@ pub fn mcp_message(data: &[u8]) {
         for reply in replies {
             assert_eq!(reply["jsonrpc"], "2.0");
         }
+    }
+}
+
+/// The output of the operating system commands that list the local networks (`ip addr`,
+/// `ifconfig`, PowerShell, `route print`): every parser, then the classification of what they found.
+pub fn local_networks(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let mut all = crate::localnets::parse_ip_addr(&text);
+    all.extend(crate::localnets::parse_ifconfig(&text));
+    all.extend(crate::localnets::parse_pipe_lines(&text));
+    all.extend(crate::localnets::parse_route_print(&text));
+    let candidates = crate::localnets::classify(&all);
+    std::hint::black_box(crate::localnets::selected(&candidates, true));
+    for net in &all {
+        std::hint::black_box((net.cidr(), net.size()));
+        if let Some(b) = crate::localnets::broadcast_for(&all, net.ip) {
+            std::hint::black_box(b);
+        }
+    }
+}
+
+/// A target list file, a MAC address typed for Wake-on-LAN and a search query: the three small
+/// parsers of user-supplied text added with the convenience features.
+pub fn target_list(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let list = crate::targets::from_list(&text);
+    if let Ok(targets) = crate::scan::parse_targets(&list, true, 1 << 12) {
+        let _ = std::hint::black_box(crate::targets::randomized(&targets, 7).map(|h| h.len()));
+    }
+    if let Ok(mac) = crate::wol::parse_mac(text.lines().next().unwrap_or("")) {
+        std::hint::black_box(crate::wol::magic_packet(mac).len());
+    }
+    if let Some(needle) = crate::search::Needle::parse(&text) {
+        std::hint::black_box(needle);
     }
 }
 

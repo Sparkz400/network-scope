@@ -66,15 +66,15 @@ impl Scanner {
             return;
         };
         ui.separator();
-        ui.hyperlink_to(
-            format!("Version {} is available", release.version_text()),
-            release.url(),
-        )
-        .on_hover_text(release.url());
-        if ui.small_button("How to verify…").clicked() {
+        convenience::link_to(
+            ui,
+            tr!("Version {} is available", release.version_text()),
+            &release.url(),
+        );
+        if ui.small_button(tr!("How to verify…")).clicked() {
             self.update_open = true;
         }
-        if ui.small_button("Dismiss").clicked() {
+        if ui.small_button(tr!("Dismiss")).clicked() {
             self.update_notice = None;
             self.update_open = false;
         }
@@ -84,20 +84,19 @@ impl Scanner {
         let Some(release) = self.update_notice.clone() else {
             return;
         };
-        egui::Window::new("Update available")
+        egui::Window::new(tr!("Update available"))
             .open(&mut self.update_open)
             .default_pos(self.window_origin)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label(format!(
+                ui.label(tr!(
                     "Version {} is available (this is {}).",
                     release.version_text(),
                     env!("CARGO_PKG_VERSION")
                 ));
-                ui.hyperlink_to(release.url(), release.url());
+                convenience::link_to(ui, release.url(), &release.url());
                 ui.label(
-                    "Network Scope never downloads or installs updates. Download the file for \
-                     your platform from the release page and verify it first:",
+                    tr!("Network Scope never downloads or installs updates. Download the file for your platform from the release page and verify it first:"),
                 );
                 let text = update::verification_text(&release);
                 ui.add(
@@ -105,7 +104,7 @@ impl Scanner {
                         .font(egui::TextStyle::Monospace)
                         .desired_width(560.0),
                 );
-                if ui.button("Copy text").clicked() {
+                if ui.button(tr!("Copy text")).clicked() {
                     ui.ctx().copy_text(text);
                 }
             });

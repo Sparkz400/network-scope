@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 30] = [
+pub(super) const FLAGS: [&str; 31] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -37,8 +37,9 @@ pub(super) const FLAGS: [&str; 30] = [
     "allow-out-of-scope",
     "no-backoff",
     "sent-log",
+    "randomize",
 ];
-pub(super) const VALUES: [&str; 62] = [
+pub(super) const VALUES: [&str; 65] = [
     "feeds",
     "top",
     "nvd",
@@ -101,6 +102,9 @@ pub(super) const VALUES: [&str; 62] = [
     "index",
     "scope",
     "scope-file",
+    "preset",
+    "broadcast",
+    "targets-file",
 ];
 pub(super) fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);
@@ -140,7 +144,91 @@ pub(super) fn number<T: std::str::FromStr>(
         None => Ok(default),
     }
 }
+/// The scan settings of the command line: the options on top of the defaults, or, with
+/// `--preset NAME`, on top of that preset (see [`crate::presets`]; an option given explicitly
+/// wins over what the preset sets). `plant` is passive and refused here.
 pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Settings, String> {
+    let cli = settings_from_options(opts)?;
+    let Some(name) = opts.get("preset") else {
+        return Ok(cli);
+    };
+    let mut s = crate::presets::Preset::parse(name)?.settings(&cli)?;
+    // What the user typed beats the preset.
+    let has = |k: &str| opts.contains_key(k);
+    for (key, field) in [
+        ("tcp-only", &mut s.tcp_only),
+        ("arp", &mut s.arp),
+        ("ot", &mut s.ot),
+        ("dns", &mut s.dns),
+        ("syn", &mut s.syn),
+        ("arp-sweep", &mut s.arp_sweep),
+        ("adaptive-syn", &mut s.syn_adaptive),
+        ("adaptive-tcp", &mut s.tcp_adaptive),
+        ("jarm", &mut s.jarm),
+        ("trace", &mut s.trace),
+        ("services", &mut s.services),
+        ("udp", &mut s.udp),
+        ("os", &mut s.os_detect),
+    ] {
+        if has(key) {
+            *field = true;
+        }
+    }
+    if has("deep") {
+        (s.services, s.udp, s.os_detect) = (true, true, true);
+    }
+    if has("fast") {
+        s.safe = false;
+    }
+    if has("no-backoff") {
+        s.backoff = false;
+    }
+    if has("ports") || has("ot") || has("top-ports") {
+        s.ports = cli.ports.clone();
+    }
+    if has("workers") {
+        s.workers = cli.workers;
+    }
+    if has("timeout") {
+        (s.port_timeout, s.ping_timeout) = (cli.port_timeout, cli.ping_timeout);
+    }
+    if has("udp-ports") {
+        (s.udp_ports, s.udp) = (cli.udp_ports.clone(), true);
+    }
+    if has("trace-method") {
+        (s.trace_method, s.trace) = (cli.trace_method, true);
+    }
+    if has("trace-port") {
+        s.trace_port = cli.trace_port;
+    }
+    if has("max-hops") {
+        s.trace_hops = cli.trace_hops;
+    }
+    if has("retries") {
+        s.retries = cli.retries;
+    }
+    if has("rate") {
+        s.max_rate = cli.max_rate;
+    }
+    if has("parallel") {
+        s.port_parallel = cli.port_parallel;
+    }
+    for (key, f) in [
+        ("unit", cli.modbus_unit),
+        ("rack", cli.s7_rack),
+        ("slot", cli.s7_slot),
+    ] {
+        if has(key) {
+            match key {
+                "unit" => s.modbus_unit = f,
+                "rack" => s.s7_rack = f,
+                _ => s.s7_slot = f,
+            }
+        }
+    }
+    Ok(s)
+}
+fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settings, String> {
     let mut s = scan::Settings {
         scan_nonresponders: true,
         probes: 1,
@@ -337,6 +425,36 @@ mod tests {
         assert!(trace_port("502").unwrap_err().contains("OT or printer"));
         assert!(trace_port("9100").is_err());
         assert!(trace_port("0").is_err());
+    }
+
+    #[test]
+    fn presets_set_the_base_and_explicit_options_win() {
+        let o = |list: &[&str]| options(&args(list)).unwrap().1;
+        // quick: the safe default scan.
+        let s = scan_settings(&o(&["--preset", "quick"])).unwrap();
+        assert!(s.safe && !s.services && s.workers == scan::Settings::default().workers);
+        // office adds identification and stays in Safe Mode; --ports still wins.
+        let s = scan_settings(&o(&["--preset", "office", "--ports", "22"])).unwrap();
+        assert!(s.safe && s.services && s.os_detect && s.mac);
+        assert_eq!(s.ports, "22");
+        // full leaves Safe Mode, and --no-backoff or --workers still apply on top of it.
+        let s =
+            scan_settings(&o(&["--preset", "FULL", "--no-backoff", "--workers", "32"])).unwrap();
+        assert!(!s.safe && s.jarm && s.syn && !s.backoff && s.workers == 32);
+        // --fast on a safe preset leaves Safe Mode; machine settings come from the options.
+        let s = scan_settings(&o(&["--preset", "quick", "--fast", "--interface", "eth0"])).unwrap();
+        assert!(!s.safe && s.interface == "eth0");
+        // plant is passive: the scan options refuse it and point to ot-listen.
+        let e = scan_settings(&o(&["--preset", "plant"])).unwrap_err();
+        assert!(e.contains("ot-listen"), "{e}");
+        assert!(
+            scan_settings(&o(&["--preset", "turbo"]))
+                .unwrap_err()
+                .contains("Unknown preset")
+        );
+        // No preset: the old defaults (all ports probed, one probe).
+        let s = scan_settings(&o(&[])).unwrap();
+        assert!(s.scan_nonresponders && s.probes == 1);
     }
 
     #[test]

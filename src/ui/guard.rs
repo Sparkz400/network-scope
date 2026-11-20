@@ -204,6 +204,7 @@ mod tests {
                 include_str!("commands/trace.rs"),
                 "guard::enforce(",
             ),
+            ("wol", include_str!("commands/wol.rs"), "guard::enforce("),
         ] {
             let code = source.split("#[cfg(test)]").next().unwrap();
             assert!(code.contains(call), "{name} must call the scope guard");
@@ -248,6 +249,13 @@ mod tests {
         #[cfg(feature = "gui")]
         {
             let gui = include_str!("../gui/mod.rs");
+            // The Wake-on-LAN button sends through the same guarded function as the command.
+            let wake = include_str!("../gui/convenience.rs");
+            assert!(
+                wake.contains("wol::guard_addresses(")
+                    && wake.contains("self.scope_check(&addresses"),
+                "the desktop Wake-on-LAN must call the scope guard"
+            );
             assert!(
                 gui.contains("scope::enforce("),
                 "the desktop Start must call the scope guard"

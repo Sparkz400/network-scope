@@ -12,6 +12,14 @@ pub(super) fn assets(ctx: &mut Ctx) -> Result<(), String> {
 
 pub(super) fn listen(ctx: &mut Ctx) -> Result<(), String> {
     let opts = &ctx.opts;
+    // `--preset plant` is what this command is; the active presets belong to `scan`.
+    if let Some(name) = opts.get("preset")
+        && crate::presets::Preset::parse(name)? != crate::presets::Preset::Plant
+    {
+        return Err(format!(
+            "ot-listen is passive: use --preset plant (or none); {name} is a scan preset"
+        ));
+    }
     let mut tracker = crate::otpassive::Tracker::new();
     tracker.set_reassembly(!opts.contains_key("no-reassembly"));
     let label = if let Some(path) = opts.get("pcap") {
