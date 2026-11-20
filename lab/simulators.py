@@ -439,6 +439,10 @@ class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
+# lossy: how long a dropped connection stays open before the reset (see serve_tcp).
+RESET_AFTER = 0.05
+
+
 def reset(sock):
     """Close with a TCP reset instead of a FIN: the peer sees the connection lost."""
     try:
@@ -455,6 +459,11 @@ def serve_tcp(bind, port, handler, device=None):
                 if device and not device.connection():
                     return
                 if SCENARIO.drop(port):
+                    # Reset only after the client has seen its connect succeed. Reset at once,
+                    # the RST can reach a fast client (Linux loopback) before its non-blocking
+                    # connect has been polled, and the port check then sees a reset instead of
+                    # an open port: the scenario is "connections lost after the connect".
+                    time.sleep(RESET_AFTER)
                     reset(self.request)
                     return
                 handler(Conn(self.request))
