@@ -772,8 +772,106 @@ def snmp_agent(bind, port, stats_path=None):
             sock.sendto(reply, addr)
 
 
+# ---- FINS/UDP, MQTT, KNXnet/IP and Niagara Fox: identification only -----------------------------
+# Each device answers only the one read-only request Network Scope sends (FINS Controller Data
+# Read, MQTT CONNECT, KNX DESCRIPTION_REQUEST, the Fox hello) and counts what it receives, so
+# lab/verify.py can show that nothing else arrives (`--ot-stats FILE`). Anything else is counted
+# under "other" and ignored.
+OT_STATS = {"fins": {}, "mqtt": {}, "knx": {}, "fox": {}}
+OT_STATS_PATH = None
+
+
+def ot_count(protocol, key):
+    OT_STATS[protocol][key] = OT_STATS[protocol].get(key, 0) + 1
+    if OT_STATS_PATH:
+        try:
+            with open(OT_STATS_PATH + ".tmp", "w") as handle:
+                json.dump(OT_STATS, handle)
+            os.replace(OT_STATS_PATH + ".tmp", OT_STATS_PATH)
+        except OSError:
+            pass
+
+
+def fins_reply(request):
+    """Controller Data Read response: model, version, system use and area data (92 bytes)."""
+    header = bytes([0xC0, 0, 2, 0, request[7], 0, 0, 0xC8, 0, request[9], 5, 1, 0, 0])
+    data = b"LabPLC-FINS".ljust(20, b" ") + b"01.00".ljust(20, b"\x00") + bytes(40) + bytes(12)
+    return header + data
+
+
+def fins_agent(bind, port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((bind, port))
+    while True:
+        data, addr = sock.recvfrom(2048)
+        if len(data) == 13 and data[0] == 0x80 and data[10:12] == b"\x05\x01":
+            ot_count("fins", "0501")
+            if not SCENARIO.drop(port):
+                SCENARIO.pause()
+                sock.sendto(fins_reply(data), addr)
+        else:
+            ot_count("fins", "other")
+
+
+def mqtt(conn):
+    """Answers a CONNECT with a CONNACK "not authorized" (like a broker that wants credentials)."""
+    data = read_some(conn)
+    if not data:
+        return
+    ot_count("mqtt", str(data[0] >> 4))
+    if data[0] == 0x10:
+        conn.sendall(bytes([0x20, 2, 0, 5]))
+        while True:  # the DISCONNECT, then the end of the stream
+            more = read_some(conn)
+            if not more:
+                return
+            ot_count("mqtt", str(more[0] >> 4))
+
+
+def fox(conn):
+    """Answers the Fox hello with a station hello."""
+    data = b""
+    conn.settimeout(IDLE_TIMEOUT)
+    try:
+        while b"};;" not in data and len(data) < 4096:
+            chunk = conn.recv(1024)
+            if not chunk:
+                return
+            data += chunk
+    except OSError:
+        return
+    ot_count("fox", "hello" if data.startswith(b"fox a 1 -1 fox hello\n") else "other")
+    if not data.startswith(b"fox a 1 -1 fox hello\n"):
+        return
+    body = ("fox.version=s:1.0\nid=i:2\nhostName=s:lab-jace\nhostAddress=s:127.0.0.1\napp.name=s:Station\n"
+            "app.version=s:4.8.0.1\nvm.name=s:J9\nvm.version=s:2.9\nos.name=s:QNX\nos.version=s:6.5\n"
+            "station.name=s:LabStation\nlang=s:en\nhostId=s:Qnx-LAB-0000-0000-0001\nbrandId=s:lab\n")
+    conn.sendall(("fox a 0 -1 fox hello\n{\n" + body + "};;\n").encode())
+
+
+def knx_description():
+    """A DESCRIPTION_RESPONSE: device information DIB (54 bytes) and supported service families."""
+    dib = bytes([54, 1, 0x02, 0]) + bytes([0x11, 0xFA]) + bytes([0, 1]) + bytes.fromhex("008300112233")
+    dib += bytes([224, 0, 23, 12]) + bytes.fromhex("001b21aabbcc") + b"Lab KNX IP Router".ljust(30, b"\x00")
+    families = bytes([10, 2, 2, 1, 3, 1, 4, 1, 5, 1])
+    body = dib + families
+    return bytes([6, 0x10, 2, 4]) + struct.pack(">H", 6 + len(body)) + body
+
+
+def knx_agent(bind, port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((bind, port))
+    while True:
+        data, addr = sock.recvfrom(2048)
+        service = struct.unpack(">H", data[2:4])[0] if len(data) >= 4 and data[:2] == b"\x06\x10" else None
+        ot_count("knx", hex(service) if service is not None else "other")
+        if service == 0x0203 and not SCENARIO.drop(port):
+            SCENARIO.pause()
+            sock.sendto(knx_description(), addr)
+
+
 def main():
-    global SCENARIO
+    global SCENARIO, OT_STATS_PATH
     ap = argparse.ArgumentParser()
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--offset", type=int, default=0, help="added to every port")
@@ -786,10 +884,13 @@ def main():
     ap.add_argument("--conn-limit", type=int, default=4, help="fragile-ot: new connections per second that crash a device")
     ap.add_argument("--stats", help="fragile-ot: JSON file for the device counters")
     ap.add_argument("--snmp-stats", help="JSON file for the SNMP agent's counters (the PDU tags it received)")
+    ap.add_argument("--ot-stats", help="JSON file for the counters of the FINS, MQTT, KNX and Fox devices (what they received)")
     args = ap.parse_args()
     SCENARIO = Scenario(args.scenario, args.seed, args.loss, (args.delay_min_ms / 1000, args.delay_max_ms / 1000))
 
     tcp = {port: (handler, None) for port, handler in TCP.items()}
+    tcp[1883] = (mqtt, None)
+    tcp[1911] = (fox, None)
     if args.scenario == "fragile-ot":
         stats = Stats(args.stats)
         for port, (name, handler) in FRAGILE.items():
@@ -802,7 +903,10 @@ def main():
         threading.Thread(target=serve_tcp, args=(args.bind, port + args.offset, handler, device), daemon=True).start()
     threading.Thread(target=bacnet, args=(args.bind, 47808 + args.offset), daemon=True).start()
     threading.Thread(target=snmp_agent, args=(args.bind, 161 + args.offset, args.snmp_stats), daemon=True).start()
-    print("lab simulators listening on", args.bind, "ports", sorted(p + args.offset for p in tcp if p not in args.skip), "and udp", 47808 + args.offset, 161 + args.offset, "scenario", args.scenario, flush=True)
+    OT_STATS_PATH = args.ot_stats
+    threading.Thread(target=fins_agent, args=(args.bind, 9600 + args.offset), daemon=True).start()
+    threading.Thread(target=knx_agent, args=(args.bind, 3671 + args.offset), daemon=True).start()
+    print("lab simulators listening on", args.bind, "ports", sorted(p + args.offset for p in tcp if p not in args.skip), "and udp", 47808 + args.offset, 161 + args.offset, 9600 + args.offset, 3671 + args.offset, "scenario", args.scenario, flush=True)
     threading.Event().wait()
 
 

@@ -38,6 +38,10 @@ pub const TARGETS: &[Target] = &[
     ("bacnet_iam", bacnet_iam),
     ("s7_szl", s7_szl),
     ("opcua_reply", opcua_reply),
+    ("fins_reply", fins_reply),
+    ("fox_hello", fox_hello),
+    ("mqtt_connack", mqtt_connack),
+    ("knx_description", knx_description),
     ("udp_dns", udp_dns),
     ("udp_ntp", udp_ntp),
     ("udp_ssdp", udp_ssdp),
@@ -257,6 +261,26 @@ pub fn udp_ntp(data: &[u8]) {
 /// An SSDP reply.
 pub fn udp_ssdp(data: &[u8]) {
     std::hint::black_box(udp::parse_ssdp(data));
+}
+
+/// The reply to the Omron FINS Controller Data Read request (a FINS frame, from the ICF byte).
+pub fn fins_reply(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_fins_controller_data(data));
+}
+
+/// A Niagara Fox hello (the station's answer to the hello request).
+pub fn fox_hello(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_fox_hello(data));
+}
+
+/// The broker's answer to the MQTT CONNECT.
+pub fn mqtt_connack(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_mqtt_connack(data));
+}
+
+/// A KNXnet/IP DESCRIPTION_RESPONSE or SEARCH_RESPONSE.
+pub fn knx_description(data: &[u8]) {
+    let _ = std::hint::black_box(ot::extra::parse_knx_description(data));
 }
 
 /// Any SNMP reply the read-only SNMP client may receive: v1/v2c responses and SNMPv3 messages

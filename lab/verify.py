@@ -101,7 +101,8 @@ def missing_identity(host, expect=EXPECT_IDENTITY):
 
 def check_normal(exe, work, failures):
     snmp_stats = os.path.join(work, "snmp-stats.json")
-    with Sim("--snmp-stats", snmp_stats):
+    ot_stats = os.path.join(work, "ot-stats.json")
+    with Sim("--snmp-stats", snmp_stats, "--ot-stats", ot_stats):
         host, ids, _ = deep_scan(exe, work, "normal", "--timeout", "1500")
         slowed = [e for e in host["errors"] if e.startswith("backed off:")]
         if slowed:
@@ -109,6 +110,7 @@ def check_normal(exe, work, failures):
         check_backoff(exe, work, failures)
         check_dry_run_and_sent_log(exe, work, host, failures)
         check_snmp(exe, work, snmp_stats, failures)
+        check_ot_extra(exe, work, ot_stats, failures)
     for key, want in missing_identity(host).items():
         failures.append(f"identity {key}: expected {want!r}, got {host['identity'].get(key)!r}")
     for want in sorted(EXPECT_FINDINGS - ids):
@@ -172,6 +174,66 @@ def check_snmp(exe, work, stats_file, failures):
     if not tags or not tags <= {"0xa0", "0xa1", "0xa5"} or stats.get("other_pdus"):
         failures.append(f"snmp: the agent received other PDUs than Get/GetNext/GetBulk: {stats}")
     print(f"snmp: PDU tags seen by the agent {sorted(tags)}, {stats.get('datagrams')} datagrams")
+
+
+# C23: Omron FINS (UDP 9600), Niagara Fox (TCP 1911), MQTT (TCP 1883) and KNXnet/IP (UDP 3671).
+EXPECT_OT_EXTRA = {
+    "Omron FINS.model": "LabPLC-FINS",
+    "Omron FINS.firmware": "01.00",
+    "Niagara Fox.station_name": "LabStation",
+    "Niagara Fox.os_name": "QNX",
+    "Niagara Fox.app_version": "4.8.0.1",
+    "MQTT.connack": "refused: not authorized",
+    "MQTT.connack_info": "authentication required",
+    "KNXnet/IP.name": "Lab KNX IP Router",
+    "KNXnet/IP.individual_address": "1.1.250",
+    "KNXnet/IP.mac": "00:1B:21:AA:BB:CC",
+    "KNXnet/IP.services": "Core 1, Device Management 1, Tunnelling 1, Routing 1",
+}
+EXPECT_OT_REQUESTS = (
+    "Omron FINS/UDP: Controller Data Read (command 0x0501)",
+    "Niagara Fox: hello (fox a 1 -1 fox hello)",
+    "MQTT: CONNECT (packet type 1, clean session, no credentials)",
+    "MQTT: DISCONNECT (packet type 14)",
+    "KNXnet/IP: DESCRIPTION_REQUEST (service type 0x0203, unicast)",
+)
+
+
+def check_ot_extra(exe, work, stats_file, failures):
+    """--ot in Safe Mode reads the four devices, and they receive nothing but the one read-only
+    request each: FINS 0x0501, MQTT CONNECT and DISCONNECT, KNX 0x0203, the Fox hello."""
+    def counted():
+        time.sleep(0.3)
+        return read_stats(stats_file)
+
+    def delta(after, before):
+        return {proto: {k: n - before.get(proto, {}).get(k, 0) for k, n in kinds.items() if n != before.get(proto, {}).get(k, 0)}
+                for proto, kinds in after.items()}
+
+    start = counted()
+    host, _, _ = scan(exe, work, "ot-extra", "--ot", "--ports", "1883,1911", "--timeout", "1500", "--tcp-only")
+    for key, want in EXPECT_OT_EXTRA.items():
+        if host["identity"].get(key) != want:
+            failures.append(f"ot extra: {key}: expected {want!r}, got {host['identity'].get(key)!r}")
+    sent = {e["detail"] for e in host.get("sent_in_output") or [] if e["kind"] == "ot-request"}
+    for want in EXPECT_OT_REQUESTS:
+        if want not in sent:
+            failures.append(f"ot extra: {want!r} missing from the sent log: {sorted(sent)}")
+    for udp in (9600, 3671):
+        if udp not in host["udp_open"]:
+            failures.append(f"ot extra: udp {udp} not listed as open: {host['udp_open']}")
+    stats = delta(counted(), start)
+    if stats.get("fins") != {"0501": 1} or stats.get("knx") != {"0x203": 1}:
+        failures.append(f"ot extra: FINS/KNX received more than the one identification request: {stats}")
+    if stats.get("mqtt") != {"1": 1, "14": 1} or stats.get("fox") != {"hello": 1}:
+        failures.append(f"ot extra: MQTT/Fox received more than CONNECT+DISCONNECT / the hello: {stats}")
+    print(f"ot extra: devices received {stats}")
+    # with --services the MQTT service probe has sent the CONNECT: --ot must not send a second one
+    before = counted()
+    scan(exe, work, "ot-extra-services", "--ot", "--services", "--ports", "1883", "--timeout", "1500", "--tcp-only")
+    connects = delta(counted(), before).get("mqtt", {}).get("1", 0)
+    if connects != 1:
+        failures.append(f"ot extra: --ot --services sent {connects} MQTT CONNECTs, expected one (the service probe's)")
 
 
 def banner_wait(port):

@@ -91,7 +91,7 @@ These apply to `scan` and `monitor`.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--ports LIST` | `80,443,8080`; with `--ot` and no `--ports`: `80,443,102,502,4840,44818` | TCP ports; `top:N` adds the N most common ports |
+| `--ports LIST` | `80,443,8080`; with `--ot` and no `--ports`: `80,443,102,502,1883,1911,4840,9600,44818` | TCP ports; `top:N` adds the N most common ports |
 | `--top-ports N` | | Add the N most common TCP ports (1-100) |
 | `--workers N` | 1024 | Hosts scanned concurrently (1-4096; Safe Mode caps at 8) |
 | `--timeout MS` | 2000 | Port and ping timeout (1-10000 ms) |
