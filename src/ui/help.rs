@@ -92,6 +92,9 @@ Scan options:
   --snmp-version 2c|1  Version for --snmp-community (default 2c)
   --snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]  SNMPv3: AUTH is sha or sha256, PRIV is aes; the
                   *_ENV parts are names of environment variables that hold the passphrases (min. 8 characters)
+  --ipv6-discover Find hosts on the local link over IPv6 (scan only): one ICMPv6 echo to ff02::1 per
+                  interface (--interface picks one by index or name), then the OS neighbour cache;
+                  joined to scanned hosts by MAC. One datagram per interface, also in Safe Mode
   --dry-run       scan, monitor, trace, dcp: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)

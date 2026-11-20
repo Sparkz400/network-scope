@@ -87,6 +87,9 @@ pub struct Settings {
     /// over SNMP (system group, interfaces, LLDP). Never serialised: it holds secrets.
     #[serde(skip)]
     pub snmp: Option<crate::snmp::SnmpConfig>,
+    /// IPv6 discovery of the local link (`--ipv6-discover`): one ICMPv6 echo to `ff02::1` per
+    /// interface, the OS neighbour cache, joined to hosts by MAC (see `ipv6`).
+    pub ipv6_discover: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -133,6 +136,7 @@ impl Default for Settings {
             jarm: false,
             backoff: true,
             snmp: None,
+            ipv6_discover: false,
         }
     }
 }

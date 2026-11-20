@@ -6,8 +6,8 @@
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
-    arp, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile, platform,
-    risk, service, syn, tls, udp, update,
+    arp, fingerprint, import, ipv6, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile,
+    platform, risk, service, syn, tls, udp, update,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -39,6 +39,8 @@ pub const TARGETS: &[Target] = &[
     ("s7_szl", s7_szl),
     ("opcua_reply", opcua_reply),
     ("fins_reply", fins_reply),
+    ("ndp_message", ndp_message),
+    ("neighbor_cache", neighbor_cache),
     ("fox_hello", fox_hello),
     ("mqtt_connack", mqtt_connack),
     ("knx_description", knx_description),
@@ -261,6 +263,32 @@ pub fn udp_ntp(data: &[u8]) {
 /// An SSDP reply.
 pub fn udp_ssdp(data: &[u8]) {
     std::hint::black_box(udp::parse_ssdp(data));
+}
+
+/// An ICMPv6 message in a valid Ethernet and IPv6 frame (hop limit 255, to ff02::1), so the
+/// Neighbor Discovery decoder of the passive listener sees every input.
+pub fn ndp_message(data: &[u8]) {
+    let mut frame = vec![
+        0x33, 0x33, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 1, 0x86, 0xdd, 0x60, 0, 0, 0,
+    ];
+    frame.extend(((data.len().min(1400)) as u16).to_be_bytes());
+    frame.extend([58, 255]);
+    frame.extend([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    frame.extend([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    frame.extend_from_slice(&data[..data.len().min(1400)]);
+    std::hint::black_box(passive::decode(&frame));
+    // and the same bytes as a whole frame
+    std::hint::black_box(passive::decode(data));
+}
+
+/// The text of `ip -6 neigh show`, `ndp -an`, `/proc/net/if_inet6` and `ifconfig -a`.
+pub fn neighbor_cache(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    std::hint::black_box(ipv6::parse_ip_neigh6(&text));
+    std::hint::black_box(ipv6::parse_ndp_an(&text));
+    std::hint::black_box(ipv6::parse_if_inet6(&text));
+    std::hint::black_box(ipv6::parse_ifconfig_inet6(&text));
+    std::hint::black_box(ipv6::normalize_mac(&text));
 }
 
 /// The reply to the Omron FINS Controller Data Read request (a FINS frame, from the ICF byte).

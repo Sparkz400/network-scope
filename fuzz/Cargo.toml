@@ -318,3 +318,17 @@ path = "fuzz_targets/knx_description.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ndp_message"
+path = "fuzz_targets/ndp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "neighbor_cache"
+path = "fuzz_targets/neighbor_cache.rs"
+test = false
+doc = false
+bench = false
