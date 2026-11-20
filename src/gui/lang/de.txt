@@ -191,6 +191,7 @@ S7 rack / slot || S7 Rack / Slot
 SYN via Npcap; fallback to TCP connect || SYN über Npcap; Rückfall auf TCP-Connect
 Adaptive SYN timing (RTT-based timeouts, slows down on packet loss) || Adaptives SYN-Timing (RTT-basierte Zeitlimits, bremst bei Paketverlust)
 JARM TLS fingerprint (10 extra connections per TLS port; needs service detection) || JARM-TLS-Fingerabdruck (10 zusätzliche Verbindungen pro TLS-Port; benötigt Diensterkennung)
+Favicon hash (one GET /favicon.ico per web port; not on industrial hosts) || Favicon-Hash (ein GET /favicon.ico pro Web-Port; nicht bei Industriegeräten)
 Needs service detection, and not in Safe Mode || Benötigt Diensterkennung und nicht im Sicheren Modus
 Configure interface, source IPv4 and MAC in Passive / DCP. || Schnittstelle, Quell-IPv4 und MAC unter Passiv / DCP einstellen.
 Identify services on open TCP ports (banners, HTTP, TLS certificate/ciphers, SMB, RDP, databases) || Dienste auf offenen TCP-Ports erkennen (Banner, HTTP, TLS-Zertifikat/Cipher, SMB, RDP, Datenbanken)
