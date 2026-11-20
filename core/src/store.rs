@@ -244,11 +244,45 @@ pub fn list(path: &Path) -> Result<Vec<Entry>, String> {
         .map_err(|e| e.to_string())
 }
 pub fn load(path: &Path, id: i64) -> Result<Snapshot, String> {
-    let c = open(path)?;
+    load_on(&open(path)?, id)
+}
+/// [`load`] on an open connection, for callers that read many scans.
+pub(crate) fn load_on(c: &Connection, id: i64) -> Result<Snapshot, String> {
     let data: String = c
         .query_row("SELECT snapshot FROM scans WHERE id=?1", [id], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    snapshot_of(&c, id, &data)
+    snapshot_of(c, id, &data)
+}
+/// The newest completed scan of every scope: (targets, id, timestamp), newest first.
+pub fn latest_complete_per_scope(path: &Path) -> Result<Vec<(String, i64, i64)>, String> {
+    let c = open(path)?;
+    let mut s = c
+        .prepare("SELECT targets,id,timestamp FROM scans WHERE id IN (SELECT MAX(id) FROM scans WHERE complete=1 GROUP BY targets) ORDER BY id DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = s
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+/// Id of the newest completed scan of `targets` saved before `timestamp` (Unix seconds).
+pub fn latest_complete_before_time(
+    path: &Path,
+    targets: &str,
+    timestamp: i64,
+) -> Result<Option<i64>, String> {
+    open(path)?
+        .query_row(
+            "SELECT id FROM scans WHERE complete=1 AND targets=?1 AND timestamp<?2 ORDER BY id DESC LIMIT 1",
+            params![targets, timestamp],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })
+        .map_err(|e| e.to_string())
 }
 pub fn timestamp(path: &Path, id: i64) -> Result<i64, String> {
     open(path)?

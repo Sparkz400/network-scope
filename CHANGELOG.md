@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Closed ports on Windows were reported as unanswered.** Windows re-sends a SYN that gets a RST and reports "refused" only after about 2 s, the default timeout, so every closed port looked unanswered (filtered). TCP connect probes now turn off SYN retransmissions for the probe socket (`SIO_TCP_INITIAL_RTO`), so a RST is seen at once: on a real /24 the closed/unanswered split now matches nmap, and scans finish sooner because closed ports no longer wait out the timeout. Silent ports still wait for the full timeout; a lost SYN is covered by `--retries`.
+- **MCP server:** `findings_gained` found no baseline older than the newest 500 scans (two days of `monitor`) and said "when it appeared is unknown"; it now asks the database. A locked or damaged inventory is reported as such instead of "No scan with ID". The `scan` tool defaults to a 50 s time limit (was 240) so the answer arrives within the 60 s many clients wait, stops a busy scan at the limit too, and gives up on a cancelled scan that does not wind down. `search_inventory` reads its scans over one connection instead of one each.
 - OT passive TCP reassembly no longer panics (integer overflow) on pcap files with extreme capture timestamps; found by ClusterFuzzLite.
 - A BACnet/IP device identified with `--ot` now lists UDP 47808 in the host's open UDP ports (and so in reports, exports and inventory), not only the default UDP probe ports.
 - IEC 61850 MMS on port 102 is no longer reported as S7comm.
