@@ -14,6 +14,8 @@ It reads the rule ids out of core/src/risk.rs (the literal ids of the `o.add(` c
 - a page lacks one of the template sections, or its Severity row disagrees with the
   severity the code assigns;
 - a relative link inside a page points at a file that does not exist;
+- a page's "How to fix" has no bullet point, or its "References" no https:// link (except
+  the pages in NO_EXTERNAL_REFERENCE, whose rules the user writes);
 - risk.rs contains an id expression this script does not understand (it fails rather than
   silently skipping the new rule).
 
@@ -44,6 +46,8 @@ SECTIONS = [
     "References",
 ]
 SEVERITIES = {"info", "low", "medium", "high", "critical"}
+# user scripts define these findings, so there is no external source to cite
+NO_EXTERNAL_REFERENCE = {"script-findings"}
 
 ADD_CALL = re.compile(r"\bo\.add\(\s*([A-Za-z_:.]+)\s*,\s*(.{0,60})", re.S)
 LITERAL_ID = re.compile(r'"([a-z0-9][a-z0-9-]*)"')
@@ -95,6 +99,12 @@ def rule_ids(text):
     return ids, generic, errors
 
 
+def section(body, name):
+    """The text of the `## name` section, up to the next level-2 heading."""
+    parts = re.split(r"^## " + re.escape(name) + r"\s*$", body, maxsplit=1, flags=re.M)
+    return re.split(r"^## ", parts[1], maxsplit=1, flags=re.M)[0] if len(parts) == 2 else ""
+
+
 def read(path):
     return path.read_text(encoding="utf-8")
 
@@ -132,6 +142,11 @@ def main():
         headings = re.findall(r"^## (.+?)\s*$", body, re.M)
         if headings != SECTIONS:
             errors.append("%s.md sections are %s, expected %s" % (pid, headings, SECTIONS))
+        fix = section(body, "How to fix")
+        if not re.search(r"^- \S", fix, re.M):
+            errors.append("%s.md has no fix steps (bullet points) under How to fix" % pid)
+        if pid not in NO_EXTERNAL_REFERENCE and "](https://" not in section(body, "References"):
+            errors.append("%s.md has no https:// reference link under References" % pid)
         row = re.search(r"^\| Severity \| (.+?) \|\s*$", body, re.M)
         if not row:
             errors.append("%s.md has no '| Severity | ... |' row" % pid)

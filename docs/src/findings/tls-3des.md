@@ -33,6 +33,7 @@ The tool offers the server only 3DES suites and records whether it picks one. Th
 
 ## References
 
+- [Mozilla, Server Side TLS recommendations](https://wiki.mozilla.org/Security/Server_Side_TLS)
 - [NVD, CVE-2016-2183 (Sweet32)](https://nvd.nist.gov/vuln/detail/CVE-2016-2183)
 - [RFC 9325, Recommendations for secure use of TLS](https://www.rfc-editor.org/rfc/rfc9325)
 - [Mozilla SSL Configuration Generator](https://ssl-config.mozilla.org/)

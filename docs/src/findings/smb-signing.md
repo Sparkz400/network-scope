@@ -32,6 +32,7 @@ The tool sends an SMB2 negotiate request and reads the signing flags from the re
 
 ## References
 
+- [Microsoft, overview of SMB signing](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-signing-overview)
 - [Microsoft, SMB security enhancements](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security)
 - [Samba, smb.conf manual](https://www.samba.org/samba/docs/current/man-html/smb.conf.5.html)
 

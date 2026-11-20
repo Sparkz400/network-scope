@@ -122,16 +122,27 @@ const MS_SMB: &str = "https://learn.microsoft.com/en-us/windows-server/storage/f
 const MS_SMB_SIGNING: &str =
     "https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-signing-overview";
 const MS_RDP_NLA: &str = "https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remotepc/remote-desktop-allow-access";
-const CISA_TELNET: &str = "https://www.cisa.gov/news-events/cybersecurity-advisories/aa20-245a";
+/// CISA AA20-245A, section "Restrict or Discontinue Use of FTP and Telnet Services".
+const CISA_FTP_TELNET: &str = "https://www.cisa.gov/news-events/cybersecurity-advisories/aa20-245a";
 const MOZILLA_TLS: &str = "https://wiki.mozilla.org/Security/Server_Side_TLS";
+const RFC_5280: &str = "https://www.rfc-editor.org/rfc/rfc5280";
+const NIST_OT: &str = "https://csrc.nist.gov/pubs/sp/800/82/r3/final";
 
-/// Documentation link for a rule id, if one is curated. Only official vendor or standards pages.
-fn reference_for(id: &str) -> Option<&'static str> {
+/// Documentation link for a rule id. Only official vendor, government or standards pages, each
+/// also listed on the rule's page in docs/src/findings (a test checks both). Every literal rule
+/// id has one; `cve-*` findings fall back to their NVD entry (see [`nvd_url`]).
+pub(crate) fn reference_for(id: &str) -> Option<&'static str> {
     Some(match id {
         "smb1-enabled" => MS_SMB,
         "smb-signing" => MS_SMB_SIGNING,
+        "smb-no-encryption" => {
+            "https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security"
+        }
+        "cve-cve-2020-0796" => {
+            "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2020-0796"
+        }
         "rdp-no-nla" => MS_RDP_NLA,
-        "telnet-open" => CISA_TELNET,
+        "telnet-open" | "ftp-cleartext" => CISA_FTP_TELNET,
         "tls-sslv3"
         | "tls-deprecated-protocol"
         | "tls-broken-cipher"
@@ -139,8 +150,42 @@ fn reference_for(id: &str) -> Option<&'static str> {
         | "tls-no-pfs"
         | "tls-weak-signature"
         | "tls-weak-key" => MOZILLA_TLS,
+        "tls-cert-expired" | "tls-cert-expiring" | "tls-cert-not-yet-valid" | "tls-self-signed" => {
+            RFC_5280
+        }
+        "tls-self-signed-bad-signature" => "https://www.rfc-editor.org/rfc/rfc5280#section-6",
+        "heartbleed" => "https://openssl-library.org/news/secadv/20140407.txt",
+        "ssh-weak-algorithms" => "https://man.openbsd.org/sshd_config",
+        "ssh-legacy-algorithms" => "https://www.openssh.org/legacy.html",
+        "ssh-protocol-1" => "https://www.openssh.org/txt/release-7.6",
+        "snmp-public" => {
+            "https://www.cisa.gov/news-events/alerts/2017/06/05/reducing-risk-snmp-abuse"
+        }
+        "http-basic-cleartext" => "https://www.rfc-editor.org/rfc/rfc7617",
+        "php-eol" => "https://www.php.net/supported-versions.php",
+        "docker-api" => "https://docs.docker.com/engine/security/protect-access/",
+        "redis-noauth" => "https://redis.io/docs/latest/operate/oss_and_stack/management/security/",
+        "memcached-open" => "https://github.com/memcached/memcached/wiki/ConfiguringServer",
+        "mqtt-anonymous" => "https://mosquitto.org/documentation/authentication-methods/",
+        "ldap-anonymous" => "https://www.rfc-editor.org/rfc/rfc4513",
+        "postgres-no-tls" => "https://www.postgresql.org/docs/current/ssl-tcp.html",
+        "mail-cleartext" => "https://www.rfc-editor.org/rfc/rfc8314",
+        "vnc-exposed" => "https://www.rfc-editor.org/rfc/rfc6143",
+        "netbios-ns" => "https://www.rfc-editor.org/rfc/rfc1001",
+        "upnp-exposed" => {
+            "https://www.cisa.gov/news-events/alerts/2014/01/17/udp-based-amplification-attacks"
+        }
+        "ot-reachable" | "ot-control-traffic" => NIST_OT,
         _ => return None,
     })
+}
+
+/// NVD detail page of a CVE id, only for a well-formed id (user cves.json files are untrusted).
+fn nvd_url(cve: &str) -> Option<String> {
+    let (year, num) = cve.strip_prefix("CVE-")?.split_once('-')?;
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    (year.len() == 4 && digits(year) && num.len() >= 4 && digits(num))
+        .then(|| format!("https://nvd.nist.gov/vuln/detail/{cve}"))
 }
 
 impl Finding {
@@ -608,7 +653,9 @@ impl Out<'_> {
             cve: cve.iter().map(|c| (*c).to_string()).collect(),
             advice: advice.into(),
             exploit: Default::default(),
-            reference: reference_for(id).map(str::to_string),
+            reference: reference_for(id)
+                .map(str::to_string)
+                .or_else(|| cve.first().and_then(|c| nvd_url(&c.to_ascii_uppercase()))),
             confidence: rule_confidence(id).unwrap_or(0),
         });
     }
@@ -1187,7 +1234,7 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             cve: vec![],
             advice: "Verify that writes, program downloads and stop/restart commands come from authorised engineering stations.".into(),
             exploit: Default::default(),
-            reference: None,
+            reference: reference_for("ot-control-traffic").map(str::to_string),
             confidence: rule_confidence("ot-control-traffic").unwrap_or(0),
         });
     }
@@ -1543,9 +1590,25 @@ mod tests {
             let url = found.reference.as_deref().unwrap_or_else(|| panic!("{id}"));
             assert!(url.starts_with(&format!("https://{host}/")), "{id}: {url}");
         }
-        // Rules without a curated link stay without one.
         let ftp = host(&[21], &[("svc.21", "ftp vsFTPd 3.0.3")]);
-        assert_eq!(analyze_host(&ftp)[0].reference, None);
+        assert_eq!(
+            analyze_host(&ftp)[0].reference.as_deref(),
+            Some(CISA_FTP_TELNET)
+        );
+        // CVE hints without a curated link point at the NVD; a malformed id gets no link.
+        assert_eq!(
+            nvd_url("CVE-2024-6387").as_deref(),
+            Some("https://nvd.nist.gov/vuln/detail/CVE-2024-6387")
+        );
+        for bad in [
+            "CVE-24-6387",
+            "CVE-2024-63",
+            "CVE-2024-6387\"><x",
+            "cve-2024-6387",
+            "",
+        ] {
+            assert_eq!(nvd_url(bad), None, "{bad}");
+        }
     }
 
     #[test]

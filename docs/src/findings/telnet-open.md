@@ -33,6 +33,7 @@ Service detection identifies Telnet from the data the server sends right after t
 
 ## References
 
+- [CISA AA20-245A, restrict or discontinue use of FTP and Telnet services](https://www.cisa.gov/news-events/cybersecurity-advisories/aa20-245a)
 - [RFC 854, Telnet protocol specification](https://www.rfc-editor.org/rfc/rfc854)
 
 [All findings](index.md)
