@@ -26,6 +26,13 @@ fi
 echo "SOURCE_DATE_EPOCH=$epoch"
 echo "CARGO_INCREMENTAL=0"
 echo "TZ=UTC"
+# The const-random crate (ahash's "compile-time-rng", enabled by rhai) draws its numbers from the
+# operating system's random source while the compiler runs, so every build embeds other
+# constants (some 8,900 bytes of .text differed in the Windows binary) unless this seed fixes
+# them. They are the fixed hash keys of the ahash maps inside rhai and the GUI toolkit; a
+# release then has the same keys in every build, and ahash still mixes in an address that
+# ASLR randomizes at run time. See docs/src/supply-chain.md.
+echo "CONST_RANDOM_SEED=network-scope-reproducible-build"
 flags="${RUSTFLAGS:-} --remap-path-prefix=$src=/build --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
 # MSVC link.exe stamps the link time into the PE header; /Brepro derives it from the content.
 if [ "$windows" = true ]; then
