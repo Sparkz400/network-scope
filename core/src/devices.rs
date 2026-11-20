@@ -94,13 +94,13 @@ pub fn is_virtual_mac(mac: &str) -> bool {
 }
 
 /// Derived keys that describe software configuration, not the device: CPE names (user
-/// templates are free text), SSH HASSH and TLS JA4S fingerprints. Keyword rules skip them.
+/// templates are free text), SSH HASSH and TLS JA3S fingerprints. Keyword rules skip them.
 const NON_EVIDENCE_SUFFIXES: [&str; 9] = [
     ".cpe",
     ".hassh",
     ".hassh_algorithms",
-    ".ja4s",
-    ".ja4x",
+    ".ja3s",
+    ".ja3s_string",
     ".confidence",
     ".jarm",
     ".favicon_mmh3",
@@ -1738,7 +1738,11 @@ mod tests {
                 "svc.80.cpe".to_string(),
                 "cpe:2.3:a:acme:printer_portal:1.0".to_string(),
             ),
-            ("tls.443.ja4s".to_string(), "t130200_1301_mfp".to_string()),
+            ("tls.443.ja3s".to_string(), "mfp".to_string()),
+            (
+                "tls.443.ja3s_string".to_string(),
+                "771,4865,mfp".to_string(),
+            ),
         ]);
         assert_eq!(classify(&ev("", &[80], &identity, "")), None);
         assert!(is_device_evidence("svc.80.product"));

@@ -1,5 +1,5 @@
 //! Groups of devices that share a fingerprint (ROADMAP L70): the same certificate key, the same
-//! certificate template (JA4X), the same TLS or SSH stack (JARM, JA4S, HASSH), the same web
+//! TLS or SSH stack (JARM, JA3S, HASSH), the same web
 //! interface (favicon hash) or the same industrial firmware, across scans and sites.
 //!
 //! The grouping is one SQL query over the `fingerprints` and `services` tables (see
@@ -14,7 +14,7 @@
 //! |---|---|---|
 //! | `key` | `spki_sha256` | The devices use the same private key. Vendor default keys and cloned images do this; anyone with the key can impersonate all of them. |
 //! | `firmware` | `ot_firmware` | The same industrial vendor, product and firmware version (a version-level fact). |
-//! | `software` | `ja4x`, `jarm`, `ja4s`, `hassh`, `favicon_mmh3` | Likely the same software stack, configuration or web interface; evidence, not proof. |
+//! | `software` | `jarm`, `ja3s`, `hassh`, `favicon_mmh3` | Likely the same software stack, configuration or web interface; evidence, not proof. |
 //!
 //! Nothing here sends traffic.
 use super::open_read_only;
@@ -48,7 +48,7 @@ pub struct Member {
 /// Devices that share one fingerprint value.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Group {
-    /// `spki_sha256`, `ja4x`, `jarm`, `ja4s`, `hassh`, `favicon_mmh3` or `ot_firmware`.
+    /// `spki_sha256`, `jarm`, `ja3s`, `hassh`, `favicon_mmh3` or `ot_firmware`.
     pub kind: String,
     pub value: String,
     /// `key`, `firmware` or `software` (see the module documentation).
@@ -71,11 +71,7 @@ fn describe(kind: &str) -> (&'static str, &'static str) {
             "firmware",
             "the same industrial vendor, product and firmware version",
         ),
-        "ja4x" => (
-            "software",
-            "certificates built from the same template (issuer and subject fields, extensions)",
-        ),
-        "jarm" | "ja4s" => ("software", "the same TLS stack and configuration"),
+        "jarm" | "ja3s" => ("software", "the same TLS stack and configuration"),
         "hassh" => ("software", "the same SSH stack and configuration"),
         "favicon_mmh3" => ("software", "the same web interface"),
         _ => ("software", "the same fingerprint"),

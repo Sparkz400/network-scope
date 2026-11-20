@@ -186,7 +186,7 @@ jobs:
 
   # Roadmap A6: Network Scope against real servers installed from apt: Samba (SMB 3.1.1, signing,
   # encryption, NetBIOS name), OpenSSL s_server and nginx (the exact TLS 1.3 suites they were
-  # configured with, JA4S) and OpenSSH (HASSHServer against an independent computation), plus the
+  # configured with, JA3S) and OpenSSH (HASSHServer against an independent computation), plus the
   # CPE names Network Scope derives against the official NVD CPE dictionary. Everything binds
   # loopback; smbd and sshd run as root (SMB detection only runs on port 445). See
   # lab/real_servers.sh and docs/src/lab-and-testing.md#real-servers. The job was written without
