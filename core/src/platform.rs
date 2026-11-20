@@ -1593,7 +1593,7 @@ mod tests {
 
     #[test]
     fn own_address_has_no_raw_next_hop() {
-        let me = std::net::Ipv4Addr::new(192, 168, 178, 111);
+        let me = std::net::Ipv4Addr::new(10, 0, 0, 5);
         let e = next_hop(me, me, "eth0").unwrap_err();
         assert!(e.contains("own address"), "{e}");
     }
