@@ -307,7 +307,7 @@ pub fn host(
         if crate::jarm::enabled(s) {
             plan.push(
                 PacketKind::TlsClientHello,
-                "JARM fingerprint hello",
+                crate::jarm::DETAIL,
                 &to,
                 "ten ClientHellos per port that spoke TLS, one connection each; --jarm only, never in Safe Mode, never on industrial or printer ports",
             );
