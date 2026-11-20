@@ -1101,7 +1101,13 @@ mod tests {
             }
         ));
         let source = include_str!("core.rs");
-        let code = source.split("#[cfg(test)]").next().unwrap();
+        let code = source
+            .split(
+                "#[cfg(test)]
+mod tests",
+            )
+            .next()
+            .unwrap();
         for call in [
             "plan::arp_lookup(",
             "plan::arp_sweep(",
