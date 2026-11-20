@@ -663,8 +663,10 @@ impl Scanner {
                                 format!("{observations} observations · saved capture #{id}")
                         }
                         Ok(id) if kind == "ot" => {
-                            self.status = format!(
-                                "OT passive: {observations} observations · saved capture #{id}"
+                            self.status = tr!(
+                                "OT passive: {} observations · saved capture #{}",
+                                observations,
+                                id
                             )
                         }
                         Ok(id) => {
