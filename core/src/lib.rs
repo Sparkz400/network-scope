@@ -132,6 +132,7 @@ pub mod script;
 pub mod sendlog;
 pub mod service;
 pub mod store;
+pub mod store_stream;
 pub mod syn;
 pub mod sync;
 pub(crate) mod tls;

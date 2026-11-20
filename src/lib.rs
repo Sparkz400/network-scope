@@ -11,7 +11,7 @@ pub(crate) mod ui;
 pub(crate) use network_scope_core::{
     alertscript, baseline, capture, changes, core, devices, evidence, feeds, import, mcp, monitor,
     nmap, notify, nvd, observations, otpassive, passive, plan, report, risk, scan, schema, scope,
-    score, script, sendlog, service, store, syn, sync, topology, trace, update,
+    score, script, sendlog, service, store, store_stream, syn, sync, topology, trace, update,
 };
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::{pcapfile, schedule};
@@ -151,7 +151,14 @@ pub fn run() -> RunResult {
         attach_parent_console();
         // `--cves FILE` replaces the default user rules (loaded by `ui::run`); otherwise a
         // broken user file is reported here instead of being silently ignored.
-        if !cli_args.iter().any(|a| a == "--cves")
+        // `--version` and the help text need no rule database; skipping it keeps their start fast
+        // (the startup budget of scripts/resource_budget.py).
+        let quick = matches!(
+            cli_args.first().map(String::as_str),
+            Some("--version" | "-V" | "--help" | "-h" | "help")
+        );
+        if !quick
+            && !cli_args.iter().any(|a| a == "--cves")
             && let Some(warning) = risk::init_cves()
         {
             eprintln!("{warning}");

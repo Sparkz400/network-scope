@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 32] = [
+pub(super) const FLAGS: [&str; 33] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -39,6 +39,7 @@ pub(super) const FLAGS: [&str; 32] = [
     "sent-log",
     "stream",
     "early-stop",
+    "no-report",
 ];
 pub(super) const VALUES: [&str; 62] = [
     "feeds",

@@ -91,6 +91,7 @@ Scan options:
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
   --early-stop    Stop probing a host's remaining ports once its device class is certain (e.g. two print
                   ports open); such a host is marked as not fully checked. Off by default
+  --no-report     scan: save the scan and print no report (for very large scans; read it with export ID)
   --stream        scan: print each result as a JSON line the moment it is found (host-up, port-open,
                   host-done); the report then goes to --output only, not stdout
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)

@@ -46,7 +46,11 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, t
 /// Schema changes after [`BASE_VERSION`], in order. Append new ones at the end with the next
 /// number; never edit a migration that has shipped. Each runs once, inside the transaction that
 /// opens an older database, and must be idempotent (`IF NOT EXISTS`, `INSERT OR IGNORE`).
-const MIGRATIONS: &[Migration] = &[(3, migrate_device_identifiers), (4, migrate_baseline)];
+const MIGRATIONS: &[Migration] = &[
+    (3, migrate_device_identifiers),
+    (4, migrate_baseline),
+    (5, migrate_scan_hosts),
+];
 type Migration = (i64, fn(&Connection) -> rusqlite::Result<()>);
 /// Schema version of a database this program has fully upgraded.
 const SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
@@ -81,6 +85,34 @@ fn migrate_baseline(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS baseline_devices(device_key TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '', criticality TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '', expected INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '', approved_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS baseline_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )
+}
+
+/// Migration 5 (B15, scale): the hosts of a scan written in batches by
+/// [`crate::store_stream::ScanWriter`], one row per host in arrival order. A scan saved the usual
+/// way has no rows here; its hosts are in the `snapshot` text.
+fn migrate_scan_hosts(c: &Connection) -> rusqlite::Result<()> {
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS scan_hosts(scan_id INTEGER NOT NULL, seq INTEGER NOT NULL, host TEXT NOT NULL, PRIMARY KEY(scan_id,seq)) WITHOUT ROWID;",
+    )
+}
+
+/// Parses a stored snapshot and puts back the hosts a [`crate::store_stream::ScanWriter`] wrote
+/// to `scan_hosts` (none for a scan saved the usual way).
+fn snapshot_of(c: &Connection, id: i64, data: &str) -> Result<Snapshot, String> {
+    let mut snapshot: Snapshot = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    let mut s = c
+        .prepare_cached("SELECT host FROM scan_hosts WHERE scan_id=?1 ORDER BY seq")
+        .map_err(|e| e.to_string())?;
+    let rows = s
+        .query_map([id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let host = row.map_err(|e| e.to_string())?;
+        snapshot
+            .hosts
+            .push(serde_json::from_str(&host).map_err(|e| e.to_string())?);
+    }
+    Ok(snapshot)
 }
 
 pub(crate) fn open(path: &Path) -> Result<Connection, String> {
@@ -179,7 +211,7 @@ pub fn load(path: &Path, id: i64) -> Result<Snapshot, String> {
     let data: String = c
         .query_row("SELECT snapshot FROM scans WHERE id=?1", [id], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| e.to_string())
+    snapshot_of(&c, id, &data)
 }
 pub fn timestamp(path: &Path, id: i64) -> Result<i64, String> {
     open(path)?
@@ -207,14 +239,8 @@ pub fn latest_complete(
             e => Err(e),
         })
         .map_err(|e| e.to_string())?;
-    row.map(|(id, ts, data)| {
-        Ok((
-            id,
-            ts,
-            serde_json::from_str(&data).map_err(|e| e.to_string())?,
-        ))
-    })
-    .transpose()
+    row.map(|(id, ts, data)| Ok((id, ts, snapshot_of(&c, id, &data)?)))
+        .transpose()
 }
 /// Id of the newest completed scan, if there is one.
 pub fn latest_complete_id(path: &Path) -> Result<Option<i64>, String> {
@@ -1023,15 +1049,24 @@ pub fn device_history(path: &Path, query: &str) -> Result<crate::devices::Device
         );
         let data: String = r.get(2).map_err(|e| e.to_string())?;
         // Cheap pre-filter: a snapshot that never spells the address cannot contain the device.
+        // The hosts of a batch-written scan are not in the text, so those are never skipped.
+        let streamed = c
+            .query_row(
+                "SELECT 1 FROM scan_hosts WHERE scan_id=?1 LIMIT 1",
+                [id],
+                |_| Ok(()),
+            )
+            .is_ok();
         let upper = data.to_ascii_uppercase();
-        if !needles
-            .iter()
-            .any(|n| upper.contains(&n.to_ascii_uppercase()))
+        if !streamed
+            && !needles
+                .iter()
+                .any(|n| upper.contains(&n.to_ascii_uppercase()))
         {
             history.skip();
             continue;
         }
-        match serde_json::from_str::<Snapshot>(&data) {
+        match snapshot_of(&c, id, &data) {
             Ok(snapshot) => history.add(id, ts, &snapshot),
             Err(_) => history.skip(),
         }
