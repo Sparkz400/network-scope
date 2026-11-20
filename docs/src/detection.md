@@ -21,12 +21,20 @@ Put a `probes.json` in `%LOCALAPPDATA%/NetworkScope` or pass `--probes FILE`. A 
 
 ## TLS
 
-- Certificate subject, CN, SAN, issuer, validity, days left, key and signature algorithm, and self-signed status (name equality plus AKI == SKI when both are present; the signature is not verified). Certificates are inventory data and are never validated.
+- Certificate subject, CN, SAN, issuer, validity, days left, key and signature algorithm, and self-signed status (name equality plus AKI == SKI when both are present). A certificate that counts as self-signed has its signature verified with its own key (ring, through x509-parser's `verify` feature): `tls.<port>.self_signature` is `valid`, `invalid` or `unchecked (reason)`; `invalid` raises `tls-self-signed-bad-signature` instead of `tls-self-signed`, and `unchecked` (MD5, RSA below 1024 bits, curves other than P-256/P-384, anything ring does not verify) is never reported as a problem. Certificates are inventory data and are never validated against a trust store.
 - The negotiated version and an enumeration of the accepted versions (SSLv3 to TLS 1.3) and cipher suites by raw ClientHello, so legacy and weak suites that rustls refuses to speak are still found.
 - Per version the budget is one general hello, up to three weakness-class hellos (broken, 3DES, static RSA) and general enumeration with what is left, so weak suites are found first. When the budget runs out the strong-suite list is cut (`tls.<port>.suites_truncated`, `suites_truncated_versions`).
 - **TLS 1.3 suites**: with Safe Mode off, servers that negotiated TLS 1.3 get TLS 1.3-only hellos (x25519 key share with random bytes; nothing is derived, only the ServerHello is read) until all five suites are known or refused, at most `min(rounds, 6)` hellos. Safe Mode sends none and reports only the negotiated version. Keys: `tls.<port>.tls13_suites` and a `TLS1.3:` part in `ciphers`; TLS_AES_128_CCM_8_SHA256 is listed as weak without a finding.
 - `not_yet_valid` (finding `tls-cert-not-yet-valid`, Medium) and `cert_error` (certificate not parseable, handshake facts kept).
 - `tls.<port>.ja4s` is a JA4S-style server fingerprint (FoxIO format, ALPN part `00` because our hellos offer none) of the first full-offer hello the server accepted. It is comparable between Network Scope scans, and comparable with other tools only for a similar client hello; it has not been cross-checked against the reference implementation.
+
+### JARM-style TLS fingerprint (`--jarm`)
+
+`scan --services --fast --jarm` sends ten more ClientHellos to every port that service detection found to speak TLS and stores `tls.<port>.jarm`, a 62 character hash: for each probe the selected cipher (2 hex characters) and version (1 letter), then 32 hex characters of the SHA-256 over the ALPN and extension lists of the ten replies (62 zeros when no probe got a ServerHello). It follows the structure of [JARM](https://github.com/salesforce/jarm) (Salesforce, BSD-3-Clause): TLS 1.2, 1.1 and 1.3 hellos with forward, reverse, top-half, bottom-half and middle-out cipher order, GREASE, rare ALPN lists and different extension orders. The hellos are built with the raw TLS code of the scanner, not rustls.
+
+- **Off by default, never in Safe Mode.** The option is ignored in Safe Mode and without `--services` (the GUI checkbox is greyed out), because it adds ten connections per TLS port. Each connection goes through the rate gate; ports are probed one after the other; industrial and printer ports are never contacted. Each probe reads at most 1484 bytes and closes.
+- **Not verified against the reference implementation.** The probe parameters follow the public description, but the cipher table, ALPN lists and extension bodies were written without the reference source at hand, so the hash has the JARM format and is stable for a given server (use it to spot servers with the same TLS stack inside one scan or between scans) but **must not be compared with hashes from public JARM databases** until the tables have been compared with `jarm.py`. The tests use synthetic server replies and check the format and the composition, not published hashes. Not tested against real servers beyond a local test server.
+- The reply parser is fuzzed (`jarm_response`). The key is a volatile-free identity key like `ja4s` and is not used as evidence for the device type or OS.
 
 ## SSH
 
@@ -58,6 +66,15 @@ A reply means open, an ICMP port-unreachable means closed, silence is "open or f
 - CPE and fingerprint keys (`.cpe`, `.hassh`, `.ja4s`) are not evidence for the OS or the device type.
 - The **manufacturer** comes from the embedded IEEE registry (MA-L, MA-M and MA-S); locally administered/randomised MACs are marked instead of looked up. EtherNet/IP vendor names come from the ODVA vendor list. See [Data sources](data-sources.md).
 - The **device type** is a second scored guess with its evidence listed.
+
+### Evidence and confidence
+
+Every conclusion says why. The OS guess, the device type and each finding carry an `Evidence`: a list of short reasons (`print port 9100`, `service text mentions laserjet`, `initial TTL 64`) and a confidence from 0 to 100.
+
+- **OS guess and device type:** the confidence is the score of the winning candidate plus half of its lead over the runner-up, limited to 10 to 95. It says how much independent evidence agrees and how far ahead the answer is; it is not a calibrated probability. In a scan result the reasons are the identity keys `os.evidence` / `device.evidence` and the scores `os.confidence` / `device.confidence` (`"70%"`). `devices ID` adds `device_type_evidence` and `os_evidence` objects (`{"reasons": [...], "confidence": 70}`) to each device, and the CSV gets `type_confidence`, `type_evidence`, `os_confidence` and `os_evidence` columns at the end. A guess imported from Nmap XML carries Nmap's accuracy as its confidence and no reasons.
+- **Findings:** `confidence` is a property of the rule: 95 when the server itself reported the condition (a TLS parameter, an SMB flag, an unauthenticated answer), 90 when the rule reads a service name or banner (Telnet, FTP, HTTP Basic), 70 for the PHP end-of-life table, 50 when only an open port number is the evidence (`ot-reachable`), 40 for version-based hints (`cve-*`, `heartbleed`, SMBGhost) because distributions backport fixes, and 60 for findings from user scripts. It is in the JSON and JSONL exports, the HTML and Markdown reports (under the evidence) and the TUI host details; exports written before the score existed load with it unset.
+- **Where it is shown:** the TUI host details (`OS: Linux (70 %) because ...`, `Type: ...`), the GUI host details (hover the OS and Type lines for the reasons), the Devices table of the HTML report (confidence next to the value, reasons as a tooltip), the Markdown summary (a `Why` column) and the JSON/JSONL exports.
+- The reasons and scores are not compared by `diff` and `monitor`: a scan that could see more or less gives different reasons for the same device, which is not a change of the device. A changed guess (`os.guess`, `device.type`) is still reported.
 
 SYN-ACK fingerprinting needs the SYN engine, so TCP-connect scans get TTL and service evidence only.
 
@@ -96,6 +113,5 @@ Not covered: WS-Discovery device metadata (a TCP request to port 5357 would be n
 
 ## Not implemented
 
-- **JARM** (10 byte-exact ClientHellos per port): an inexact implementation would not match public JARM databases, and it costs too many connections for Safe Mode.
+- **Reference-exact JARM**: `--jarm` produces a JARM-style hash whose tables are not verified against `jarm.py` (see above), so it cannot be compared with public JARM databases.
 - **SNMPv3**.
-- x509 signature verification for self-signed detection.

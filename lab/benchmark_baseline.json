@@ -2,6 +2,8 @@
   "platforms": {
     "windows": {
       "device_type_accuracy": 1.0,
+      "false_alarms": 0,
+      "finding_recall": 1.0,
       "host_precision": 1.0,
       "host_recall": 1.0,
       "os_accuracy": 1.0,

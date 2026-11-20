@@ -4,6 +4,7 @@ use crate::{
     devices, risk,
     risk::Severity,
     scan::Host,
+    score,
     store::{self, Snapshot},
     topology,
 };
@@ -177,6 +178,140 @@ fn topology_svg(hosts: &[Host]) -> String {
     s
 }
 
+/// A line under a finding's evidence ("confidence 90 %"), empty for an unscored finding.
+fn confidence_line_html(confidence: u8) -> String {
+    if confidence == 0 {
+        String::new()
+    } else {
+        format!("<br><span class=\"muted\">confidence {confidence} %</span>")
+    }
+}
+
+/// " (75 %)" after a Markdown table value, empty for an unscored conclusion.
+fn confidence_md(confidence: u8) -> String {
+    if confidence == 0 {
+        String::new()
+    } else {
+        format!(" ({confidence} %)")
+    }
+}
+
+/// The reasons behind a device's type and OS for the Markdown "Why" column.
+fn devices_why(d: &devices::Device) -> String {
+    let mut parts = vec![];
+    if !d.device_type_evidence.reasons.is_empty() {
+        parts.push(format!("type: {}", d.device_type_evidence.because()));
+    }
+    if !d.os_evidence.reasons.is_empty() {
+        parts.push(format!("OS: {}", d.os_evidence.because()));
+    }
+    parts.join(" / ")
+}
+
+/// " 75 %" in muted text, empty for an unscored conclusion.
+fn confidence_html(confidence: u8) -> String {
+    if confidence == 0 {
+        String::new()
+    } else {
+        format!(" <span class=\"muted\">{confidence} %</span>")
+    }
+}
+
+/// How many entries the reports list under "fix these first".
+const FIX_FIRST: usize = 10;
+
+fn band_color(b: score::Band) -> &'static str {
+    match b {
+        score::Band::None => "#2f855a",
+        score::Band::Low => "#718096",
+        score::Band::Medium => "#b7791f",
+        score::Band::High => "#d9480f",
+        score::Band::Critical => "#b71c1c",
+    }
+}
+
+/// The "fix these first" table (identical findings across hosts, ranked by how much fixing
+/// them lowers the host scores) and the riskiest hosts. Empty without findings.
+fn fix_first_html(a: &score::Assessment) -> String {
+    if a.top_fixes.is_empty() {
+        return String::new();
+    }
+    let mut o = format!(
+        "<h2>Fix these first</h2><p class=\"muted\">Network risk score {} of 100 ({}). Findings with the same id on several hosts are one entry, ranked by how much fixing them lowers the host scores (<a href=\"https://sparkz400.github.io/network-scope/findings-and-cves.html#risk-score-and-fix-list\" rel=\"noreferrer\">how it is computed</a>).</p><div class=\"scroll\"><table><tr><th>#</th><th>Severity</th><th>Finding</th><th>Hosts</th><th>Risk lowered</th><th>How to fix</th></tr>",
+        a.network.score,
+        a.network.band.name()
+    );
+    for (i, g) in a.top_fixes.iter().enumerate() {
+        let _ = write!(
+            o,
+            "<tr><td>{}</td><td><span class=\"badge\" style=\"background:{}\">{}</span></td><td>{}{}</td><td>{}</td><td>{:.1}</td><td>{}</td></tr>",
+            i + 1,
+            sev_color(g.severity),
+            g.severity.name(),
+            esc(&g.title),
+            if g.kev {
+                " <span class=\"badge\" style=\"background:#b71c1c\">Known exploited</span>"
+            } else {
+                ""
+            },
+            esc(&score::hosts_text(&g.hosts)),
+            g.risk_reduction,
+            esc(&g.advice)
+        );
+    }
+    o.push_str("</table></div><h3>Riskiest hosts</h3><div class=\"scroll\"><table><tr><th>Host</th><th>Score</th><th>Findings</th></tr>");
+    for h in a.hosts.iter().take(FIX_FIRST) {
+        let _ = write!(
+            o,
+            "<tr><td>{}</td><td><span class=\"badge\" style=\"background:{}\">{} {}</span></td><td>{}</td></tr>",
+            h.ip,
+            band_color(h.band),
+            h.score,
+            h.band.name(),
+            h.findings
+        );
+    }
+    o.push_str("</table></div>");
+    o
+}
+
+/// The same for the Markdown summary.
+fn fix_first_md(a: &score::Assessment) -> String {
+    if a.top_fixes.is_empty() {
+        return String::new();
+    }
+    let mut o = format!(
+        "\n## Risk score and fix list\n\nNetwork risk score: **{} of 100 ({})**. Findings with the same id on several hosts are one entry, ranked by how much fixing them lowers the host scores.\n\n| # | Severity | Finding | Hosts | Risk lowered | How to fix |\n|---|---|---|---|---|---|\n",
+        a.network.score,
+        a.network.band.name()
+    );
+    for (i, g) in a.top_fixes.iter().enumerate() {
+        let _ = writeln!(
+            o,
+            "| {} | {} | {}{} | {} | {:.1} | {} |",
+            i + 1,
+            g.severity.name(),
+            md(&g.title),
+            if g.kev { " (known exploited)" } else { "" },
+            md(&score::hosts_text(&g.hosts)),
+            g.risk_reduction,
+            md(&g.advice)
+        );
+    }
+    o.push_str("\n| Riskiest host | Score | Findings |\n|---|---|---|\n");
+    for h in a.hosts.iter().take(FIX_FIRST) {
+        let _ = writeln!(
+            o,
+            "| {} | {} ({}) | {} |",
+            h.ip,
+            h.score,
+            h.band.name(),
+            h.findings
+        );
+    }
+    o
+}
+
 fn cve_links(ids: &[String]) -> String {
     ids.iter()
         .map(|id| {
@@ -220,6 +355,7 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
     let devs = devices::merge(&snapshot.hosts, &snapshot.observations);
     let up = snapshot.hosts.iter().filter(|h| h.responding).count();
     let cpes = Cpes::new(snapshot);
+    let assessment = score::assess(&findings, FIX_FIRST);
     let mut o = String::with_capacity(64 * 1024);
     let _ = write!(
         o,
@@ -251,6 +387,15 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
         ("Devices", devs.len().to_string(), "#2b6cb0"),
         ("Open ports", open_ports.to_string(), "#805ad5"),
         (
+            "Risk score",
+            format!(
+                "{} ({})",
+                assessment.network.score,
+                assessment.network.band.name()
+            ),
+            band_color(assessment.network.band),
+        ),
+        (
             "Findings",
             findings.len().to_string(),
             if findings.iter().any(|f| f.severity >= Severity::High) {
@@ -266,7 +411,9 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
             esc(&value)
         );
     }
-    o.push_str("</div><h2>Charts</h2><div class=\"charts\">");
+    o.push_str("</div>");
+    o.push_str(&fix_first_html(&assessment));
+    o.push_str("<h2>Charts</h2><div class=\"charts\">");
     let sev: Vec<(String, usize)> = [
         Severity::Critical,
         Severity::High,
@@ -413,7 +560,7 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
             .collect();
         let _ = write!(
             o,
-            "<tr><td>{}<br><span class=\"muted\">{}</span></td><td>{}<br><span class=\"muted\">{}</span></td><td title=\"{}\">{}</td><td>{} {}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}<br><span class=\"muted\">{}</span></td><td>{}<br><span class=\"muted\">{}</span></td><td title=\"{}\">{}{}</td><td title=\"{}\">{}{}</td><td>{}</td><td>{}</td></tr>",
             esc(&d
                 .ips
                 .iter()
@@ -427,10 +574,17 @@ pub fn html(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timestamp: 
             } else {
                 d.vendor.clone()
             }),
-            esc(&d.type_evidence),
+            esc(&d.device_type_evidence.line(&d.device_type)),
             esc(&d.device_type),
+            confidence_html(d.device_type_evidence.confidence),
+            esc(&d.os_evidence.line(&d.os)),
             esc(&d.os),
-            esc(&d.os_confidence),
+            if d.os_evidence.confidence > 0 {
+                confidence_html(d.os_evidence.confidence)
+            } else {
+                // Not scored: show whatever text the import carried.
+                format!(" <span class=\"muted\">{}</span>", esc(&d.os_confidence))
+            },
             esc(&ports.join(", ")),
             esc(&d.sources.join("; "))
         );
@@ -554,8 +708,10 @@ fn findings_table(findings: &[risk::Finding], cpes: &Cpes) -> String {
         }
         let _ = write!(
             o,
-            "<td>{}</td><td>{}{}</td><td>{}",
+            "<td title=\"{}\">{}{}</td><td>{}{}</td><td>{}",
+            esc(&f.explain().line("")),
             esc(&f.evidence),
+            confidence_line_html(f.confidence),
             cve_links(&f.cve),
             crate::feeds::badges_html(f),
             esc(&f.advice)
@@ -622,7 +778,7 @@ pub fn findings_by_host(snapshot: &Snapshot, findings: &[risk::Finding]) -> Vec<
 }
 
 /// Markdown table cell / inline text: no table breaks, no raw HTML, no Markdown markup.
-fn md(s: &str) -> String {
+pub(crate) fn md(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -682,6 +838,7 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
             counts.get(&sev).copied().unwrap_or(0)
         );
     }
+    o.push_str(&fix_first_md(&score::assess(&findings, FIX_FIRST)));
     let md_findings = |o: &mut String, list: &[risk::Finding]| {
         o.push_str("| Severity | Finding | Host |");
         if cpes.any {
@@ -706,8 +863,13 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
             }
             let _ = writeln!(
                 o,
-                " {} | {} | {} |",
+                " {}{} | {} | {} |",
                 md(&f.evidence),
+                if f.confidence > 0 {
+                    format!(" (confidence {} %)", f.confidence)
+                } else {
+                    String::new()
+                },
                 md(&f.cve.join(", ")),
                 reference_url(f).map_or(String::new(), |u| format!("<{u}>"))
             );
@@ -764,7 +926,7 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
     }
     let _ = writeln!(
         o,
-        "\n## Devices ({})\n\n| Address | MAC | Vendor | Type | OS (guess) | Open ports |\n|---|---|---|---|---|---|",
+        "\n## Devices ({})\n\n| Address | MAC | Vendor | Type | OS (guess) | Open ports | Why |\n|---|---|---|---|---|---|---|",
         devs.len()
     );
     for d in &devs {
@@ -782,13 +944,16 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
             .join(", ");
         let _ = writeln!(
             o,
-            "| {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {}{} | {}{} | {} | {} |",
             md(&ips),
             md(&d.mac),
             md(&d.vendor),
             md(&d.device_type),
+            confidence_md(d.device_type_evidence.confidence),
             md(&d.os),
-            md(&ports.join(", "))
+            confidence_md(d.os_evidence.confidence),
+            md(&ports.join(", ")),
+            md(&devices_why(d))
         );
     }
     o.push_str(
@@ -800,6 +965,7 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
 /// One compact JSON object per responding host (JSON Lines), for log pipelines and SIEMs.
 pub fn jsonl(snapshot: &Snapshot, timestamp: i64) -> Result<String, String> {
     let findings = risk::analyze_snapshot(snapshot);
+    let scores = score::host_scores(&findings);
     let devs = devices::merge(&snapshot.hosts, &snapshot.observations);
     let mut out = String::new();
     for h in snapshot.hosts.iter().filter(|h| h.responding) {
@@ -834,6 +1000,7 @@ pub fn jsonl(snapshot: &Snapshot, timestamp: i64) -> Result<String, String> {
                     "title": f.title,
                     "port": f.port,
                     "evidence": f.evidence,
+                    "confidence": f.confidence,
                     "cve": f.cve,
                     "reference": f.reference,
                 })
@@ -849,10 +1016,13 @@ pub fn jsonl(snapshot: &Snapshot, timestamp: i64) -> Result<String, String> {
             "hostname": h.hostname,
             "device_type": dev.map(|d| d.device_type.as_str()).unwrap_or(""),
             "os": h.identity.get("os.guess"),
+            "device_type_evidence": dev.map(|d| &d.device_type_evidence),
+            "os_evidence": dev.map(|d| &d.os_evidence),
             "open_tcp": h.open,
             "open_udp": h.udp_open,
             "services": services,
             "findings": host_findings,
+            "risk_score": scores.iter().find(|s| s.ip == h.ip).map_or(0, |s| s.score),
             "identity": h.identity,
             "note": snapshot.notes.get(&h.ip),
         });
@@ -1131,6 +1301,91 @@ mod tests {
                 .unwrap()
                 .starts_with("https://")
         );
+    }
+
+    #[test]
+    fn reports_show_the_evidence_and_confidence_of_every_conclusion() {
+        let mut s = snapshot();
+        s.hosts[0].identity.insert(
+            "os.evidence".into(),
+            "initial TTL 64; TCP options <b>M,S,T,N,W</b>".into(),
+        );
+        s.hosts[0]
+            .identity
+            .insert("os.confidence".into(), "70%".into());
+        s.hosts[0]
+            .identity
+            .insert("svc.9100".into(), "jetdirect HP LaserJet 4250".into());
+        s.hosts[0].open.push(9100);
+        let html = html(&s, None, 0);
+        // OS guess: confidence in the cell, the reasons in the tooltip (escaped).
+        assert!(html.contains("70 %"), "{html}");
+        assert!(
+            html.contains("because initial TTL 64; TCP options &lt;b&gt;M,S,T,N,W&lt;/b&gt;"),
+            "{html}"
+        );
+        // Device type: tooltip with the reasons.
+        assert!(html.contains("print port 9100"), "{html}");
+        // Finding: confidence under the evidence.
+        assert!(html.contains("confidence 90 %"), "{html}");
+        assert!(!html.contains("<b>M,S,T"), "reasons must be escaped");
+        let md = markdown(&s, None, 0);
+        assert!(md.contains("(confidence 90 %)"), "{md}");
+        assert!(md.contains("| Why |"), "{md}");
+        assert!(md.contains("OS: initial TTL 64; TCP options"), "{md}");
+        assert!(md.contains("Linux (70 %)"), "{md}");
+        let out = jsonl(&s, 0).unwrap();
+        let h: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(h["os_evidence"]["confidence"], 70);
+        assert_eq!(h["os_evidence"]["reasons"][0], "initial TTL 64");
+        let telnet = h["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == "telnet-open")
+            .unwrap();
+        assert_eq!(telnet["confidence"], 90);
+    }
+
+    #[test]
+    fn reports_list_the_risk_score_and_the_fix_first_table() {
+        let mut s = snapshot();
+        // The same weak service on a second host: one group, two hosts.
+        s.hosts[1].identity.insert("svc.23".into(), "telnet".into());
+        s.hosts[1].open.push(23);
+        let page = html(&s, None, 0);
+        assert!(page.contains("Risk score"), "{page}");
+        assert!(page.contains("Fix these first"), "{page}");
+        assert!(page.contains("2 hosts"), "{page}");
+        assert!(page.contains("Riskiest hosts"), "{page}");
+        let md = markdown(&s, None, 0);
+        assert!(md.contains("## Risk score and fix list"), "{md}");
+        assert!(md.contains("Network risk score: **"), "{md}");
+        assert!(
+            md.contains("Telnet exposes credentials in clear text | 2 hosts"),
+            "{md}"
+        );
+        let out = jsonl(&s, 0).unwrap();
+        let scores: Vec<u64> = out
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["risk_score"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(scores.len(), 2);
+        assert!(scores.iter().all(|s| *s > 0 && *s <= 100));
+        // No findings: no table, a score of 0.
+        let mut clean = snapshot();
+        for h in &mut clean.hosts {
+            h.open.clear();
+            h.identity.clear();
+        }
+        let page = html(&clean, None, 0);
+        assert!(!page.contains("Fix these first"));
+        assert!(!markdown(&clean, None, 0).contains("fix list"));
+        assert!(page.contains("0 (none)"));
     }
 
     #[test]

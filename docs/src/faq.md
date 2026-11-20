@@ -38,7 +38,7 @@ CVE entries are version-based hints. Distributions backport fixes without changi
 
 ## The diff shows changes I do not care about
 
-Use `--ignore` with exact keys, globs (`http.*.title`) or suffixes (`.server`). `*.days_left`, `*.clock_skew` and `*.boot_time` are always ignored.
+Use `--ignore` with exact keys, globs (`http.*.title`) or suffixes (`.server`). `*.days_left`, `*.clock_skew`, `*.boot_time`, `*.confidence` and `*.evidence` (the reasons and scores behind OS and device-type guesses) are always ignored.
 
 ## My webhook uses HTTPS
 

@@ -31,6 +31,10 @@ Original work of the Network Scope authors, under the project's MIT license. The
 
 Original work of the Network Scope authors, under the project's MIT license. The rules are hand-written version ranges that reference public CVE identifiers. The CPE vendor/product names were written from memory of the NVD CPE dictionary and have not been checked against it. See [Findings and CVE hints](../docs/src/findings-and-cves.md).
 
+## compliance.json
+
+Original work of the Network Scope authors, under the project's MIT license. It maps finding rule ids to control identifiers of IEC 62443 (FR 1 to FR 7), the NIS2 Directive (Article 21(2)) and the CIS Controls v8 (safeguard numbers) for the compliance exports. Only identifiers and short titles are used, no text of the standards. They were written from memory of the published documents and not compared with the licensed texts; the assignment of findings to controls is the authors' judgment, not an official crosswalk. See [Inventory, diffs and reports](../docs/src/inventory-diff-reports.md#compliance-exports).
+
 ## Imported feeds (not shipped): CISA KEV and FIRST EPSS
 
 Network Scope does **not** embed or download these. `feeds import` reads files that the user downloaded and stores them in a local cache (`feeds.json` next to the user `cves.json`); see [Findings and CVE hints](../docs/src/findings-and-cves.md#known-exploited-and-epss-offline-feeds). The test fixtures `tests/fixtures/kev.json` and `tests/fixtures/epss.csv` are invented examples in the same shape, not copies of the real data.

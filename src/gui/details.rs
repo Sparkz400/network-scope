@@ -38,6 +38,22 @@ impl Scanner {
                         &host.mac
                     }
                 ));
+                // The conclusions with their confidence; hover for the reasons.
+                for (label, key, prefix) in
+                    [("OS", "os.guess", "os"), ("Type", "device.type", "device")]
+                {
+                    if let Some(value) = host.identity.get(key) {
+                        let why = crate::evidence::Evidence::from_identity(&host.identity, prefix);
+                        let shown = why
+                            .as_ref()
+                            .filter(|e| e.confidence > 0)
+                            .map_or(value.clone(), |e| format!("{value} ({} %)", e.confidence));
+                        let response = ui.label(format!("{label}: {shown}"));
+                        if let Some(e) = why.filter(|e| !e.reasons.is_empty()) {
+                            response.on_hover_text(format!("because {}", e.because()));
+                        }
+                    }
+                }
                 ui.label(format!("Open ports: {}", ports_text(&host.open)));
                 if !host.udp_open.is_empty() {
                     ui.label(format!(

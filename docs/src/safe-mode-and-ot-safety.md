@@ -13,6 +13,7 @@
 | Traceroute | ICMP only | ICMP, TCP, UDP |
 | SMB NTLM SESSION_SETUP | not sent | sent (no AUTHENTICATE) |
 | TLS 1.3 suite enumeration | not sent | sent |
+| JARM fingerprint (`--jarm`, ten ClientHellos per TLS port) | not sent | opt-in |
 | OT operations | identification only | identification only |
 
 In the desktop the disabled controls are greyed out. Safe Mode is a conservative traffic profile, **not a guarantee** for every PLC.

@@ -6,8 +6,8 @@
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
-    arp, fingerprint, nmap, osfp, ot, otpassive, passive, pcapfile, platform, risk, service, syn,
-    tls, udp,
+    arp, fingerprint, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile, platform, risk,
+    service, syn, tls, udp,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -24,6 +24,7 @@ pub const TARGETS: &[Target] = &[
     ("otpassive_feed", otpassive_feed),
     ("tls_flight", tls_flight),
     ("tls13_server_hello", tls13_server_hello),
+    ("jarm_response", jarm_response),
     ("tls_certificate", tls_certificate),
     ("fingerprint_server_hello", fingerprint_server_hello),
     ("smb_negotiate", smb_negotiate),
@@ -47,6 +48,7 @@ pub const TARGETS: &[Target] = &[
     ("probes_json", probes_json),
     ("cves_json", cves_json),
     ("feeds_import", feeds_import),
+    ("nvd_import", nvd_import),
     ("arp_reply", arp_reply),
     ("syn_reply", syn_reply),
     ("tcp_options", tcp_options),
@@ -105,6 +107,31 @@ pub fn tls_flight(data: &[u8]) {
     {
         std::hint::black_box(tls::describe_cert(&cert).ok());
     }
+}
+
+/// An NVD CVE JSON 2.0 feed file (streamed, so only the compact records are kept), the CPE
+/// lookup over what it produced, and the CPE and version parsers on the raw text.
+pub fn nvd_import(data: &[u8]) {
+    if let Ok(parsed) = nvd::parse_nvd(data) {
+        let mut cache = nvd::Nvd::default();
+        if cache.merge(parsed, "fuzz.json").is_ok() {
+            std::hint::black_box(cache.lookup("cpe:2.3:a:openbsd:openssh:9.6:p1:*:*:*:*:*:*"));
+            std::hint::black_box(cache.lookup("cpe:/a:apache:http_server:2.4.49"));
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        std::hint::black_box(nvd::parse_cpe(text));
+        std::hint::black_box(nvd::compare_versions(text, "1.0.1e"));
+    }
+}
+
+/// A server's reply to a JARM probe: the ServerHello parser, the per-probe line and the hash
+/// built from ten copies of it.
+pub fn jarm_response(data: &[u8]) {
+    let parsed = jarm::parse_response(data);
+    let line = jarm::response_line(parsed.as_ref());
+    let lines = vec![line; 10];
+    assert!(jarm::is_jarm(&jarm::hash(&lines)));
 }
 
 /// The first handshake message of a TLS 1.3 server, and its JA4S.

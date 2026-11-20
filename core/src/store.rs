@@ -234,8 +234,17 @@ pub fn list_alerts_since(
 /// (matched by suffix). Certificate expiry is still reported through `tls.<port>.expired`, which
 /// only changes when the certificate actually crosses its expiry date. The SMB clock offset
 /// (`smb.<port>.clock_skew`) drifts with the server clock and the SMB server start date
-/// (`smb.<port>.boot_time`) changes on every reboot; neither is a change of the device.
-pub const VOLATILE_IDENTITY_SUFFIXES: &[&str] = &[".days_left", ".clock_skew", ".boot_time"];
+/// (`smb.<port>.boot_time`) changes on every reboot; neither is a change of the device. The
+/// reasons and scores behind the OS guess and the device type (`os.evidence`, `os.confidence`,
+/// `device.evidence`, `device.confidence`) vary with how much a scan could observe; a change of
+/// the conclusion itself (`os.guess`, `device.type`) is still reported.
+pub const VOLATILE_IDENTITY_SUFFIXES: &[&str] = &[
+    ".days_left",
+    ".clock_skew",
+    ".boot_time",
+    ".confidence",
+    ".evidence",
+];
 
 /// Identity keys a diff skips: the built-in volatile suffixes plus user patterns.
 ///
@@ -898,7 +907,10 @@ pub fn export_at(snapshot: &Snapshot, format: &str, timestamp: i64) -> Result<St
         "nmap" | "xml" => Ok(crate::nmap::export(snapshot, timestamp)),
         "md" | "markdown" => Ok(crate::report::markdown(snapshot, None, timestamp)),
         "jsonl" => crate::report::jsonl(snapshot, timestamp),
-        _ => Err("Choose json, csv, html, nmap, md or jsonl".into()),
+        other => match crate::compliance::Standard::from_format(other) {
+            Some((standard, csv)) => Ok(crate::compliance::export(snapshot, standard, csv, timestamp)),
+            None => Err("Choose json, csv, html, nmap, md or jsonl, or compliance-iec62443, compliance-nis2 or compliance-cis (add -csv for CSV)".into()),
+        },
     }
 }
 #[cfg(test)]
@@ -1001,6 +1013,34 @@ mod tests {
             .identity
             .insert("smb.445.boot_time".into(), "2026-11-01".into());
         assert_eq!(diff(&a, &b).unwrap(), Vec::<String>::new());
+        // The reasons and scores of a conclusion are not a change; the conclusion is.
+        for (k, v) in [
+            ("os.guess", "Linux"),
+            ("os.confidence", "60%"),
+            ("os.evidence", "initial TTL 64"),
+            ("device.confidence", "40%"),
+        ] {
+            a.hosts[0].identity.insert(k.into(), v.into());
+        }
+        b = a.clone();
+        b.hosts[0]
+            .identity
+            .insert("os.confidence".into(), "75%".into());
+        b.hosts[0].identity.insert(
+            "os.evidence".into(),
+            "initial TTL 64; TCP options M,S,T,N,W".into(),
+        );
+        b.hosts[0]
+            .identity
+            .insert("device.confidence".into(), "55%".into());
+        assert_eq!(diff(&a, &b).unwrap(), Vec::<String>::new());
+        b.hosts[0]
+            .identity
+            .insert("os.guess".into(), "Windows".into());
+        assert_eq!(diff(&a, &b).unwrap().len(), 1);
+        b.hosts[0]
+            .identity
+            .insert("os.guess".into(), "Linux".into());
         // Expiry is reported once, when the expired flag flips.
         b.hosts[0]
             .identity

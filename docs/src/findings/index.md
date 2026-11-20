@@ -18,6 +18,7 @@ For how findings are produced and filtered, see [Findings and CVE hints](../find
 | `tls-cert-expiring` | Medium | TLS certificate expires within 30 days | [tls-cert-expiring](tls-cert-expiring.md) |
 | `tls-cert-not-yet-valid` | Medium | TLS certificate is not yet valid | [tls-cert-not-yet-valid](tls-cert-not-yet-valid.md) |
 | `tls-self-signed` | Low | Self-signed TLS certificate | [tls-self-signed](tls-self-signed.md) |
+| `tls-self-signed-bad-signature` | Medium | Certificate claims to be self-signed but its signature does not verify | [tls-self-signed-bad-signature](tls-self-signed-bad-signature.md) |
 | `tls-weak-signature` | Medium | Certificate signed with a weak hash | [tls-weak-signature](tls-weak-signature.md) |
 | `tls-weak-key` | High | Certificate uses a short RSA key | [tls-weak-key](tls-weak-key.md) |
 | `tls-sslv3` | High | SSLv3 is enabled | [tls-sslv3](tls-sslv3.md) |
