@@ -51,8 +51,9 @@ SystemCallFilter=~@privileged @resources
 
 # Optional raw features (ICMP ping over a raw socket, SYN scan, ARP sweep, passive capture).
 # They are off by default and need Safe Mode off or an interface option, so most installations
-# do not want them. Without CAP_NET_RAW the scanner uses TCP connect probes (and unprivileged
-# ICMP when net.ipv4.ping_group_range allows the service's group). If you do need them, replace
+# do not want them. Without CAP_NET_RAW the ICMP ping may fail (noted on each host; unprivileged
+# ICMP works when net.ipv4.ping_group_range includes the service's group) and the TCP connect
+# probes decide whether a host is up, which is what `monitor` relies on anyway. If you need them, replace
 # the two empty lines above with:
 #   CapabilityBoundingSet=CAP_NET_RAW
 #   AmbientCapabilities=CAP_NET_RAW

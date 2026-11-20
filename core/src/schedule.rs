@@ -91,6 +91,14 @@ impl Schedule {
     }
 }
 
+/// Puts `settings` into Safe Mode for an unattended scan and returns the previous value, so the
+/// caller can restore it: a scheduled scan never lifts the safety limits, whatever the user chose
+/// for scans they start by hand. (The engine ignores the opt-in transmitting features, such as SYN
+/// and the ARP sweep, while Safe Mode is on.)
+pub fn force_safe_mode(settings: &mut crate::scan::Settings) -> bool {
+    std::mem::replace(&mut settings.safe, true)
+}
+
 /// "in 5 min", "in 1 h 20 min", "in under a minute".
 pub fn describe_wait(left: Duration) -> String {
     let minutes = left.as_secs().div_ceil(60);
@@ -183,6 +191,22 @@ mod tests {
         assert!(schedule(60, "10.0.0.1-5").validate(false).is_ok());
         assert!(schedule(60, "not a target").validate(false).is_err());
         assert!(schedule(1, "10.0.0.1").validate(false).is_err());
+    }
+
+    #[test]
+    fn unattended_scans_are_always_safe_mode() {
+        let mut fast = crate::scan::Settings {
+            safe: false,
+            syn: true,
+            ..Default::default()
+        };
+        assert!(
+            !force_safe_mode(&mut fast),
+            "the previous value is returned"
+        );
+        assert!(fast.safe);
+        // Already safe: unchanged, and the previous value says so.
+        assert!(force_safe_mode(&mut fast) && fast.safe);
     }
 
     #[test]
