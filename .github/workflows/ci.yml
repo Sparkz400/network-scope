@@ -50,7 +50,11 @@ jobs:
       # macOS: binding 127.0.0.1 below port 1024 needs root, and Remote Login holds port 22.
       - name: Free the lab ports (macOS)
         if: runner.os == 'macOS'
-        run: sudo launchctl bootout system/com.openssh.sshd || true
+        run: |
+          sudo launchctl bootout system/com.openssh.sshd || true
+          # lab/verify.py's segmentation check needs 127.0.0.1 to 127.0.0.5; macOS has only the
+          # first on lo0 (without the aliases the check prints "SKIPPED" and passes).
+          for n in 2 3 4 5; do sudo ifconfig lo0 alias "127.0.0.$n" up || true; done
       - name: Lab end-to-end check (simulated weak and OT services on loopback)
         shell: bash
         run: |
