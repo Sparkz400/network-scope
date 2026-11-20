@@ -73,6 +73,18 @@ CI runs all of the above on Windows, Linux and macOS. A pull request must pass C
 
 Documentation lives in `docs/src` (mdBook). Preview it with `mdbook serve docs` if you have [mdBook](https://rust-lang.github.io/mdBook/) installed. Keep pages plain Markdown with relative links between them. Every finding rule id in `core/src/risk.rs` needs a page `docs/src/findings/<id>.md` (same sections as the existing pages, listed in `SUMMARY.md` and `findings/index.md`); `python -I docs/check_finding_pages.py` checks this and runs in CI. Every rule id also needs a case in `core/src/risk_budget.rs` (a host that must trigger it and a near miss that must not); a test fails when a rule id in `risk.rs` has none.
 
+## Testing policy
+
+These rules are mandatory for every pull request. Reviews check them, and a pull request that breaks them is not merged.
+
+- **New functionality comes with automated tests** in the same pull request: unit tests next to the code, and for scanning or detection features a lab case (`lab/`) where one is possible. A feature that cannot be tested automatically, for example one that needs real hardware, says so in the pull request and in its documentation.
+- **Bug fixes come with a regression test** that fails before the fix and passes after it, unless that is impractical (say why in the pull request).
+- **Parsers of untrusted input** also get truncated and oversized test input and a fuzz target (see [Fuzzing](#fuzzing)).
+- **Coverage must not drop.** The `coverage` job fails when a gated file falls below its threshold in `scripts/coverage_targets.json`. The workspace as a whole stays above 80% line coverage.
+- **All tests run in CI** on Windows, Linux and macOS on every push and pull request. A red CI blocks the merge.
+
+The project's governance, roles and decision-making are described in [GOVERNANCE.md](GOVERNANCE.md).
+
 ## Fuzzing
 
 The parsers of network replies and imported files have [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets in `fuzz/fuzz_targets` (`cargo +nightly fuzz list` shows them) (a one-line call into `core/src/fuzz.rs`) and seeds in `fuzz/corpus/<target>`. cargo-fuzz needs a nightly toolchain (the pinned stable one is used for everything else):
