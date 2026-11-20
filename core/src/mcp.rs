@@ -651,7 +651,7 @@ impl Server {
         // One connection for every scan read, opened only when there is one (asking never
         // creates the inventory).
         let conn = (!entries.is_empty())
-            .then(|| store::open(&self.cfg.db))
+            .then(|| store::open_read(&self.cfg.db))
             .transpose()?;
         'scans: for entry in entries.iter().take(SEARCH_SCANS) {
             let Some(Ok(snapshot)) = conn.as_ref().map(|c| store::load_on(c, entry.id)) else {

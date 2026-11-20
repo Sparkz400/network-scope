@@ -1331,3 +1331,62 @@ fn the_needle_recognises_addresses_macs_and_names() {
     assert!(!Needle::Name("".into()).matches(None, "", &["x"]));
     assert!(!Needle::Ip("10.0.0.1".parse().unwrap()).matches(None, "", &["10.0.0.1"]));
 }
+
+/// The query tools open the inventory read-only: an inventory written by an older version is
+/// read as it is (not upgraded, no WAL switch) and a write-protected file can be read; neither
+/// file changes.
+#[test]
+fn the_query_tools_change_neither_an_older_inventory_nor_a_read_only_file() {
+    // The version-5 layout (before `scan_hosts`), in rollback-journal mode.
+    let old = temp_db("old-format");
+    {
+        let c = rusqlite::Connection::open(&old).unwrap();
+        c.execute_batch("CREATE TABLE scans(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); PRAGMA user_version=5;").unwrap();
+        for (ts, extra) in [(1_699_920_000, ""), (1_700_100_000, TELNET)] {
+            let data = serde_json::to_string(&nmap_scan("10.0.0.1", extra)).unwrap();
+            c.execute(
+                "INSERT INTO scans(timestamp,targets,complete,hosts,snapshot) VALUES(?1,'10.0.0.1',1,1,?2)",
+                rusqlite::params![ts, data],
+            )
+            .unwrap();
+        }
+    }
+    let read_only = fixture("read-only-file");
+    let mut permissions = std::fs::metadata(&read_only).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&read_only, permissions.clone()).unwrap();
+    for (db, scans) in [(&old, 2), (&read_only, 3)] {
+        let before = std::fs::read(db).unwrap();
+        let mut server = session(db);
+        for (tool, args) in [
+            ("list_scans", json!({})),
+            ("list_devices", json!({})),
+            ("list_findings", json!({})),
+            ("device_history", json!({"query": "00:0C:29:AA:BB:CC"})),
+            ("diff_scans", json!({"old_id": 1, "new_id": 2})),
+            ("search_inventory", json!({"query": "10.0.0.1"})),
+            (
+                "findings_gained",
+                json!({"finding_id": "telnet-open", "since": "2023-11-15"}),
+            ),
+        ] {
+            let result = call(&mut server, tool, args);
+            assert_eq!(result["isError"], false, "{tool}: {result}");
+        }
+        let history = call(&mut server, "device_history", json!({"query": "10.0.0.1"}));
+        assert_eq!(
+            history["structuredContent"]["sightings"], scans,
+            "{history}"
+        );
+        assert!(
+            std::fs::read(db).unwrap() == before,
+            "{} changed",
+            db.display()
+        );
+    }
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&read_only, permissions).unwrap();
+    remove_db(&old);
+    remove_db(&read_only);
+}
