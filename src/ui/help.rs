@@ -87,6 +87,11 @@ Scan options:
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
   --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
+  --snmp-community STRING  Read responding hosts over SNMP v2c (sysDescr, interfaces, LLDP neighbours) with
+                  this community; read-only (Get/GetNext/GetBulk), never guessed; allowed in Safe Mode
+  --snmp-version 2c|1  Version for --snmp-community (default 2c)
+  --snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]  SNMPv3: AUTH is sha or sha256, PRIV is aes; the
+                  *_ENV parts are names of environment variables that hold the passphrases (min. 8 characters)
   --dry-run       scan, monitor, trace, dcp: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)

@@ -68,7 +68,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `ot-assets ID [--format json\|csv]` | OT asset inventory from a passive capture |
 | `devices ID [--format json\|csv]` | One record per device (active and passive merged), with its stable device key |
 | `devices --history MAC\|IP [--format text\|json]` | Timeline of one device across saved scans |
-| `topology ID [--format ascii\|dot]` | Network path map from traceroute data |
+| `topology ID [--format ascii\|dot]` | Network path map from traceroute data, plus LLDP links when the scan used [`--snmp-community` or `--snmp-v3`](snmp.md) |
 | `trace TARGET [--max-hops 20] [--timeout 1000] [--fast --trace-method udp\|tcp --trace-port N]` | Traceroute to one IP |
 | `probes [--probes FILE]` | List the TCP and UDP probe database |
 | `probes validate FILE` | Load a probe file like a scan with `--probes` would, then lint it; exit 1 on an error |
@@ -120,6 +120,8 @@ These apply to `scan` and `monitor`.
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
 | `--jarm` | off | JARM-style TLS fingerprint: ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode; not verified against the reference JARM, see [Detection](detection.md)) |
+| `--snmp-community STRING` / `--snmp-version 2c\|1` | off / 2c | Read every responding host over [SNMP](snmp.md) with this community (system group, interfaces, addresses, LLDP neighbours): read-only requests, the community is never guessed and never `public` unless you type it; allowed in Safe Mode (with tighter limits) |
+| `--snmp-v3 USER[:AUTH:AUTH_ENV[:PRIV:PRIV_ENV]]` | off | SNMPv3 (USM): `AUTH` is `sha` or `sha256`, `PRIV` is `aes`; `AUTH_ENV` and `PRIV_ENV` are the **names of environment variables** holding the passphrases (at least 8 characters), never the passphrases themselves |
 | `--no-backoff` | off | Turn off the [automatic back-off](scanning-engine.md#automatic-back-off) (on by default; it only ever slows a host down) |
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
@@ -162,7 +164,7 @@ ipv4 2 host(s), 192.168.1.1 ... 192.168.1.2
   ...
 ```
 
-The packet kinds are `icmp-echo`, `arp-request`, `neighbor-lookup`, `tcp-connect`, `tcp-syn`, `udp-probe`, `service-probe`, `http-request`, `tls-client-hello`, `smb-negotiate`, `rdp-negotiate`, `ssh-banner`, `ot-request` (with the protocol, service and function code), `dcp-identify`, `traceroute`, `dhcp-discover` and `dns-ptr` (the reverse lookup goes to your resolver, not to the host). `--format json` prints the same plan as JSON (`dry_run`, `packets_sent: 0`, `groups`, and the scope verdict). The plan is built from the same conditions and allow-lists the scanner uses (a test runs a real scan and checks that everything it sent was in the plan), and a dry run does not need scope confirmation: it prints what a real run would ask instead.
+The packet kinds are `icmp-echo`, `arp-request`, `neighbor-lookup`, `tcp-connect`, `tcp-syn`, `udp-probe`, `service-probe`, `http-request`, `tls-client-hello`, `smb-negotiate`, `rdp-negotiate`, `ssh-banner`, `ot-request` (with the protocol, service and function code), `dcp-identify`, `traceroute`, `dhcp-discover`, `snmp-request` (the read-only SNMP PDU and version) and `dns-ptr` (the reverse lookup goes to your resolver, not to the host). `--format json` prints the same plan as JSON (`dry_run`, `packets_sent: 0`, `groups`, and the scope verdict). The plan is built from the same conditions and allow-lists the scanner uses (a test runs a real scan and checks that everything it sent was in the plan), and a dry run does not need scope confirmation: it prints what a real run would ask instead.
 
 Every scan also keeps a **sent log**: a counter per `(kind, detail)` of the packets it really sent (a port scan counts under `tcp-connect` / `port scan`, a UDP probe under `udp-probe` / `dns/53`, an OT request under its protocol and function code). It is stored with the scan (the `sent` array of the JSON export, `export ID --format json`), shown in the desktop by hovering the status line after a scan, and printed by `--sent-log`:
 

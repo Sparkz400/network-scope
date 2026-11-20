@@ -220,6 +220,35 @@ mod tests {
     }
 
     #[test]
+    fn snmp_dry_run_lists_the_read_only_pdus_and_never_the_secret() {
+        let (text, status) = run_to_file(&[
+            "scan",
+            "192.168.77.1",
+            "--dry-run",
+            "--ports",
+            "80",
+            "--snmp-community",
+            "hunter2-community",
+        ]);
+        assert_eq!(status, crate::ui::ExitCode::Success);
+        for want in [
+            "snmp-request",
+            "SNMPv2c: GetRequest (PDU 0xA0)",
+            "SNMPv2c: GetNextRequest (PDU 0xA1)",
+            "SNMPv2c: GetBulkRequest (PDU 0xA5)",
+            "udp/161",
+            "SNMP never sends a SetRequest",
+        ] {
+            assert!(text.contains(want), "missing {want} in:\n{text}");
+        }
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(!text.contains("0xA3"), "no SetRequest in the plan: {text}");
+        // without the option there is no SNMP line at all
+        let (text, _) = run_to_file(&["scan", "192.168.77.1", "--dry-run", "--ports", "80"]);
+        assert!(!text.contains("snmp-request"), "{text}");
+    }
+
+    #[test]
     fn dry_run_json_and_the_scope_verdict_for_a_public_target() {
         // A public target would be refused by a real run; the dry run reports it and exits 0.
         let (text, status) = run_to_file(&[

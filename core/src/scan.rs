@@ -83,6 +83,10 @@ pub struct Settings {
     /// a host, and a slower pace (or a pause for the rest of the scan) when the host starts
     /// resetting connections. It only ever slows a host down; `--no-backoff` turns it off.
     pub backoff: bool,
+    /// SNMP credentials (`--snmp-community`, `--snmp-v3`): when set, responding hosts are read
+    /// over SNMP (system group, interfaces, LLDP). Never serialised: it holds secrets.
+    #[serde(skip)]
+    pub snmp: Option<crate::snmp::SnmpConfig>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -128,6 +132,7 @@ impl Default for Settings {
             trace_port: 0,
             jarm: false,
             backoff: true,
+            snmp: None,
         }
     }
 }

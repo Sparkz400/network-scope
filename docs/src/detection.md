@@ -115,4 +115,4 @@ Not covered: WS-Discovery device metadata (a TCP request to port 5357 would be n
 ## Not implemented
 
 - **Reference-exact JARM**: `--jarm` produces a JARM-style hash whose tables are not verified against `jarm.py` (see above), so it cannot be compared with public JARM databases.
-- **SNMPv3**.
+- **SNMPv3 in the UDP scan**: the built-in `snmp/161` probe sends only SNMPv1/v2c `sysDescr` requests with the community `public`. Reading devices with your own v1/v2c/v3 credentials is a separate option, see [SNMP](snmp.md).

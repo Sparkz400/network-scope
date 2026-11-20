@@ -42,6 +42,7 @@ pub const TARGETS: &[Target] = &[
     ("udp_ntp", udp_ntp),
     ("udp_ssdp", udp_ssdp),
     ("udp_snmp", udp_snmp),
+    ("snmp_response", snmp_response),
     ("udp_netbios", udp_netbios),
     ("udp_dhcp", udp_dhcp),
     ("nmap_import", nmap_import),
@@ -256,6 +257,12 @@ pub fn udp_ntp(data: &[u8]) {
 /// An SSDP reply.
 pub fn udp_ssdp(data: &[u8]) {
     std::hint::black_box(udp::parse_ssdp(data));
+}
+
+/// Any SNMP reply the read-only SNMP client may receive: v1/v2c responses and SNMPv3 messages
+/// (reports, authenticated and encrypted responses), and the BER pieces under them.
+pub fn snmp_response(data: &[u8]) {
+    crate::snmp::decode_reply_for_fuzzing(data);
 }
 
 /// An SNMP GetResponse (BER).

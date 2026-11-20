@@ -130,6 +130,7 @@ pub mod score;
 pub mod script;
 pub mod sendlog;
 pub mod service;
+pub mod snmp;
 pub mod store;
 pub mod syn;
 pub mod sync;

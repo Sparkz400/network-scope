@@ -237,7 +237,7 @@ pub fn guess(
     let http = suffixed(&[".server", ".powered_by"]);
     let snmp = identity
         .iter()
-        .filter(|(k, _)| key_under(k, "udp.161"))
+        .filter(|(k, _)| key_under(k, "udp.161") || k.as_str() == "snmp.sysdescr")
         .map(|(_, v)| v.as_str())
         .collect::<Vec<_>>()
         .join(" | ");
