@@ -458,3 +458,55 @@ medium || mittel
 low || niedrig
 info || Info
 none || keines
+
+# OT passive discovery (Passive / DCP window)
+OT passive asset discovery || Passive OT-Asset-Erkennung
+Reads a capture file or listens on the interface above. Nothing is transmitted. Industrial protocol traffic (Modbus, S7, EtherNet/IP, OPC UA, Profinet...) builds the asset table. || Liest eine Mitschnitt-Datei oder lauscht auf der oben gewählten Schnittstelle. Es wird nichts gesendet. Industrieller Protokollverkehr (Modbus, S7, EtherNet/IP, OPC UA, Profinet...) füllt die Asset-Tabelle.
+Open pcap… || pcap öffnen…
+Packet capture || Paketmitschnitt
+All files || Alle Dateien
+OT assets || OT-Assets
+Listen (OT) || Lauschen (OT)
+Choose an interface; stop other captures and scans first. || Wählen Sie eine Schnittstelle; beenden Sie zuerst andere Mitschnitte und Scans.
+{} · {} frames processed · {}s || {} · {} Frames verarbeitet · {} s
+{} · {} frames · {} observations · {} OT assets{} || {} · {} Frames · {} Beobachtungen · {} OT-Assets{}
+Export assets CSV… || Assets als CSV exportieren…
+Export assets JSON… || Assets als JSON exportieren…
+control traffic seen (writes, program changes, stop/start) || Steuerverkehr gesehen (Schreibzugriffe, Programmänderungen, Stopp/Start)
+Vendor || Hersteller
+Product || Produkt
+Firmware || Firmware
+Serial || Seriennr.
+Protocols || Protokolle
+Roles || Rollen
+First seen || Erstmals gesehen
+Last seen || Zuletzt gesehen
+Control traffic || Steuerverkehr
+None seen || Keiner gesehen
+Writing {}… || Schreibe {}…
+OT capture thread stopped || Der OT-Mitschnitt-Thread wurde beendet
+OT passive: no observations in {} || OT passiv: keine Beobachtungen in {}
+OT passive: {} observations · saved capture #{} || OT passiv: {} Beobachtungen · Mitschnitt #{} gespeichert
+
+# Device timeline window
+Device timeline · {} || Geräteverlauf · {}
+Looked up by {} || Gesucht über {}
+Copy as text || Als Text kopieren
+Reading the saved inventory… || Lese das gespeicherte Inventar…
+No events yet: the device was not seen in a saved scan. || Noch keine Ereignisse: Das Gerät wurde in keinem gespeicherten Scan gesehen.
+Not seen in any of {} saved scans (a scan that never reached it, or none saved yet). || In keinem von {} gespeicherten Scans gesehen (kein Scan hat es erreicht, oder es ist noch keiner gespeichert).
+First seen {} · last seen {} · in {} of {} saved scans || Erstmals gesehen {} · zuletzt gesehen {} · in {} von {} gespeicherten Scans
+Addresses: {} || Adressen: {}
+MAC addresses: {} || MAC-Adressen: {}
+Names: {} || Namen: {}
+Open TCP ports (latest completed scan): {} || Offene TCP-Ports (letzter abgeschlossener Scan): {}
+Address changed || Adresse geändert
+MAC changed || MAC geändert
+Name changed || Name geändert
+Port opened || Port geöffnet
+Port closed || Port geschlossen
+UDP answering || UDP antwortet
+UDP silent || UDP still
+Finding appeared || Befund aufgetreten
+Finding resolved || Befund behoben
+Event || Ereignis

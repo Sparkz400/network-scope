@@ -1,7 +1,7 @@
 //! Passive OT asset discovery in the GUI. A pcap file, or a live capture through
 //! `capture::PassiveCapture` (which has no transmit call), is fed to `otpassive::Tracker` on a
 //! thread of its own: a long capture must not hold up the inventory worker or the window.
-use super::{Job, Scanner};
+use super::{Job, Scanner, i18n::tr};
 use crate::{capture, otpassive, passive, store};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -135,13 +135,6 @@ impl OtState {
             },
         ];
     }
-    #[cfg(test)]
-    fn wait(&mut self) {
-        while self.run.is_some() {
-            self.poll();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
     /// Takes new messages; returns the finished capture (label, observations, complete).
     fn poll(&mut self) -> Option<(String, Vec<passive::Observation>, bool)> {
         let run = self.run.as_ref()?;
@@ -160,7 +153,11 @@ impl OtState {
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    finished = Some((vec![], vec![], Some("OT capture thread stopped".into())));
+                    finished = Some((
+                        vec![],
+                        vec![],
+                        Some(tr!("OT capture thread stopped").into()),
+                    ));
                     break;
                 }
             }
@@ -371,7 +368,7 @@ impl Scanner {
             return;
         };
         if observations.is_empty() {
-            self.status = format!("OT passive: no observations in {label}");
+            self.status = tr!("OT passive: no observations in {}", label);
             return;
         }
         if self.screenshot.is_some() {
@@ -394,31 +391,31 @@ impl Scanner {
         let extension = if csv { "csv" } else { "json" };
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(format!("ot-assets.{extension}"))
-            .add_filter("OT assets", &[extension])
+            .add_filter(tr!("OT assets"), &[extension])
             .save_file()
         else {
             return;
         };
-        self.status = format!("Writing {}…", path.display());
+        self.status = tr!("Writing {}…", path.display());
         self.submit(Job::ExportAssets(self.ot.assets.clone(), csv, path));
     }
 
     /// The OT part of the Passive window.
     pub(super) fn ot_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.strong("OT passive asset discovery");
-        ui.label(
+        ui.strong(tr!("OT passive asset discovery"));
+        ui.label(tr!(
             "Reads a capture file or listens on the interface above. Nothing is transmitted. \
-             Industrial protocol traffic (Modbus, S7, EtherNet/IP, OPC UA, Profinet...) builds the asset table.",
-        );
+             Industrial protocol traffic (Modbus, S7, EtherNet/IP, OPC UA, Profinet...) builds the asset table."
+        ));
         let running = self.ot.running();
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!running, egui::Button::new("Open pcap…"))
+                .add_enabled(!running, egui::Button::new(tr!("Open pcap…")))
                 .clicked()
                 && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Packet capture", &["pcap", "pcapng", "cap"])
-                    .add_filter("All files", &["*"])
+                    .add_filter(tr!("Packet capture"), &["pcap", "pcapng", "cap"])
+                    .add_filter(tr!("All files"), &["*"])
                     .pick_file()
             {
                 self.ot.begin(Source::Pcap(path), ui.ctx().clone());
@@ -434,8 +431,10 @@ impl Scanner {
                     .suffix(" s"),
             );
             if ui
-                .add_enabled(can_listen, egui::Button::new("Listen (OT)"))
-                .on_disabled_hover_text("Choose an interface; stop other captures and scans first.")
+                .add_enabled(can_listen, egui::Button::new(tr!("Listen (OT)")))
+                .on_disabled_hover_text(tr!(
+                    "Choose an interface; stop other captures and scans first."
+                ))
                 .clicked()
             {
                 let source = Source::Live {
@@ -445,9 +444,9 @@ impl Scanner {
                 self.ot.begin(source, ui.ctx().clone());
             }
             let stop = if self.ot.capturing() {
-                "Stop"
+                tr!("Stop")
             } else {
-                "Cancel"
+                tr!("Cancel")
             };
             if running && ui.button(stop).clicked() {
                 self.ot.cancel();
@@ -468,23 +467,27 @@ impl Scanner {
                 None => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(format!(
-                            "{} · {} frames processed · {:.0}s",
+                        ui.label(tr!(
+                            "{} · {} frames processed · {}s",
                             run.label,
                             self.ot.frames,
-                            run.started.elapsed().as_secs_f32()
+                            format!("{:.0}", run.started.elapsed().as_secs_f32())
                         ));
                     });
                 }
             }
         } else if !self.ot.label.is_empty() {
-            ui.label(format!(
+            ui.label(tr!(
                 "{} · {} frames · {} observations · {} OT assets{}",
                 self.ot.label,
                 self.ot.frames,
                 self.ot.observations,
                 self.ot.assets.len(),
-                if self.ot.complete { "" } else { " (partial)" }
+                if self.ot.complete {
+                    String::new()
+                } else {
+                    format!(" ({})", tr!("partial"))
+                }
             ));
         }
         if !self.ot.error.is_empty() {
@@ -494,14 +497,16 @@ impl Scanner {
             return;
         }
         ui.horizontal(|ui| {
-            if ui.button("Export assets CSV…").clicked() {
+            if ui.button(tr!("Export assets CSV…")).clicked() {
                 self.export_assets(true);
             }
-            if ui.button("Export assets JSON…").clicked() {
+            if ui.button(tr!("Export assets JSON…")).clicked() {
                 self.export_assets(false);
             }
             ui.colored_label(CONTROL, "■");
-            ui.label("control traffic seen (writes, program changes, stop/start)");
+            ui.label(tr!(
+                "control traffic seen (writes, program changes, stop/start)"
+            ));
         });
         asset_table(ui, &self.ot.assets);
     }
@@ -534,16 +539,16 @@ fn asset_rows(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
         .column(Column::initial(240.0).at_least(120.0).clip(true))
         .header(22.0, |mut row| {
             for h in [
-                "Address",
-                "Vendor",
-                "Product",
-                "Firmware",
-                "Serial",
-                "Protocols",
-                "Roles",
-                "First seen",
-                "Last seen",
-                "Control traffic",
+                tr!("Address"),
+                tr!("Vendor"),
+                tr!("Product"),
+                tr!("Firmware"),
+                tr!("Serial"),
+                tr!("Protocols"),
+                tr!("Roles"),
+                tr!("First seen"),
+                tr!("Last seen"),
+                tr!("Control traffic"),
             ] {
                 row.col(|ui| {
                     ui.strong(h);
@@ -595,7 +600,11 @@ fn asset_rows(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
                 row.col(|ui| {
                     let all = a.control_traffic.join("\n");
                     ui.label(text(list(&a.control_traffic)))
-                        .on_hover_text(if control { all.as_str() } else { "None seen" });
+                        .on_hover_text(if control {
+                            all.as_str()
+                        } else {
+                            tr!("None seen")
+                        });
                 });
             });
         });
@@ -612,6 +621,29 @@ fn seen(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl OtState {
+        fn wait(&mut self) {
+            while self.run.is_some() {
+                self.poll();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
+    fn the_ot_section_texts_are_translated() {
+        use super::super::i18n::{Lang, set};
+        set(Lang::German);
+        assert_eq!(tr!("Listen (OT)"), "Lauschen (OT)");
+        assert_eq!(tr!("None seen"), "Keiner gesehen");
+        assert_eq!(
+            tr!("{} · {} frames processed · {}s", "a.pcap", 12, "3"),
+            "a.pcap · 12 Frames verarbeitet · 3 s"
+        );
+        set(Lang::English);
+        assert_eq!(tr!("Listen (OT)"), "Listen (OT)");
+    }
 
     #[test]
     fn pump_counts_frames_stops_on_cancel_and_keeps_data_on_errors() {
