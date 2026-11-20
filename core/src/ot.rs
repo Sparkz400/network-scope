@@ -433,12 +433,21 @@ pub(crate) fn parse_szl(b: &[u8], seq: u8, id: u8, fields: &mut Fields) -> Resul
     Ok(())
 }
 async fn s7(ip: IpAddr, rack: u8, slot: u8, gate: &Gate) -> Result<Fields, String> {
-    let cr =
-        S7Request::connection_request(rack, slot).ok_or("S7 rack must be 0–7 and slot 0–31")?;
-    let mut socket = OtStream::connect((ip, 102))
+    let socket = OtStream::connect((ip, 102))
         .await
         .map_err(connect_error)?
         .with_log(gate.log().clone());
+    s7_stream(socket, rack, slot, gate).await
+}
+async fn s7_stream(
+    socket: impl Into<OtStream>,
+    rack: u8,
+    slot: u8,
+    gate: &Gate,
+) -> Result<Fields, String> {
+    let cr =
+        S7Request::connection_request(rack, slot).ok_or("S7 rack must be 0–7 and slot 0–31")?;
+    let mut socket = socket.into();
     let response = tpkt(&mut socket, &cr).await?;
     if response.get(5) != Some(&0xd0) {
         return Err("COTP connection refused".into());
@@ -698,5 +707,372 @@ mod tests {
         let mut huge = reply.clone();
         huge[29..31].copy_from_slice(&[0xff, 0xff]); // record count
         assert!(parse_szl(&huge, 2, 0x11, &mut f).is_err());
+    }
+
+    // ---- the network halves of the identification, against scripted devices on loopback ----
+
+    use tokio::net::TcpListener;
+
+    /// A TCP device that answers each request it reads with the next scripted reply (then closes).
+    async fn scripted(replies: Vec<Vec<u8>>) -> TcpStream {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            for reply in replies {
+                let mut b = [0u8; 512];
+                if socket.read(&mut b).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                if socket.write_all(&reply).await.is_err() {
+                    return;
+                }
+            }
+        });
+        TcpStream::connect(address).await.unwrap()
+    }
+
+    /// The data of a List Identity reply with one identity item.
+    fn identity_body(vendor: u16, name: &[u8]) -> Vec<u8> {
+        let mut v = vec![1, 0];
+        v.extend([0u8; 16]);
+        v.extend(vendor.to_le_bytes());
+        v.extend(14u16.to_le_bytes());
+        v.extend(55u16.to_le_bytes());
+        v.extend([32, 11, 0, 0]);
+        v.extend(7u32.to_le_bytes());
+        v.push(name.len() as u8);
+        v.extend(name);
+        v.push(3);
+        let mut b = vec![1, 0, 0x0c, 0];
+        b.extend((v.len() as u16).to_le_bytes());
+        b.extend(v);
+        b
+    }
+
+    /// The encapsulation header (24 bytes) and body of a List Identity reply.
+    fn enip_reply(body: &[u8]) -> Vec<u8> {
+        let mut h = vec![0x63, 0];
+        h.extend((body.len() as u16).to_le_bytes());
+        h.extend([0; 4]); // session handle
+        h.extend([0; 4]); // status
+        h.extend(EnipRequest::SENDER_CONTEXT);
+        h.extend([0; 4]); // options
+        h.extend(body);
+        h
+    }
+
+    #[tokio::test]
+    async fn enip_reads_a_list_identity_reply_and_refuses_the_rest() {
+        let good = enip_reply(&identity_body(1, b"PLC1"));
+        let f = enip_stream(scripted(vec![good.clone()]).await)
+            .await
+            .unwrap();
+        assert_eq!(f["name"], "PLC1");
+        assert_eq!(f["vendor"], "Rockwell Automation/Allen-Bradley");
+        // Not a List Identity reply (wrong command), a foreign sender context, a non-zero status.
+        for (at, value) in [(0usize, 0x65u8), (12, b'X'), (8, 1)] {
+            let mut bad = good.clone();
+            bad[at] = value;
+            let e = enip_stream(scripted(vec![bad]).await).await.unwrap_err();
+            assert_eq!(e, "Invalid List Identity header", "byte {at}");
+        }
+        // A size outside 2..=8192 is never read.
+        for size in [0u16, 1, 8193, 60_000] {
+            let mut bad = good.clone();
+            bad[2..4].copy_from_slice(&size.to_le_bytes());
+            let e = enip_stream(scripted(vec![bad]).await).await.unwrap_err();
+            assert_eq!(e, "Invalid List Identity size", "size {size}");
+        }
+        // The device closes in the middle of the reply: an error, not a hang.
+        let cut = good[..good.len() - 5].to_vec();
+        assert!(enip_stream(scripted(vec![cut]).await).await.is_err());
+        // No identity item in a well-formed reply.
+        let empty = enip_reply(&[0, 0]);
+        assert_eq!(
+            enip_stream(scripted(vec![empty]).await).await.unwrap_err(),
+            "No identity item returned"
+        );
+    }
+
+    #[test]
+    fn list_identity_malformed_bodies_are_errors() {
+        assert_eq!(
+            parse_list_identity(&[1]),
+            Err("Truncated List Identity".into())
+        );
+        // One item announced, none present.
+        assert_eq!(
+            parse_list_identity(&[1, 0]),
+            Err("Truncated identity item".into())
+        );
+        // The item claims more bytes than there are.
+        assert_eq!(
+            parse_list_identity(&[1, 0, 0x0c, 0, 200, 0, 1, 2]),
+            Err("Truncated identity".into())
+        );
+        // An item of another type is skipped; a short identity is skipped.
+        assert_eq!(
+            parse_list_identity(&[1, 0, 0x86, 0, 2, 0, 1, 2]),
+            Err("No identity item returned".into())
+        );
+        assert_eq!(
+            parse_list_identity(&[1, 0, 0x0c, 0, 2, 0, 1, 2]),
+            Err("No identity item returned".into())
+        );
+        // The product name length runs past the item.
+        let mut body = identity_body(1, b"PLC1");
+        let name_len_at = body.len() - 6;
+        body[name_len_at] = 100;
+        assert_eq!(
+            parse_list_identity(&body),
+            Err("Truncated product name".into())
+        );
+        // Names are cleaned: control characters and padding disappear.
+        let f = parse_list_identity(&identity_body(1, b"  PL\x07C1\0\0")).unwrap();
+        assert_eq!(f["name"], "PLC1");
+    }
+
+    #[tokio::test]
+    async fn modbus_stream_refuses_replies_that_do_not_match() {
+        let reply = |header: [u8; 7], body: &[u8]| {
+            let mut b = header.to_vec();
+            b.extend(body);
+            b
+        };
+        let ok_body = [0x2b, 0x0e, 1, 1, 0, 0, 1, 0, 3, b'P', b'L', b'C'];
+        // Wrong transaction id, wrong unit.
+        for header in [[0x4e, 0x54, 0, 0, 0, 13, 7], [0x4e, 0x53, 0, 0, 0, 13, 8]] {
+            let e = modbus_stream(scripted(vec![reply(header, &ok_body)]).await, 7)
+                .await
+                .unwrap_err();
+            assert_eq!(e, "Mismatched transaction or unit");
+        }
+        // A length outside 2..=254.
+        for length in [0u8, 1] {
+            let e = modbus_stream(
+                scripted(vec![reply([0x4e, 0x53, 0, 0, 0, length, 7], &[])]).await,
+                7,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(e, "Invalid Modbus length");
+        }
+        let e = modbus_stream(
+            scripted(vec![reply([0x4e, 0x53, 0, 0, 1, 0, 7], &[])]).await,
+            7,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e, "Invalid Modbus length", "256 is too long");
+        // The device answers with an exception to the identification request.
+        let e = modbus_stream(
+            scripted(vec![reply([0x4e, 0x53, 0, 0, 0, 3, 7], &[0xab, 1])]).await,
+            7,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e, "Device identification exception 1");
+        // The reply stops after the header.
+        assert!(
+            modbus_stream(
+                scripted(vec![reply([0x4e, 0x53, 0, 0, 0, 13, 7], &[0x2b])]).await,
+                7
+            )
+            .await
+            .is_err()
+        );
+        // And the good one still works through the same path.
+        let f = modbus_stream(
+            scripted(vec![reply([0x4e, 0x53, 0, 0, 0, 13, 7], &ok_body)]).await,
+            7,
+        )
+        .await
+        .unwrap();
+        assert_eq!(f["vendor"], "PLC");
+    }
+
+    #[test]
+    fn bacnet_frames_that_are_not_an_i_am_are_refused() {
+        let good = bvlc(0, &[]);
+        assert!(parse_bacnet(&good).is_ok());
+        // Not BVLC type 0x81, not a unicast/broadcast result, wrong length, wrong version,
+        // network-layer bit set: all "unsupported".
+        for (at, value) in [(0usize, 0x82u8), (1, 0x01), (3, 99), (4, 2), (5, 0x80)] {
+            let mut bad = good.clone();
+            bad[at] = value;
+            assert_eq!(
+                parse_bacnet(&bad),
+                Err("Unsupported BACnet frame".into()),
+                "byte {at}"
+            );
+        }
+        assert!(parse_bacnet(&good[..7]).is_err());
+        // Another APDU (an unconfirmed Who-Has, service 1) is not an I-Am.
+        let mut other = good.clone();
+        other[7] = 1;
+        assert_eq!(parse_bacnet(&other), Err("Not an I-Am response".into()));
+        // The object is not a device (analog input 42).
+        let mut object = good.clone();
+        object[9..13].copy_from_slice(&[0, 0, 0, 42]);
+        assert_eq!(
+            parse_bacnet(&object),
+            Err("I-Am object is not a device".into())
+        );
+        // Tags that are wrong, application-class, too long or missing.
+        for (at, value) in [(8usize, 0xd4u8), (8, 0xcc), (8, 0xc5), (13, 0x32)] {
+            let mut bad = good.clone();
+            bad[at] = value;
+            assert!(parse_bacnet(&bad).is_err(), "byte {at} = {value:#x}");
+        }
+        // Truncated inside the vendor value, and right after the object.
+        for keep in [good.len() - 1, 13] {
+            let mut cut = good[..keep].to_vec();
+            let n = cut.len() as u16;
+            cut[2..4].copy_from_slice(&n.to_be_bytes());
+            assert!(parse_bacnet(&cut).is_err(), "kept {keep}");
+        }
+    }
+
+    /// A COTP connection confirm, an S7 setup reply and two SZL replies, as a device sends them.
+    fn s7_script() -> Vec<Vec<u8>> {
+        let mut confirm = vec![3, 0, 0, 11, 6, 0xd0, 0, 0, 0, 1, 0];
+        let n = confirm.len() as u16;
+        confirm[2..4].copy_from_slice(&n.to_be_bytes());
+        let mut setup = vec![
+            3, 0, 0, 0, 2, 0xf0, 0x80, 0x32, 3, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0,
+        ];
+        setup.extend([0xf0, 0, 0, 1, 0, 1, 0x01, 0xe0]);
+        let n = setup.len() as u16;
+        setup[2..4].copy_from_slice(&n.to_be_bytes());
+        vec![
+            confirm,
+            setup,
+            szl_reply(2, 0x11, 28, &[(1, b"6ES7 315-2EH14-0AB0 "), (7, &[0; 23])]),
+            szl_reply(3, 0x1c, 34, &[(1, b"PLC_1"), (5, b"S C-X4U")]),
+        ]
+    }
+
+    #[tokio::test]
+    async fn s7_identification_runs_the_four_exchanges() {
+        let gate = Gate::unlimited();
+        let f = s7_stream(scripted(s7_script()).await, 0, 2, &gate)
+            .await
+            .unwrap();
+        assert_eq!(f["order_code"], "6ES7 315-2EH14-0AB0");
+        assert_eq!(f["name"], "PLC_1");
+        assert_eq!(f["serial"], "S C-X4U");
+        // A connection refused at the COTP level (0xd2 is a disconnect request).
+        let mut script = s7_script();
+        script[0][5] = 0xd2;
+        let e = s7_stream(scripted(script).await, 0, 2, &gate)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "COTP connection refused");
+        // Setup rejected (error class 0x81).
+        let mut script = s7_script();
+        script[1][17] = 0x81;
+        let e = s7_stream(scripted(script).await, 0, 2, &gate)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "S7 setup rejected");
+        // Something that is not TPKT, and a TPKT that claims too much or too little.
+        for head in [[9u8, 9, 0, 11], [3, 0, 0, 3], [3, 0, 0x30, 0]] {
+            let mut script = s7_script();
+            script[0][..4].copy_from_slice(&head);
+            let e = s7_stream(scripted(script).await, 0, 2, &gate)
+                .await
+                .unwrap_err();
+            assert_eq!(e, "Invalid TPKT", "{head:?}");
+        }
+        // The second SZL reply is for another sequence number.
+        let mut script = s7_script();
+        script[3] = szl_reply(9, 0x1c, 34, &[(1, b"PLC_1")]);
+        assert!(
+            s7_stream(scripted(script).await, 0, 2, &gate)
+                .await
+                .is_err()
+        );
+        // The device goes away after the connect: an error, not a hang.
+        assert!(
+            s7_stream(scripted(s7_script()[..1].to_vec()).await, 0, 2, &gate)
+                .await
+                .is_err()
+        );
+        // A rack or slot outside the S7 range is refused before anything is sent.
+        for (rack, slot) in [(8u8, 0u8), (0, 32)] {
+            let e = s7_stream(scripted(vec![]).await, rack, slot, &gate)
+                .await
+                .unwrap_err();
+            assert_eq!(e, "S7 rack must be 0–7 and slot 0–31");
+        }
+    }
+
+    fn quiet_host(open: Vec<u16>, responding: bool) -> Host {
+        Host {
+            ip: "127.0.0.1".parse().unwrap(),
+            responding,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open,
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::new(),
+            udp_open: vec![],
+            trace: vec![],
+        }
+    }
+
+    /// What `identify` does not send: no TCP request to a closed port, no FINS or KNX datagram to
+    /// a host that answered nothing, and no second MQTT CONNECT when service detection has sent
+    /// the probe's one.
+    #[test]
+    fn identify_leaves_out_what_would_be_pointless_or_a_duplicate() {
+        let _port = crate::core::BACNET_PORT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // Ports not open: no TCP identification at all; a silent host: no FINS or KNX.
+        let mut h = quiet_host(vec![80, 8080], false);
+        let s = Settings {
+            ot: true,
+            port_timeout: 600,
+            ..Settings::default()
+        };
+        let gate = Gate::unlimited();
+        let failed = runtime.block_on(identify(&mut h, &s, &gate));
+        assert!(failed.is_empty() && h.errors.is_empty(), "{:?}", h.errors);
+        let sent = gate.log().snapshot();
+        assert!(
+            sent.iter().all(|p| p.kind != PacketKind::TcpConnect),
+            "{sent:?}"
+        );
+        // MQTT open, but services is on: the probe has sent the CONNECT, so no attempt here.
+        let mut h = quiet_host(vec![1883], true);
+        let s = Settings {
+            services: true,
+            ..s
+        };
+        let gate = Gate::unlimited();
+        let failed = runtime.block_on(identify(&mut h, &s, &gate));
+        assert!(failed.is_empty(), "{:?}", h.errors);
+        assert!(
+            !h.errors.iter().any(|e| e.starts_with("MQTT")),
+            "{:?}",
+            h.errors
+        );
+        assert!(
+            gate.log()
+                .snapshot()
+                .iter()
+                .all(|p| p.kind != PacketKind::TcpConnect)
+        );
     }
 }

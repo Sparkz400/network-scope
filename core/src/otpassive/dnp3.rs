@@ -231,6 +231,30 @@ mod tests {
         }
     }
 
+    /// Every function code, once: the ones that change the outstation (writes, selects and
+    /// operates, freezes, restarts, application control, file deletes, assigning classes and
+    /// disabling unsolicited reports) are flagged, reads, confirms, responses and the
+    /// authentication messages are not, and a code outside the standard is listed by number.
+    #[test]
+    fn every_function_code_is_named_or_listed_by_number_and_flagged_correctly() {
+        let changing: Vec<u8> = (2..=19).chain([21, 22, 27, 31]).collect();
+        let standard: Vec<u8> = (0..=33).chain(129..=131).collect();
+        for code in 0..=255u8 {
+            let (name, control) = dnp3_function(code);
+            assert_eq!(control, changing.contains(&code), "{code} {name}");
+            if standard.contains(&code) {
+                assert!(!name.starts_with("function"), "{code} should be named");
+            } else {
+                assert_eq!(name, format!("function {code}"));
+            }
+        }
+        assert_eq!(dnp3_function(2).0, "Write");
+        assert_eq!(dnp3_function(13).0, "Cold Restart");
+        assert_eq!(dnp3_function(20), ("Enable Unsolicited".into(), false));
+        assert_eq!(dnp3_function(21), ("Disable Unsolicited".into(), true));
+        assert_eq!(dnp3_function(130).0, "Unsolicited Response");
+    }
+
     #[test]
     fn addresses_functions_and_iin_of_a_conversation() {
         let mut t = Tracker::new();

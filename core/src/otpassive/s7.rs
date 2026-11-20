@@ -53,4 +53,56 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, Severity::High);
     }
+
+    /// Which S7 functions are named, which change the controller, and that nothing else is.
+    #[test]
+    fn the_function_table_names_eleven_functions_and_flags_the_changing_ones() {
+        use super::s7_function;
+        let table = [
+            (0x04u8, "Read Var", false),
+            (0x05, "Write Var", true),
+            (0x1a, "Request Download", true),
+            (0x1b, "Download Block", true),
+            (0x1c, "Download Ended", true),
+            (0x1d, "Start Upload", false),
+            (0x1e, "Upload", false),
+            (0x1f, "End Upload", false),
+            (0x28, "PLC Control", true),
+            (0x29, "PLC Stop", true),
+            (0xf0, "Setup Communication", false),
+        ];
+        for (f, name, control) in table {
+            assert_eq!(s7_function(f), Some((name, control)), "{f:#04x}");
+        }
+        let named = (0..=255u8).filter(|f| s7_function(*f).is_some()).count();
+        assert_eq!(named, table.len());
+    }
+
+    /// Only a well-formed S7 job (TPKT, COTP, protocol id 0x32, ROSCTR 1) is decoded: an
+    /// acknowledgement, a truncated frame and anything that is not S7 are not.
+    #[test]
+    fn only_s7_jobs_are_decoded() {
+        use super::s7_request;
+        assert_eq!(s7_request(&s7(0x05, 1)), Some(("Write Var", true)));
+        assert_eq!(s7_request(&s7(0x04, 1)), Some(("Read Var", false)));
+        assert_eq!(
+            s7_request(&s7(0x29, 3)),
+            None,
+            "an ack-data PDU is not a request"
+        );
+        assert_eq!(s7_request(&s7(0x77, 1)), None, "an unknown function");
+        let good = s7(0x29, 1);
+        for cut in 0..good.len() - 1 {
+            assert_eq!(s7_request(&good[..cut]), None, "cut at {cut}");
+        }
+        let mut not_tpkt = good.clone();
+        not_tpkt[0] = 4;
+        assert_eq!(s7_request(&not_tpkt), None);
+        let mut not_s7 = good.clone();
+        not_s7[7] = 0x72; // the S7 protocol id
+        assert_eq!(s7_request(&not_s7), None);
+        let mut long_cotp = good.clone();
+        long_cotp[4] = 200; // a COTP header that runs past the frame
+        assert_eq!(s7_request(&long_cotp), None);
+    }
 }

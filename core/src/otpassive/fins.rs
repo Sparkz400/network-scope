@@ -165,4 +165,54 @@ mod tests {
             "01.00"
         );
     }
+
+    /// The command table, checked as a whole: every named command that changes something is
+    /// flagged and no read is, and a code that is not in the table is listed by number and is
+    /// never flagged (an unknown command must not raise a false control finding).
+    #[test]
+    fn the_command_table_flags_exactly_the_commands_that_change_state() {
+        use super::fins_command;
+        let changing = [
+            "Write",
+            "Fill",
+            "Transfer",
+            "Clear",
+            "Run",
+            "Stop",
+            "Acquire",
+            "Forced",
+            "Delete",
+            "Format",
+            "Set/Reset",
+        ];
+        let mut named = 0;
+        for main in 0..=0xffu8 {
+            for sub in 0..=0xffu8 {
+                let (name, control) = fins_command(main, sub);
+                if let Some(code) = name.strip_prefix("FINS command ") {
+                    assert_eq!(code, format!("{main:02X}{sub:02X}"));
+                    assert!(!control, "an unnamed command is not flagged: {name}");
+                    continue;
+                }
+                named += 1;
+                let changes =
+                    changing.iter().any(|w| name.contains(w)) && !name.contains("Release");
+                assert_eq!(control, changes, "{main:02X}{sub:02X} {name}");
+                assert!(
+                    !control || !name.contains("Read"),
+                    "{name} reads and is flagged"
+                );
+            }
+        }
+        assert_eq!(named, 32, "the table has 32 named commands");
+        assert_eq!(fins_command(0x04, 0x02), ("Stop".to_string(), true));
+        assert_eq!(
+            fins_command(0x0c, 0x03),
+            ("Access Right Release".to_string(), false)
+        );
+        assert_eq!(
+            fins_command(0x01, 0x04),
+            ("Multiple Memory Area Read".to_string(), false)
+        );
+    }
 }

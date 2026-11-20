@@ -61,7 +61,24 @@ See [data/README.md](data/README.md) for provenance and licensing details.
 
 nmap is a trademark of its owners; Network Scope reads and writes the documented nmap XML format and contains no nmap code or data. Modbus, PROFINET, EtherNet/IP, CIP, BACnet, OPC UA and other protocol and product names are trademarks of their respective owners and are used only to describe interoperability.
 
-- JARM structure (`core/src/jarm.rs`): the ten-probe design and the hash composition follow the public description of JARM, https://github.com/salesforce/jarm, Copyright (c) 2020, salesforce.com, inc., BSD-3-Clause. No JARM source code is included; the cipher table and extension bodies are original to Network Scope and not verified against the reference.
+- JARM (`core/src/jarm.rs`, `core/src/jarm_reference_*.txt`, `lab/jarm_reference.py`, `lab/jarm_compare.py`): the ClientHello builder, the reading of the ServerHello, the cipher table and the hash of `core/src/jarm.rs` are a transcription of `jarm.py` from https://github.com/salesforce/jarm (commit e00ad79b02166568048266054a38470f4814c868), so that the fingerprints equal those of the reference; the test vectors in `jarm_reference_*.txt` are output of that code. `jarm.py` itself is not included in this repository or in the binaries. See the license below.
+
+## JARM (Salesforce)
+
+The JARM files named in the list above derive from `jarm.py` and are used under its license:
+
+    Copyright (c) 2020, Salesforce.com, Inc.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+    * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+    * Neither the name of Salesforce.com nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Protocol references
 
