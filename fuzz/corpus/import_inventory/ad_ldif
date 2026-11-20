@@ -1,0 +1,7 @@
+dn: CN=PC-01,OU=W,DC=corp
+objectClass: computer
+cn: PC-01
+dNSHostName: pc-01.corp.local
+managedBy:: Q049QWRh
+userAccountControl: 4096
+

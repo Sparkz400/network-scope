@@ -2,3 +2,6 @@
 *.sh text eol=lf
 # Fuzz seeds are raw bytes: never convert line endings.
 fuzz/corpus/** -text
+# Capture files (test fixtures and fuzz seeds) are binary.
+*.pcap binary
+*.pcapng binary

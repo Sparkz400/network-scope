@@ -20,6 +20,20 @@ services:
       lab:
         ipv4_address: 172.28.0.11
     cap_drop: [ALL]
+  # Real controller software for the test plant (ROADMAP L74). UNTESTED: no Docker on the development
+  # machine, and the image name and tag below were written from memory: check them before use. It
+  # is a profile of its own, so `docker compose up` does not start it:
+  #   docker compose --profile plant-ci up -d openplc
+  # OpenPLC serves Modbus/TCP on 502 and (with a program loaded) EtherNet/IP; log in at port 8080
+  # to upload a program. The planted weaknesses of lab/plant_truth.json do not apply to it: it is
+  # a second target for the same scan, not part of the ground truth.
+  openplc:
+    profiles: ["plant-ci"]
+    image: ghcr.io/autonomy-logic/openplc-runtime:latest
+    networks:
+      lab:
+        ipv4_address: 172.28.0.20
+    cap_drop: [ALL]
 networks:
   lab:
     driver: bridge

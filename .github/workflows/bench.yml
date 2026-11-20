@@ -1,0 +1,70 @@
+name: bench
+
+# Performance tests (roadmap B18): the criterion benchmarks of core/benches run on every pull
+# request, once on the base branch (saved as the baseline) and once on the change, in the same job
+# on the same runner, and the job fails when a benchmark got more than 15 percent slower
+# (scripts/bench_compare.py). Shared runners are noisy: the threshold leaves room for that, a
+# benchmark only fails when criterion's confidence interval excludes "no change" as well, and a
+# failure is worth one re-run before it is believed. The first pull request that adds the
+# benchmarks has nothing to compare with and passes with a notice.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Both runs write to, and the comparison reads from, this folder.
+  CRITERION_HOME: ${{ github.workspace }}/criterion
+
+jobs:
+  benchmarks:
+    name: benchmarks against the base branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Unit tests of the comparison script
+        run: python -I -m unittest discover -s scripts -p "test_bench_compare.py"
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The base branch in its own folder, so its benchmarks run with its own code. A base without
+      # core/benches (the pull request that introduces them) has no baseline.
+      - name: Baseline on the base branch
+        id: base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add "$RUNNER_TEMP/base" "$BASE"
+          if [ -f "$RUNNER_TEMP/base/core/benches/hot_paths.rs" ]; then
+            (cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+              cargo bench --locked -p network-scope-core --bench hot_paths -- --save-baseline base)
+            echo "saved=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The base branch has no benchmarks yet; nothing to compare with."
+          fi
+      - name: Benchmarks of the change
+        run: |
+          if [ "${{ steps.base.outputs.saved }}" = "true" ]; then
+            cargo bench --locked -p network-scope-core --bench hot_paths -- --baseline base
+          else
+            cargo bench --locked -p network-scope-core --bench hot_paths
+          fi
+      - name: Fail on a regression above 15 percent
+        run: python -I scripts/bench_compare.py "$CRITERION_HOME" --threshold 15
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: criterion
+          path: criterion/
+          if-no-files-found: ignore

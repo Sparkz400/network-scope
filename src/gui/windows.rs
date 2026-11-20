@@ -1,6 +1,6 @@
-use super::{Job, Scanner, tables, win_size};
-use crate::{capture, devices, passive, risk, store, topology};
-use eframe::egui;
+use super::{Job, Scanner, home, i18n::tr, tables, win_size};
+use crate::{capture, devices, passive, risk, scan, store};
+use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{atomic::Ordering, mpsc::TryRecvError};
 /// Combines non-empty, distinct scopes ("10.0.0.0/24 + listen:eth0").
@@ -12,12 +12,65 @@ fn combined_scope(scan: &str, capture: &str) -> String {
         (false, false) => format!("{scan} + {capture}"),
     }
 }
+/// The settings a scan that starts now runs with: the ones in the window, stamped with the
+/// provenance (tool version and hashes of the rules and feeds in effect, ROADMAP L72) like a
+/// scan from the CLI, the monitor or MCP. The preferences keep the unstamped settings.
+pub(super) fn settings_for_scan(current: &scan::Settings) -> scan::Settings {
+    crate::provenance::stamped(current)
+}
+
+/// A hash cut to `sha256:` and its first 16 digits.
+fn short_hash(hash: &str) -> String {
+    let (algorithm, digits) = hash.split_once(':').unwrap_or(("", hash));
+    let cut: String = digits.chars().take(16).collect();
+    let more = if digits.chars().count() > 16 {
+        "…"
+    } else {
+        ""
+    };
+    if algorithm.is_empty() {
+        format!("{cut}{more}")
+    } else {
+        format!("{algorithm}:{cut}{more}")
+    }
+}
+
+/// What the "Scan details" section says about the provenance of the scan on screen.
+pub(super) fn provenance_lines(provenance: Option<&crate::provenance::Provenance>) -> Vec<String> {
+    let Some(p) = provenance else {
+        return vec![
+            tr!(
+                "No provenance stamp: the scan was saved before stamps existed or it is an import, so the rules it ran with are not known."
+            )
+            .to_string(),
+        ];
+    };
+    let mut lines = vec![tr!("Tool: {}", p.tool)];
+    for (name, hash) in &p.rules {
+        lines.push(tr!("Rules {}: {}", name, short_hash(hash)));
+    }
+    if p.feeds.is_empty() {
+        lines.push(tr!("Data feeds: none in use").to_string());
+    }
+    for (name, hash) in &p.feeds {
+        lines.push(tr!("Feed {}: {}", name, short_hash(hash)));
+    }
+    lines
+}
+
+/// The line to cite a scan by (tool and combined hash), also what the Copy button puts on the
+/// clipboard.
+pub(super) fn provenance_cite(p: &crate::provenance::Provenance) -> String {
+    format!("{} {}", p.tool, p.combined)
+}
+
 impl Scanner {
     /// Everything on screen: active results plus passive observations (exports, reports).
     pub(super) fn snapshot(&self) -> store::Snapshot {
         let mut notes = self.saved.notes.clone();
         super::prune_notes(&mut notes);
         store::Snapshot {
+            sent: self.scan_sent.clone(),
             targets: combined_scope(&self.scan_scope, &self.capture_scope),
             complete: self.scan_complete && self.capture_complete && !self.live(),
             settings: self.scan_settings.clone(),
@@ -31,6 +84,7 @@ impl Scanner {
         let mut notes = self.saved.notes.clone();
         super::prune_notes(&mut notes);
         store::Snapshot {
+            sent: self.scan_sent.clone(),
             targets: self.scan_scope.clone(),
             complete: self.scan_complete && self.run.is_none(),
             settings: self.scan_settings.clone(),
@@ -44,6 +98,7 @@ impl Scanner {
         let mut notes = self.saved.notes.clone();
         super::prune_notes(&mut notes);
         store::Snapshot {
+            sent: vec![],
             targets: self.capture_scope.clone(),
             complete: self.capture_complete && self.listening.is_none(),
             settings: self.saved.settings.clone(),
@@ -52,73 +107,55 @@ impl Scanner {
             notes,
         }
     }
-    pub(super) fn topology_window(&mut self, ctx: &egui::Context) {
-        if !self.topology_open {
+    /// Confirmation before a scan of public or out-of-scope addresses (ROADMAP H54). "Scan
+    /// anyway" starts the scan with consent for this one start; "Cancel" sends nothing.
+    pub(super) fn scope_dialog(&mut self, ctx: &egui::Context) {
+        let Some((shown_for, text)) = self.scope_confirm.clone() else {
             return;
-        }
-        if self.topology.stale(self.generation, self.live()) {
-            let graph = topology::build(&self.results);
-            let layers = topology::layers(&graph);
-            self.topology.set(self.generation, (graph, layers));
-        }
-        let mut open = self.topology_open;
-        let (graph, layers) = &self.topology.value;
-        egui::Window::new("Network topology")
-            .open(&mut open)
-            .default_size(win_size([780.0, 460.0]))
-            .default_pos(self.window_origin)
+        };
+        let mut choice = None;
+        egui::Window::new(tr!("Confirm scan targets"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                if graph.nodes.len() <= 1 {
-                    ui.label("No path data yet. Enable \"Record router path\" in Settings and scan again.");
-                    return;
-                }
-                ui.label(format!(
-                    "{} nodes, {} links. Columns are router hops from this scanner; unanswered hops are shown as *.",
-                    graph.nodes.len(),
-                    graph.edges.len()
+                ui.label(text);
+                ui.label(tr!(
+                    "Only scan networks you are authorized to test. Nothing has been sent yet."
                 ));
-                egui::ScrollArea::both().show(ui, |ui| {
-                    let (col_w, row_h) = (190.0, 30.0);
-                    let rows = layers.iter().map(Vec::len).max().unwrap_or(1).max(1);
-                    let size = egui::vec2(col_w * layers.len() as f32 + 20.0, row_h * rows as f32 + 20.0);
-                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                    let painter = ui.painter_at(rect);
-                    let mut at = vec![egui::Pos2::ZERO; graph.nodes.len()];
-                    for (x, layer) in layers.iter().enumerate() {
-                        for (y, &node) in layer.iter().enumerate() {
-                            at[node] = rect.min + egui::vec2(16.0 + x as f32 * col_w, 16.0 + y as f32 * row_h);
-                        }
+                ui.horizontal(|ui| {
+                    if ui.button(tr!("Scan anyway")).clicked() {
+                        choice = Some(true);
                     }
-                    for &(a, b) in &graph.edges {
-                        painter.line_segment([at[a], at[b]], egui::Stroke::new(1.0_f32, egui::Color32::from_gray(170)));
-                    }
-                    for (i, node) in graph.nodes.iter().enumerate() {
-                        let color = match node.kind {
-                            topology::Kind::Source => egui::Color32::from_rgb(43, 108, 176),
-                            topology::Kind::Router => egui::Color32::from_rgb(113, 128, 150),
-                            topology::Kind::Host => egui::Color32::from_rgb(47, 133, 90),
-                            topology::Kind::Unknown => egui::Color32::from_gray(190),
-                        };
-                        painter.circle_filled(at[i], 6.0, color);
-                        let label: String = node.label.chars().take(26).collect();
-                        painter.text(
-                            at[i] + egui::vec2(10.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            label,
-                            egui::FontId::proportional(12.0),
-                            egui::Color32::from_gray(30),
-                        );
+                    if ui.button(tr!("Cancel")).clicked() {
+                        choice = Some(false);
                     }
                 });
             });
-        self.topology_open = open;
+        match choice {
+            Some(true) if shown_for != self.targets => {
+                // The targets were edited after the dialog was shown: the answer does not apply.
+                self.scope_confirm = None;
+                self.status = tr!("Targets changed; press Start again").into();
+            }
+            Some(true) => {
+                self.scope_confirm = None;
+                self.scope_consent = crate::scope::Consent {
+                    public: true,
+                    out_of_scope: true,
+                };
+                self.start();
+            }
+            Some(false) => self.scope_confirm = None,
+            None => {}
+        }
     }
-
     /// Findings of everything on screen, recomputed when results or observations change.
-    fn ensure_findings(&mut self) {
+    pub(super) fn ensure_findings(&mut self) {
         if self.findings.stale(self.generation, self.live()) {
             // Borrow the data into a snapshot instead of deep-cloning it.
             let snapshot = store::Snapshot {
+                sent: vec![],
                 targets: String::new(),
                 complete: false,
                 settings: Default::default(),
@@ -126,7 +163,11 @@ impl Scanner {
                 observations: std::mem::take(&mut self.observations),
                 notes: Default::default(),
             };
-            let findings = risk::analyze_snapshot(&snapshot);
+            #[allow(unused_mut)]
+            let mut findings = risk::analyze_snapshot(&snapshot);
+            if self.screenshot.is_some() {
+                super::demo::decorate_findings(&mut findings);
+            }
             self.results = snapshot.hosts;
             self.observations = snapshot.observations;
             self.findings.set(self.generation, findings);
@@ -147,23 +188,23 @@ impl Scanner {
         let mut sort = None;
         let findings = &self.findings.value;
         let view = &mut self.findings_view;
-        egui::Window::new("Findings (weak configuration, risky services, CVE hints)")
+        egui::Window::new(tr!("Findings (weak configuration, risky services, CVE hints)"))
             .open(&mut open)
             .default_size(win_size([900.0, 420.0]))
             .default_pos(self.window_origin)
             // Wide tables must not push the window past the screen edge.
             .max_width((ctx.content_rect().width() - 24.0).max(320.0))
             .show(ctx, |ui| {
-                ui.label(format!(
+                ui.label(tr!(
                     "{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host.",
                     view.rows.len(),
                     findings.len()
                 ));
                 if findings.is_empty() {
-                    ui.label("Nothing found. Enable service detection in Settings to collect the evidence these checks use.");
+                    ui.label(tr!("Nothing found. Enable service detection in Settings to collect the evidence these checks use."));
                     return;
                 }
-                view.controls(ui, "findings_severity", "All severities");
+                view.controls_with(ui, "findings_severity", tr!("All severities"), true);
                 tables::plain_labels(ui);
                 TableBuilder::new(ui)
                     .id_salt("findings_table")
@@ -173,23 +214,29 @@ impl Scanner {
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::initial(80.0))
                     .column(Column::initial(140.0))
-                    .column(Column::initial(260.0).clip(true))
-                    .column(Column::initial(260.0).clip(true))
+                    .column(Column::initial(240.0).clip(true))
+                    .column(Column::initial(220.0).clip(true))
+                    .column(Column::initial(130.0).clip(true))
+                    .column(Column::initial(80.0))
+                    .column(Column::initial(70.0))
                     .column(Column::remainder())
                     .header(22.0, |mut row| {
-                        for (i, h) in tables::FINDING_COLUMNS.iter().enumerate() {
+                        for (i, h) in tables::finding_columns().iter().enumerate() {
                             row.col(|ui| {
                                 if tables::header(ui, view, i, h) {
                                     sort = Some(i);
                                 }
                             });
                         }
+                        row.col(|ui| {
+                            ui.strong(tr!("Learn more"));
+                        });
                     })
                     .body(|body| {
                         body.rows(22.0, view.rows.len(), |mut row| {
                             let f = &findings[view.rows[row.index()]];
                             row.col(|ui| {
-                                ui.colored_label(severity_color(f.severity), f.severity.name());
+                                ui.colored_label(severity_color(f.severity), home::severity_name(f.severity));
                             });
                             row.col(|ui| {
                                 ui.label(format!("{}{}", f.ip, f.port.map_or(String::new(), |p| format!(":{p}"))));
@@ -202,9 +249,35 @@ impl Scanner {
                             });
                             row.col(|ui| {
                                 ui.label(f.cve.join(", "));
-                                // The last column is not clipped, so the link is always visible.
+                            });
+                            row.col(|ui| {
+                                if f.exploit.kev {
+                                    let text = if f.exploit.kev_ransomware { "KEV · ransomware" } else { "KEV" };
+                                    ui.colored_label(
+                                        home::severity_color(risk::Severity::Critical, ui.visuals().dark_mode),
+                                        text,
+                                    )
+                                    .on_hover_text(match (&f.exploit.kev_added, f.exploit.kev_ransomware) {
+                                        (Some(date), true) => tr!("Known exploited (CISA KEV, added {}); used in ransomware campaigns", date),
+                                        (Some(date), false) => tr!("Known exploited (CISA KEV, added {})", date),
+                                        (None, true) => tr!("Known exploited (CISA KEV); used in ransomware campaigns").to_string(),
+                                        (None, false) => tr!("Known exploited (CISA KEV)").to_string(),
+                                    });
+                                }
+                            });
+                            row.col(|ui| {
+                                if let Some(p) = tables::epss_percent(f) {
+                                    ui.label(format!("{p:.1} %")).on_hover_text(tr!(
+                                        "Estimated probability of exploitation within 30 days (EPSS)"
+                                    ));
+                                }
+                            });
+                            row.col(|ui| {
+                                // The last column is not clipped, so the links are always visible;
+                                // a click opens the default browser.
+                                super::convenience::link_to(ui, tr!("Learn more"), &super::docs_url(&f.id));
                                 if let Some(url) = f.reference.as_deref().filter(|u| u.starts_with("https://")) {
-                                    ui.hyperlink_to("reference", url).on_hover_text(url);
+                                    super::convenience::link_to(ui, tr!("Reference"), url);
                                 }
                             });
                             if row.response().clicked() {
@@ -244,21 +317,33 @@ impl Scanner {
         let mut open = self.devices_open;
         let mut focus = None;
         let mut sort = None;
+        let mut workbench = false;
         let devices = &self.devices.value;
         let view = &mut self.devices_view;
-        egui::Window::new("Devices (active + passive merged)")
+        egui::Window::new(tr!("Devices (active + passive merged)"))
             .open(&mut open)
             .default_size(win_size([980.0, 420.0]))
             .default_pos(self.window_origin)
             // Wide tables must not push the window past the screen edge.
             .max_width((ctx.content_rect().width() - 24.0).max(320.0))
             .show(ctx, |ui| {
-                ui.label(format!(
+                ui.label(tr!(
                     "{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host.",
                     view.rows.len(),
                     devices.len()
                 ));
-                view.controls(ui, "devices_severity", "Any risk");
+                ui.horizontal(|ui| {
+                    view.controls(ui, "devices_severity", tr!("Any risk"));
+                    if ui
+                        .button(tr!("Unknown devices…"))
+                        .on_hover_text(tr!(
+                            "Group the banners that no rule identified, compare firmware versions and draft a probe rule."
+                        ))
+                        .clicked()
+                    {
+                        workbench = true;
+                    }
+                });
                 tables::plain_labels(ui);
                 TableBuilder::new(ui)
                     .id_salt("devices_table")
@@ -274,7 +359,7 @@ impl Scanner {
                     .column(Column::initial(150.0).clip(true))
                     .column(Column::remainder())
                     .header(22.0, |mut row| {
-                        for (i, h) in tables::DEVICE_COLUMNS.iter().enumerate() {
+                        for (i, h) in tables::device_columns().iter().enumerate() {
                             row.col(|ui| {
                                 if tables::header(ui, view, i, h) {
                                     sort = Some(i);
@@ -296,7 +381,7 @@ impl Scanner {
                             });
                             row.col(|ui| {
                                 ui.label(if d.randomized_mac {
-                                    format!("{} (randomized)", d.mac)
+                                    tr!("{} (randomized)", d.mac)
                                 } else {
                                     d.mac.clone()
                                 });
@@ -325,7 +410,7 @@ impl Scanner {
                             });
                             row.col(|ui| {
                                 if let Some(s) = tables::device_risk(d, &risk) {
-                                    ui.colored_label(severity_color(s), s.name());
+                                    ui.colored_label(severity_color(s), home::severity_name(s));
                                 }
                             });
                             if row.response().clicked() {
@@ -340,6 +425,9 @@ impl Scanner {
         if let Some(ips) = focus {
             self.focus_host(&ips);
         }
+        if workbench {
+            self.open_workbench();
+        }
         self.devices_open = open;
     }
     pub(super) fn refresh_history(&mut self) {
@@ -349,29 +437,32 @@ impl Scanner {
     }
     pub(super) fn inventory_window(&mut self, ctx: &egui::Context) {
         let mut open = self.history_open;
-        egui::Window::new("Saved inventory & scan differences")
+        egui::Window::new(tr!("Saved inventory & scan differences"))
             .open(&mut open)
             .default_size(win_size([650.0, 420.0]))
             .default_pos(self.window_origin)
             .show(ctx, |ui| {
-                ui.label(
-                    "Scans are saved automatically, including interrupted scans marked as partial.",
-                );
+                ui.label(tr!(
+                    "Scans are saved automatically, including interrupted scans marked as partial."
+                ));
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!self.busy.listing, egui::Button::new("Refresh"))
+                        .add_enabled(!self.busy.listing, egui::Button::new(tr!("Refresh")))
                         .clicked()
                     {
                         self.refresh_history();
                     }
                     if ui
-                        .add_enabled(!self.busy.comparing, egui::Button::new("Compare A → B"))
+                        .add_enabled(
+                            !self.busy.comparing,
+                            egui::Button::new(tr!("Compare A to B")),
+                        )
                         .clicked()
                     {
                         match (self.compare_a, self.compare_b) {
                             (Some(a), Some(b)) => self.submit(Job::Diff(a, b)),
-                            (None, _) => self.error = "Select baseline A".into(),
-                            (_, None) => self.error = "Select scan B".into(),
+                            (None, _) => self.error = tr!("Select baseline A").into(),
+                            (_, None) => self.error = tr!("Select scan B").into(),
                         }
                     }
                     if self.busy.listing || self.busy.comparing || self.busy.loading {
@@ -388,15 +479,19 @@ impl Scanner {
                             ui.horizontal(|ui| {
                                 ui.radio_value(&mut self.compare_a, Some(h.id), "A");
                                 ui.radio_value(&mut self.compare_b, Some(h.id), "B");
-                                ui.label(format!(
+                                ui.label(tr!(
                                     "#{} · {} hosts · {} · {}",
                                     h.id,
                                     h.hosts,
-                                    if h.complete { "complete" } else { "partial" },
+                                    if h.complete {
+                                        tr!("complete")
+                                    } else {
+                                        tr!("partial")
+                                    },
                                     h.targets
                                 ));
                                 if ui
-                                    .add_enabled(can_open, egui::Button::new("Open"))
+                                    .add_enabled(can_open, egui::Button::new(tr!("Open")))
                                     .clicked()
                                 {
                                     load = Some(h.id);
@@ -404,7 +499,7 @@ impl Scanner {
                             });
                         }
                         if self.history.is_empty() && !self.busy.listing {
-                            ui.label("No saved scans yet. Run a scan to start an inventory.");
+                            ui.label(tr!("No saved scans yet. Run a scan to start an inventory."));
                         }
                     });
                 if let Some(id) = load {
@@ -419,15 +514,53 @@ impl Scanner {
                             ui.label(change);
                         }
                     });
+                self.scan_details(ui);
                 ui.horizontal(|ui| {
                     for format in ["json", "csv", "html"] {
-                        if ui.button(format!("Export {format}")).clicked() {
+                        if ui.button(tr!("Export {}", format)).clicked() {
                             self.export(format);
                         }
                     }
                 });
             });
         self.history_open = open;
+    }
+    /// Where the scan on screen came from: its source, whether it finished and the provenance
+    /// stamp (tool version and rule hashes) with a button that copies the line to cite it by.
+    fn scan_details(&self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new(tr!("Scan details"))
+            .id_salt("scan_details")
+            .default_open(self.screenshot.is_some())
+            .show(ui, |ui| {
+                if self.results.is_empty() && self.scan_scope.is_empty() {
+                    ui.label(tr!("No scan on screen."));
+                    return;
+                }
+                let state = if self.run.is_some() {
+                    tr!("running")
+                } else if self.scan_complete {
+                    tr!("complete")
+                } else {
+                    tr!("partial")
+                };
+                ui.label(match self.loaded_scan {
+                    Some(id) => tr!("Saved scan #{} · {} · {}", id, self.scan_scope, state),
+                    None => tr!("Scan not saved yet · {} · {}", self.scan_scope, state),
+                });
+                let provenance = self.scan_settings.provenance.as_ref();
+                for line in provenance_lines(provenance) {
+                    ui.label(line);
+                }
+                if let Some(p) = provenance {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(tr!("Combined hash (cite this):"));
+                        ui.label(RichText::new(&p.combined).monospace().small());
+                        if ui.button(tr!("Copy")).clicked() {
+                            ui.ctx().copy_text(provenance_cite(p));
+                        }
+                    });
+                }
+            });
     }
     pub(super) fn poll_capture(&mut self) {
         let mut done = false;
@@ -437,7 +570,7 @@ impl Scanner {
                 match run.receiver.try_recv() {
                     Ok(Ok(o)) => {
                         changed = true;
-                        if let Err(e) = crate::ui::merge_indexed(
+                        if let Err(e) = crate::observations::merge_indexed(
                             &mut self.observations,
                             &mut self.observation_index,
                             o,
@@ -475,7 +608,7 @@ impl Scanner {
     }
     fn begin_capture(&mut self, dcp: bool) {
         if self.busy.loading {
-            self.error = "Wait until the inventory scan has been opened.".into();
+            self.error = tr!("Wait until the inventory scan has been opened.").into();
             return;
         }
         let source = if dcp {
@@ -507,36 +640,36 @@ impl Scanner {
             source,
         ));
         self.status = if dcp {
-            "DCP Identify running"
+            tr!("DCP Identify running")
         } else {
-            "Listening — no packets sent"
+            tr!("Listening — no packets sent")
         }
         .into();
     }
     pub(super) fn capture_window(&mut self, ctx: &egui::Context) {
         let mut open = self.capture_open;
-        egui::Window::new("Passive discovery / Profinet DCP / OT")
+        egui::Window::new(tr!("Passive discovery / Profinet DCP / OT"))
             .vscroll(true)
             .open(&mut open)
             .default_size(win_size([760.0, 620.0]))
             .default_pos([24.0, 40.0])
             .show(ctx, |ui| {
-                ui.label("Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP");
-                ui.label(
-                    "Requires Npcap and permission to capture on the selected Ethernet interface.",
-                );
+                ui.label(tr!("Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP"));
+                ui.label(tr!(
+                    "Requires Npcap and permission to capture on the selected Ethernet interface."
+                ));
                 ui.add_enabled_ui(
                     self.listening.is_none() && self.run.is_none() && !self.ot.capturing(),
                     |ui| {
-                        if ui.button("Refresh interfaces").clicked() {
+                        if ui.button(tr!("Refresh interfaces")).clicked() {
                             match capture::interfaces() {
                                 Ok(v) => self.interfaces = v,
                                 Err(e) => self.error = e,
                             }
                         }
-                        egui::ComboBox::from_label("Interface")
+                        egui::ComboBox::from_label(tr!("Interface"))
                             .selected_text(if self.saved.settings.interface.is_empty() {
-                                "Choose interface"
+                                tr!("Choose interface")
                             } else {
                                 &self.saved.settings.interface
                             })
@@ -551,26 +684,29 @@ impl Scanner {
                                 }
                             });
                         ui.horizontal(|ui| {
-                            ui.label("Duration");
+                            let label = ui.label(tr!("Duration"));
                             ui.add(
                                 egui::DragValue::new(&mut self.capture_seconds)
                                     .range(1..=86400)
-                                    .suffix(" seconds"),
-                            );
+                                    .suffix(format!(" {}", tr!("seconds"))),
+                            )
+                            .labelled_by(label.id);
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Interface MAC (DCP / SYN)");
-                            ui.text_edit_singleline(&mut self.saved.settings.source_mac);
+                            let label = ui.label(tr!("Interface MAC (DCP / SYN)"));
+                            ui.text_edit_singleline(&mut self.saved.settings.source_mac)
+                                .labelled_by(label.id);
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Interface IPv4 (SYN)");
-                            ui.text_edit_singleline(&mut self.saved.settings.source_ip);
+                            let label = ui.label(tr!("Interface IPv4 (SYN)"));
+                            ui.text_edit_singleline(&mut self.saved.settings.source_ip)
+                                .labelled_by(label.id);
                         });
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(
                                     !self.saved.settings.interface.is_empty(),
-                                    egui::Button::new("Start passive listening"),
+                                    egui::Button::new(tr!("Start passive listening")),
                                 )
                                 .clicked()
                             {
@@ -579,7 +715,7 @@ impl Scanner {
                             if ui
                                 .add_enabled(
                                     !self.saved.settings.interface.is_empty(),
-                                    egui::Button::new("DCP Identify (read only)"),
+                                    egui::Button::new(tr!("DCP Identify (read only)")),
                                 )
                                 .clicked()
                             {
@@ -589,12 +725,12 @@ impl Scanner {
                     },
                 );
                 if let Some(run) = &self.listening
-                    && ui.button("Stop capture").clicked()
+                    && ui.button(tr!("Stop capture")).clicked()
                 {
                     run.cancel.store(true, Ordering::Relaxed);
                 }
                 ui.separator();
-                ui.label(format!(
+                ui.label(tr!(
                     "{} observed device/protocol combinations",
                     self.observations.len()
                 ));
@@ -618,7 +754,7 @@ impl Scanner {
                                         o.protocol,
                                         o.mac,
                                         o.ip.map(|v| v.to_string())
-                                            .unwrap_or_else(|| "No IP advertised".into())
+                                            .unwrap_or_else(|| tr!("No IP advertised").into())
                                     ),
                                 )
                                 .clicked()
@@ -640,7 +776,7 @@ impl Scanner {
                         });
                 }
                 if !self.error.is_empty() {
-                    ui.colored_label(egui::Color32::DARK_RED, &self.error);
+                    ui.colored_label(egui::Color32::from_rgb(205, 70, 70), &self.error);
                 }
                 self.ot_section(ui);
             });
@@ -649,13 +785,18 @@ impl Scanner {
 }
 
 fn severity_color(s: risk::Severity) -> egui::Color32 {
-    match s {
-        risk::Severity::Critical => egui::Color32::from_rgb(155, 28, 28),
-        risk::Severity::High => egui::Color32::from_rgb(217, 72, 15),
-        risk::Severity::Medium => egui::Color32::from_rgb(180, 120, 0),
-        risk::Severity::Low => egui::Color32::from_rgb(43, 108, 176),
-        risk::Severity::Info => egui::Color32::GRAY,
-    }
+    // Same colours as the overview, for the theme that is active.
+    home::severity_color(s, dark_mode())
+}
+thread_local! {
+    static DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Set once per frame by the window code: whether the dark theme is on.
+pub(super) fn set_dark_mode(dark: bool) {
+    DARK.with(|d| d.set(dark));
+}
+fn dark_mode() -> bool {
+    DARK.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -671,5 +812,139 @@ mod tests {
             "10.0.0.0/24 + listen:eth0"
         );
         assert_eq!(combined_scope("", ""), "");
+    }
+
+    #[test]
+    fn a_gui_scan_carries_the_provenance_stamp_like_a_cli_scan() {
+        let window = scan::Settings {
+            ports: "22,80".into(),
+            ..Default::default()
+        };
+        assert!(window.provenance.is_none());
+        let used = settings_for_scan(&window);
+        let p = used.provenance.clone().expect("a stamp");
+        assert_eq!(p, crate::provenance::Provenance::current(&window));
+        assert!(p.tool.starts_with("network-scope "), "{}", p.tool);
+        assert!(p.combined.starts_with("sha256:"), "{}", p.combined);
+        for rules in ["probes.json", "cves.json", "compliance.json"] {
+            assert!(p.rules.contains_key(rules), "{rules}");
+        }
+        // Everything else is what the window had, and the same call as the CLI makes.
+        assert_eq!(used.ports, "22,80");
+        assert_eq!(
+            serde_json::to_string(&used).unwrap(),
+            serde_json::to_string(&crate::provenance::stamped(&window)).unwrap()
+        );
+        // The settings in the window (and so the preferences file) never get the stamp.
+        assert!(window.provenance.is_none());
+        let saved = super::super::Saved {
+            settings: window,
+            ..Default::default()
+        };
+        let prefs = String::from_utf8(saved.to_disk()).unwrap();
+        assert!(!prefs.contains("provenance"), "{prefs}");
+    }
+
+    #[test]
+    fn every_gui_scan_start_goes_through_the_stamping_helper() {
+        let code = include_str!("mod.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(
+            code.contains("self.scan_settings = windows::settings_for_scan(&self.saved.settings);")
+        );
+        assert!(
+            !code.contains("self.scan_settings = self.saved.settings.clone()"),
+            "a scan would be saved without its provenance"
+        );
+    }
+
+    #[test]
+    fn the_details_show_the_stamp_or_say_there_is_none() {
+        let none = provenance_lines(None);
+        assert_eq!(none.len(), 1);
+        assert!(none[0].starts_with("No provenance stamp"), "{none:?}");
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert("cves.json".to_string(), crate::provenance::hash(b"rules"));
+        let p = crate::provenance::Provenance::with(rules, Default::default());
+        let lines = provenance_lines(Some(&p));
+        assert!(lines[0].starts_with("Tool: network-scope "), "{lines:?}");
+        assert!(
+            lines[1].starts_with("Rules cves.json: sha256:"),
+            "{lines:?}"
+        );
+        assert!(lines[1].ends_with('…'), "a long hash is cut: {lines:?}");
+        assert_eq!(lines[2], "Data feeds: none in use");
+        assert_eq!(lines.len(), 3);
+        let mut feeds = std::collections::BTreeMap::new();
+        feeds.insert("nvd".to_string(), crate::provenance::hash(b"feed"));
+        let with_feed = crate::provenance::Provenance::with(Default::default(), feeds);
+        let lines = provenance_lines(Some(&with_feed));
+        assert!(
+            lines.iter().any(|l| l.starts_with("Feed nvd: sha256:")),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.contains("none in use")));
+        // What the Copy button gives: the tool and the full combined hash.
+        let cite = provenance_cite(&p);
+        assert_eq!(cite, format!("{} {}", p.tool, p.combined));
+        assert_eq!(cite.len(), p.tool.len() + 1 + 71);
+        assert_eq!(
+            short_hash("sha256:0123456789abcdef0123"),
+            "sha256:0123456789abcdef…"
+        );
+        assert_eq!(short_hash("sha256:0123"), "sha256:0123");
+    }
+
+    #[test]
+    fn the_stamp_survives_the_inventory_and_shows_when_the_scan_is_opened_again() {
+        let path = std::env::temp_dir().join(format!(
+            "ns-gui-provenance-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let snapshot = |settings: scan::Settings| store::Snapshot {
+            sent: vec![],
+            targets: "10.0.0.0/24".into(),
+            complete: true,
+            settings,
+            hosts: vec![],
+            observations: vec![],
+            notes: Default::default(),
+        };
+        let stamped = settings_for_scan(&scan::Settings::default());
+        let with = store::save(&path, &snapshot(stamped.clone())).unwrap();
+        let without = store::save(&path, &snapshot(scan::Settings::default())).unwrap();
+        let opened = store::load(&path, with).unwrap();
+        assert_eq!(opened.settings.provenance, stamped.provenance);
+        assert_eq!(
+            provenance_lines(opened.settings.provenance.as_ref()),
+            provenance_lines(stamped.provenance.as_ref())
+        );
+        // A scan stored without a stamp is not given one when it is opened.
+        let old = store::load(&path, without).unwrap();
+        assert!(old.settings.provenance.is_none());
+        assert!(provenance_lines(old.settings.provenance.as_ref())[0].starts_with("No provenance"));
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(p));
+        }
+    }
+
+    #[test]
+    fn stamping_is_cheap_enough_for_the_ui_thread() {
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            let _ = settings_for_scan(&scan::Settings::default());
+        }
+        let each = started.elapsed() / 5;
+        eprintln!("provenance stamp: {each:?} each (debug build)");
+        assert!(each < std::time::Duration::from_millis(500), "{each:?}");
     }
 }

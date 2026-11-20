@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:dry-run:v1",
+  "title": "Dry run plan",
+  "description": "Output of scan, monitor, trace and dcp with --dry-run --format json (and of the MCP scan tool with dry_run true): what would be sent, per kind of packet, and nothing was sent.",
+  "type": "object",
+  "required": [
+    "schema",
+    "dry_run",
+    "command",
+    "packets_sent"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/dry-run/v1"
+    },
+    "dry_run": {
+      "const": true
+    },
+    "command": {
+      "enum": [
+        "scan",
+        "monitor",
+        "trace",
+        "dcp",
+        "wol"
+      ]
+    },
+    "packets_sent": {
+      "const": 0
+    },
+    "safe_mode": {
+      "type": "boolean"
+    },
+    "hosts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "target": {
+      "type": "string"
+    },
+    "scope": {
+      "type": "object",
+      "description": "What the scope guard would do with the targets",
+      "required": [
+        "would_need_confirmation"
+      ],
+      "properties": {
+        "would_need_confirmation": {
+          "type": "boolean"
+        },
+        "public": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "out_of_scope": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scope_declared": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "Hosts that share a plan, by address family",
+        "required": [
+          "family",
+          "hosts",
+          "first",
+          "last",
+          "packets",
+          "notes"
+        ],
+        "properties": {
+          "family": {
+            "enum": [
+              "ipv4",
+              "ipv6"
+            ]
+          },
+          "hosts": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "first": {
+            "type": "string"
+          },
+          "last": {
+            "type": "string"
+          },
+          "packets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "detail",
+                "to",
+                "when"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "description": "Packet kind, as in the sent log (icmp-echo, tcp-connect, udp-probe, ...)"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "when": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "per_cycle": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "monitor: what each cycle adds to the scan plan; scan: what runs once per scan (the IPv6 discovery of --ipv6-discover)",
+      "properties": {
+        "packets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "detail",
+              "to",
+              "when"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "description": "Packet kind, as in the sent log (icmp-echo, tcp-connect, udp-probe, ...)"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "when": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "packets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "detail",
+          "to",
+          "when"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "Packet kind, as in the sent log (icmp-echo, tcp-connect, udp-probe, ...)"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

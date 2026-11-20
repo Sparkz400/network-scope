@@ -7,9 +7,10 @@ impl Scanner {
         let Some(host) = self.results.iter().find(|h| h.ip == ip) else {
             return;
         };
-        let (mut test, mut apply, mut discard) = (None, false, false);
+        let (mut test, mut apply, mut discard, mut timeline) = (None, false, false, false);
         let mut open = true;
-        egui::Window::new(format!("Host details · {ip}"))
+        let mut menu_action = None;
+        egui::Window::new(tr!("Host details · {}", ip))
             .open(&mut open)
             // 30 px above egui's default height: 0.37 widgets are taller, and the script result
             // must stay in view.
@@ -17,12 +18,12 @@ impl Scanner {
             .default_pos([24.0, 40.0])
             .vscroll(true)
             .show(ctx, |ui| {
-                ui.label(format!("Status: {}", host_status(host)));
-                ui.label(format!("Ping: {}", ping_text(host.ping)));
+                ui.label(tr!("Status: {}", host_status(host)));
+                ui.label(tr!("Ping: {}", ping_text(host.ping)));
                 if let Some(ttl) = host.ttl {
                     ui.label(format!("TTL: {ttl}"));
                 }
-                ui.label(format!(
+                ui.label(tr!(
                     "Hostname: {}",
                     if host.hostname.is_empty() {
                         "—"
@@ -38,9 +39,26 @@ impl Scanner {
                         &host.mac
                     }
                 ));
-                ui.label(format!("Open ports: {}", ports_text(&host.open)));
+                // The conclusions with their confidence; hover for the reasons.
+                for (label, key, prefix) in [
+                    (tr!("OS"), "os.guess", "os"),
+                    (tr!("Type"), "device.type", "device"),
+                ] {
+                    if let Some(value) = host.identity.get(key) {
+                        let why = crate::evidence::Evidence::from_identity(&host.identity, prefix);
+                        let shown = why
+                            .as_ref()
+                            .filter(|e| e.confidence > 0)
+                            .map_or(value.clone(), |e| format!("{value} ({} %)", e.confidence));
+                        let response = ui.label(format!("{label}: {shown}"));
+                        if let Some(e) = why.filter(|e| !e.reasons.is_empty()) {
+                            response.on_hover_text(tr!("because {}", e.because()));
+                        }
+                    }
+                }
+                ui.label(tr!("Open ports: {}", ports_text(&host.open)));
                 if !host.udp_open.is_empty() {
-                    ui.label(format!(
+                    ui.label(tr!(
                         "Open UDP ports: {}",
                         host.udp_open
                             .iter()
@@ -50,7 +68,7 @@ impl Scanner {
                     ));
                 }
                 if !host.trace.is_empty() {
-                    ui.label(format!(
+                    ui.label(tr!(
                         "Path: {}",
                         host.trace
                             .iter()
@@ -69,32 +87,33 @@ impl Scanner {
                         });
                 }
                 if host.ports_checked {
-                    ui.label(format!(
+                    ui.label(tr!(
                         "Closed: {}   No reply: {}",
-                        host.closed, host.unanswered
+                        host.closed,
+                        host.unanswered
                     ));
                 } else {
-                    ui.label("Ports not checked: no ping reply.");
+                    ui.label(tr!("Ports not checked: no ping reply."));
                 }
                 if let Some(old) = self.previous.get(&ip) {
                     if old.responding != host.responding || old.open != host.open {
                         ui.colored_label(
                             Color32::from_rgb(170, 100, 15),
-                            format!(
+                            tr!(
                                 "Changed since previous scan · previously {} · ports {}",
                                 host_status(old),
                                 ports_text(&old.open)
                             ),
                         );
                     } else {
-                        ui.label("Unchanged since previous scan.");
+                        ui.label(tr!("Unchanged since previous scan."));
                     }
                 }
                 for error in &host.errors {
-                    ui.colored_label(Color32::from_rgb(180, 40, 40), error);
+                    ui.colored_label(Color32::from_rgb(205, 70, 70), error);
                 }
                 ui.separator();
-                ui.label("Your note");
+                ui.label(tr!("Your note"));
                 // Edit a copy: viewing a host must not create an empty note.
                 let mut note = self.saved.notes.get(&ip).cloned().unwrap_or_default();
                 if ui
@@ -108,12 +127,26 @@ impl Scanner {
                     set_note(&mut self.saved.notes, ip, note);
                     self.notes_generation += 1;
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("Copy IP address").clicked() {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(tr!("Copy IP address")).clicked() {
                         ctx.copy_text(ip.to_string());
                     }
+                    // The same actions as the right-click menu of the table row.
+                    let starred = self.saved.starred.contains(&convenience::favorite_key(host));
+                    ui.menu_button(tr!("Actions"), |ui| {
+                        menu_action = Some(convenience::host_menu(ui, host, starred));
+                    });
+                    if ui
+                        .button(tr!("Timeline…"))
+                        .on_hover_text(
+                            tr!("When this device was first seen and what changed: address, MAC, name, ports and findings, from the saved scans."),
+                        )
+                        .clicked()
+                    {
+                        timeline = true;
+                    }
                     ui.add_enabled_ui(!self.busy.testing, |ui| {
-                        let menu = egui::containers::menu::MenuButton::new("Test script…")
+                        let menu = egui::containers::menu::MenuButton::new(tr!("Test script…"))
                             .config(super::controls::menu_config());
                         menu.ui(ui, |ui| {
                             let configured = self.saved.settings.scripts.trim();
@@ -121,9 +154,9 @@ impl Scanner {
                                 .add_enabled(
                                     !configured.is_empty(),
                                     egui::Button::new(if configured.is_empty() {
-                                        "Configured script (none set in Settings)".to_string()
+                                        tr!("Configured script (none set in Settings)").to_string()
                                     } else {
-                                        format!("Configured script ({configured})")
+                                        tr!("Configured script ({})", configured)
                                     }),
                                 )
                                 .clicked()
@@ -131,7 +164,7 @@ impl Scanner {
                                 test = Some(configured.to_string());
                                 ui.close();
                             }
-                            if ui.button("Choose .rhai file…").clicked() {
+                            if ui.button(tr!("Choose .rhai file…")).clicked() {
                                 ui.close();
                                 if let Some(path) = rfd::FileDialog::new()
                                     .add_filter("Rhai script", &["rhai"])
@@ -143,22 +176,22 @@ impl Scanner {
                         })
                         .0
                         .on_hover_text(
-                            "Runs the script on a copy of this host. Nothing is rescanned or changed until you choose Apply.",
+                            tr!("Runs the script on a copy of this host. Nothing is rescanned or changed until you choose Apply."),
                         );
                     });
                 });
                 if let Some(t) = self.script_test.as_ref().filter(|t| t.ip == ip) {
                     ui.separator();
-                    ui.strong(format!("Script test · {}", t.path));
+                    ui.strong(tr!("Script test · {}", t.path));
                     match &t.result {
                         None => {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.label("Running…");
+                                ui.label(tr!("Running…"));
                             });
                         }
                         Some(Err(e)) => {
-                            ui.colored_label(Color32::from_rgb(180, 40, 40), e);
+                            ui.colored_label(Color32::from_rgb(205, 70, 70), e);
                         }
                         Some(Ok(outcome)) => {
                             for line in script_lines(outcome) {
@@ -168,19 +201,19 @@ impl Scanner {
                                 if ui
                                     .add_enabled(
                                         self.run.is_none() && !outcome_is_empty(outcome),
-                                        egui::Button::new("Apply"),
+                                        egui::Button::new(tr!("Apply")),
                                     )
                                     .on_hover_text(
-                                        "Adds these fields, findings and notes to the host in this window.",
+                                        tr!("Adds these fields, findings and notes to the host in this window."),
                                     )
                                     .on_disabled_hover_text(
-                                        "Nothing to apply, or a scan is running.",
+                                        tr!("Nothing to apply, or a scan is running."),
                                     )
                                     .clicked()
                                 {
                                     apply = true;
                                 }
-                                if ui.button("Discard").clicked() {
+                                if ui.button(tr!("Discard")).clicked() {
                                     discard = true;
                                 }
                             });
@@ -188,6 +221,11 @@ impl Scanner {
                     }
                 }
             });
+        if let Some(act) = menu_action
+            && let Some(host) = self.results.iter().find(|h| h.ip == ip).cloned()
+        {
+            self.do_menu_action(ctx, &host, act);
+        }
         let tested = test.and_then(|path| {
             let host = self.results.iter().find(|h| h.ip == ip)?.clone();
             Some((path, host))
@@ -205,6 +243,9 @@ impl Scanner {
                 path,
                 Box::new(host_copy),
             ));
+        }
+        if timeline && let Some(host) = self.results.iter().find(|h| h.ip == ip).cloned() {
+            self.open_timeline(&host);
         }
         if apply {
             self.apply_script_test();
@@ -228,7 +269,7 @@ impl Scanner {
             return;
         };
         if self.run.is_some() {
-            self.error = "Script result not applied: a scan is running.".into();
+            self.error = tr!("Script result not applied: a scan is running.").into();
             return;
         }
         match self.results.iter_mut().find(|h| h.ip == ip) {
@@ -236,10 +277,13 @@ impl Scanner {
                 outcome.apply(host);
                 self.haystacks.remove(&ip);
                 self.data_changed();
-                self.status =
-                    format!("Applied {path} to {ip} (in this window; export or rescan to keep it)");
+                self.status = tr!(
+                    "Applied {} to {} (in this window; export or rescan to keep it)",
+                    path,
+                    ip
+                );
             }
-            None => self.error = format!("{ip} is no longer in the results."),
+            None => self.error = tr!("{} is no longer in the results.", ip),
         }
     }
 }

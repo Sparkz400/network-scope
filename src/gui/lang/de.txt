@@ -1,0 +1,594 @@
+# German catalog of the desktop app. One entry per line: "English text || Deutscher Text".
+# {} is filled in order, {1} {2} ... pick an argument by number. Lines starting with # are comments.
+# A test checks that every text wrapped in tr!(...) in src/gui has an entry here, that no entry
+# appears twice and that both sides have the same number of placeholders.
+
+# Status bar, busy messages, main table
+Saving to inventory… || Speichere im Inventar…
+Writing export… || Schreibe Export…
+Running script… || Führe Skript aus…
+Reading device history… || Lese Geräteverlauf…
+Opening inventory… || Öffne Inventar…
+Comparing scans… || Vergleiche Scans…
+Looking for your networks… || Suche nach Ihren Netzwerken…
+Reading inventory… || Lese Inventar…
+Reading address list… || Lese Adressliste…
+saved #{} || gespeichert als #{}
+Inventory could not be saved: {} || Das Inventar konnte nicht gespeichert werden: {}
+The list has no addresses. || Die Liste enthält keine Adressen.
+Address list ignored: a scan is running. || Adressliste ignoriert: Ein Scan läuft.
+Ready to scan || Bereit zum Scannen
+Wait until the inventory scan has been opened. || Warten Sie, bis der Scan aus dem Inventar geöffnet ist.
+The Plant preset is passive and sends no packets. Use Listen (OT) in Passive / DCP, or choose another preset to scan. || Das Anlagen-Preset ist passiv und sendet keine Pakete. Nutzen Sie „Listen (OT)“ unter Passiv / DCP oder wählen Sie ein anderes Preset zum Scannen.
+Scanning {} addresses || Scanne {} Adressen
+Stopping… || Wird gestoppt…
+Paused || Pausiert
+Scanning || Scan läuft
+{} responding · {} with open ports || {} antworten · {} mit offenen Ports
+IP address || IP-Adresse
+Status || Status
+Ping || Ping
+Hostname || Hostname
+Open TCP ports || Offene TCP-Ports
+Not checked || Nicht geprüft
+Discover devices on your network || Geräte in Ihrem Netzwerk finden
+No hosts match this view || Keine Hosts in dieser Ansicht
+Results appear as each host finishes. || Ergebnisse erscheinen, sobald ein Host fertig ist.
+Enter addresses and choose Start to begin. || Adressen eingeben und auf Start klicken.
+Try All hosts or clear the search. || Versuchen Sie „Alle Hosts“ oder leeren Sie die Suche.
+Safe Mode || Sicherer Modus
+At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep and TCP/UDP traceroute are off. Click to open Settings. || Höchstens 8 Hosts gleichzeitig, mindestens 100 ms zwischen den Proben; SYN, ARP-Sweep und TCP/UDP-Traceroute sind aus. Klicken öffnet die Einstellungen.
+Responding || Antwortet
+Probe error || Probenfehler
+No reply || Keine Antwort
+
+# Menus and the scan controls
+Scan || Scan
+Scan my network || Mein Netzwerk scannen
+Finds your local networks and scans them in Safe Mode. || Findet Ihre lokalen Netzwerke und scannt sie im Sicheren Modus.
+Start scan || Scan starten
+Import address list… || Adressliste importieren…
+Export visible rows as CSV… || Sichtbare Zeilen als CSV exportieren…
+Export visible rows as JSON… || Sichtbare Zeilen als JSON exportieren…
+Export HTML report… || HTML-Bericht exportieren…
+Export Markdown summary… || Markdown-Zusammenfassung exportieren…
+Clear results and captures || Ergebnisse und Mitschnitte löschen
+Removes active scan results and passive observations from the window. Saved inventory is kept. || Entfernt aktive Scan-Ergebnisse und passive Beobachtungen aus dem Fenster. Das gespeicherte Inventar bleibt erhalten.
+Favorites || Favoriten
+Save current addresses || Aktuelle Adressen speichern
+Remove || Entfernen
+Show starred devices || Markierte Geräte anzeigen
+Right click a host and choose Add to favorites to star it. || Rechtsklick auf einen Host und „Zu Favoriten hinzufügen“ markiert ihn.
+Settings || Einstellungen
+Inventory || Inventar
+Network map || Netzwerkkarte
+Findings || Befunde
+Devices || Geräte
+Passive / DCP || Passiv / DCP
+Commands (Ctrl+K) || Befehle (Strg+K)
+Search actions and all saved scans: an address, MAC, name, vendor or finding id. || Aktionen und alle gespeicherten Scans durchsuchen: Adresse, MAC, Name, Hersteller oder Befund-ID.
+About || Info
+IP & PORT SCANNER || IP- UND PORT-SCANNER
+Addresses || Adressen
+Resume || Fortsetzen
+Pause || Pause
+Stop || Stopp
+▶ Start || ▶ Start
+TCP ports || TCP-Ports
+Preset || Preset
+Standard || Standard
+Original scan defaults (keeps interface, source addresses and script) || Ursprüngliche Scan-Voreinstellungen (behält Schnittstelle, Quelladressen und Skript)
+Fast || Schnell
+TCP discovery, up to 1024 concurrent hosts, 800 ms timeouts || TCP-Erkennung, bis zu 1024 Hosts gleichzeitig, 800 ms Zeitlimit
+Thorough || Gründlich
+Three probes and port checks even when ping gets no reply || Drei Proben und Port-Prüfung auch ohne Ping-Antwort
+Overview || Übersicht
+What changed since the last scan, the risk score and what to fix first || Was sich seit dem letzten Scan geändert hat, die Risikobewertung und was zuerst zu beheben ist
+Hosts || Hosts
+All hosts || Alle Hosts
+Open ports || Offene Ports
+Starred ★ || Markiert ★
+Search results… || Ergebnisse durchsuchen…
+
+# Dialogs
+Confirm scan targets || Scan-Ziele bestätigen
+Only scan networks you are authorized to test. Nothing has been sent yet. || Scannen Sie nur Netzwerke, die Sie testen dürfen. Es wurde noch nichts gesendet.
+Scan anyway || Trotzdem scannen
+Cancel || Abbrechen
+Targets changed; press Start again || Ziele geändert; drücken Sie erneut Start
+
+# Findings window
+Findings (weak configuration, risky services, CVE hints) || Befunde (schwache Konfiguration, riskante Dienste, CVE-Hinweise)
+{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host. || {} von {} Befunden angezeigt. CVE-Einträge sind versionsbasierte Hinweise; Hersteller portieren Korrekturen oft zurück. Klick auf eine Zeile zeigt den Host.
+Nothing found. Enable service detection in Settings to collect the evidence these checks use. || Nichts gefunden. Aktivieren Sie in den Einstellungen die Diensterkennung, um die Belege für diese Prüfungen zu sammeln.
+All severities || Alle Schweregrade
+Learn more || Mehr erfahren
+Known exploited (CISA KEV, added {}); used in ransomware campaigns || Aktiv ausgenutzt (CISA KEV, hinzugefügt {}); in Ransomware-Kampagnen genutzt
+Known exploited (CISA KEV, added {}) || Aktiv ausgenutzt (CISA KEV, hinzugefügt {})
+Known exploited (CISA KEV); used in ransomware campaigns || Aktiv ausgenutzt (CISA KEV); in Ransomware-Kampagnen genutzt
+Known exploited (CISA KEV) || Aktiv ausgenutzt (CISA KEV)
+Estimated probability of exploitation within 30 days (EPSS) || Geschätzte Wahrscheinlichkeit einer Ausnutzung innerhalb von 30 Tagen (EPSS)
+Reference || Referenz
+{} and above || {} und höher
+Filter… || Filter…
+Clear || Leeren
+Known exploited (KEV) only || Nur aktiv ausgenutzte (KEV)
+Findings with a CVE in the CISA catalog of vulnerabilities exploited in the wild. Needs imported feeds (feeds import). || Befunde mit einer CVE im CISA-Katalog der in der Praxis ausgenutzten Schwachstellen. Benötigt importierte Feeds (feeds import).
+Any EPSS || Beliebiger EPSS
+EPSS {} % or more || EPSS {} % oder mehr
+EPSS: the estimated probability that the vulnerability is exploited in the next 30 days. || EPSS: die geschätzte Wahrscheinlichkeit, dass die Schwachstelle in den nächsten 30 Tagen ausgenutzt wird.
+Severity || Schweregrad
+Host || Host
+Finding || Befund
+Evidence || Beleg
+CVE || CVE
+KEV || KEV
+EPSS || EPSS
+
+# Devices window
+Devices (active + passive merged) || Geräte (aktiv + passiv zusammengeführt)
+{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host. || {} von {} Geräten angezeigt. Einträge sind über die MAC-Adresse zugeordnet, ohne MAC über die IP. Klick auf eine Zeile zeigt den Host.
+Any risk || Beliebiges Risiko
+{} (randomized) || {} (zufällig)
+Address || Adresse
+MAC || MAC
+Manufacturer || Hersteller
+OS guess || OS-Vermutung
+Risk || Risiko
+
+# Inventory window
+Saved inventory & scan differences || Gespeichertes Inventar und Scan-Unterschiede
+Scans are saved automatically, including interrupted scans marked as partial. || Scans werden automatisch gespeichert, auch abgebrochene Scans (als teilweise markiert).
+Refresh || Aktualisieren
+Compare A to B || A mit B vergleichen
+Select baseline A || Wählen Sie die Basis A
+Select scan B || Wählen Sie den Scan B
+#{} · {} hosts · {} · {} || #{} · {} Hosts · {} · {}
+complete || vollständig
+partial || teilweise
+Open || Öffnen
+No saved scans yet. Run a scan to start an inventory. || Noch keine gespeicherten Scans. Starten Sie einen Scan, um ein Inventar anzulegen.
+Export {} || {} exportieren
+
+# Passive window
+DCP Identify running || DCP-Identify läuft
+Listening — no packets sent || Lauscht — es werden keine Pakete gesendet
+Passive discovery / Profinet DCP / OT || Passive Erkennung / Profinet DCP / OT
+Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP || Passiv: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP
+Requires Npcap and permission to capture on the selected Ethernet interface. || Benötigt Npcap und die Berechtigung zum Mitschneiden auf der gewählten Ethernet-Schnittstelle.
+Refresh interfaces || Schnittstellen aktualisieren
+Interface || Schnittstelle
+Choose interface || Schnittstelle wählen
+Duration || Dauer
+seconds || Sekunden
+Interface MAC (DCP / SYN) || MAC der Schnittstelle (DCP / SYN)
+Interface IPv4 (SYN) || IPv4 der Schnittstelle (SYN)
+Start passive listening || Passives Lauschen starten
+DCP Identify (read only) || DCP-Identify (nur lesend)
+Stop capture || Mitschnitt stoppen
+{} observed device/protocol combinations || {} beobachtete Gerät/Protokoll-Kombinationen
+No IP advertised || Keine IP angegeben
+
+# Scan settings
+Scan settings || Scan-Einstellungen
+Concurrent hosts || Gleichzeitige Hosts
+Ping probes || Ping-Proben
+Ping timeout || Ping-Zeitlimit
+Port timeout || Port-Zeitlimit
+Minimum port timeout || Minimales Port-Zeitlimit
+Probe spacing (Safe Mode) || Abstand der Proben (Sicherer Modus)
+Port probes per host || Port-Proben pro Host
+Retries for silent ports || Wiederholungen bei stummen Ports
+Rate cap (0 = none) || Ratenbegrenzung (0 = keine)
+Safe Mode: max. 8 hosts, 100 ms probe spacing, no SYN, no ARP sweep, ICMP traceroute || Sicherer Modus: max. 8 Hosts, 100 ms Abstand, kein SYN, kein ARP-Sweep, ICMP-Traceroute
+ARP discovery even without a ping response (Windows LAN) || ARP-Erkennung auch ohne Ping-Antwort (Windows-LAN)
+Fast ARP sweep through the capture interface (needs Npcap) || Schneller ARP-Sweep über die Capture-Schnittstelle (benötigt Npcap)
+Not in Safe Mode || Nicht im Sicheren Modus
+Read industrial device identities (standard ports + BACnet UDP) || Industrielle Geräteidentitäten lesen (Standardports + BACnet UDP)
+Use industrial ports || Industrielle Ports verwenden
+Modbus unit || Modbus-Unit
+S7 rack / slot || S7 Rack / Slot
+SYN via Npcap; fallback to TCP connect || SYN über Npcap; Rückfall auf TCP-Connect
+Adaptive SYN timing (RTT-based timeouts, slows down on packet loss) || Adaptives SYN-Timing (RTT-basierte Zeitlimits, bremst bei Paketverlust)
+JARM TLS fingerprint (10 extra connections per TLS port; needs service detection) || JARM-TLS-Fingerabdruck (10 zusätzliche Verbindungen pro TLS-Port; benötigt Diensterkennung)
+Favicon hash (one GET /favicon.ico per web port; not on industrial hosts) || Favicon-Hash (ein GET /favicon.ico pro Web-Port; nicht bei Industriegeräten)
+Needs service detection, and not in Safe Mode || Benötigt Diensterkennung und nicht im Sicheren Modus
+Configure interface, source IPv4 and MAC in Passive / DCP. || Schnittstelle, Quell-IPv4 und MAC unter Passiv / DCP einstellen.
+Identify services on open TCP ports (banners, HTTP, TLS certificate/ciphers, SMB, RDP, databases) || Dienste auf offenen TCP-Ports erkennen (Banner, HTTP, TLS-Zertifikat/Cipher, SMB, RDP, Datenbanken)
+Probe UDP services (DNS, DHCP, NTP, NetBIOS, SNMP public, SSDP, mDNS) || UDP-Dienste prüfen (DNS, DHCP, NTP, NetBIOS, SNMP public, SSDP, mDNS)
+UDP ports || UDP-Ports
+Script (.rhai file or folder) || Skript (.rhai-Datei oder Ordner)
+CVE rules file (added to the built-in rules) || CVE-Regeldatei (zu den eingebauten Regeln hinzugefügt)
+Browse… || Durchsuchen…
+{} (previous rules stay active) || {} (die bisherigen Regeln bleiben aktiv)
+Guess OS, manufacturer and device type || Betriebssystem, Hersteller und Gerätetyp vermuten
+Record router path to each responding host (traceroute) || Router-Pfad zu jedem antwortenden Host aufzeichnen (Traceroute)
+Max hops || Max. Hops
+Method || Methode
+TCP port || TCP-Port
+0 = first open port; OT and printer ports are never used || 0 = erster offener Port; OT- und Druckerports werden nie verwendet
+OT/printer port: ICMP will be used instead || OT-/Druckerport: Stattdessen wird ICMP verwendet
+TCP only (skip ICMP ping) || Nur TCP (ICMP-Ping überspringen)
+Check ports even when ping gets no reply || Ports auch ohne Ping-Antwort prüfen
+Adapt port timeout to measured ping || Port-Zeitlimit an gemessenen Ping anpassen
+Back off when a device resets connections (lower limits for OT/printers) || Zurückschalten, wenn ein Gerät Verbindungen zurücksetzt (niedrigere Grenzen für OT/Drucker)
+Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255) || Netzwerk-/Broadcast-Adressen überspringen (CIDR: echte Ränder; Bereiche: .0 und .255)
+Resolve hostnames (system DNS) || Hostnamen auflösen (System-DNS)
+Look up MAC addresses (local IPv4 network) || MAC-Adressen nachschlagen (lokales IPv4-Netz)
+Probe the addresses in random order || Adressen in zufälliger Reihenfolge prüfen
+Record the scan's traffic (pcapng in NetworkScope/recordings) || Datenverkehr des Scans aufzeichnen (pcapng in NetworkScope/recordings)
+A wire capture of the targets while the scan runs when the capture driver allows it (Npcap/libpcap, at most 256 targets); otherwise the scan's own requests and replies, labelled as an application-level record. Sends nothing extra. || Ein Mitschnitt der Ziele während des Scans, wenn der Capture-Treiber es erlaubt (Npcap/libpcap, höchstens 256 Ziele); sonst die eigenen Anfragen und Antworten des Scans, als Aufzeichnung auf Anwendungsebene gekennzeichnet. Sendet nichts zusätzlich.
+Only the order changes, not which addresses or probes. Spreads the load over the network instead of walking it address by address. || Nur die Reihenfolge ändert sich, nicht welche Adressen oder Proben. Verteilt die Last über das Netz, statt es Adresse für Adresse abzulaufen.
+Check for updates on start (one request to GitHub; only tells you, never downloads) || Beim Start nach Updates suchen (eine Anfrage an GitHub; informiert nur, lädt nie herunter)
+Sends one HTTPS request to api.github.com with the user agent network-scope/<version> and no other data. Off by default. || Sendet eine HTTPS-Anfrage an api.github.com mit dem User-Agent network-scope/<Version> und keinen weiteren Daten. Standardmäßig aus.
+A ping timeout does not prove a device is offline. || Ein Ping-Zeitlimit beweist nicht, dass ein Gerät aus ist.
+Read-only queries can still affect fragile devices. Passive listening sends none. || Auch lesende Abfragen können empfindliche Geräte beeinträchtigen. Passives Lauschen sendet keine.
+Pause lets active hosts finish. Stop cancels async work. || Pause lässt aktive Hosts fertig werden. Stopp bricht asynchrone Arbeit ab.
+Restore defaults || Standardwerte wiederherstellen
+Keeps interface, source addresses, script and probe file || Behält Schnittstelle, Quelladressen, Skript und Probendatei
+Settings can be changed after this scan finishes. || Einstellungen können nach Ende dieses Scans geändert werden.
+Appearance and language || Darstellung und Sprache
+Language || Sprache
+Automatic (system language) || Automatisch (Systemsprache)
+Theme || Design
+Light || Hell
+Dark || Dunkel
+Interface scale || Skalierung der Oberfläche
+On top of the system's display scaling (also Ctrl and + or -). || Zusätzlich zur Skalierung des Systems (auch Strg und + oder -).
+About Network Scope || Über Network Scope
+A native Rust network scanner · {} || Ein nativer Netzwerk-Scanner in Rust · {}
+Built with egui/eframe, egui_extras, image, serde, rfd and dns-lookup. || Gebaut mit egui/eframe, egui_extras, image, serde, rfd und dns-lookup.
+Address inputs: IPv4, IPv6, IPv4 ranges, CIDR, or an imported list. || Adresseingaben: IPv4, IPv6, IPv4-Bereiche, CIDR oder eine importierte Liste.
+Use the Scan menu to export the currently visible results. || Über das Menü „Scan“ exportieren Sie die aktuell sichtbaren Ergebnisse.
+Press Ctrl+K for the command palette. || Strg+K öffnet die Befehlspalette.
+Project page || Projektseite
+Documentation || Dokumentation
+Releases || Versionen
+TCP SYN (needs Npcap) || TCP-SYN (benötigt Npcap)
+UDP (needs administrator) || UDP (benötigt Administratorrechte)
+ICMP in Safe Mode || ICMP im Sicheren Modus
+
+# Host details
+Host details · {} || Host-Details · {}
+Status: {} || Status: {}
+Ping: {} || Ping: {}
+Hostname: {} || Hostname: {}
+OS || Betriebssystem
+Type || Typ
+because {} || weil {}
+Open ports: {} || Offene Ports: {}
+Open UDP ports: {} || Offene UDP-Ports: {}
+Path: {} || Pfad: {}
+Closed: {}   No reply: {} || Geschlossen: {}   Keine Antwort: {}
+Ports not checked: no ping reply. || Ports nicht geprüft: keine Ping-Antwort.
+Changed since previous scan · previously {} · ports {} || Seit dem vorigen Scan geändert · vorher {} · Ports {}
+Unchanged since previous scan. || Seit dem vorigen Scan unverändert.
+Your note || Ihre Notiz
+Copy IP address || IP-Adresse kopieren
+Actions || Aktionen
+Timeline… || Verlauf…
+When this device was first seen and what changed: address, MAC, name, ports and findings, from the saved scans. || Wann dieses Gerät zuerst gesehen wurde und was sich geändert hat: Adresse, MAC, Name, Ports und Befunde, aus den gespeicherten Scans.
+Test script… || Skript testen…
+Configured script (none set in Settings) || Eingestelltes Skript (keines in den Einstellungen)
+Configured script ({}) || Eingestelltes Skript ({})
+Choose .rhai file… || .rhai-Datei wählen…
+Runs the script on a copy of this host. Nothing is rescanned or changed until you choose Apply. || Führt das Skript auf einer Kopie dieses Hosts aus. Nichts wird neu gescannt oder geändert, bis Sie „Anwenden“ wählen.
+Script test · {} || Skripttest · {}
+Running… || Läuft…
+Apply || Anwenden
+Adds these fields, findings and notes to the host in this window. || Fügt diese Felder, Befunde und Notizen dem Host in diesem Fenster hinzu.
+Nothing to apply, or a scan is running. || Nichts anzuwenden, oder ein Scan läuft.
+Discard || Verwerfen
+Script result not applied: a scan is running. || Skriptergebnis nicht angewendet: Ein Scan läuft.
+Applied {} to {} (in this window; export or rescan to keep it) || {} auf {} angewendet (nur in diesem Fenster; exportieren oder neu scannen, um es zu behalten)
+{} is no longer in the results. || {} ist nicht mehr in den Ergebnissen.
+
+# Overview (what changed)
+Since the last scan || Seit dem letzten Scan
+Last 24 hours || Letzte 24 Stunden
+Last 7 days || Letzte 7 Tage
+and {} more (see Inventory and the changes command) || und {} weitere (siehe Inventar und den Befehl changes)
+Show the details of this host || Details dieses Hosts anzeigen
+not on the baseline || nicht in der Baseline
+Known exploited vulnerability (CISA KEV) || Aktiv ausgenutzte Schwachstelle (CISA KEV)
+This device is not in the results on screen || Dieses Gerät ist nicht in den angezeigten Ergebnissen
+The scan cannot be opened while a scan or capture is running. || Der Scan kann nicht geöffnet werden, solange ein Scan oder Mitschnitt läuft.
+What changed || Was sich geändert hat
+Reading the inventory… || Lese das Inventar…
+No scan yet || Noch kein Scan
+Network Scope has not scanned anything on this computer yet. || Network Scope hat auf diesem Computer noch nichts gescannt.
+One click finds your local network and scans it in Safe Mode: a few gentle probes per device, nothing that changes a device. || Ein Klick findet Ihr lokales Netzwerk und scannt es im Sicheren Modus: wenige schonende Proben pro Gerät, nichts, was ein Gerät verändert.
+Or enter addresses at the top and choose Start. || Oder geben Sie oben Adressen ein und klicken Sie auf Start.
+Show the hosts table || Hosts-Tabelle anzeigen
+Scan #{} ({}, {} hosts) compared with scan #{} ({}). || Scan #{} ({}, {} Hosts) verglichen mit Scan #{} ({}).
+Latest scan: #{} ({}, {} hosts). || Letzter Scan: #{} ({}, {} Hosts).
+New devices || Neue Geräte
+Gone devices || Verschwundene Geräte
+Changed devices || Geänderte Geräte
+New risks || Neue Risiken
+Resolved risks || Behobene Risiken
+Not on the baseline || Nicht in der Baseline
+Network risk score ({}) || Netzwerk-Risikowert ({})
+{} hosts, {} findings in the newest completed scan || {} Hosts, {} Befunde im neuesten vollständigen Scan
+Gone devices (not seen; not proof that they are off) || Verschwundene Geräte (nicht gesehen; kein Beweis, dass sie aus sind)
+Every device is on the approved baseline. || Jedes Gerät steht in der freigegebenen Baseline.
+{} devices are not on the approved baseline. || {} Geräte stehen nicht in der freigegebenen Baseline.
+Risks || Risiken
+Not seen again, but not checked by the scan either (host silent or port not probed): {} || Nicht erneut gesehen, vom Scan aber auch nicht geprüft (Host stumm oder Port nicht geprüft): {}
+Fix these first || Das zuerst beheben
+Nothing to fix in the newest completed scan. || Im neuesten vollständigen Scan ist nichts zu beheben.
+Affects || Betrifft
+and {} more || und {} weitere
+
+# Scan my network
+Stop the running scan or capture first. || Beenden Sie zuerst den laufenden Scan oder Mitschnitt.
+No private network was found on this computer. || Auf diesem Computer wurde kein privates Netzwerk gefunden.
+Scanning {} in Safe Mode || Scanne {} im Sicheren Modus
+Scanning {} in Safe Mode (skipped: {}) || Scanne {} im Sicheren Modus (übersprungen: {})
+{} on {} is large ({}). || {} an {} ist groß ({}).
+Scan the large networks too (this takes a long time) || Auch die großen Netzwerke scannen (das dauert lange)
+Left out || Ausgelassen
+Safe Mode: at most 8 hosts at a time and 100 ms between probes. || Sicherer Modus: höchstens 8 Hosts gleichzeitig und 100 ms zwischen den Proben.
+
+# Network map
+This scanner || Dieser Scanner
+Router on the path || Router auf dem Pfad
+Hop without a reply || Hop ohne Antwort
+Controller / HMI || Steuerung / HMI
+Network device || Netzwerkgerät
+Server / storage || Server / Speicher
+Workstation || Arbeitsplatz
+Printer || Drucker
+Camera || Kamera
+Other device || Anderes Gerät
+{} nodes ({} hosts), {} links. Drag to move, scroll to zoom, click a host for its details. || {} Knoten ({} Hosts), {} Verbindungen. Ziehen zum Verschieben, Scrollen zum Zoomen, Klick auf einen Host für Details.
+Fit to window || An Fenster anpassen
+A dot in the corner is the worst finding of the host. || Ein Punkt in der Ecke zeigt den schwersten Befund des Hosts.
+No devices to draw yet. Scan, and enable "Record router path" in Settings to see the path to each device. || Noch keine Geräte zu zeichnen. Scannen Sie und aktivieren Sie in den Einstellungen „Router-Pfad aufzeichnen“, um den Pfad zu jedem Gerät zu sehen.
+Show the devices as a list || Geräte als Liste anzeigen
+
+# Host menu, favorites, Wake-on-LAN
+Remove from favorites ★ || Aus Favoriten entfernen ★
+Add to favorites ☆ || Zu Favoriten hinzufügen ☆
+Open in browser || Im Browser öffnen
+No web port (80, 443, 8080, ...) was found open on this host. || Auf diesem Host wurde kein offener Web-Port (80, 443, 8080, ...) gefunden.
+Open {} || {} öffnen
+Open SSH (ssh://) || SSH öffnen (ssh://)
+Port 22 was not found open on this host. || Port 22 wurde auf diesem Host nicht offen gefunden.
+Open remote desktop (RDP) || Remotedesktop öffnen (RDP)
+Port 3389 was not found open on this host. || Port 3389 wurde auf diesem Host nicht offen gefunden.
+Ping in a terminal || Ping in einem Terminal
+Wake-on-LAN… || Wake-on-LAN…
+Sends one magic packet to the broadcast address after you confirm. || Sendet nach Ihrer Bestätigung ein Magic Packet an die Broadcast-Adresse.
+The MAC address of this host is not known. || Die MAC-Adresse dieses Hosts ist nicht bekannt.
+Copy MAC address || MAC-Adresse kopieren
+{} added to the favorites || {} zu den Favoriten hinzugefügt
+{} removed from the favorites || {} aus den Favoriten entfernt
+The address is not valid for this action. || Die Adresse ist für diese Aktion nicht gültig.
+The link is not valid: {} || Der Link ist nicht gültig: {}
+The program could not be started: {} || Das Programm konnte nicht gestartet werden: {}
+Wake-on-LAN || Wake-on-LAN
+Send one magic packet for {} ({}) as a UDP broadcast? || Ein Magic Packet für {} ({}) als UDP-Broadcast senden?
+Nothing else is sent. It only wakes a device that is set up for Wake-on-LAN, and it answers nothing back. || Es wird nichts weiter gesendet. Es weckt nur ein Gerät, das für Wake-on-LAN eingerichtet ist, und liefert keine Antwort.
+Send to || Senden an
+Send || Senden
+{} is not an IPv4 address. || {} ist keine IPv4-Adresse.
+Wake-on-LAN was not sent. {} || Wake-on-LAN wurde nicht gesendet. {}
+Sent a Wake-on-LAN magic packet for {} to {} (1 packet) || Magic Packet für {} an {} gesendet (1 Paket)
+
+# Command palette
+New scan: scan my network || Neuer Scan: mein Netzwerk scannen
+Start the scan of the addresses || Scan der Adressen starten
+Stop the running scan || Laufenden Scan stoppen
+Import an address list… || Adressliste importieren…
+Open the overview (what changed) || Übersicht öffnen (was sich geändert hat)
+Open the hosts table || Hosts-Tabelle öffnen
+Open the scan settings || Scan-Einstellungen öffnen
+Open the saved inventory || Gespeichertes Inventar öffnen
+Open the network map || Netzwerkkarte öffnen
+Open the findings || Befunde öffnen
+Open the devices || Geräte öffnen
+Open passive discovery / OT || Passive Erkennung / OT öffnen
+Export the visible rows as CSV… || Sichtbare Zeilen als CSV exportieren…
+Export the visible rows as JSON… || Sichtbare Zeilen als JSON exportieren…
+Export the HTML report… || HTML-Bericht exportieren…
+Export the Markdown summary… || Markdown-Zusammenfassung exportieren…
+Clear the results and captures || Ergebnisse und Mitschnitte löschen
+Use the dark theme || Dunkles Design verwenden
+Use the light theme || Helles Design verwenden
+Preset: {} || Preset: {}
+Language: {} || Sprache: {}
+{}{} — scan #{}, {} || {}{} — Scan #{}, {}
+Command palette || Befehlspalette
+Type an action, or an address, MAC, name, vendor or finding id… || Aktion eingeben, oder Adresse, MAC, Name, Hersteller oder Befund-ID…
+Searching the saved scans… || Durchsuche die gespeicherten Scans…
+Nothing matches. || Nichts passt.
+Seen in the saved scans (newest first) || In den gespeicherten Scans gesehen (neueste zuerst)
+Up/Down choose · Enter runs · Esc closes || Auf/Ab wählen · Enter führt aus · Esc schließt
+
+# Update notice
+Version {} is available || Version {} ist verfügbar
+How to verify… || So prüfen Sie…
+Dismiss || Ausblenden
+Update available || Update verfügbar
+Version {} is available (this is {}). || Version {} ist verfügbar (dies ist {}).
+Network Scope never downloads or installs updates. Download the file for your platform from the release page and verify it first: || Network Scope lädt Updates nie herunter und installiert sie nicht. Laden Sie die Datei für Ihre Plattform von der Release-Seite und prüfen Sie sie zuerst:
+Copy text || Text kopieren
+
+# Presets
+Quick || Schnell-Scan
+Office || Büro
+Plant (passive) || Anlage (passiv)
+Full audit || Vollständige Prüfung
+Custom || Benutzerdefiniert
+Preset {} applied || Preset {} angewendet
+Plant preset: passive only. Listen with Listen (OT); no scan is started. || Anlagen-Preset: nur passiv. Lauschen Sie mit „Listen (OT)“; es wird kein Scan gestartet.
+A bundle of scan settings. Hover a preset to see what it turns on. || Ein Bündel von Scan-Einstellungen. Fahren Sie über ein Preset, um zu sehen, was es einschaltet.
+Safe Mode on (at most 8 hosts at a time, 100 ms between probes) || Sicherer Modus an (höchstens 8 Hosts gleichzeitig, 100 ms zwischen den Proben)
+Ping and TCP connect to ports 80, 443 and 8080 || Ping und TCP-Verbindung zu den Ports 80, 443 und 8080
+No service, UDP, OS or OT probes, no traceroute || Keine Dienst-, UDP-, OS- oder OT-Proben, kein Traceroute
+Ping and TCP connect to the common office and server ports || Ping und TCP-Verbindung zu den üblichen Büro- und Server-Ports
+Identifies services on open ports (banners, HTTP, TLS, SMB, RDP) || Erkennt Dienste auf offenen Ports (Banner, HTTP, TLS, SMB, RDP)
+Guesses OS, manufacturer and device type; looks up MAC addresses || Vermutet Betriebssystem, Hersteller und Gerätetyp; schlägt MAC-Adressen nach
+No UDP, OT or traceroute probes || Keine UDP-, OT- oder Traceroute-Proben
+Passive only: no packet is sent || Nur passiv: Es wird kein Paket gesendet
+Listens with ot-listen (live capture) or reads a pcap file || Lauscht mit ot-listen (Live-Mitschnitt) oder liest eine pcap-Datei
+Nothing is scanned, so no device is touched || Es wird nichts gescannt, also wird kein Gerät berührt
+Safe Mode off: up to 256 hosts at a time || Sicherer Modus aus: bis zu 256 Hosts gleichzeitig
+Ping, TCP connect (SYN engine with adaptive timing when an interface is set), ARP sweep || Ping, TCP-Verbindung (SYN-Engine mit adaptivem Timing, wenn eine Schnittstelle gesetzt ist), ARP-Sweep
+Services, UDP services, OS guess, read-only OT identification, JARM, ICMP traceroute, DNS names, MACs || Dienste, UDP-Dienste, OS-Vermutung, lesende OT-Identifikation, JARM, ICMP-Traceroute, DNS-Namen, MACs
+The scope guard still asks before public or out-of-scope targets, and the back-off still slows devices that reset connections || Der Scope-Schutz fragt weiterhin vor öffentlichen oder außerhalb des Scopes liegenden Zielen, und das Zurückschalten bremst weiterhin Geräte, die Verbindungen zurücksetzen
+
+# Scheduled scans
+Next scan {} || Nächster Scan {}
+Next scan waits for the running scan or capture || Der nächste Scan wartet auf den laufenden Scan oder Mitschnitt
+Starting || Startet
+Scheduled scan · {} || Geplanter Scan · {}
+Scheduled scans || Geplante Scans
+Scan on a schedule while Network Scope is open || Nach Zeitplan scannen, solange Network Scope geöffnet ist
+Targets || Ziele
+Use main window || Aus Hauptfenster
+Copy the targets from the main window || Ziele aus dem Hauptfenster übernehmen
+Every || Alle
+Scheduled scans always run in Safe Mode with your other settings and are saved to the inventory. They run only while this window is open. || Geplante Scans laufen immer im Sicheren Modus mit Ihren übrigen Einstellungen und werden im Inventar gespeichert. Sie laufen nur, solange dieses Fenster geöffnet ist.
+For monitoring that keeps running with the window closed, run `monitor` as a service: || Für Überwachung, die bei geschlossenem Fenster weiterläuft, führen Sie `monitor` als Dienst aus:
+Copy command || Befehl kopieren
+
+# Severities and score bands
+critical || kritisch
+high || hoch
+medium || mittel
+low || niedrig
+info || Info
+none || keines
+
+# OT passive discovery (Passive / DCP window)
+OT passive asset discovery || Passive OT-Asset-Erkennung
+Reads a capture file or listens on the interface above. Nothing is transmitted. Industrial protocol traffic (Modbus, S7, EtherNet/IP, OPC UA, Profinet...) builds the asset table. || Liest eine Mitschnitt-Datei oder lauscht auf der oben gewählten Schnittstelle. Es wird nichts gesendet. Industrieller Protokollverkehr (Modbus, S7, EtherNet/IP, OPC UA, Profinet...) füllt die Asset-Tabelle.
+Open pcap… || pcap öffnen…
+Packet capture || Paketmitschnitt
+All files || Alle Dateien
+OT assets || OT-Assets
+Listen (OT) || Lauschen (OT)
+Choose an interface; stop other captures and scans first. || Wählen Sie eine Schnittstelle; beenden Sie zuerst andere Mitschnitte und Scans.
+{} · {} frames processed · {}s || {} · {} Frames verarbeitet · {} s
+{} · {} frames · {} observations · {} OT assets{} || {} · {} Frames · {} Beobachtungen · {} OT-Assets{}
+Export assets CSV… || Assets als CSV exportieren…
+Export assets JSON… || Assets als JSON exportieren…
+control traffic seen (writes, program changes, stop/start) || Steuerverkehr gesehen (Schreibzugriffe, Programmänderungen, Stopp/Start)
+Vendor || Hersteller
+Product || Produkt
+Firmware || Firmware
+Serial || Seriennr.
+Protocols || Protokolle
+Roles || Rollen
+First seen || Erstmals gesehen
+Last seen || Zuletzt gesehen
+Control traffic || Steuerverkehr
+None seen || Keiner gesehen
+Writing {}… || Schreibe {}…
+OT capture thread stopped || Der OT-Mitschnitt-Thread wurde beendet
+OT passive: no observations in {} || OT passiv: keine Beobachtungen in {}
+OT passive: {} observations · saved capture #{} || OT passiv: {} Beobachtungen · Mitschnitt #{} gespeichert
+
+# Device timeline window
+Device timeline · {} || Geräteverlauf · {}
+Looked up by {} || Gesucht über {}
+Copy as text || Als Text kopieren
+Reading the saved inventory… || Lese das gespeicherte Inventar…
+No events yet: the device was not seen in a saved scan. || Noch keine Ereignisse: Das Gerät wurde in keinem gespeicherten Scan gesehen.
+Not seen in any of {} saved scans (a scan that never reached it, or none saved yet). || In keinem von {} gespeicherten Scans gesehen (kein Scan hat es erreicht, oder es ist noch keiner gespeichert).
+First seen {} · last seen {} · in {} of {} saved scans || Erstmals gesehen {} · zuletzt gesehen {} · in {} von {} gespeicherten Scans
+Addresses: {} || Adressen: {}
+MAC addresses: {} || MAC-Adressen: {}
+Names: {} || Namen: {}
+Open TCP ports (latest completed scan): {} || Offene TCP-Ports (letzter abgeschlossener Scan): {}
+Address changed || Adresse geändert
+MAC changed || MAC geändert
+Name changed || Name geändert
+Port opened || Port geöffnet
+Port closed || Port geschlossen
+UDP answering || UDP antwortet
+UDP silent || UDP still
+Finding appeared || Befund aufgetreten
+Finding resolved || Befund behoben
+Event || Ereignis
+
+# Scan details (provenance stamp, ROADMAP L72)
+Scan details || Scan-Details
+No scan on screen. || Kein Scan im Fenster.
+running || läuft
+Saved scan #{} · {} · {} || Gespeicherter Scan #{} · {} · {}
+Scan not saved yet · {} · {} || Scan noch nicht gespeichert · {} · {}
+No provenance stamp: the scan was saved before stamps existed or it is an import, so the rules it ran with are not known. || Kein Herkunftsstempel: Der Scan wurde gespeichert, bevor es Stempel gab, oder er ist ein Import; womit er gelaufen ist, ist daher nicht bekannt.
+Tool: {} || Programm: {}
+Rules {}: {} || Regeln {}: {}
+Data feeds: none in use || Datenquellen: keine in Benutzung
+Feed {}: {} || Datenquelle {}: {}
+Combined hash (cite this): || Gesamt-Hash (zum Zitieren):
+Copy || Kopieren
+
+# Unknown-device workbench (ROADMAP L73)
+Open the unknown-device workbench || Werkbank für unbekannte Geräte öffnen
+Unknown devices… || Unbekannte Geräte…
+Group the banners that no rule identified, compare firmware versions and draft a probe rule. || Fasst die Banner zusammen, die keine Regel erkannt hat, vergleicht Firmware-Versionen und entwirft eine Probe-Regel.
+Unknown devices: banner workbench || Unbekannte Geräte: Banner-Werkbank
+Banners of services that no rule identified, grouped by how alike they are. This reads the saved scans only and sends nothing. || Banner von Diensten, die keine Regel erkannt hat, gruppiert nach Ähnlichkeit. Gelesen werden nur die gespeicherten Scans; es wird nichts gesendet.
+Grouping unidentified banners… || Gruppiere unerkannte Banner…
+Drafting a probe rule… || Entwerfe eine Probe-Regel…
+Reading the saved scans… || Lese die gespeicherten Scans…
+{} groups from {} saved scans || {} Gruppen aus {} gespeicherten Scans
+No unidentified banners in the stored scans. || Keine unerkannten Banner in den gespeicherten Scans.
+Choose a group to see its variants. || Wählen Sie eine Gruppe, um ihre Varianten zu sehen.
+{} · {} hosts · {} banners · port {} · {} || {} · {} Hosts · {} Banner · Port {} · {}
+port suggests {} || Port deutet auf {}
+Compare with || Vergleichen mit
+(none) || (keine)
+Group || Gruppe
+Template || Vorlage
+Ports || Ports
+The port number suggests || Die Portnummer deutet auf
+Distinct banners || Verschiedene Banner
+MAC vendors || MAC-Hersteller
+Differs || Unterschiede
+Banner || Banner
+Versions || Versionen
+Similarity of the commonest banners: {} (a group needs at least {}): {} || Ähnlichkeit der häufigsten Banner: {} (eine Gruppe braucht mindestens {}): {}
+they would be one group || sie wären eine Gruppe
+different products or protocols || verschiedene Produkte oder Protokolle
+Group {}: {} ({} hosts, {} distinct banners, ports {}) || Gruppe {}: {} ({} Hosts, {} verschiedene Banner, Ports {})
+The port number suggests: {} || Die Portnummer deutet auf: {}
+MAC vendors of the hosts: {} || MAC-Hersteller der Hosts: {}
+The banners are identical apart from nothing the workbench can see. || Die Banner sind identisch, soweit die Werkbank es sehen kann.
+Differs: {} || Unterschied: {}
+… and {} more banners || … und {} weitere Banner
+Draft a probe rule || Probe-Regel entwerfen
+Builds a rule for data/probes.json from the banners of the group on view. It only listens: the rule adds no probe that sends anything. || Erstellt aus den Bannern der angezeigten Gruppe eine Regel für data/probes.json. Sie hört nur zu: Die Regel fügt keine Probe hinzu, die etwas sendet.
+Note: {} || Hinweis: {}
+Pull request checklist: || Checkliste für den Pull Request:
+Save probe file… || Probe-Datei speichern…
+Probe file || Probe-Datei
+Saved {} || {} gespeichert
+Wrote {} (check it with `probes validate`) and {}. Read both and remove anything that identifies a person, host or site; nothing was sent. || {} geschrieben (prüfen Sie sie mit `probes validate`) und {}. Lesen Sie beide und entfernen Sie alles, was eine Person, einen Host oder einen Standort kennzeichnet; es wurde nichts gesendet.
+
+# Names for screen readers
+Minimum severity || Mindest-Schweregrad
+Minimum EPSS || Mindest-EPSS
+S7 slot || S7-Steckplatz
+# SNMP (read-only) in the settings
+Read devices over SNMP (read-only) || Geräte über SNMP lesen (nur lesend)
+Off || Aus
+Community (SNMP v1/v2c) || Community (SNMP v1/v2c)
+SNMPv3 user || SNMPv3-Benutzer
+Version || Version
+Environment variable with the community || Umgebungsvariable mit der Community
+User name || Benutzername
+Authentication || Authentifizierung
+Privacy || Verschlüsselung
+Environment variable with the authentication passphrase || Umgebungsvariable mit dem Authentifizierungs-Kennwort
+Environment variable with the privacy passphrase || Umgebungsvariable mit dem Verschlüsselungs-Kennwort
+Only the names of the variables are saved, never the passphrases. A scheduled scan reads them again each time it starts. || Gespeichert werden nur die Namen der Variablen, nie die Kennwörter. Ein geplanter Scan liest sie bei jedem Start erneut.
+
+# IPv6 discovery in the settings
+Find IPv6 hosts on the local link after the scan (one multicast ping per interface) || IPv6-Geräte im lokalen Netz nach dem Scan suchen (ein Multicast-Ping je Netzwerkschnittstelle)
+Sends one ICMPv6 echo request to ff02::1 per network interface with hop limit 1, also in Safe Mode, then reads the system's IPv6 neighbor list and joins it to the scanned hosts by MAC address. || Sendet je Netzwerkschnittstelle eine ICMPv6-Echo-Anfrage an ff02::1 mit Hop-Limit 1, auch im abgesicherten Modus, und liest danach die IPv6-Nachbarliste des Systems aus und ordnet sie den gescannten Geräten über die MAC-Adresse zu.

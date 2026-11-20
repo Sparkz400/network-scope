@@ -38,6 +38,58 @@ Ports that stay silent are retried (`--retries`, default 1). Each retry doubles 
 - The SYN engine ignores it (use `--adaptive-syn`); when SYN falls back to TCP connect it applies.
 - Trade-off: a closed port that answers later than the measured RTT is reported as unanswered, not closed. Windows reports a refused connect only after about 2 s (it retransmits the SYN), so with this flag closed ports on a host that also has open ports usually show as unanswered there; open ports are unaffected. Use it on Linux/macOS scanners, or where distinguishing closed from filtered does not matter.
 
+## Very large scans
+
+Targets are never expanded into a list: a /8 (16,777,214 addresses, the limit of 2^24) is a range that the scheduler walks one address at a time, the scope guard judges as a range, and `--dry-run` plans without holding. A test (`core/tests/flat_memory.rs`, a counting allocator) walks 10.0.0.0/8 through the generator, the planner and the scope check and fails above 1 MiB of live memory. Measured on Windows 11 (peak working set of the whole process, 2026-11-20): `scan 10.0.0.0/8 --dry-run` 12.2 MB and 0.23 s, the same as for a /16.
+
+Above 65,536 addresses only responding hosts are kept, and they are not kept in memory: the CLI writes them to the inventory in transactions of 1,000 hosts (`store_stream::ScanWriter`, table `scan_hosts`, database migration 5) while the scan runs. The scan row is inserted when the scan starts and marked incomplete, so an interrupted scan is on record as a partial scan with the hosts written so far. Reading a scan (`export`, `diff`, the desktop) puts the hosts back, so nothing else changes. Measured with real loopback scans of 127.0.0.0/15 (131,070 targets) and 127.0.0.0/14 (262,142): 26.0 and 26.1 MB peak, against 69.6 MB for the /16 (65,534 targets), which is below the limit and kept in memory. The report of a big scan is the exception: it is built from the stored scan and needs every responding host in memory, so very large scans are best run with `--no-report` (or `--stream`) and read later with `export ID`.
+
+## Fast repeat scans
+
+`scan --incremental` (and `monitor --incremental`) check a network that was scanned before without looking at everything again. The base is the newest complete scan of exactly the same targets in the inventory; if there is none, or it used other ports or detection settings, a full scan runs and the message says why.
+
+| Per host | What a repeat scan does |
+| --- | --- |
+| Ports | probes the ports that were open (that are still requested) plus a sample: the 8 likeliest of the others and a rotating slice of 8 more, moved by one slice per base scan, so every port is reached after a few scans. A host that was silent gets the sample only, which is where a sparse network saves most. A scan with 16 ports or fewer is always probed completely |
+| Services (`--services`) | connects once and hashes what the service says first (its greeting banner) or, for a web server, its status line, `Server` header and title. Unchanged: the identification of the base scan is kept. Changed, new or not hashable (a TLS port, a silent one): identified in full as usual. The hash is stored as `incr.fp.PORT` |
+| UDP, traceroute | copied from the base scan for a host that answered then |
+| Ping, ARP, OT identification, DNS, OS and device guess | run as usual |
+
+**Nothing carried over is presented as checked again.** A host that was not probed on every requested port has `ports_checked: false`, the ports it did probe in the identity key `incr.rechecked`, the base scan in `incr.base`, and what was copied in `incr.carried` (for example `svc:22,80;udp`). `diff` and `monitor` compare exactly the ports both scans looked at: a known port that closed or a sampled port that opened is reported, a port the repeat scan did not probe is not, and the `incr.*` keys are bookkeeping that never shows up as a change. A repeat of an unchanged host diffs empty (a test checks it); a test also closes a port between a full and a repeat scan and checks the diff names it.
+
+The price is stated plainly: a repeat scan can miss a new service on a port outside the sample, or a changed UDP answer, until the rotation reaches it. Run a full scan now and then; `monitor --incremental` does it every 10th cycle (`--full-every N`). Run time depends on how much of the cost is port probing and identification; the lab numbers are in [Lab and testing](lab-and-testing.md#fast-repeat-scans).
+
+## Several subnets and interfaces at once
+
+Several target ranges (`10.0.1.0/24,10.0.2.0/24,192.168.1.0/24`) are scanned at the same time, not one after the other: the targets are handed to the scheduler one address of each range in turn, so a slow or silent subnet cannot hold the others back. There is one rate gate, one worker limit and one back-off for the whole scan, so `--rate` and Safe Mode spacing apply to the scan as a whole, however many subnets it covers. A test scans two loopback ranges concurrently.
+
+The raw features can use several interfaces: `--interface eth0,eth1 --source-ip 10.0.0.5,192.168.1.5 --source-mac M1,M2` (paired by position) opens a SYN engine and an ARP sweep engine per interface, and each target goes out through the interface the operating system's routing table picks for it: one on whose subnet the target lies, else the first that routes to it, else the connect scan. The pairing and the choice are unit-tested; the capture part has not been run against two real interfaces (it needs Npcap or libpcap and administrator rights).
+
+## Probe order and early stop
+
+A host's ports are probed likeliest first, not in numeric order: first the order of the built-in top-100 frequency list, then the rest by number. As evidence for a device class arrives (the MAC vendor from the ARP answer, the initial TTL from the ping, and the ports found open so far), the class's priority ports move to the front: printers 9100, 631, 515; controllers 502, 102, 44818; Windows 445, 135, 3389; and so on (`data/port_classes.json`). The scan only reorders the ports you asked for, never adds one, and the result of a host is sorted by port at the end, so the order never changes what is reported; a test scans the same host with two different orders and compares the results. The order matters when probes are paced (Safe Mode, `--rate`) or capped (`--parallel`): the answers that identify a host arrive first.
+
+`--early-stop` (off by default) uses that: once a host's class is certain (two signature ports open, or one plus a vendor match, the device classifier agrees, and the class's priority ports have been probed), its remaining ports are skipped. With the flag the number of probes in flight per host is capped at 16, so answers arrive while ports are left to skip. A host that stopped early has `ports_checked: false` and a note ("early stop: identified as Printer / MFP ... N port(s) were not probed"), so `diff` and `monitor` treat its unprobed ports as unknown, not closed. Use it for a quick inventory; do not use it where a complete port list matters.
+
+## Automatic back-off
+
+A scan must never harm a device, so each host has its own pacing controller (on by default; `--no-backoff` or the Settings checkbox turns it off). It only ever slows a host down: it never raises a limit above what Safe Mode, `--parallel` or `--rate` allow.
+
+**Limits per device type.** The type is learned from the ports found open during the scan, and caps the parallel probes to that host:
+
+| Type | Recognised by | Parallel probes | Back-off step | Paused after |
+| --- | --- | --- | --- | --- |
+| OT controller or printer | an OT port (102, 502, 4840, 44818, 47808, ...) or a printer port (515, 9100-9107) is open | at most 2 | 250 ms | 3 strikes |
+| Unclassified (every host at the start) | everything else | at most 32 | 100 ms | 4 strikes |
+| Computer | two or more typical computer ports are open (22, 135, 139, 445, 3389, 5985, databases, ...) and no OT or printer port | no extra cap | 50 ms | 6 strikes |
+
+**What counts as trouble.** A closed port answers with a refusal and a filtered port with silence on a perfectly healthy host, so neither says anything about an ordinary computer; a scan of a host with thousands of closed ports is never slowed. These do count:
+
+- A connection that is **reset or aborted while connecting**, and a port the scan found open that **stops answering** when service or OT identification connects to it again (the "refuses after N connections" pattern). Each is a *strike*: the host's parallel probes are halved, the delay between its probes doubles (starting at the step above, at most 2 s) and, after enough strikes, the host is **paused for the rest of the scan**: no further probes of any kind are sent to it. Ports that were not probed because of a pause are unknown, not closed: the host is marked as not fully checked, so `monitor` and `diff` do not report them as closed.
+- On OT controllers and printers only: a burst of 12 refusals in a row, or 6 timeouts among the last 8 connections, after the host had answered. That slows the host down once and never pauses it.
+
+Every reaction is recorded in the host's notes, first in the list, as `backed off: ...` with the reason and the new limits. The controller is a pure state machine (`core/src/backoff.rs`) with tests for these rules, including the negative cases above.
+
 ## Ports
 
 `--top-ports N` or `top:N` in the port field adds the N most common TCP ports (1-100). The ordering is approximate, recalled from public scanner statistics, and not generated from any third-party services file.
@@ -120,4 +172,8 @@ On one host whose firewall silently drops most ports, both tools are limited by 
 
 ## Source layout
 
-`core` (scheduler/rate gate), `scan` (targets and model), `syn`, `arp`, `service`, `tls`, `fingerprint`, `udp`, `osfp`, `oui`, `devices`, `trace`, `topology`, `risk`, `report`, `nmap`, `monitor`, `notify`, `script`, `probes`, `capture`, `passive`, `otpassive`, `pcapfile`, `ot` (including `ot/opcua`), `platform`, `store`, `ui` (CLI/TUI) and `gui` (egui). All of them are crate-private modules of the library (`src/lib.rs`), which exports only `run` (CLI/TUI/GUI dispatch) and the fuzzing entry points (`fuzz`). `main.rs` (GUI subsystem on Windows) and `bin/network-scope-cli.rs` (console twin) just call `network_scope::run`.
+The repository is a Cargo workspace of two crates.
+
+`network-scope-core` (`core/`, library `network_scope_core`) is the engine without any GUI code: `core` (scheduler/rate gate), `scan` (targets and model), `syn`, `arp`, `service`, `tls`, `fingerprint`, `udp`, `osfp`, `oui`, `devices`, `trace`, `topology`, `risk`, `report`, `nmap`, `monitor`, `notify`, `script`, `probes`, `capture`, `passive`, `otpassive`, `pcapfile`, `observations`, `ot` (including `ot/opcua`), `platform` and `store`. Its crate documentation (`cargo doc -p network-scope-core --open`) lists the entry points for other tools: scan a target list, parse and import, analyze risk, open the store.
+
+`network-scope` (the repository root) is the application: `ui` (CLI/TUI, `src/ui/`: option parsing, one file per command under `src/ui/commands/`, the live view) and `gui` (egui). Its library (`src/lib.rs`) exports only `run` (CLI/TUI/GUI dispatch) and the fuzzing entry points (`fuzz`, re-exported from the core crate). `main.rs` (GUI subsystem on Windows) and `bin/network-scope-cli.rs` (console twin) just call `network_scope::run`.

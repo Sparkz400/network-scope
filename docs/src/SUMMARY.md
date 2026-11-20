@@ -13,19 +13,30 @@
 - [GUI guide](gui-guide.md)
 - [CLI reference](cli-reference.md)
 - [Inventory, diffs and reports](inventory-diff-reports.md)
+- [JSON output and schemas](json-output.md)
+- [MCP server for AI assistants](mcp.md)
+- [Import, export and sync](import-export.md)
+- [Research data layer](research.md)
+- [Segmentation check](segmentation.md)
+- [Reproducible scans](reproducible-scans.md)
 - [Monitoring and alerts](monitoring-alerts.md)
+- [Service and scheduling](service-and-scheduling.md)
 - [Scripting](scripting.md)
 
 # How it works
 
 - [Scanning engine](scanning-engine.md)
 - [Detection](detection.md)
+- [SNMP (read-only, with your credentials)](snmp.md)
+- [IPv6 discovery](ipv6-discovery.md)
+- [Device identity](device-identity.md)
 - [Findings and CVE hints](findings-and-cves.md)
   - [Finding reference](findings/index.md)
     - [TLS certificate has expired](findings/tls-cert-expired.md)
     - [TLS certificate expires within 30 days](findings/tls-cert-expiring.md)
     - [TLS certificate is not yet valid](findings/tls-cert-not-yet-valid.md)
     - [Self-signed TLS certificate](findings/tls-self-signed.md)
+    - [Self-signed certificate with a bad signature](findings/tls-self-signed-bad-signature.md)
     - [Certificate signed with a weak hash](findings/tls-weak-signature.md)
     - [Certificate uses a short RSA key](findings/tls-weak-key.md)
     - [SSLv3 is enabled](findings/tls-sslv3.md)
@@ -66,7 +77,10 @@
 
 # Reference
 
+- [Comparison with other tools](comparison.md)
 - [Lab and testing](lab-and-testing.md)
+- [Contributing fingerprints](contributing-fingerprints.md)
+- [Supply chain: SBOM and reproducible builds](supply-chain.md)
 - [Data sources](data-sources.md)
 - [FAQ and troubleshooting](faq.md)
 - [Changelog](changelog.md)

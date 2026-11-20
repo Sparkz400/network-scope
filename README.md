@@ -28,7 +28,7 @@ Network Scope finds the hosts on a network, identifies what runs on them, flags 
 ## Features
 
 - **Fast discovery**: async TCP connect scanning (no driver, no admin rights), optional SYN scanning, ARP and ICMP discovery, UDP probes, traceroute (ICMP/TCP/UDP).
-- **Service detection**: banners and data-driven probes, HTTP, TLS (certificate, versions, cipher suites, JA4S-style fingerprint), SSH (HASSHServer), SMB 2/3 and SMBv1, RDP, LDAP, databases.
+- **Service detection**: banners and data-driven probes, HTTP, TLS (certificate, versions, cipher suites, JA3S fingerprint), SSH (HASSHServer), SMB 2/3 and SMBv1, RDP, LDAP, databases.
 - **Risk findings and CVE hints**: weak TLS/SSH, cleartext protocols, unauthenticated services, SMB signing/encryption, plus version-based CVE hints with CPE names.
 - **OT / industrial**: read-only identification of Modbus/TCP, S7, EtherNet/IP, BACnet/IP and OPC UA; passive OT asset discovery from pcap/pcapng or a live interface, with control-traffic detection.
 - **Inventory and diffs**: every scan stored in SQLite; diffs with new, resolved and unconfirmed findings; device timelines across scans.

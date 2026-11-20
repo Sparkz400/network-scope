@@ -1,0 +1,16 @@
+# Runs network-scope-monitor-once.service every 15 minutes (and once after boot).
+# Enable with: systemctl enable --now network-scope-monitor-once.timer
+# Do not enable this together with network-scope-monitor.service for the same targets.
+
+[Unit]
+Description=Run the Network Scope monitor every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+Persistent=true
+Unit=network-scope-monitor-once.service
+
+[Install]
+WantedBy=timers.target

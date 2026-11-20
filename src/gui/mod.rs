@@ -1,17 +1,31 @@
+mod a11y;
 mod controls;
+mod convenience;
 mod demo;
 mod details;
+mod home;
+mod i18n;
+mod map;
 mod ot;
+mod palette;
+mod preset_ui;
+mod quick;
+mod recording;
+mod scheduler;
 mod settings;
 mod tables;
+mod timeline;
+mod updates;
 mod windows;
+mod workbench;
 
-use crate::{devices, passive, risk, scan, store, topology};
+use crate::{devices, localnets, passive, risk, scan, store, topology, update};
 use eframe::egui::{self, Color32, RichText};
 use egui_extras::{Column, TableBuilder};
+use i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::IpAddr,
     path::PathBuf,
     sync::{atomic::Ordering, mpsc},
@@ -26,6 +40,27 @@ struct Saved {
     notes: BTreeMap<IpAddr, String>,
     /// CVE rules file merged over the built-in rules (like `--cves`); empty: the default rules.
     cves_file: String,
+    /// Recurring scans while the window is open (off by default).
+    schedule: crate::schedule::Schedule,
+    /// Ask GitHub for the latest release once when the program starts (notify only, never
+    /// downloads). Off unless the user turns it on.
+    check_updates: bool,
+    /// Starred devices (favorites), by MAC address or, without one, IP address. Kept here and
+    /// not in the inventory: it is a setting of this computer (see `convenience`).
+    starred: BTreeSet<String>,
+    /// The chosen scan preset when it is the passive `plant` one (else empty: the picker shows
+    /// the preset the settings equal).
+    preset: String,
+    /// Probe the addresses in random order.
+    randomize: bool,
+    /// Record each scan's traffic to `NetworkScope/recordings` (wire capture when possible).
+    record_traffic: bool,
+    /// `auto` (or empty: follow the system), `en` or `de`.
+    language: String,
+    /// Dark theme (light is the default).
+    dark: bool,
+    /// Interface scale on top of the system's scale factor; 0 means 1.0.
+    zoom: f32,
 }
 impl Saved {
     /// What goes to disk: empty notes are dropped.
@@ -119,6 +154,7 @@ fn filter_rows(
     query: &str,
     haystacks: &mut HashMap<IpAddr, String>,
     notes: &BTreeMap<IpAddr, String>,
+    starred: &BTreeSet<String>,
 ) -> Vec<usize> {
     results
         .iter()
@@ -128,6 +164,7 @@ fn filter_rows(
                 Filter::All => true,
                 Filter::Responding => h.responding,
                 Filter::Open => !h.open.is_empty(),
+                Filter::Starred => starred.contains(&convenience::favorite_key(h)),
             }) && (query.is_empty()
                 || haystacks
                     .entry(h.ip)
@@ -156,6 +193,20 @@ enum Job {
     ExportAssets(Vec<crate::otpassive::Asset>, bool, PathBuf),
     /// Loads a script file/folder and runs it on a copy of the host (token, path, host).
     TestScript(u64, String, Box<scan::Host>),
+    /// The timeline of one device (token, MAC or IP address): `store::device_history`.
+    History(u64, String),
+    /// The "what changed" overview (token, window).
+    Home(u64, home::Window),
+    /// The local IPv4 networks of this computer (`localnets::detect`).
+    Networks,
+    /// A search across the saved scans (token, query).
+    Search(u64, String),
+    /// The unknown-device workbench: group the unidentified banners of every saved scan.
+    Groups(u64),
+    /// A draft probe rule for one group (token, group).
+    Draft(u64, Box<crate::service::workbench::Group>),
+    /// Writes a draft probe file and its checklist (`FILE`, `FILE.checklist.md`).
+    WriteDraft(Box<workbench::DraftView>, PathBuf),
 }
 enum Done {
     Saved(&'static str, usize, Result<i64, String>),
@@ -166,6 +217,14 @@ enum Done {
     PrefsWritten(Result<(), String>),
     Exported(PathBuf, Result<(), String>),
     ScriptTested(u64, Result<crate::script::Outcome, String>),
+    History(u64, Result<Box<crate::devices::DeviceHistory>, String>),
+    Home(u64, Result<Box<home::HomeData>, String>),
+    Networks(Result<Vec<localnets::LocalNet>, String>),
+    Searched(u64, Result<Box<crate::search::Results>, String>),
+    Groups(u64, Result<Box<workbench::GroupsData>, String>),
+    /// A draft (token, group id, result).
+    Drafted(u64, String, Result<Box<workbench::DraftView>, String>),
+    DraftWritten(Result<(String, String), String>),
 }
 fn write_file(path: &std::path::Path, data: Result<String, String>) -> Result<(), String> {
     data.and_then(|d| std::fs::write(path, d).map_err(|e| format!("{}: {e}", path.display())))
@@ -196,7 +255,7 @@ fn run_job(job: Job) -> Done {
             let data = if csv {
                 Ok(crate::otpassive::assets_csv(&assets))
             } else {
-                serde_json::to_string_pretty(&assets).map_err(|e| e.to_string())
+                crate::schema::list("ot-assets", "assets", &assets)
             };
             let result = write_file(&file, data);
             Done::Exported(file, result)
@@ -205,6 +264,24 @@ fn run_job(job: Job) -> Done {
             token,
             crate::script::Scripts::load(&path).map(|s| s.dry_run(&host)),
         ),
+        Job::History(token, query) => {
+            Done::History(token, store::device_history(&path, &query).map(Box::new))
+        }
+        Job::Home(token, window) => Done::Home(
+            token,
+            home::compute(&path, window, unix_now()).map(Box::new),
+        ),
+        Job::Networks => Done::Networks(localnets::detect()),
+        Job::Search(token, query) => Done::Searched(
+            token,
+            crate::search::search(&path, &query, 60).map(Box::new),
+        ),
+        Job::Groups(token) => Done::Groups(token, workbench::load_groups(&path)),
+        Job::Draft(token, group) => {
+            let id = group.id.clone();
+            Done::Drafted(token, id, workbench::make_draft(&group))
+        }
+        Job::WriteDraft(view, file) => Done::DraftWritten(workbench::write_draft(&file, &view)),
     }
 }
 struct Worker {
@@ -248,23 +325,38 @@ struct Busy {
     prefs: bool,
     exporting: usize,
     testing: bool,
+    history: bool,
+    home: bool,
+    detecting: bool,
+    searching: bool,
+    workbench: bool,
+    drafting: bool,
+    writing_draft: bool,
 }
 impl Busy {
     fn label(&self) -> Option<&'static str> {
         if self.saving > 0 {
-            Some("Saving to inventory…")
+            Some(tr!("Saving to inventory…"))
         } else if self.exporting > 0 {
-            Some("Writing export…")
+            Some(tr!("Writing export…"))
         } else if self.testing {
-            Some("Running script…")
+            Some(tr!("Running script…"))
+        } else if self.history {
+            Some(tr!("Reading device history…"))
         } else if self.loading {
-            Some("Opening inventory…")
+            Some(tr!("Opening inventory…"))
         } else if self.comparing {
-            Some("Comparing scans…")
+            Some(tr!("Comparing scans…"))
+        } else if self.detecting {
+            Some(tr!("Looking for your networks…"))
         } else if self.listing {
-            Some("Reading inventory…")
+            Some(tr!("Reading inventory…"))
+        } else if self.workbench {
+            Some(tr!("Grouping unidentified banners…"))
+        } else if self.drafting || self.writing_draft {
+            Some(tr!("Drafting a probe rule…"))
         } else if self.importing {
-            Some("Reading address list…")
+            Some(tr!("Reading address list…"))
         } else {
             None
         }
@@ -276,6 +368,29 @@ enum Filter {
     Responding,
     All,
     Open,
+    Starred,
+}
+/// The two main views: the "what changed" overview and the table of hosts.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+enum MainView {
+    #[default]
+    Home,
+    Hosts,
+}
+/// The documentation page of a finding rule id (`telnet-open`). The run-time id families have one
+/// shared page each (`cve-...`, `script-...`); `cve-cve-2020-0796` has its own.
+fn docs_url(id: &str) -> String {
+    let lower = id.to_ascii_lowercase();
+    let page = if lower == "cve-cve-2020-0796" {
+        lower.as_str()
+    } else if lower.starts_with("cve-") {
+        "cve-hints"
+    } else if lower.starts_with("script-") {
+        "script-findings"
+    } else {
+        lower.as_str()
+    };
+    format!("https://sparkz400.github.io/network-scope/findings/{page}.html")
 }
 struct Scanner {
     saved: Saved,
@@ -289,6 +404,11 @@ struct Scanner {
     error: String,
     /// Why the CVE rules file in the settings could not be loaded; empty when it loaded.
     cves_error: String,
+    /// The answer of the update check that runs at start (when enabled) while it is pending.
+    update_check: Option<updates::Check>,
+    /// A newer release that the check found; shown in the status bar until dismissed.
+    update_notice: Option<update::Release>,
+    update_open: bool,
     settings_open: bool,
     about_open: bool,
     selected: Option<IpAddr>,
@@ -312,7 +432,7 @@ struct Scanner {
     compare_b: Option<i64>,
     changes: Vec<String>,
     observations: Vec<passive::Observation>,
-    observation_index: crate::ui::ObservationIndex,
+    observation_index: crate::observations::ObservationIndex,
     capture_selected: Option<usize>,
     listening: Option<passive::Listening>,
     interfaces: Vec<(String, String)>,
@@ -322,11 +442,19 @@ struct Scanner {
     scan_complete: bool,
     scan_scope: String,
     scan_settings: scan::Settings,
+    /// The IPv6 step after a finished scan (`--ipv6-discover`), running off the UI thread: it
+    /// blocks for the echo's wait on every interface. Its answer is the host list with the IPv6
+    /// results joined by MAC.
+    ipv6_job: Option<mpsc::Receiver<(Vec<scan::Host>, crate::ipv6::Outcome)>>,
     /// Bumped whenever results (including their order) or observations change.
     generation: u64,
     /// Bumped whenever a note changes.
     notes_generation: u64,
     haystacks: HashMap<IpAddr, String>,
+    /// Rows of hosts still being scanned (`scan::Event::Partial`), by address: the row index.
+    live: HashMap<IpAddr, usize>,
+    /// The traffic recording of the running scan (Settings: "Record the scan's traffic").
+    recording: Option<recording::Recording>,
     rows: Vec<usize>,
     rows_key: Option<(u64, u64, Filter, String)>,
     responding: usize,
@@ -344,10 +472,45 @@ struct Scanner {
     devices_view: tables::View,
     script_test: Option<ScriptTest>,
     script_tokens: u64,
+    /// The device timeline window (opened from the host details).
+    timeline: Option<timeline::Timeline>,
+    timeline_tokens: u64,
     ot: ot::OtState,
+    /// The unknown-device workbench window.
+    workbench: workbench::WorkbenchState,
     /// Stored time of the inventory snapshot on screen; `None` for live results (exports are
     /// then stamped with the current time).
     opened_stamp: Option<i64>,
+    /// When the schedule was enabled or its last scan started; the interval counts from here.
+    schedule_anchor: Option<Instant>,
+    /// What the scheduler is waiting for, shown in the settings.
+    schedule_note: String,
+    /// Why the scheduled targets cannot be scanned; empty when they parse.
+    schedule_error: String,
+    /// The scope guard wants a yes before this scan starts: what it found (public or
+    /// out-of-scope addresses). Shown as a dialog; `None` when nothing is pending.
+    scope_confirm: Option<(String, String)>,
+    /// What the last scan sent, by packet kind and detail (saved with the scan).
+    scan_sent: Vec<crate::sendlog::SentEntry>,
+    /// Set for one call of `start` after the user confirmed the dialog.
+    scope_consent: crate::scope::Consent,
+    /// What the main area shows.
+    view: MainView,
+    home: home::HomeState,
+    quick: quick::QuickState,
+    /// The local networks of the last detection (for broadcast addresses).
+    local_nets: Vec<localnets::LocalNet>,
+    wake: Option<convenience::WakeRequest>,
+    palette: palette::Palette,
+    map: map::MapState,
+    /// The id of the saved scan whose results are on screen (None: a live or unsaved scan).
+    loaded_scan: Option<i64>,
+    /// Show these hosts as soon as the scan being opened has loaded.
+    pending_focus: Option<Vec<IpAddr>>,
+    /// The zoom factor last applied to the context.
+    zoom_applied: f32,
+    /// Screenshot mode: scroll the settings to the appearance section.
+    scroll_to_appearance: bool,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -358,7 +521,6 @@ struct ScriptTest {
 }
 impl Scanner {
     fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::light());
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
@@ -373,6 +535,7 @@ impl Scanner {
         };
         prune_notes(&mut saved.notes);
         let prefs_written = saved.to_disk();
+        i18n::set(i18n::detect(&saved.language));
         let mut app = Self {
             saved,
             targets: "192.168.1.1-254".into(),
@@ -381,9 +544,12 @@ impl Scanner {
             run: None,
             filter: Filter::Responding,
             search: String::new(),
-            status: "Ready to scan".into(),
+            status: tr!("Ready to scan").into(),
             error: String::new(),
             cves_error: String::new(),
+            update_check: None,
+            update_notice: None,
+            update_open: false,
             settings_open: false,
             about_open: false,
             selected: None,
@@ -414,9 +580,12 @@ impl Scanner {
             scan_complete: true,
             scan_scope: String::new(),
             scan_settings: scan::Settings::default(),
+            ipv6_job: None,
             generation: 0,
             notes_generation: 0,
             haystacks: HashMap::new(),
+            live: HashMap::new(),
+            recording: None,
             rows: vec![],
             rows_key: None,
             responding: 0,
@@ -433,9 +602,35 @@ impl Scanner {
             devices_view: tables::View::default(),
             script_test: None,
             script_tokens: 0,
+            timeline: None,
+            timeline_tokens: 0,
             ot: ot::OtState::default(),
+            workbench: Default::default(),
             opened_stamp: None,
+            schedule_anchor: None,
+            schedule_note: String::new(),
+            schedule_error: String::new(),
+            scope_confirm: None,
+            scan_sent: vec![],
+            scope_consent: Default::default(),
+            view: MainView::Home,
+            home: Default::default(),
+            quick: Default::default(),
+            local_nets: vec![],
+            wake: None,
+            palette: Default::default(),
+            map: Default::default(),
+            loaded_scan: None,
+            pending_focus: None,
+            zoom_applied: 1.0,
+            scroll_to_appearance: false,
         };
+        i18n::set(i18n::detect(&app.saved.language));
+        apply_theme(&cc.egui_ctx, app.saved.dark);
+        if app.saved.zoom > 0.0 {
+            cc.egui_ctx.set_zoom_factor(app.saved.zoom);
+            app.zoom_applied = app.saved.zoom;
+        }
         // A broken user CVE file is reported, not silently replaced by the built-in rules.
         if app.screenshot.is_none() {
             if app.saved.cves_file.trim().is_empty() {
@@ -454,10 +649,20 @@ impl Scanner {
                 }
             }
         }
+        // Opt-in, never in screenshot mode: one request, in the background.
+        if app.saved.check_updates && app.screenshot.is_none() {
+            app.start_update_check(&cc.egui_ctx);
+        }
+        // The first view: what changed, read from the inventory in the background.
+        app.refresh_home();
         if app.screenshot.is_some()
             && let Ok(state) = std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
         {
             app.seed_demo(&state);
+            // The theme and language the state asked for ("-dark", "-de").
+            i18n::set(i18n::detect(&app.saved.language));
+            apply_theme(&cc.egui_ctx, app.saved.dark);
+            app.status = tr!("Ready to scan").into();
         }
         app
     }
@@ -474,6 +679,13 @@ impl Scanner {
             Job::WritePrefs(_) => self.busy.prefs = true,
             Job::Export(..) | Job::ExportAssets(..) => self.busy.exporting += 1,
             Job::TestScript(..) => self.busy.testing = true,
+            Job::History(..) => self.busy.history = true,
+            Job::Home(..) => self.busy.home = true,
+            Job::Networks => self.busy.detecting = true,
+            Job::Search(..) => self.busy.searching = true,
+            Job::Groups(..) => self.busy.workbench = true,
+            Job::Draft(..) => self.busy.drafting = true,
+            Job::WriteDraft(..) => self.busy.writing_draft = true,
         }
         let sent = self
             .worker
@@ -496,12 +708,23 @@ impl Scanner {
                                 format!("{observations} observations · saved capture #{id}")
                         }
                         Ok(id) if kind == "ot" => {
-                            self.status = format!(
-                                "OT passive: {observations} observations · saved capture #{id}"
+                            self.status = tr!(
+                                "OT passive: {} observations · saved capture #{}",
+                                observations,
+                                id
                             )
                         }
-                        Ok(id) => self.status.push_str(&format!(" · saved #{id}")),
-                        Err(e) => self.error = format!("Inventory could not be saved: {e}"),
+                        Ok(id) => {
+                            self.status
+                                .push_str(&format!(" · {}", tr!("saved #{}", id)));
+                            if kind == "scan" {
+                                if self.run.is_none() {
+                                    self.loaded_scan = Some(id);
+                                }
+                                self.refresh_home();
+                            }
+                        }
+                        Err(e) => self.error = tr!("Inventory could not be saved: {}", e),
                     }
                 }
                 Done::Listed(result) => {
@@ -536,8 +759,17 @@ impl Scanner {
                 Done::Read(result) => {
                     self.busy.importing = false;
                     match result {
-                        Ok(text) if self.run.is_none() => self.targets = text,
-                        Ok(_) => self.error = "Address list ignored: a scan is running.".into(),
+                        Ok(text) if self.run.is_none() => {
+                            let list = crate::targets::from_list(&text);
+                            if list.is_empty() {
+                                self.error = tr!("The list has no addresses.").into();
+                            } else {
+                                self.targets = list;
+                            }
+                        }
+                        Ok(_) => {
+                            self.error = tr!("Address list ignored: a scan is running.").into()
+                        }
                         Err(e) => self.error = e,
                     }
                 }
@@ -554,6 +786,19 @@ impl Scanner {
                         Err(e) => self.error = format!("Export failed: {e}"),
                     }
                 }
+                Done::History(token, result) => {
+                    self.busy.history = false;
+                    // An answer for a window that was closed or asked again since is dropped.
+                    if let Some(t) = self.timeline.as_mut().filter(|t| t.token == token) {
+                        t.result = Some(result);
+                    }
+                }
+                Done::Home(token, result) => self.home_loaded(token, result),
+                Done::Networks(result) => self.networks_found(result),
+                Done::Searched(token, result) => self.search_loaded(token, result),
+                Done::Groups(token, result) => self.groups_loaded(token, result),
+                Done::Drafted(token, group, result) => self.draft_made(token, group, result),
+                Done::DraftWritten(result) => self.draft_written(result),
                 Done::ScriptTested(token, result) => {
                     self.busy.testing = false;
                     // A test for another host (or one replaced since) is dropped.
@@ -595,6 +840,7 @@ impl Scanner {
         };
         self.scan_settings = snapshot.settings;
         self.scan_complete = snapshot.complete;
+        self.scan_sent = snapshot.sent;
         self.selected = None;
         self.script_test = None;
         self.previous.clear();
@@ -615,6 +861,11 @@ impl Scanner {
         }
         self.recount();
         self.sort();
+        self.loaded_scan = Some(id);
+        if let Some(ips) = self.pending_focus.take() {
+            self.view = MainView::Hosts;
+            self.focus_host(&ips);
+        }
     }
     fn clear(&mut self) {
         self.results.clear();
@@ -624,58 +875,212 @@ impl Scanner {
         self.selected = None;
         self.script_test = None;
         self.scan_scope.clear();
+        self.scan_sent.clear();
         self.capture_scope.clear();
         self.scan_complete = true;
         self.capture_complete = true;
         self.changes.clear();
         self.opened_stamp = None;
-        self.status = "Ready to scan".into();
+        self.loaded_scan = None;
+        self.status = tr!("Ready to scan").into();
         self.recount();
         self.data_changed();
     }
     fn start(&mut self) {
+        self.start_checked(false);
+    }
+    /// A scan nobody is watching (the scheduler): the same scope guard, but nobody can confirm,
+    /// so what needs a yes is refused (no dialog, no stored consent is used) and the reason goes
+    /// to the status line.
+    fn start_unattended(&mut self) {
+        self.start_checked(true);
+    }
+    fn start_checked(&mut self, unattended: bool) {
         if self.listening.is_some() || self.ot.capturing() {
             self.error = "Stop passive capture before starting an active scan.".into();
             return;
         }
         if self.busy.loading {
-            self.error = "Wait until the inventory scan has been opened.".into();
+            self.error = tr!("Wait until the inventory scan has been opened.").into();
             return;
         }
+        if self.saved.preset == preset_ui::PLANT {
+            // The passive preset sends nothing: point to the listener instead of scanning.
+            self.error = tr!(
+                "The Plant preset is passive and sends no packets. Use Listen (OT) in Passive / DCP, or choose another preset to scan."
+            )
+            .into();
+            if !unattended {
+                self.capture_open = true;
+            }
+            return;
+        }
+        // Consent counts for this call only, whichever way it ends.
+        let consent = if unattended {
+            crate::scope::Consent::default()
+        } else {
+            std::mem::take(&mut self.scope_consent)
+        };
         let parsed =
             scan::parse_hosts(&self.targets, self.saved.settings.skip_edges).and_then(|hosts| {
                 scan::parse_ports(&self.saved.settings.ports).map(|ports| (hosts, ports))
             });
         match parsed {
-            Ok((hosts, ports)) => {
+            Ok((mut hosts, ports)) => {
+                // The same scope check as the CLI (ROADMAP H54): public or out-of-scope
+                // addresses need a yes in the confirmation dialog first.
+                if let Some(text) = self.scope_check(&hosts, consent) {
+                    if unattended {
+                        self.error = format!("Scheduled scan not started. {text}");
+                        return;
+                    }
+                    // The dialog remembers the targets it was shown for.
+                    self.scope_confirm = Some((self.targets.clone(), text));
+                    return;
+                }
+                // The same addresses, probed in random order (the order only).
+                if self.saved.randomize {
+                    crate::targets::shuffle(&mut hosts, crate::targets::fresh_seed());
+                }
+                if !unattended {
+                    self.view = MainView::Hosts;
+                }
+                self.loaded_scan = None;
                 // Passive observations stay: the Devices window merges them with this scan.
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
                 self.haystacks.clear();
+                self.live.clear();
                 self.selected = None;
                 self.script_test = None;
                 self.scan_complete = true;
                 self.scan_scope = self.targets.clone();
-                self.scan_settings = self.saved.settings.clone();
+                self.scan_settings = windows::settings_for_scan(&self.saved.settings);
                 self.opened_stamp = None;
+                self.scan_sent.clear();
                 self.error.clear();
-                self.status = format!("Scanning {} addresses", hosts.len());
+                self.status = tr!("Scanning {} addresses", hosts.len());
                 self.recount();
                 self.data_changed();
-                self.run = Some(scan::start(hosts, ports, self.saved.settings.clone()));
+                let live_settings = scan::Settings {
+                    partial_events: true,
+                    record: self.saved.record_traffic,
+                    ..self.saved.settings.clone()
+                };
+                // The wire capture starts before the scan sends its first packet.
+                self.recording = self.saved.record_traffic.then(|| {
+                    let dir = saved_path().with_file_name("recordings");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    recording::start(
+                        recording::file_in(&dir, now),
+                        &self.saved.settings.interface,
+                        &hosts,
+                    )
+                });
+                self.run = Some(scan::start(hosts, ports, live_settings));
             }
             Err(e) => self.error = e,
         }
     }
+    /// `Some(description)` when the scope guard needs the user's confirmation for `hosts`.
+    fn scope_check(&mut self, hosts: &[IpAddr], consent: crate::scope::Consent) -> Option<String> {
+        let declared = match crate::scope::declared(None, crate::scope::default_path().as_deref()) {
+            Ok(declared) => declared,
+            // An unreadable scope file blocks the scan until the user confirms once.
+            Err(_) if consent.out_of_scope => None,
+            Err(e) => {
+                return Some(format!(
+                    "The scope file is invalid ({e}), so nothing is known to be in scope."
+                ));
+            }
+        };
+        match crate::scope::enforce(hosts, declared.as_ref(), consent, None) {
+            Ok(_) => None,
+            Err(_) => Some(crate::scope::assess(hosts, declared.as_ref()).describe()),
+        }
+    }
+    /// The end of a scan: the results are final (the IPv6 step, if any, has run), they are saved
+    /// to the inventory and the scan is over for the rest of the window.
+    fn finish_scan(&mut self) {
+        self.live.clear();
+        self.run = None;
+        self.data_changed();
+        let snapshot = self.scan_snapshot();
+        self.submit(Job::Save(Box::new(snapshot), "scan"));
+    }
+    /// Waits for the IPv6 step; true while it runs.
+    fn poll_ipv6(&mut self) -> bool {
+        let Some(job) = &self.ipv6_job else {
+            return false;
+        };
+        match job.try_recv() {
+            Ok((hosts, outcome)) => {
+                self.ipv6_job = None;
+                self.results = hosts;
+                self.haystacks.clear();
+                if let Some(run) = &self.run {
+                    // the echoes are in the sent log now
+                    self.scan_sent = run.sent.snapshot();
+                }
+                self.status = format!("{} · {}", self.status, outcome.summary());
+                if !outcome.found.notes.is_empty() {
+                    self.status = format!("{} ({})", self.status, outcome.found.notes.join("; "));
+                }
+                self.recount();
+                self.sort();
+                self.finish_scan();
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.ipv6_job = None;
+                self.status = format!("{} · IPv6 discovery failed", self.status);
+                self.finish_scan();
+                false
+            }
+        }
+    }
     fn poll(&mut self) {
+        if self.poll_ipv6() {
+            return;
+        }
         let mut done = false;
         let mut changed = false;
+        let mut recount = false;
         if let Some(run) = &self.run {
             for _ in 0..2048 {
                 match run.receiver.try_recv() {
+                    Ok(scan::Event::Partial(host)) => {
+                        // A host that answered, or a port found open, before the host is done.
+                        self.haystacks.remove(&host.ip);
+                        match self.live.get(&host.ip).copied() {
+                            Some(i) if self.results.get(i).is_some_and(|r| r.ip == host.ip) => {
+                                self.results[i] = host;
+                            }
+                            _ => {
+                                self.live.insert(host.ip, self.results.len());
+                                self.results.push(host);
+                            }
+                        }
+                        recount = true;
+                        changed = true;
+                    }
                     Ok(scan::Event::Host(host)) => {
-                        self.responding += usize::from(host.responding);
-                        self.with_open += usize::from(!host.open.is_empty());
-                        self.results.push(host);
+                        self.haystacks.remove(&host.ip);
+                        match self.live.remove(&host.ip) {
+                            Some(i) if self.results.get(i).is_some_and(|r| r.ip == host.ip) => {
+                                // Replaces the provisional row; the counters are redone below.
+                                self.results[i] = host;
+                                recount = true;
+                            }
+                            _ => {
+                                self.responding += usize::from(host.responding);
+                                self.with_open += usize::from(!host.open.is_empty());
+                                self.results.push(host);
+                            }
+                        }
                         changed = true;
                     }
                     Ok(scan::Event::Error(e)) => {
@@ -695,8 +1100,9 @@ impl Scanner {
                 }
             }
             if done {
+                self.scan_sent = run.sent.snapshot();
                 self.status = format!(
-                    "{} · {} of {} addresses · {:.1}s",
+                    "{} · {} of {} addresses · {:.1}s · {} packets sent",
                     if run.cancel.load(Ordering::Relaxed) {
                         "Stopped"
                     } else {
@@ -704,9 +1110,18 @@ impl Scanner {
                     },
                     self.results.len(),
                     run.total,
-                    run.started.elapsed().as_secs_f32()
+                    run.started.elapsed().as_secs_f32(),
+                    crate::sendlog::total(&self.scan_sent)
                 );
+                // The recording ends with the scan; its result follows the scan summary.
+                if let Some(rec) = self.recording.take() {
+                    let recorded = rec.finish(run.sent.recorder());
+                    self.status = format!("{} · {recorded}", self.status);
+                }
             }
+        }
+        if recount {
+            self.recount();
         }
         if changed {
             // Sorted once per batch of new hosts, never on idle frames.
@@ -718,10 +1133,30 @@ impl Scanner {
                 .as_ref()
                 .map(|r| !r.cancel.load(Ordering::Relaxed))
                 .unwrap_or(false);
-            self.run = None;
-            self.data_changed();
-            let snapshot = self.scan_snapshot();
-            self.submit(Job::Save(Box::new(snapshot), "scan"));
+            // IPv6 discovery of the local link (opt-in; also in Safe Mode, one echo per interface):
+            // after a complete scan, on a worker thread, joined to the hosts by MAC. A stopped
+            // scan does not start it. The scan stays "running" until it has answered.
+            if self.scan_complete
+                && self.scan_settings.ipv6_discover
+                && let Some(run) = &self.run
+            {
+                let (tx, rx) = mpsc::channel();
+                let (settings, sent) = (self.scan_settings.clone(), run.sent.clone());
+                let mut hosts = self.results.clone();
+                std::thread::spawn(move || {
+                    let outcome = crate::ipv6::after_scan(
+                        &settings,
+                        sent,
+                        &mut hosts,
+                        crate::ipv6::AddHosts::Fresh,
+                    );
+                    let _ = tx.send((hosts, outcome));
+                });
+                self.ipv6_job = Some(rx);
+                self.status = format!("{} · IPv6 discovery…", self.status);
+            } else {
+                self.finish_scan();
+            }
         }
     }
     fn sort(&mut self) {
@@ -740,6 +1175,17 @@ impl Scanner {
                 order
             }
         });
+        // Rows moved: the provisional ones are found again by address.
+        if !self.live.is_empty() {
+            let live: HashMap<IpAddr, usize> = self
+                .results
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| self.live.contains_key(&h.ip))
+                .map(|(i, h)| (h.ip, i))
+                .collect();
+            self.live = live;
+        }
         self.data_changed();
     }
     /// Recomputes the visible row list only when data, notes, filter or query changed.
@@ -755,6 +1201,7 @@ impl Scanner {
             &key.3,
             &mut self.haystacks,
             &self.saved.notes,
+            &self.saved.starred,
         );
         self.rows_key = Some(key);
     }
@@ -842,6 +1289,61 @@ fn default_win_size() -> egui::Vec2 {
     win_size([340.0, 420.0])
 }
 
+/// Light or dark colours, with a thicker outline on the widget that has keyboard focus (egui
+/// draws a focused widget with its "active" look, so the outline is what makes Tab visible).
+fn apply_theme(ctx: &egui::Context, dark: bool) {
+    let mut visuals = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    visuals.widgets.active.bg_stroke.width = 2.0;
+    visuals.selection.stroke.width = 2.0;
+    ctx.set_visuals(visuals);
+}
+/// The scale factors the interface scale setting accepts (on top of the system's factor).
+const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
+
+impl Scanner {
+    /// Applies the interface scale setting when it changed.
+    fn apply_zoom(&mut self, ctx: &egui::Context) {
+        let wanted = if self.saved.zoom > 0.0 {
+            self.saved
+                .zoom
+                .clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end())
+        } else {
+            1.0
+        };
+        if (wanted - self.zoom_applied).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(wanted);
+            self.zoom_applied = wanted;
+        }
+    }
+    /// Changes the theme and remembers it.
+    fn set_dark(&mut self, ctx: &egui::Context, dark: bool) {
+        self.saved.dark = dark;
+        apply_theme(ctx, dark);
+    }
+    /// Changes the language (`auto`, `en` or `de`) and remembers it.
+    fn set_language(&mut self, code: &str) {
+        self.saved.language = code.to_string();
+        i18n::set(i18n::detect(code));
+    }
+    /// The file picker for an address list (read in the background; `#` comments allowed).
+    fn import_address_list(&mut self) {
+        if self.run.is_some() || self.busy.importing {
+            return;
+        }
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Address list", &["txt", "csv", "lst"])
+            .pick_file()
+        {
+            // Read in the background; large lists must not freeze the window.
+            self.submit(Job::ReadFile(path));
+        }
+    }
+}
+
 impl eframe::App for Scanner {
     /// Runs before every `ui` call and also while the window is hidden, so background jobs,
     /// scans and captures keep draining their channels.
@@ -850,21 +1352,29 @@ impl eframe::App for Scanner {
         self.poll();
         self.poll_capture();
         self.poll_ot();
+        self.poll_schedule(ctx);
         if self.live() || self.ot.running() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        windows::set_dark_mode(ui.visuals().dark_mode);
+        // A link from the last frame that could not be opened.
+        if let Some(e) = convenience::take_link_error() {
+            self.error = e;
+        }
+        self.poll_update();
+        self.apply_zoom(ctx);
         self.controls(ui);
         egui::Panel::bottom("status").show(ui, |ui| {
             if let Some(run) = &self.run {
                 let label = if run.cancel.load(Ordering::Relaxed) {
-                    "Stopping…"
+                    tr!("Stopping…")
                 } else if run.pause.load(Ordering::Relaxed) {
-                    "Paused"
+                    tr!("Paused")
                 } else {
-                    "Scanning"
+                    tr!("Scanning")
                 };
                 ui.add(
                     egui::ProgressBar::new(self.results.len() as f32 / run.total.max(1) as f32)
@@ -897,18 +1407,30 @@ impl eframe::App for Scanner {
                     ui.spinner();
                     ui.label(busy);
                 }
-                ui.label(&self.status);
+                // Hovering the status line also lists what the Safe Mode badge limits.
+                let status = ui.label(&self.status);
+                if !self.scan_sent.is_empty() {
+                    // The scan summary: every kind of packet the scan sent, with counts.
+                    status.on_hover_text(crate::sendlog::format_table(&self.scan_sent));
+                }
+                self.update_notice_ui(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!(
+                    ui.label(tr!(
                         "{} responding · {} with open ports",
-                        self.responding, self.with_open
+                        self.responding,
+                        self.with_open
                     ));
                 });
             });
         });
         self.refresh_rows();
         self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
+        let mut menu: Option<(usize, convenience::MenuAction)> = None;
         egui::CentralPanel::default().show(ui, |ui| {
+            if self.view == MainView::Home {
+                self.home_view(ui);
+                return;
+            }
             let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
             let scroll_row = self.scroll_to.take().and_then(|ip| {
@@ -930,9 +1452,15 @@ impl eframe::App for Scanner {
                 .column(Column::remainder().at_least(80.0))
                 .column(Column::initial(140.0))
                 .header(26.0, |mut row| {
-                    for (i, name) in ["IP address", "Status", "Ping", "Hostname", "Open TCP ports"]
-                        .iter()
-                        .enumerate()
+                    for (i, name) in [
+                        tr!("IP address"),
+                        tr!("Status"),
+                        tr!("Ping"),
+                        tr!("Hostname"),
+                        tr!("Open TCP ports"),
+                    ]
+                    .iter()
+                    .enumerate()
                     {
                         row.col(|ui| {
                             if ui.selectable_label(self.sort_column == i, *name).clicked() {
@@ -943,25 +1471,35 @@ impl eframe::App for Scanner {
                 })
                 .body(|body| {
                     body.rows(26.0, visible.len(), |mut row| {
-                        let host = &self.results[visible[row.index()]];
+                        let index = visible[row.index()];
+                        let host = &self.results[index];
                         row.col(|ui| {
-                            if ui
-                                .selectable_label(
-                                    self.selected == Some(host.ip),
-                                    host.ip.to_string(),
-                                )
-                                .clicked()
-                            {
+                            let starred = self
+                                .saved
+                                .starred
+                                .contains(&convenience::favorite_key(host));
+                            let shown = if starred {
+                                format!("★ {}", host.ip)
+                            } else {
+                                host.ip.to_string()
+                            };
+                            let response =
+                                ui.selectable_label(self.selected == Some(host.ip), shown);
+                            if response.clicked() {
                                 if self.selected != Some(host.ip) {
                                     self.script_test = None;
                                 }
                                 self.selected = Some(host.ip);
                             }
+                            // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
+                            response.context_menu(|ui| {
+                                menu = Some((index, convenience::host_menu(ui, host, starred)));
+                            });
                         });
                         row.col(|ui| {
                             ui.colored_label(
                                 if host.responding {
-                                    Color32::from_rgb(26, 128, 82)
+                                    Color32::from_rgb(40, 150, 95)
                                 } else {
                                     Color32::from_gray(115)
                                 },
@@ -982,7 +1520,7 @@ impl eframe::App for Scanner {
                             ui.label(if host.ports_checked {
                                 ports_text(&host.open)
                             } else {
-                                "Not checked".into()
+                                tr!("Not checked").into()
                             });
                         });
                     });
@@ -1005,35 +1543,46 @@ impl eframe::App for Scanner {
                     center - egui::vec2(0.0, 8.0),
                     egui::Align2::CENTER_CENTER,
                     if self.results.is_empty() && self.run.is_none() {
-                        "Discover devices on your network"
+                        tr!("Discover devices on your network")
                     } else {
-                        "No hosts match this view"
+                        tr!("No hosts match this view")
                     },
                     egui::FontId::proportional(18.0),
-                    Color32::from_gray(85),
+                    ui.visuals().text_color(),
                 );
                 ui.painter().text(
                     center + egui::vec2(0.0, 20.0),
                     egui::Align2::CENTER_CENTER,
                     if self.run.is_some() {
-                        "Results appear as each host finishes."
+                        tr!("Results appear as each host finishes.")
                     } else if self.results.is_empty() {
-                        "Enter addresses and choose Start to begin."
+                        tr!("Enter addresses and choose Start to begin.")
                     } else {
-                        "Try All hosts or clear the search."
+                        tr!("Try All hosts or clear the search.")
                     },
                     egui::FontId::proportional(13.0),
-                    Color32::from_gray(125),
+                    ui.visuals().weak_text_color(),
                 );
             }
         });
+        if let Some((index, act)) = menu {
+            let host = self.results[index].clone();
+            self.do_menu_action(ctx, &host, act);
+        }
         self.settings(ctx);
+        self.update_window(ctx);
         self.details(ctx);
+        self.timeline_window(ctx);
+        self.workbench_window(ctx);
         self.inventory_window(ctx);
-        self.topology_window(ctx);
+        self.map_window(ctx);
         self.devices_window(ctx);
         self.findings_window(ctx);
         self.capture_window(ctx);
+        self.scope_dialog(ctx);
+        self.quick_dialog(ctx);
+        self.wake_dialog(ctx);
+        self.palette_window(ctx);
         self.save_prefs_debounced(ctx);
         if self.live() || self.ot.running() || self.screenshot.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
@@ -1110,6 +1659,7 @@ impl eframe::App for Scanner {
         }
         if let Some((label, observations)) = ot_partial.filter(|(_, o)| !o.is_empty()) {
             let snapshot = store::Snapshot {
+                sent: vec![],
                 targets: label,
                 complete: false,
                 settings: Default::default(),
@@ -1165,10 +1715,11 @@ fn safe_badge(s: &scan::Settings) -> SafeBadge {
     if s.safe {
         return SafeBadge {
             safe: true,
-            label: "Safe Mode",
-            tooltip: "At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep \
-                      and TCP/UDP traceroute are off. Click to open Settings."
-                .into(),
+            label: tr!("Safe Mode"),
+            tooltip: tr!(
+                "At most 8 hosts at a time, at least 100 ms between probes; SYN, ARP sweep and TCP/UDP traceroute are off. Click to open Settings."
+            )
+            .into(),
         };
     }
     let mut on = vec![format!(
@@ -1213,11 +1764,11 @@ fn badge_color(safe: bool, dark: bool) -> Color32 {
 }
 fn host_status(host: &scan::Host) -> &'static str {
     if host.responding {
-        "Responding"
+        tr!("Responding")
     } else if !host.errors.is_empty() {
-        "Probe error"
+        tr!("Probe error")
     } else {
-        "No reply"
+        tr!("No reply")
     }
 }
 pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
@@ -1386,6 +1937,58 @@ mod tests {
     }
 
     #[test]
+    fn the_schedule_is_saved_with_the_preferences_and_off_when_absent() {
+        let mut saved = Saved::default();
+        assert!(!saved.schedule.enabled, "off by default");
+        saved.schedule = crate::schedule::Schedule {
+            enabled: true,
+            interval_minutes: 30,
+            targets: "10.0.0.0/24".into(),
+        };
+        let disk: Saved = serde_json::from_slice(&saved.to_disk()).unwrap();
+        assert_eq!(disk.schedule, saved.schedule);
+        let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
+        assert!(!old.schedule.enabled && old.schedule.targets.is_empty());
+    }
+
+    #[test]
+    fn update_check_is_off_by_default_and_remembered_when_turned_on() {
+        // Off for a new user and for preferences from before the setting existed.
+        assert!(!Saved::default().check_updates);
+        let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
+        assert!(!old.check_updates);
+        let on = Saved {
+            check_updates: true,
+            ..Default::default()
+        };
+        let disk: Saved = serde_json::from_slice(&on.to_disk()).unwrap();
+        assert!(disk.check_updates);
+    }
+
+    #[test]
+    fn update_answers_become_a_notice_a_status_line_or_nothing() {
+        use updates::{Effect, effect};
+        let release = |tag: &str| {
+            update::parse_latest(format!(r#"{{"tag_name":"{tag}"}}"#).as_bytes()).unwrap()
+        };
+        let current = env!("CARGO_PKG_VERSION");
+        let outcome = |tag: &str| update::compare(current, release(tag)).unwrap();
+        assert_eq!(
+            effect(Ok(outcome("v99.0.0"))),
+            Effect::Notice(release("v99.0.0"))
+        );
+        assert_eq!(effect(Ok(outcome(&format!("v{current}")))), Effect::Nothing);
+        assert_eq!(effect(Ok(outcome("v0.0.1"))), Effect::Nothing);
+        assert_eq!(effect(Ok(outcome("v100.0.0-rc.1"))), Effect::Nothing);
+        assert_eq!(
+            effect(Err("no release has been published yet (HTTP 404)".into())),
+            Effect::Failed(
+                "Update check failed: no release has been published yet (HTTP 404)".into()
+            )
+        );
+    }
+
+    #[test]
     fn notes_are_stored_only_when_not_empty() {
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
         let mut notes = BTreeMap::new();
@@ -1402,6 +2005,38 @@ mod tests {
             .insert("10.0.0.2".parse().unwrap(), "keep".into());
         let disk: Saved = serde_json::from_slice(&saved.to_disk()).unwrap();
         assert_eq!(disk.notes.len(), 1);
+    }
+
+    #[test]
+    fn every_finding_page_is_reached_through_the_docs_url() {
+        // The pages in docs/src/findings (without the index) are what `docs_url` can point to.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/src/findings");
+        let mut pages = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".md").filter(|s| *s != "index") else {
+                continue;
+            };
+            pages += 1;
+            let url = docs_url(stem);
+            if stem == "cve-hints" || stem == "script-findings" {
+                // The shared pages are reached through the ids of their family.
+                continue;
+            }
+            assert_eq!(
+                url,
+                format!("https://sparkz400.github.io/network-scope/findings/{stem}.html"),
+                "{stem}"
+            );
+        }
+        assert!(pages > 30, "{pages}");
+        // The families built at run time share one page each; other CVE ids too.
+        assert!(docs_url("cve-CVE-2021-41773").ends_with("/findings/cve-hints.html"));
+        assert!(docs_url("script-owner-check").ends_with("/findings/script-findings.html"));
+        assert!(docs_url("cve-CVE-2020-0796").ends_with("/findings/cve-cve-2020-0796.html"));
+        assert!(docs_url("Telnet-Open").ends_with("/findings/telnet-open.html"));
+        // And every URL it builds is one the opener accepts.
+        assert!(convenience::valid_url(&docs_url("telnet-open")));
     }
 
     #[test]
@@ -1426,32 +2061,152 @@ mod tests {
         ];
         let mut hay = HashMap::new();
         let mut notes = BTreeMap::new();
+        let stars = BTreeSet::new();
         assert_eq!(
-            filter_rows(&results, Filter::All, "", &mut hay, &notes),
+            filter_rows(&results, Filter::All, "", &mut hay, &notes, &stars),
             [0, 1, 2]
         );
         assert!(hay.is_empty(), "no haystacks without a query");
         assert_eq!(
-            filter_rows(&results, Filter::Responding, "", &mut hay, &notes),
+            filter_rows(&results, Filter::Responding, "", &mut hay, &notes, &stars),
             [0, 2]
         );
         assert_eq!(
-            filter_rows(&results, Filter::Open, "", &mut hay, &notes),
+            filter_rows(&results, Filter::Open, "", &mut hay, &notes, &stars),
             [0]
         );
         assert_eq!(
-            filter_rows(&results, Filter::All, "pc-7", &mut hay, &notes),
+            filter_rows(&results, Filter::All, "pc-7", &mut hay, &notes, &stars),
             [2]
         );
         assert_eq!(
-            filter_rows(&results, Filter::All, "acme plc", &mut hay, &notes),
+            filter_rows(&results, Filter::All, "acme plc", &mut hay, &notes, &stars),
             [0, 1, 2]
         );
         assert_eq!(hay.len(), 3);
         notes.insert(results[1].ip, "Basement Rack".to_string());
         assert_eq!(
-            filter_rows(&results, Filter::All, "basement", &mut hay, &notes),
+            filter_rows(&results, Filter::All, "basement", &mut hay, &notes, &stars),
             [1]
         );
+    }
+
+    /// GUI budget (ROADMAP B17): a table of 65,536 hosts stays within one 60 fps frame (16.6 ms).
+    /// The window itself needs a display, so this drives the same `TableBuilder` columns and cells
+    /// as the results table through a headless egui context, and times the two things that happen
+    /// to 65k rows while a scan runs: a frame that only draws (the rows are virtual, only the
+    /// visible ones are laid out), and a frame that also gets a new batch of hosts (sort by open
+    /// ports, then the filtered row list with a text query, which builds the search text of every
+    /// row once). A timing test, so it is ignored by default and runs in release mode:
+    /// `cargo test --release --lib frame_budget -- --ignored --nocapture`
+    /// (`scripts/resource_budget.py --gui`). It prints one `GUI_FRAME_MS` line.
+    #[test]
+    #[ignore = "timing test, run in release mode by scripts/resource_budget.py --gui"]
+    fn frame_budget_with_65k_rows() {
+        let mut results: Vec<scan::Host> = (0..65_536u32)
+            .map(|i| {
+                let ip = std::net::Ipv4Addr::from(0x0a00_0000 + i).to_string();
+                let open = if i % 5 == 0 { vec![80, 443] } else { vec![] };
+                host(&ip, i % 3 != 0, open, &format!("pc-{i}.example.net"))
+            })
+            .collect();
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let rows: Vec<usize> = (0..results.len()).collect();
+        let draw = |results: &[scan::Host], rows: &[usize]| {
+            ctx.run_ui(input(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(135.0).at_least(80.0))
+                        .column(Column::initial(110.0))
+                        .column(Column::initial(65.0))
+                        .column(Column::remainder().at_least(80.0))
+                        .column(Column::initial(140.0))
+                        .header(26.0, |mut row| {
+                            for name in
+                                ["IP address", "Status", "Ping", "Hostname", "Open TCP ports"]
+                            {
+                                row.col(|ui| {
+                                    let _ = ui.selectable_label(false, name);
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            body.rows(26.0, rows.len(), |mut row| {
+                                let host = &results[rows[row.index()]];
+                                row.col(|ui| {
+                                    let _ = ui.selectable_label(false, host.ip.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(host_status(host));
+                                });
+                                row.col(|ui| {
+                                    ui.label(ping_text(host.ping));
+                                });
+                                row.col(|ui| {
+                                    ui.label(&host.hostname);
+                                });
+                                row.col(|ui| {
+                                    ui.label(ports_text(&host.open));
+                                });
+                            });
+                        });
+                });
+            })
+            // Nothing is painted, so the font atlas upload is dropped on purpose.
+            .drop_without_applying_deltas();
+        };
+        let time = |mut f: Box<dyn FnMut() + '_>| {
+            f(); // warm-up: fonts, layout caches
+            let mut samples: Vec<f64> = (0..30)
+                .map(|_| {
+                    let t = Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            samples.sort_by(f64::total_cmp);
+            (samples[samples.len() / 2], samples[samples.len() - 1])
+        };
+        let (idle_median, idle_max) = time(Box::new(|| draw(&results, &rows)));
+        let mut haystacks = HashMap::new();
+        let notes = BTreeMap::new();
+        let (live_median, live_max) = time(Box::new(|| {
+            // The work of a frame that received hosts: the sort of `Scanner::sort` (column 4)...
+            results.sort_by(|a, b| a.open.cmp(&b.open).then_with(|| a.ip.cmp(&b.ip)));
+            // ...the visible row list for a search text (the cache of search texts is kept)...
+            let visible = filter_rows(
+                &results,
+                Filter::All,
+                "pc-1",
+                &mut haystacks,
+                &notes,
+                &BTreeSet::new(),
+            );
+            // ...and the draw.
+            draw(&results, &visible);
+        }));
+        println!(
+            "GUI_FRAME_MS idle_median={idle_median:.3} idle_max={idle_max:.3} live_median={live_median:.3} live_max={live_max:.3} rows=65536"
+        );
+        if !cfg!(debug_assertions) {
+            assert!(
+                idle_median < 1000.0 / 60.0,
+                "idle frame {idle_median:.2} ms"
+            );
+            assert!(
+                live_median < 1000.0 / 60.0,
+                "live frame {live_median:.2} ms"
+            );
+        }
     }
 }

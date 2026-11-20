@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:device-history:v1",
+  "title": "Device history",
+  "description": "Output of `devices --history MAC|IP --format json`: one device across all saved scans.",
+  "type": "object",
+  "required": [
+    "schema",
+    "query",
+    "key",
+    "first_seen",
+    "first_scan",
+    "last_seen",
+    "last_scan",
+    "sightings",
+    "scans",
+    "ips",
+    "macs",
+    "hostnames",
+    "open_tcp",
+    "events"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/device-history/v1"
+    },
+    "query": {
+      "type": "string"
+    },
+    "key": {
+      "enum": [
+        "mac",
+        "ip"
+      ]
+    },
+    "first_seen": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "first_scan": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "last_seen": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "last_scan": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sightings": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scans": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ips": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "IPv4 or IPv6 address in text form"
+      }
+    },
+    "macs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "hostnames": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "open_tcp": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65535
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "scan_id",
+          "timestamp",
+          "kind",
+          "detail"
+        ],
+        "properties": {
+          "scan_id": {
+            "type": "integer"
+          },
+          "timestamp": {
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "first-seen",
+              "ip-changed",
+              "mac-changed",
+              "hostname-changed",
+              "port-opened",
+              "port-closed",
+              "udp-answering",
+              "udp-silent",
+              "finding-appeared",
+              "finding-resolved"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

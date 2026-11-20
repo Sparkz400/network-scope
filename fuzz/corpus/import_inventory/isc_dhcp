@@ -1,0 +1,5 @@
+lease 192.168.1.50 {
+  binding state active;
+  hardware ethernet aa:bb:cc:dd:ee:01;
+  client-hostname "laptop";
+}

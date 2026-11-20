@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:unknown-banners:v1",
+  "title": "Unidentified banners",
+  "description": "Output of fingerprints export-unknown: the banners of services nothing identified, for a contribution. It carries no host addresses; the user reads and redacts it before sharing. The members format and version are the contribution file's own and stay as before.",
+  "type": "object",
+  "required": [
+    "schema",
+    "format",
+    "version",
+    "generated_by",
+    "review",
+    "entries",
+    "truncated"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/unknown-banners/v1"
+    },
+    "format": {
+      "const": "network-scope-unknown-banners"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "review": {
+      "type": "string"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "proto",
+          "port",
+          "banner",
+          "hosts"
+        ],
+        "properties": {
+          "proto": {
+            "enum": [
+              "tcp",
+              "udp"
+            ]
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "port_hint": {
+            "type": "string",
+            "description": "What the port number alone suggests, when it suggests something"
+          },
+          "banner": {
+            "type": "string"
+          },
+          "hosts": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  }
+}

@@ -1,47 +1,66 @@
-//! Network Scope as a library. The two binaries (`src/main.rs` and
-//! `src/bin/network-scope-cli.rs`) call [`run`]; the fuzz targets in `fuzz/` call the
-//! entry points in [`fuzz`]. Everything else stays crate-private.
-pub(crate) mod arp;
-pub(crate) mod capture;
-pub(crate) mod core;
-pub(crate) mod devices;
-pub(crate) mod feeds;
-pub(crate) mod fingerprint;
+//! Network Scope as a library: the desktop GUI (`gui`), the CLI and TUI (`ui`) on top of the engine
+//! crate `network-scope-core` (`core/`). The two binaries (`src/main.rs` and
+//! `src/bin/network-scope-cli.rs`) call [`run`]; the fuzz targets in `fuzz/` call the entry points
+//! in [`fuzz`] (re-exported from the core crate). Everything else stays crate-private.
+#[cfg(feature = "gui")]
 pub(crate) mod gui;
-pub(crate) mod monitor;
-pub(crate) mod nmap;
-pub(crate) mod notify;
-pub(crate) mod osfp;
-pub(crate) mod ot;
-pub(crate) mod otpassive;
-pub(crate) mod oui;
-pub(crate) mod passive;
-pub(crate) mod pcapfile;
-pub(crate) mod platform;
-pub(crate) mod probes;
-pub(crate) mod report;
-pub(crate) mod risk;
-pub(crate) mod rtt;
-pub(crate) mod scan;
-pub(crate) mod script;
-pub(crate) mod service;
-pub(crate) mod store;
-pub(crate) mod syn;
-pub(crate) mod tls;
-pub(crate) mod topology;
-pub(crate) mod trace;
-pub(crate) mod udp;
 pub(crate) mod ui;
 
-#[doc(hidden)]
-pub mod fuzz;
+// The engine lives in `network-scope-core`; its modules are used here under the same paths
+// (`crate::scan::Host`, `crate::risk::analyze_host`, ...).
+pub(crate) use network_scope_core::{
+    alertscript, baseline, capture, changes, core, devices, evidence, feeds, import, incremental,
+    interfaces, ipv6, mcp, monitor, nmap, notify, nvd, observations, otpassive, passive, plan,
+    presets, report, risk, scan, schema, scope, score, script, search, sendlog, service, snmp,
+    store, store_stream, syn, sync, targets, topology, trace, update, wol,
+};
+// Research and security-research modules (ROADMAP section L).
+pub(crate) use network_scope_core::{csaf, otmodel, pivot, provenance, research, segmentation};
+#[cfg(feature = "gui")]
+pub(crate) use network_scope_core::{localnets, netmap, pcapfile, schedule};
 
-/// The read-only OT request types (see [`ot::readonly`]). Public only so that the
-/// `compile_fail` doctests there can show that a write or control request does not compile.
+/// The fuzz entry points (`network_scope::fuzz::*`, called by the targets in `fuzz/`).
 #[doc(hidden)]
-pub use ot::readonly as ot_readonly;
+pub use network_scope_core::fuzz;
 
+/// The read-only OT request types (see `network_scope_core::ot::readonly`); kept at this path for
+/// existing users of the library.
+#[doc(hidden)]
+pub use network_scope_core::ot_readonly;
+
+#[cfg(feature = "gui")]
 use std::path::PathBuf;
+
+/// Why [`run`] failed. Only the desktop GUI can fail this way; a CLI or TUI command reports its
+/// problem on stderr and ends the process with its exit status instead.
+pub enum Error {
+    /// The desktop window could not be opened.
+    #[cfg(feature = "gui")]
+    Gui(eframe::Error),
+}
+// What `fn main() -> Result<..>` prints on failure: exactly the underlying error.
+impl std::fmt::Debug for Error {
+    #[cfg_attr(not(feature = "gui"), allow(unused_variables))]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            #[cfg(feature = "gui")]
+            Self::Gui(ref e) => std::fmt::Debug::fmt(e, f),
+        }
+    }
+}
+impl std::fmt::Display for Error {
+    #[cfg_attr(not(feature = "gui"), allow(unused_variables))]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            #[cfg(feature = "gui")]
+            Self::Gui(ref e) => std::fmt::Display::fmt(e, f),
+        }
+    }
+}
+impl std::error::Error for Error {}
+
+/// Result of [`run`] (and of the `main` of both binaries).
+pub type RunResult = Result<(), Error>;
 
 /// A standard handle the process cannot use: never set (a GUI-subsystem process
 /// started from a console gets NULL handles) or invalid. Redirected handles (files,
@@ -122,7 +141,10 @@ fn attach_parent_console() {
 /// The whole program: CLI or TUI when arguments are given, otherwise the desktop GUI.
 /// Both binaries (`network-scope` with the Windows GUI subsystem in release builds and the
 /// console twin `network-scope-cli`) are thin wrappers around this function.
-pub fn run() -> eframe::Result<()> {
+///
+/// Without the `gui` feature (the CLI-only build) there is no window: started without a command
+/// it prints a message and ends the process with status 2.
+pub fn run() -> RunResult {
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
     if cli_args
         .first()
@@ -132,7 +154,14 @@ pub fn run() -> eframe::Result<()> {
         attach_parent_console();
         // `--cves FILE` replaces the default user rules (loaded by `ui::run`); otherwise a
         // broken user file is reported here instead of being silently ignored.
-        if !cli_args.iter().any(|a| a == "--cves")
+        // `--version` and the help text need no rule database; skipping it keeps their start fast
+        // (the startup budget of scripts/resource_budget.py).
+        let quick = matches!(
+            cli_args.first().map(String::as_str),
+            Some("--version" | "-V" | "--help" | "-h" | "help")
+        );
+        if !quick
+            && !cli_args.iter().any(|a| a == "--cves")
             && let Some(warning) = risk::init_cves()
         {
             eprintln!("{warning}");
@@ -150,6 +179,19 @@ pub fn run() -> eframe::Result<()> {
         }
         return Ok(());
     }
+    #[cfg(not(feature = "gui"))]
+    {
+        eprintln!("network-scope-cli: built without the GUI; see --help");
+        std::process::exit(2);
+    }
+    #[cfg(feature = "gui")]
+    run_gui()
+}
+
+/// The desktop window, with the optional `--screenshot FILE` (a self-test that saves the first
+/// frame and exits).
+#[cfg(feature = "gui")]
+fn run_gui() -> RunResult {
     let mut screenshot = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -160,7 +202,7 @@ pub fn run() -> eframe::Result<()> {
             screenshot = Some(PathBuf::from(path));
         }
     }
-    gui::run(screenshot)
+    gui::run(screenshot).map_err(Error::Gui)
 }
 
 #[cfg(test)]
@@ -188,5 +230,15 @@ mod tests {
         }
         assert!(gui.contains("windows_subsystem = \"windows\""));
         assert!(!cli.contains("windows_subsystem"));
+    }
+
+    #[test]
+    fn the_core_crate_has_the_version_of_this_package() {
+        let core = include_str!("../core/Cargo.toml");
+        let line = format!("version = \"{}\"", env!("CARGO_PKG_VERSION"));
+        assert!(
+            core.lines().any(|l| l == line),
+            "core/Cargo.toml must say {line}"
+        );
     }
 }

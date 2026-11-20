@@ -1,0 +1,63 @@
+# Network Scope monitor as a long-running service: repeated scans, change alerts, one inventory.
+# Install: see README.md in this folder and docs/src/service-and-scheduling.md.
+#
+# Edit the ExecStart line: the targets, the interval in seconds and any other monitor options.
+# Safe Mode is on by default; do not add --fast to an unattended scan.
+
+[Unit]
+Description=Network Scope monitor (continuous scans and change alerts)
+Documentation=https://sparkz400.github.io/network-scope/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/network-scope-cli monitor 192.168.1.0/24 --interval 300 --db /var/lib/network-scope/inventory.sqlite --alerts /var/lib/network-scope/alerts.jsonl
+Restart=on-failure
+RestartSec=30
+
+# A throw-away user with no home; the inventory lives in /var/lib/network-scope (the only
+# writable place), readable by root and the service.
+DynamicUser=yes
+StateDirectory=network-scope
+StateDirectoryMode=0750
+UMask=0077
+
+# Hardening. The scanner needs only outgoing TCP/UDP and the state directory.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# Optional raw features (ICMP ping over a raw socket, SYN scan, ARP sweep, passive capture).
+# They are off by default and need Safe Mode off or an interface option, so most installations
+# do not want them. Without CAP_NET_RAW the ICMP ping may fail (noted on each host; unprivileged
+# ICMP works when net.ipv4.ping_group_range includes the service's group) and the TCP connect
+# probes decide whether a host is up, which is what `monitor` relies on anyway. If you need them, replace
+# the two empty lines above with:
+#   CapabilityBoundingSet=CAP_NET_RAW
+#   AmbientCapabilities=CAP_NET_RAW
+# and for capture add AF_PACKET to RestrictAddressFamilies.
+
+[Install]
+WantedBy=multi-user.target

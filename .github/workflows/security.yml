@@ -4,9 +4,9 @@ name: security
 on:
   push:
     branches: [main]
-    paths: ["Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/security.yml"]
+    paths: ["Cargo.toml", "core/Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/security.yml"]
   pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/security.yml"]
+    paths: ["Cargo.toml", "core/Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/security.yml"]
   schedule:
     - cron: "17 5 * * 1" # weekly, Monday 05:17 UTC: new advisories appear without code changes
   workflow_dispatch:

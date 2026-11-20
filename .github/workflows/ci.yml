@@ -31,7 +31,29 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets --locked -- -D warnings
       - run: cargo test --release --locked
+      # Roadmap A6: a real Windows Schannel server (lab/schannel_server.ps1, PowerShell 7, no
+      # administrator rights) against the TLS inspection; the test is ignored by default.
+      - name: Schannel server test (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --release --locked -p network-scope-core windows_schannel -- --ignored --nocapture
       - run: cargo build --release --locked
+      # Roadmap L72: the real wire capture of `scan --record-wire` with libpcap on the loopback
+      # interface (Linux only; capturing needs root, so the already built test binary and the CLI
+      # run under sudo). The test is ignored by default because it needs a capture driver.
+      - name: Wire capture with libpcap (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y libpcap0.8t64 || sudo apt-get install -y libpcap0.8
+          bin=$(cargo test --release --locked -p network-scope-core --lib --no-run --message-format=json \
+            | python3 -c 'import json,sys; print([m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason")=="compiler-artifact" and m.get("executable") and m["target"]["name"]=="network_scope_core"][-1])')
+          sudo "$bin" wire_capture --ignored --nocapture
+          python3 -m http.server 18080 --bind 127.0.0.1 >/dev/null 2>&1 &
+          sleep 1
+          sudo target/release/network-scope-cli scan 127.0.0.1 --ports 18080 --services --db "$RUNNER_TEMP/wire.sqlite" --record "$RUNNER_TEMP/wire.pcapng" --record-wire --output "$RUNNER_TEMP/wire.json" 2> "$RUNNER_TEMP/wire.log" || { cat "$RUNNER_TEMP/wire.log"; exit 1; }
+          cat "$RUNNER_TEMP/wire.log"
+          grep -q "from the wire" "$RUNNER_TEMP/wire.log"
+          kill %1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
@@ -45,7 +67,11 @@ jobs:
       # macOS: binding 127.0.0.1 below port 1024 needs root, and Remote Login holds port 22.
       - name: Free the lab ports (macOS)
         if: runner.os == 'macOS'
-        run: sudo launchctl bootout system/com.openssh.sshd || true
+        run: |
+          sudo launchctl bootout system/com.openssh.sshd || true
+          # lab/verify.py's segmentation check needs 127.0.0.1 to 127.0.0.5; macOS has only the
+          # first on lo0 (without the aliases the check prints "SKIPPED" and passes).
+          for n in 2 3 4 5; do sudo ifconfig lo0 alias "127.0.0.$n" up || true; done
       - name: Lab end-to-end check (simulated weak and OT services on loopback)
         shell: bash
         run: |
@@ -61,7 +87,21 @@ jobs:
       # above, so it runs on Linux only. Timing is reported, not gated (runners are noisy).
       - name: Accuracy benchmark (Linux)
         if: runner.os == 'Linux'
-        run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --out-dir benchmark-results
+        run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --max-scan-seconds 60 --gate-first-result --out-dir benchmark-results
+      # Test plant (roadmap L74): the planted weaknesses of lab/plant_truth.json and the traffic replay
+      # of L69. It fails when a write reaches a plant device or the replay reports the wrong alerts;
+      # recall is gated only where lab/plant_baseline.json has a value (Windows, measured locally).
+      # Not yet run on a CI runner.
+      - name: Test plant (Linux)
+        if: runner.os == 'Linux'
+        run: python -I lab/plant_benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --out-dir plant-results
+      # Resource budgets (roadmap B17): startup under 150 ms, under 200 MB for a /16 (dry run and a real
+      # loopback scan of 127.0.0.0/16) and for a batch-written /15, and a GUI frame under 16.6 ms with
+      # 65,536 rows (a headless egui test, run in release mode). Linux only, like the benchmark: it
+      # needs loopback aliases and the numbers differ per platform. See scripts/resource_budget.py.
+      - name: Resource budgets (Linux)
+        if: runner.os == 'Linux'
+        run: python -I scripts/resource_budget.py --cli "$PWD/target/release/network-scope-cli" --check --gui --json benchmark-results/resource-budget.json
       - name: Upload the benchmark result
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -69,6 +109,44 @@ jobs:
           name: benchmark-${{ runner.os }}
           path: benchmark-results/
           if-no-files-found: ignore
+      # nmap comparison (roadmap A3): scans the same loopback lab with nmap -sT -sV and Network Scope,
+      # imports nmap's XML through Network Scope's importer and diffs open/closed, service, product and
+      # version. Every difference must be explained in lab/nmap_differences.json, otherwise the step
+      # fails. Installing nmap is optional: when apt fails, the comparison is skipped (with a warning).
+      # The explanations were written from nmap 7.98 on Windows; Ubuntu's nmap is older, so the first
+      # Linux run may list differences that still have to be investigated.
+      - name: Install nmap (Linux, optional)
+        id: nmap
+        if: runner.os == 'Linux'
+        run: |
+          if sudo apt-get update && sudo apt-get install -y --no-install-recommends nmap; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::nmap could not be installed with apt; the nmap comparison is skipped"
+          fi
+      - name: nmap comparison (Linux; fails on an unexplained difference)
+        if: runner.os == 'Linux' && steps.nmap.outputs.available == 'true'
+        run: python -I lab/nmap_compare.py --cli "$PWD/target/release/network-scope-cli" --explain lab/nmap_differences.json --out-dir nmap-compare-results
+      - name: Upload the nmap comparison
+        if: always() && runner.os == 'Linux' && steps.nmap.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nmap-compare-${{ runner.os }}
+          path: nmap-compare-results/
+          if-no-files-found: ignore
+      # The same lab under bad conditions (lab/simulators.py --scenario, lab/verify.py --scenario):
+      # a slow WAN (150-300 ms per reply), lost connections and UDP replies, and fragile OT devices
+      # that crash on a write or a connection burst. Linux only; each scenario is its own step so
+      # a failure names the condition.
+      - name: Lab scenario slow-wan (replies 150-300 ms late, default timeouts)
+        if: runner.os == 'Linux'
+        run: python lab/verify.py target/release/network-scope --scenario slow-wan
+      - name: Lab scenario lossy (3 of 10 connections reset, repeated scans recover)
+        if: runner.os == 'Linux'
+        run: python lab/verify.py target/release/network-scope --scenario lossy
+      - name: Lab scenario fragile-ot (zero writes, connection rate under the limit)
+        if: runner.os == 'Linux'
+        run: python lab/verify.py target/release/network-scope --scenario fragile-ot
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: network-scope-${{ runner.os }}
@@ -79,7 +157,82 @@ jobs:
             target/release/network-scope-cli.exe
           if-no-files-found: error
 
-  # Every finding rule id in src/risk.rs needs a page under docs/src/findings (linked from the
+  # The CLI/TUI binary without the `gui` feature. Unlike the check job this one installs none of
+  # the window-system development packages, which proves the build needs none, and it runs the
+  # binary: version, the no-argument message (there is no window to open) and a real scan.
+  cli-only:
+    name: cli-only build (no GUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked --no-default-features --bin network-scope-cli
+      - name: Run the CLI-only binary
+        run: |
+          bin=target/release/network-scope-cli
+          "$bin" --version
+          status=0
+          "$bin" || status=$?
+          test "$status" -eq 2
+          "$bin" scan 127.0.0.1 --ports 1 --timeout 500 --db "$RUNNER_TEMP/cli-only.sqlite" --quiet
+          ! ldd "$bin" | grep -Ei 'libX11|libxcb|libwayland|libxkbcommon|libGL'
+      # Roadmap K65: the safety linter (OT and printer ports, write-like payloads, payload and
+      # regex size, nested quantifiers) must pass on the probe database that ships.
+      - name: Probe safety lint (data/probes.json)
+        run: |
+          bin=target/release/network-scope-cli
+          "$bin" probes lint data/probes.json
+          "$bin" probes validate data/probes.json
+
+  # Roadmap A6: Network Scope against real servers installed from apt: Samba (SMB 3.1.1, signing,
+  # encryption, NetBIOS name), OpenSSL s_server and nginx (the exact TLS 1.3 suites they were
+  # configured with, JA3S) and OpenSSH (HASSHServer against an independent computation), plus the
+  # CPE names Network Scope derives against the official NVD CPE dictionary. Everything binds
+  # loopback; smbd and sshd run as root (SMB detection only runs on port 445). See
+  # lab/real_servers.sh and docs/src/lab-and-testing.md#real-servers. The job was written without
+  # being able to run it on the runner image; the first run may need its expected values adjusted.
+  real-servers:
+    name: real servers (Samba, OpenSSH, OpenSSL, nginx) and NVD CPE names
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Unit tests of the lab scripts
+        run: python -I -m unittest discover -s lab -p "test_*.py"
+      # The pinned NVD CPE 2.0 feed (the URL is in lab/check_cpe.py); every vendor:product pair of
+      # the cpe table in data/cves.json must be a current name in it.
+      - name: CPE names against the official NVD CPE dictionary
+        run: python -I lab/check_cpe.py --download "$RUNNER_TEMP/nvdcpe-2.0.tar.gz"
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked --no-default-features --bin network-scope-cli
+      - name: Scan the real servers and check the results
+        env:
+          INSTALL: "1"
+          WORK: ${{ runner.temp }}/real-servers
+        run: bash lab/real_servers.sh
+      - name: Keep the server logs and the scan
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: real-servers
+          path: |
+            ${{ runner.temp }}/real-servers/*.log
+            ${{ runner.temp }}/real-servers/scan.json
+            ${{ runner.temp }}/real-servers/samba/log.*
+            ${{ runner.temp }}/real-servers/smb.conf
+          if-no-files-found: ignore
+
+  # Every finding rule id in core/src/risk.rs needs a page under docs/src/findings (linked from the
   # GUI and reports). Plain Python, no build; runs on pull requests, which docs.yml does not.
   finding-docs:
     name: finding documentation
@@ -92,6 +245,59 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -I docs/check_finding_pages.py
+  # Line coverage of the parsers and risk rules (cargo-llvm-cov). scripts/coverage_gate.py fails
+  # the job when one of those files drops below its threshold in scripts/coverage_targets.json
+  # (80%, or the measured floor of a file that is not there yet; none is below 80% at the moment).
+  # The report commands need --workspace (without it the summary lists no files here) and the
+  # folder target/llvm-cov must exist before --output-path writes into it. The HTML report, lcov and the
+  # JSON summary are uploaded either way. Linux only: the numbers differ slightly per platform.
+  coverage:
+    name: coverage (parsers and risk rules)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_LLVM_COV_VERSION: "0.9.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Unit tests of the coverage gate
+        run: python -I -m unittest discover -s scripts -p "test_*.py"
+      - name: Linux GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo install cargo-llvm-cov --version "$CARGO_LLVM_COV_VERSION" --locked
+      - name: Run the tests with coverage
+        run: cargo llvm-cov --locked --workspace --no-report
+      - name: Reports (JSON summary, lcov, HTML)
+        run: |
+          mkdir -p target/llvm-cov
+          cargo llvm-cov report --workspace --json --summary-only --output-path target/llvm-cov/summary.json
+          cargo llvm-cov report --workspace --lcov --output-path target/llvm-cov/lcov.info
+          cargo llvm-cov report --workspace --html
+      - name: Coverage gate
+        shell: bash
+        run: |
+          status=0
+          python -I scripts/coverage_gate.py target/llvm-cov/summary.json > target/llvm-cov/gate.txt || status=$?
+          cat target/llvm-cov/gate.txt
+          { echo '```'; cat target/llvm-cov/gate.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            target/llvm-cov/html
+            target/llvm-cov/lcov.info
+            target/llvm-cov/summary.json
+            target/llvm-cov/gate.txt
+          if-no-files-found: warn
 
   installer:
     name: windows installer
@@ -132,7 +338,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --name-only "$BASE" HEAD | grep -qE '^(Dockerfile|\.dockerignore|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github/workflows/(ci|release)\.yml)$'; then
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(Dockerfile|\.dockerignore|Cargo\.toml|core/Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github/workflows/(ci|release)\.yml)$'; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "No container inputs changed; skipping the image build."
