@@ -599,6 +599,22 @@ pub fn dcp() -> HostPlan {
     plan
 }
 
+/// The plan of `wol MAC` (nothing is sent by planning it): one UDP broadcast datagram, and only
+/// because the user asked for it.
+pub fn wol(destination: std::net::Ipv4Addr) -> HostPlan {
+    let mut plan = HostPlan {
+        packets: vec![],
+        notes: vec!["sent only on request; a scan never sends it".into()],
+    };
+    plan.push(
+        PacketKind::WakeOnLan,
+        crate::wol::DETAIL,
+        format!("{destination}:{} (UDP broadcast)", crate::wol::PORT),
+        "once",
+    );
+    plan
+}
+
 /// What `monitor` adds to each cycle's scan plan.
 pub fn monitor_extras(dhcp_discover: bool, interface_listening: bool) -> HostPlan {
     let mut plan = HostPlan {

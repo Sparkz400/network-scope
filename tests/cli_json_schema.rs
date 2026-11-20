@@ -160,6 +160,32 @@ fn the_newer_json_outputs_carry_their_schema_and_match_it() {
 }
 
 #[test]
+fn the_search_output_carries_its_schema_and_matches_it() {
+    let f = Fixture::new("search");
+    let found = f.check("search", &["search", "10.0.0.1", "--format", "json"], false);
+    assert_eq!(found[0]["hits"].as_array().unwrap().len(), 2, "both scans");
+    assert_eq!(found[0]["hits"][0]["scan_id"], 2, "newest first");
+    assert_eq!(found[0]["last_seen"]["scan_id"], 2);
+    // Nothing found is still a valid document, with no last sighting.
+    let none = f.check("search", &["search", "10.9.9.9", "--format", "json"], false);
+    assert!(none[0]["hits"].as_array().unwrap().is_empty());
+    assert!(none[0]["last_seen"].is_null());
+    // A finding id is found through the risk analysis.
+    let finding = f.check(
+        "search",
+        &["search", "telnet-open", "--format", "json"],
+        false,
+    );
+    assert!(
+        finding[0]["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["source"] == "finding")
+    );
+}
+
+#[test]
 fn the_unknown_banner_export_carries_its_schema_and_keeps_its_own_format() {
     let f = Fixture::new("unknown");
     let doc = f.check(
@@ -191,6 +217,10 @@ fn every_dry_run_prints_the_dry_run_schema() {
         ("monitor", vec!["monitor", "10.0.0.1", "--dhcp-discover"]),
         ("trace", vec!["trace", "10.0.0.1"]),
         ("dcp", vec!["dcp"]),
+        (
+            "wol",
+            vec!["wol", "00:11:22:33:44:55", "--broadcast", "10.0.0.255"],
+        ),
     ] {
         let mut a = args;
         a.extend(scope);

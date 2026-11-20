@@ -9,6 +9,8 @@ network-scope listen --interface ID [--seconds 60]  Passive capture only
 network-scope dcp --interface ID --source-mac MAC  Read-only DCP Identify
 network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
+network-scope search QUERY [--top N] [--format text|json]   Where an address, MAC, name, vendor or finding id appeared in the saved scans
+network-scope wol MAC [--broadcast IPV4] [--dry-run]   Wake-on-LAN: one magic packet to the broadcast address (only on request)
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
         [--fail-on-findings [--min-severity low]]
 network-scope changes [--since last|7d|2026-11-01] [--format text|json]   New, gone and changed devices, new and resolved risks
@@ -62,6 +64,11 @@ network-scope update check                     Ask GitHub for the latest release
 network-scope completions powershell|bash      Print a shell completion script
 
 Scan options:
+  --preset quick|office|plant|full  Named settings bundle (explicit options still win): quick = the
+                  Safe Mode default, office = + service/OS/MAC identification, full = Safe Mode off with
+                  everything on (scope guard and back-off still apply); plant is passive: use ot-listen
+  --targets-file FILE  scan: targets from a list file (one per line, # comments); adds to TARGETS
+  --randomize     scan: probe the addresses in random order (up to 1,048,576 addresses)
   --ports 80,443,502,102,4840,44818 --workers 1024 --timeout 2000
   --top-ports N   Add the N most common TCP ports (1-100); also usable as top:N in --ports
   --retries 1     Extra attempts for unanswered ports (timeout doubles each time)
@@ -87,7 +94,7 @@ Scan options:
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
   --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
-  --dry-run       scan, monitor, trace, dcp: print per host which packet types would be sent
+  --dry-run       scan, monitor, trace, dcp, wol: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)
   --no-backoff    Turn off the automatic back-off (per-device-type parallel limits and slowing or

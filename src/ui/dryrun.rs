@@ -13,7 +13,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 /// Commands that accept `--dry-run`: the ones that can send something.
-pub(super) const COMMANDS: [&str; 4] = ["scan", "monitor", "trace", "dcp"];
+pub(super) const COMMANDS: [&str; 5] = ["scan", "monitor", "trace", "dcp", "wol"];
 
 pub(super) fn requested(opts: &BTreeMap<String, String>) -> bool {
     opts.contains_key("dry-run")
@@ -143,6 +143,29 @@ pub(super) fn dcp_plan(opts: &BTreeMap<String, String>) -> Result<(), String> {
     }
     text.push_str("\nThe capture itself only listens.");
     output(&text, opts)
+}
+
+/// The plan of `wol`: one UDP broadcast datagram, and only because the user asked for it.
+pub(super) fn wol_plan(
+    opts: &BTreeMap<String, String>,
+    destination: std::net::Ipv4Addr,
+) -> Result<(), String> {
+    let p = plan::wol(destination);
+    if wants_json(opts) {
+        let doc = json!({
+            "dry_run": true,
+            "command": "wol",
+            "packets_sent": 0,
+            "packets": p.packets,
+            "notes": p.notes,
+        });
+        return output(&crate::schema::object("dry-run", &doc)?, opts);
+    }
+    let mut text = String::from("DRY RUN: nothing was sent.\n\n");
+    for line in p.lines() {
+        text.push_str(&format!("  {line}\n"));
+    }
+    output(text.trim_end(), opts)
 }
 
 #[cfg(test)]
@@ -338,6 +361,13 @@ mod tests {
                 &ports,
             ],
             vec!["dcp", "--dry-run"],
+            vec![
+                "wol",
+                "00:11:22:33:44:55",
+                "--broadcast",
+                "127.0.0.1",
+                "--dry-run",
+            ],
         ] {
             let (text, status) = run_to_file(&list);
             assert_eq!(status, crate::ui::ExitCode::Success, "{list:?}");

@@ -283,3 +283,17 @@ path = "fuzz_targets/update_response.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "local_networks"
+path = "fuzz_targets/local_networks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "target_list"
+path = "fuzz_targets/target_list.rs"
+test = false
+doc = false
+bench = false

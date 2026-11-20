@@ -204,6 +204,7 @@ mod tests {
                 include_str!("commands/trace.rs"),
                 "guard::enforce(",
             ),
+            ("wol", include_str!("commands/wol.rs"), "guard::enforce("),
         ] {
             let code = source.split("#[cfg(test)]").next().unwrap();
             assert!(code.contains(call), "{name} must call the scope guard");
