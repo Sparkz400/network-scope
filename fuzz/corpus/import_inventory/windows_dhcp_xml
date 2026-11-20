@@ -1,0 +1,1 @@
+<DHCPServer><Leases><Lease><IPAddress>10.1.0.20</IPAddress><ClientId>aa-bb-cc-00-00-01</ClientId><AddressState>Active</AddressState></Lease></Leases></DHCPServer>

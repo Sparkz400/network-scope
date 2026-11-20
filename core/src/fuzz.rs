@@ -6,8 +6,8 @@
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
-    arp, fingerprint, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile, platform, risk,
-    service, syn, tls, udp,
+    arp, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile, platform,
+    risk, service, syn, tls, udp,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -49,6 +49,7 @@ pub const TARGETS: &[Target] = &[
     ("cves_json", cves_json),
     ("feeds_import", feeds_import),
     ("nvd_import", nvd_import),
+    ("import_inventory", import_inventory),
     ("arp_reply", arp_reply),
     ("syn_reply", syn_reply),
     ("tcp_options", tcp_options),
@@ -282,6 +283,19 @@ pub fn nmap_import(data: &[u8]) {
     if let Ok(snapshot) = nmap::import(xml) {
         std::hint::black_box(risk::analyze_snapshot(&snapshot));
         std::hint::black_box(nmap::export(&snapshot, 0));
+    }
+}
+
+/// A file for `import` (CSV, DHCP leases, Active Directory, NetBox): the first byte picks the
+/// kind (modulo the number of kinds), the rest is the file. Parsing, joining entries that
+/// describe one device and writing the result as JSON must never panic or grow without bound.
+pub fn import_inventory(data: &[u8]) {
+    let Some((kind, file)) = data.split_first() else {
+        return;
+    };
+    let kind = import::Kind::ALL[usize::from(*kind) % import::Kind::ALL.len()];
+    if let Ok(parsed) = import::parse(kind, file) {
+        std::hint::black_box(serde_json::to_string(&parsed).ok());
     }
 }
 

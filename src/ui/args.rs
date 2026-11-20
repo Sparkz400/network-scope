@@ -34,7 +34,7 @@ pub(super) const FLAGS: [&str; 26] = [
     "dry-run",
     "no-scan",
 ];
-pub(super) const VALUES: [&str; 48] = [
+pub(super) const VALUES: [&str; 60] = [
     "feeds",
     "top",
     "nvd",
@@ -83,6 +83,18 @@ pub(super) const VALUES: [&str; 48] = [
     "on-alert",
     "on-alert-dir",
     "service-name",
+    "owner",
+    "tag",
+    "untag",
+    "criticality",
+    "expected",
+    "since",
+    "push",
+    "token-env",
+    "netbox-site",
+    "netbox-role",
+    "netbox-device-type",
+    "index",
 ];
 pub(super) fn options(args: &[String]) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     let (flags, values) = (FLAGS, VALUES);

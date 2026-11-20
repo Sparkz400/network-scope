@@ -88,13 +88,17 @@
 //! Network Scope engine.
 pub mod alertscript;
 pub(crate) mod arp;
+pub mod baseline;
 pub mod capture;
+pub mod changes;
 pub mod compliance;
 pub mod core;
 pub mod devices;
 pub mod evidence;
 pub mod feeds;
 pub(crate) mod fingerprint;
+pub mod identity;
+pub mod import;
 pub mod jarm;
 pub mod mcp;
 pub mod monitor;
@@ -121,6 +125,7 @@ pub mod script;
 pub mod service;
 pub mod store;
 pub mod syn;
+pub mod sync;
 pub(crate) mod tls;
 pub mod topology;
 pub mod trace;

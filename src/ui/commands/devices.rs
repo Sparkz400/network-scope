@@ -1,4 +1,4 @@
-//! `devices ID` (active and passive results merged, one record per device), `devices --history`
+//! `devices ID` (active and passive results merged, one record per device, with its stable key), `devices --history`
 //! and `topology ID` (network path map from traceroute data).
 use crate::{
     devices, schema, store, topology,
@@ -15,7 +15,12 @@ pub(super) fn devices(ctx: &mut Ctx) -> Result<(), String> {
         );
     }
     let snapshot = store::load(db, ctx.id(0)?)?;
-    let devices = devices::merge(&snapshot.hosts, &snapshot.observations);
+    let mut devices = devices::merge(&snapshot.hosts, &snapshot.observations);
+    // The stable device key: what the inventory recognises the device as across scans.
+    let matches = store::resolve_devices(db, &devices)?;
+    for (d, m) in devices.iter_mut().zip(matches) {
+        d.key = m.key;
+    }
     match opts.get("format").map(String::as_str).unwrap_or("json") {
         "json" => output(&schema::list("devices", "devices", &devices)?, opts),
         "csv" => output(&devices::csv(&devices), opts),

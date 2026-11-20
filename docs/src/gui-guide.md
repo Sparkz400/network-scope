@@ -48,6 +48,10 @@ The same window has an OT passive section:
 
 See [OT / industrial](ot-industrial.md).
 
+## Device timeline
+
+**Host details → Timeline…** opens the timeline of that device from the saved scans: when it was first seen, when its address, MAC or name changed, which ports opened or closed, and which findings appeared or were resolved, newest first, with a summary (first and last sighting, addresses, MACs, names, open ports). The device is looked up by its MAC address when it has one (so the history follows it across address changes), otherwise by its IP address. The data comes from the same function as `devices --history` (see [Device history](inventory-diff-reports.md#device-history)) and is read in the background. **Refresh** reads it again, **Copy as text** copies the text form. Nothing is shown for a scan that did not mention the device.
+
 ## Scripts
 
 **Host details → Test script…** dry-runs the configured or a chosen `.rhai` file on a copy of the host; **Apply** adds the result to the host in the window only. See [Scripting](scripting.md).
@@ -58,4 +62,4 @@ The **Topology** window draws the merged path map from traceroute data (enable t
 
 ## Screenshot mode
 
-`network-scope --screenshot FILE.png` renders the window to a PNG without scanning or touching preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|ot|script` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, then `-fast` for Safe Mode off, e.g. `main-small-fast`). This is used for the documentation images.
+`network-scope --screenshot FILE.png` renders the window to a PNG without scanning or touching preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|ot|script|timeline` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, then `-fast` for Safe Mode off, e.g. `main-small-fast`). This is used for the documentation images.

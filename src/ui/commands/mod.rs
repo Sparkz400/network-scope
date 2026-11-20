@@ -1,6 +1,8 @@
 //! The commands, one file per command or small family of related commands. `ui::run` looks the
 //! command word up in [`COMMANDS`] and calls its handler; see the module docs of `ui` for how to
 //! add one.
+mod baseline;
+mod changes;
 mod completions;
 mod devices;
 mod diff;
@@ -36,6 +38,8 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("interfaces", listen::interfaces),
     ("history", inventory::history),
     ("diff", diff::run),
+    ("baseline", baseline::run),
+    ("changes", changes::run),
     ("export", export::export),
     ("report", export::report),
     ("import", inventory::import),

@@ -118,7 +118,9 @@
               "port-opened",
               "port-closed",
               "udp-answering",
-              "udp-silent"
+              "udp-silent",
+              "finding-appeared",
+              "finding-resolved"
             ]
           },
           "detail": {

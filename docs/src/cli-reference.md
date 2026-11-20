@@ -47,10 +47,14 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `interfaces` | List capture interfaces |
 | `history [--db FILE]` | List saved scans as JSON |
 | `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
+| `changes [--since last\|7d\|DATE] [--format text\|json]` | New, gone and changed devices and new and resolved risks, see [Inventory](inventory-diff-reports.md#what-changed) |
+| `baseline approve [SCAN_ID]` / `enable` / `set DEVICE [...]` / `show` / `remove DEVICE` / `clear` | Approved baseline of expected devices, see [Inventory](inventory-diff-reports.md#approved-baseline) |
 | `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
 | `export ID --format compliance-iec62443\|compliance-nis2\|compliance-cis [-csv] [--output FILE]` | Asset inventory with findings mapped to IEC 62443, NIS2 Art. 21 or CIS Controls v8 (Markdown, or CSV with the `-csv` suffix); see [Compliance exports](inventory-diff-reports.md#compliance-exports) |
+| `export ID --format netbox\|netbox-devices\|snipeit\|splunk\|elastic\|servicenow [--push URL --token-env VAR]` | Export to other systems, optional opt-in push, see [Export](import-export.md#export-to-other-systems) |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
 | `import FILE.xml` | Import an nmap XML scan into the inventory |
+| `import csv\|isc-dhcp\|dnsmasq\|windows-dhcp\|ad-csv\|ad-ldif\|netbox FILE...` | Known devices from a list (offline file, never a scan), see [Import](import-export.md) |
 | `findings ID [--min-severity low] [--sort exploited\|severity] [--fail-on-findings]` | Weak TLS/SSH, risky services, CVE hints |
 | `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
 | `feeds import nvd FILE... [--nvd FILE]` | Import NVD CVE JSON 2.0 feed files (unpack `.gz` first) into the NVD cache; CPE matches become `cve` findings. No network access |
@@ -62,7 +66,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
 | `ot-listen --interface ID --seconds N` or `ot-listen --pcap FILE [--progress] [--no-reassembly]` | Passive OT asset discovery |
 | `ot-assets ID [--format json\|csv]` | OT asset inventory from a passive capture |
-| `devices ID [--format json\|csv]` | One record per device (active and passive merged) |
+| `devices ID [--format json\|csv]` | One record per device (active and passive merged), with its stable device key |
 | `devices --history MAC\|IP [--format text\|json]` | Timeline of one device across saved scans |
 | `topology ID [--format ascii\|dot]` | Network path map from traceroute data |
 | `trace TARGET [--max-hops 20] [--timeout 1000] [--fast --trace-method udp\|tcp --trace-port N]` | Traceroute to one IP |
