@@ -251,3 +251,34 @@ No industrial production network was scanned during development. Reports from re
 ## Screenshots
 
 `cargo run --release -- --screenshot screenshot.png` renders the desktop to a PNG without scanning or modifying preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|settings|ot|script|timeline` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, then `-fast` for Safe Mode off, e.g. `main-small-fast`).
+
+## Resource budgets
+
+`scripts/resource_budget.py` (Python standard library) checks the roadmap's budgets (B17) against a release build and runs in CI on Ubuntu (`--check` fails on a breach):
+
+```sh
+python -I scripts/resource_budget.py --cli /absolute/path/to/network-scope-cli --check --gui
+```
+
+| Budget | Limit | What is measured |
+| --- | --- | --- |
+| Startup | 150 ms | Median of 21 runs of `network-scope-cli --version`, process start to exit |
+| Memory, /16 dry run | 200 MB | Peak memory of `scan 10.0.0.0/16 --dry-run` |
+| Memory, /16 scan | 200 MB | Peak memory of a real scan of 127.0.0.0/16 on loopback (65,534 targets, `--fast --tcp-only --ports 1 --timeout 300`) |
+| Memory, batch-written scan | 200 MB | The same over 127.0.0.0/15 (131,070 targets): above 65,536 addresses the hosts go to the database in batches |
+| GUI frame | 16.6 ms | `cargo test --release --lib frame_budget -- --ignored`: a headless egui table of 65,536 hosts, an idle frame and a frame that also sorts and filters the rows |
+
+Loopback only; nothing leaves the machine. Peak memory is the operating system's figure for the process (`ru_maxrss` from `wait4`, or the peak working set on Windows).
+
+Measured on Windows 11, 22 logical cores, release build, 2026-11-20 (the CI limits are enforced on Ubuntu, where nothing was measured by the author):
+
+| Measurement | Result |
+| --- | --- |
+| Startup (`--version`) | 86 ms median (81.5 to 212 ms over 31 runs; 94 to 158 ms before `--version` and `--help` stopped loading the rule database). A trivial `cmd /c ver` takes 58 ms in the same harness, so most of it is the process start of this Windows machine |
+| `scan 10.0.0.0/16 --dry-run` | 12.2 MB, 0.2 s |
+| `scan 10.0.0.0/8 --dry-run` (`--dry-run-8`) | 12.2 MB, 0.23 s |
+| Scan of 127.0.0.0/16 | 69.6 MB, 14 s |
+| Scan of 127.0.0.0/15 (batch-written) | 26.0 MB, 29 s; 127.0.0.0/14: 26.1 MB, 52 s |
+| GUI frame, 65,536 rows | idle frame 0.40 ms median (the rows are virtual: only the visible ones are laid out); a frame with sort, filter and draw 10.95 ms median, worst of 30 frames 18.9 ms. The median meets 60 fps; one frame in 30 can miss it while a scan feeds the table |
+
+The GUI test cannot drive the real window (that needs a display): it draws the same `TableBuilder` columns and cells as the results table and repeats the sort and the row filter, so a change to the table code itself (not these helpers) is not covered.

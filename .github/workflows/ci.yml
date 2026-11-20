@@ -67,6 +67,13 @@ jobs:
       - name: Accuracy benchmark (Linux)
         if: runner.os == 'Linux'
         run: python -I lab/benchmark.py --cli "$PWD/target/release/network-scope-cli" --check --max-scan-seconds 60 --out-dir benchmark-results
+      # Resource budgets (roadmap B17): startup under 150 ms, under 200 MB for a /16 (dry run and a real
+      # loopback scan of 127.0.0.0/16) and for a batch-written /15, and a GUI frame under 16.6 ms with
+      # 65,536 rows (a headless egui test, run in release mode). Linux only, like the benchmark: it
+      # needs loopback aliases and the numbers differ per platform. See scripts/resource_budget.py.
+      - name: Resource budgets (Linux)
+        if: runner.os == 'Linux'
+        run: python -I scripts/resource_budget.py --cli "$PWD/target/release/network-scope-cli" --check --gui --json benchmark-results/resource-budget.json
       - name: Upload the benchmark result
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

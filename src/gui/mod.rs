@@ -1675,4 +1675,116 @@ mod tests {
             [1]
         );
     }
+
+    /// GUI budget (ROADMAP B17): a table of 65,536 hosts stays within one 60 fps frame (16.6 ms).
+    /// The window itself needs a display, so this drives the same `TableBuilder` columns and cells
+    /// as the results table through a headless egui context, and times the two things that happen
+    /// to 65k rows while a scan runs: a frame that only draws (the rows are virtual, only the
+    /// visible ones are laid out), and a frame that also gets a new batch of hosts (sort by open
+    /// ports, then the filtered row list with a text query, which builds the search text of every
+    /// row once). A timing test, so it is ignored by default and runs in release mode:
+    /// `cargo test --release --lib frame_budget -- --ignored --nocapture`
+    /// (`scripts/resource_budget.py --gui`). It prints one `GUI_FRAME_MS` line.
+    #[test]
+    #[ignore = "timing test, run in release mode by scripts/resource_budget.py --gui"]
+    fn frame_budget_with_65k_rows() {
+        let mut results: Vec<scan::Host> = (0..65_536u32)
+            .map(|i| {
+                let ip = std::net::Ipv4Addr::from(0x0a00_0000 + i).to_string();
+                let open = if i % 5 == 0 { vec![80, 443] } else { vec![] };
+                host(&ip, i % 3 != 0, open, &format!("pc-{i}.example.net"))
+            })
+            .collect();
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let rows: Vec<usize> = (0..results.len()).collect();
+        let draw = |results: &[scan::Host], rows: &[usize]| {
+            ctx.run_ui(input(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(135.0).at_least(80.0))
+                        .column(Column::initial(110.0))
+                        .column(Column::initial(65.0))
+                        .column(Column::remainder().at_least(80.0))
+                        .column(Column::initial(140.0))
+                        .header(26.0, |mut row| {
+                            for name in
+                                ["IP address", "Status", "Ping", "Hostname", "Open TCP ports"]
+                            {
+                                row.col(|ui| {
+                                    let _ = ui.selectable_label(false, name);
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            body.rows(26.0, rows.len(), |mut row| {
+                                let host = &results[rows[row.index()]];
+                                row.col(|ui| {
+                                    let _ = ui.selectable_label(false, host.ip.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(host_status(host));
+                                });
+                                row.col(|ui| {
+                                    ui.label(ping_text(host.ping));
+                                });
+                                row.col(|ui| {
+                                    ui.label(&host.hostname);
+                                });
+                                row.col(|ui| {
+                                    ui.label(ports_text(&host.open));
+                                });
+                            });
+                        });
+                });
+            })
+            // Nothing is painted, so the font atlas upload is dropped on purpose.
+            .drop_without_applying_deltas();
+        };
+        let time = |mut f: Box<dyn FnMut() + '_>| {
+            f(); // warm-up: fonts, layout caches
+            let mut samples: Vec<f64> = (0..30)
+                .map(|_| {
+                    let t = Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            samples.sort_by(f64::total_cmp);
+            (samples[samples.len() / 2], samples[samples.len() - 1])
+        };
+        let (idle_median, idle_max) = time(Box::new(|| draw(&results, &rows)));
+        let mut haystacks = HashMap::new();
+        let notes = BTreeMap::new();
+        let (live_median, live_max) = time(Box::new(|| {
+            // The work of a frame that received hosts: the sort of `Scanner::sort` (column 4)...
+            results.sort_by(|a, b| a.open.cmp(&b.open).then_with(|| a.ip.cmp(&b.ip)));
+            // ...the visible row list for a search text (the cache of search texts is kept)...
+            let visible = filter_rows(&results, Filter::All, "pc-1", &mut haystacks, &notes);
+            // ...and the draw.
+            draw(&results, &visible);
+        }));
+        println!(
+            "GUI_FRAME_MS idle_median={idle_median:.3} idle_max={idle_max:.3} live_median={live_median:.3} live_max={live_max:.3} rows=65536"
+        );
+        if !cfg!(debug_assertions) {
+            assert!(
+                idle_median < 1000.0 / 60.0,
+                "idle frame {idle_median:.2} ms"
+            );
+            assert!(
+                live_median < 1000.0 / 60.0,
+                "live frame {live_median:.2} ms"
+            );
+        }
+    }
 }
