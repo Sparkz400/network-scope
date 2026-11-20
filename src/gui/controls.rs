@@ -265,11 +265,14 @@ impl Scanner {
                     ui.selectable_value(&mut self.filter, Filter::Starred, tr!("Starred ★"));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // The hint text is the accessible name of the box.
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.search)
-                            .hint_text(tr!("Search results…"))
-                            .desired_width(190.0),
+                    // The hint text is only the "placeholder" for a screen reader: name the box.
+                    a11y::named(
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .hint_text(tr!("Search results…"))
+                                .desired_width(190.0),
+                        ),
+                        tr!("Search results…"),
                     );
                 });
             });

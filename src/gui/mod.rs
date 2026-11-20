@@ -1,3 +1,4 @@
+mod a11y;
 mod controls;
 mod convenience;
 mod demo;
@@ -15,6 +16,7 @@ mod tables;
 mod timeline;
 mod updates;
 mod windows;
+mod workbench;
 
 use crate::{devices, localnets, passive, risk, scan, store, topology, update};
 use eframe::egui::{self, Color32, RichText};
@@ -196,6 +198,12 @@ enum Job {
     Networks,
     /// A search across the saved scans (token, query).
     Search(u64, String),
+    /// The unknown-device workbench: group the unidentified banners of every saved scan.
+    Groups(u64),
+    /// A draft probe rule for one group (token, group).
+    Draft(u64, Box<crate::service::workbench::Group>),
+    /// Writes a draft probe file and its checklist (`FILE`, `FILE.checklist.md`).
+    WriteDraft(Box<workbench::DraftView>, PathBuf),
 }
 enum Done {
     Saved(&'static str, usize, Result<i64, String>),
@@ -210,6 +218,10 @@ enum Done {
     Home(u64, Result<Box<home::HomeData>, String>),
     Networks(Result<Vec<localnets::LocalNet>, String>),
     Searched(u64, Result<Box<crate::search::Results>, String>),
+    Groups(u64, Result<Box<workbench::GroupsData>, String>),
+    /// A draft (token, group id, result).
+    Drafted(u64, String, Result<Box<workbench::DraftView>, String>),
+    DraftWritten(Result<(String, String), String>),
 }
 fn write_file(path: &std::path::Path, data: Result<String, String>) -> Result<(), String> {
     data.and_then(|d| std::fs::write(path, d).map_err(|e| format!("{}: {e}", path.display())))
@@ -261,6 +273,12 @@ fn run_job(job: Job) -> Done {
             token,
             crate::search::search(&path, &query, 60).map(Box::new),
         ),
+        Job::Groups(token) => Done::Groups(token, workbench::load_groups(&path)),
+        Job::Draft(token, group) => {
+            let id = group.id.clone();
+            Done::Drafted(token, id, workbench::make_draft(&group))
+        }
+        Job::WriteDraft(view, file) => Done::DraftWritten(workbench::write_draft(&file, &view)),
     }
 }
 struct Worker {
@@ -308,6 +326,9 @@ struct Busy {
     home: bool,
     detecting: bool,
     searching: bool,
+    workbench: bool,
+    drafting: bool,
+    writing_draft: bool,
 }
 impl Busy {
     fn label(&self) -> Option<&'static str> {
@@ -327,6 +348,10 @@ impl Busy {
             Some(tr!("Looking for your networks…"))
         } else if self.listing {
             Some(tr!("Reading inventory…"))
+        } else if self.workbench {
+            Some(tr!("Grouping unidentified banners…"))
+        } else if self.drafting || self.writing_draft {
+            Some(tr!("Drafting a probe rule…"))
         } else if self.importing {
             Some(tr!("Reading address list…"))
         } else {
@@ -442,6 +467,8 @@ struct Scanner {
     timeline: Option<timeline::Timeline>,
     timeline_tokens: u64,
     ot: ot::OtState,
+    /// The unknown-device workbench window.
+    workbench: workbench::WorkbenchState,
     /// Stored time of the inventory snapshot on screen; `None` for live results (exports are
     /// then stamped with the current time).
     opened_stamp: Option<i64>,
@@ -567,6 +594,7 @@ impl Scanner {
             timeline: None,
             timeline_tokens: 0,
             ot: ot::OtState::default(),
+            workbench: Default::default(),
             opened_stamp: None,
             schedule_anchor: None,
             schedule_note: String::new(),
@@ -644,6 +672,9 @@ impl Scanner {
             Job::Home(..) => self.busy.home = true,
             Job::Networks => self.busy.detecting = true,
             Job::Search(..) => self.busy.searching = true,
+            Job::Groups(..) => self.busy.workbench = true,
+            Job::Draft(..) => self.busy.drafting = true,
+            Job::WriteDraft(..) => self.busy.writing_draft = true,
         }
         let sent = self
             .worker
@@ -666,8 +697,10 @@ impl Scanner {
                                 format!("{observations} observations · saved capture #{id}")
                         }
                         Ok(id) if kind == "ot" => {
-                            self.status = format!(
-                                "OT passive: {observations} observations · saved capture #{id}"
+                            self.status = tr!(
+                                "OT passive: {} observations · saved capture #{}",
+                                observations,
+                                id
                             )
                         }
                         Ok(id) => {
@@ -752,6 +785,9 @@ impl Scanner {
                 Done::Home(token, result) => self.home_loaded(token, result),
                 Done::Networks(result) => self.networks_found(result),
                 Done::Searched(token, result) => self.search_loaded(token, result),
+                Done::Groups(token, result) => self.groups_loaded(token, result),
+                Done::Drafted(token, group, result) => self.draft_made(token, group, result),
+                Done::DraftWritten(result) => self.draft_written(result),
                 Done::ScriptTested(token, result) => {
                     self.busy.testing = false;
                     // A test for another host (or one replaced since) is dropped.
@@ -907,7 +943,7 @@ impl Scanner {
                 self.script_test = None;
                 self.scan_complete = true;
                 self.scan_scope = self.targets.clone();
-                self.scan_settings = self.saved.settings.clone();
+                self.scan_settings = windows::settings_for_scan(&self.saved.settings);
                 self.opened_stamp = None;
                 self.scan_sent.clear();
                 self.error.clear();
@@ -1444,6 +1480,7 @@ impl eframe::App for Scanner {
         self.update_window(ctx);
         self.details(ctx);
         self.timeline_window(ctx);
+        self.workbench_window(ctx);
         self.inventory_window(ctx);
         self.map_window(ctx);
         self.devices_window(ctx);

@@ -847,4 +847,23 @@ mod tests {
         assert!(e.contains("definitely-not-a-program-xyz"), "{e}");
         assert!(launch(&[]).is_err());
     }
+
+    /// Run by hand to see the opener work: `cargo test --lib live_link_opener -- --ignored
+    /// --nocapture`. Refused links start nothing; the documentation page goes to the default
+    /// browser.
+    #[test]
+    #[ignore = "opens a page in the default browser"]
+    fn live_link_opener_hands_a_docs_page_to_the_default_browser() {
+        for bad in [
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "https://exa mple.com/",
+            "calc.exe",
+        ] {
+            assert!(open_url(bad).is_err(), "{bad}");
+        }
+        let url = super::super::docs_url("telnet-open");
+        open_url(&url).unwrap();
+        eprintln!("handed to the system: {url}");
+    }
 }

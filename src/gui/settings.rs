@@ -95,11 +95,14 @@ impl Scanner {
                             s.scan_nonresponders = true;
                         }
                         ui.horizontal(|ui| {
-                            ui.label(tr!("Modbus unit"));
-                            ui.add(egui::DragValue::new(&mut s.modbus_unit));
-                            ui.label(tr!("S7 rack / slot"));
-                            ui.add(egui::DragValue::new(&mut s.s7_rack).range(0..=7));
-                            ui.add(egui::DragValue::new(&mut s.s7_slot).range(0..=31));
+                            let unit = ui.label(tr!("Modbus unit"));
+                            ui.add(egui::DragValue::new(&mut s.modbus_unit)).labelled_by(unit.id);
+                            let rack = ui.label(tr!("S7 rack / slot"));
+                            ui.add(egui::DragValue::new(&mut s.s7_rack).range(0..=7)).labelled_by(rack.id);
+                            a11y::named(
+                                ui.add(egui::DragValue::new(&mut s.s7_slot).range(0..=31)),
+                                tr!("S7 slot"),
+                            );
                         });
                     }
                     ui.add_enabled(
@@ -138,16 +141,19 @@ impl Scanner {
                         });
                     }
                     ui.horizontal(|ui| {
-                        ui.label(tr!("Script (.rhai file or folder)"));
-                        ui.add(egui::TextEdit::singleline(&mut s.scripts).desired_width(220.0));
+                        let label = ui.label(tr!("Script (.rhai file or folder)"));
+                        ui.add(egui::TextEdit::singleline(&mut s.scripts).desired_width(220.0))
+                            .labelled_by(label.id);
                     });
-                    ui.label(tr!("CVE rules file (added to the built-in rules)"));
+                    let cves_label = ui.label(tr!("CVE rules file (added to the built-in rules)"));
                     ui.horizontal(|ui| {
-                        let edit = ui.add(
-                            egui::TextEdit::singleline(&mut self.saved.cves_file)
-                                .hint_text("cves.json")
-                                .desired_width(190.0),
-                        );
+                        let edit = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.saved.cves_file)
+                                    .hint_text("cves.json")
+                                    .desired_width(190.0),
+                            )
+                            .labelled_by(cves_label.id);
                         // Enter or leaving the field loads the file, so a path is not
                         // parsed on every keystroke.
                         if edit.lost_focus() {
@@ -179,18 +185,20 @@ impl Scanner {
                     ui.checkbox(&mut s.trace, tr!("Record router path to each responding host (traceroute)"));
                     if s.trace {
                         ui.horizontal(|ui| {
-                            ui.label(tr!("Max hops"));
-                            ui.add(egui::DragValue::new(&mut s.trace_hops).range(1..=64));
+                            let hops = ui.label(tr!("Max hops"));
+                            ui.add(egui::DragValue::new(&mut s.trace_hops).range(1..=64))
+                                .labelled_by(hops.id);
                             ui.label(tr!("Method"));
                             trace_method_combo(ui, s.safe, &mut s.trace_method);
                         });
                         if s.trace_method == TraceMethod::Tcp {
                             ui.horizontal(|ui| {
-                                ui.label(tr!("TCP port"));
+                                let port = ui.label(tr!("TCP port"));
                                 ui.add_enabled(
                                     !s.safe,
                                     egui::DragValue::new(&mut s.trace_port).range(0..=65535),
-                                );
+                                )
+                                .labelled_by(port.id);
                                 ui.label(tr!("0 = first open port; OT and printer ports are never used"));
                             });
                             if s.trace_port != 0
@@ -261,12 +269,12 @@ impl Scanner {
                     .num_columns(2)
                     .spacing([24.0, 10.0])
                     .show(ui, |ui| {
-                        ui.label(tr!("Language"));
+                        let language_label = ui.label(tr!("Language"));
                         let shown = match self.saved.language.as_str() {
                             "" | "auto" => tr!("Automatic (system language)").to_string(),
                             code => i18n::Lang::from_locale(code).map_or(code.to_string(), |l| l.name().to_string()),
                         };
-                        egui::ComboBox::from_id_salt("language")
+                        let language_box = egui::ComboBox::from_id_salt("language")
                             .selected_text(shown)
                             .show_ui(ui, |ui| {
                                 if ui
@@ -287,6 +295,7 @@ impl Scanner {
                                     }
                                 }
                             });
+                        language_box.response.labelled_by(language_label.id);
                         ui.end_row();
                         ui.label(tr!("Theme"));
                         ui.horizontal(|ui| {
@@ -298,10 +307,11 @@ impl Scanner {
                             }
                         });
                         ui.end_row();
-                        ui.label(tr!("Interface scale"));
+                        let scale_label = ui.label(tr!("Interface scale"));
                         let mut zoom = if self.saved.zoom > 0.0 { self.saved.zoom } else { 1.0 };
                         if ui
                             .add(egui::Slider::new(&mut zoom, ZOOM_RANGE).fixed_decimals(2).step_by(0.05))
+                            .labelled_by(scale_label.id)
                             .on_hover_text(tr!("On top of the system's display scaling (also Ctrl and + or -)."))
                             .changed()
                         {

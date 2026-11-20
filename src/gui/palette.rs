@@ -29,6 +29,7 @@ pub(super) enum Cmd {
     Map,
     Findings,
     Devices,
+    Workbench,
     Passive,
     About,
     ExportCsv,
@@ -91,6 +92,11 @@ pub(super) fn entries() -> Vec<Entry> {
             "risks vulnerabilities cve kev",
         ),
         (Cmd::Devices, tr!("Open the devices"), "assets mac vendor"),
+        (
+            Cmd::Workbench,
+            tr!("Open the unknown-device workbench"),
+            "unidentified banners fingerprint probe rule draft group compare",
+        ),
         (
             Cmd::Passive,
             tr!("Open passive discovery / OT"),
@@ -357,6 +363,10 @@ impl Scanner {
                         ))
                         .desired_width(f32::INFINITY),
                 );
+                a11y::named(
+                    edit.clone(),
+                    tr!("Type an action, or an address, MAC, name, vendor or finding id…"),
+                );
                 if self.palette.focus {
                     edit.request_focus();
                     self.palette.focus = false;
@@ -469,6 +479,7 @@ impl Scanner {
             Cmd::Map => self.topology_open = true,
             Cmd::Findings => self.findings_open = true,
             Cmd::Devices => self.devices_open = true,
+            Cmd::Workbench => self.open_workbench(),
             Cmd::Passive => self.capture_open = true,
             Cmd::About => self.about_open = true,
             Cmd::ExportCsv => self.export("csv"),

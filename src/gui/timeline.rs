@@ -41,17 +41,17 @@ pub(super) struct Row {
 /// The heading and tone of a history event kind (see `devices::HistoryEvent::kind`).
 pub(super) fn event_label(kind: &str) -> (&'static str, Tone) {
     match kind {
-        "first-seen" => ("First seen", Tone::Info),
-        "ip-changed" => ("Address changed", Tone::Warn),
-        "mac-changed" => ("MAC changed", Tone::Warn),
-        "hostname-changed" => ("Name changed", Tone::Info),
-        "port-opened" => ("Port opened", Tone::Warn),
-        "port-closed" => ("Port closed", Tone::Info),
-        "udp-answering" => ("UDP answering", Tone::Warn),
-        "udp-silent" => ("UDP silent", Tone::Info),
-        "finding-appeared" => ("Finding appeared", Tone::Bad),
-        "finding-resolved" => ("Finding resolved", Tone::Good),
-        _ => ("Event", Tone::Info),
+        "first-seen" => (tr!("First seen"), Tone::Info),
+        "ip-changed" => (tr!("Address changed"), Tone::Warn),
+        "mac-changed" => (tr!("MAC changed"), Tone::Warn),
+        "hostname-changed" => (tr!("Name changed"), Tone::Info),
+        "port-opened" => (tr!("Port opened"), Tone::Warn),
+        "port-closed" => (tr!("Port closed"), Tone::Info),
+        "udp-answering" => (tr!("UDP answering"), Tone::Warn),
+        "udp-silent" => (tr!("UDP silent"), Tone::Info),
+        "finding-appeared" => (tr!("Finding appeared"), Tone::Bad),
+        "finding-resolved" => (tr!("Finding resolved"), Tone::Good),
+        _ => (tr!("Event"), Tone::Info),
     }
 }
 
@@ -77,7 +77,7 @@ pub(super) fn rows(h: &DeviceHistory) -> Vec<Row> {
 /// The header lines: first and last sighting, addresses, MACs, names and open ports.
 pub(super) fn summary(h: &DeviceHistory) -> Vec<String> {
     let (Some(first), Some(last)) = (h.first_seen, h.last_seen) else {
-        return vec![format!(
+        return vec![tr!(
             "Not seen in any of {} saved scans (a scan that never reached it, or none saved yet).",
             h.scans
         )];
@@ -90,20 +90,20 @@ pub(super) fn summary(h: &DeviceHistory) -> Vec<String> {
         }
     };
     vec![
-        format!(
+        tr!(
             "First seen {} · last seen {} · in {} of {} saved scans",
             crate::report::fmt_time(first),
             crate::report::fmt_time(last),
             h.sightings,
             h.scans
         ),
-        format!(
+        tr!(
             "Addresses: {}",
             join(h.ips.iter().map(ToString::to_string).collect())
         ),
-        format!("MAC addresses: {}", join(h.macs.clone())),
-        format!("Names: {}", join(h.hostnames.clone())),
-        format!(
+        tr!("MAC addresses: {}", join(h.macs.clone())),
+        tr!("Names: {}", join(h.hostnames.clone())),
+        tr!(
             "Open TCP ports (latest completed scan): {}",
             join(h.open_tcp.iter().map(u16::to_string).collect())
         ),
@@ -154,7 +154,7 @@ impl Scanner {
         let Some(t) = self.timeline.as_ref() else {
             return;
         };
-        let (title, query) = (format!("Device timeline · {}", t.label), t.query.clone());
+        let (title, query) = (tr!("Device timeline · {}", t.label), t.query.clone());
         let mut open = true;
         let mut refresh = false;
         let mut copy = None;
@@ -167,18 +167,18 @@ impl Scanner {
             .vscroll(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(format!("Looked up by {query}"));
+                    ui.label(tr!("Looked up by {}", query));
                     if busy {
                         ui.spinner();
                     }
                     if ui
-                        .add_enabled(!busy, egui::Button::new("Refresh"))
+                        .add_enabled(!busy, egui::Button::new(tr!("Refresh")))
                         .clicked()
                     {
                         refresh = true;
                     }
                     if let Some(Ok(h)) = result
-                        && ui.button("Copy as text").clicked()
+                        && ui.button(tr!("Copy as text")).clicked()
                     {
                         copy = Some(history_text(h));
                     }
@@ -186,7 +186,7 @@ impl Scanner {
                 ui.separator();
                 match result {
                     None => {
-                        ui.label("Reading the saved inventory…");
+                        ui.label(tr!("Reading the saved inventory…"));
                     }
                     Some(Err(e)) => {
                         ui.colored_label(Color32::from_rgb(205, 70, 70), e);
@@ -198,7 +198,9 @@ impl Scanner {
                         ui.separator();
                         let rows = rows(h);
                         if rows.is_empty() {
-                            ui.label("No events yet: the device was not seen in a saved scan.");
+                            ui.label(tr!(
+                                "No events yet: the device was not seen in a saved scan."
+                            ));
                         }
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
@@ -342,6 +344,35 @@ mod tests {
         assert_eq!(lines[2], "MAC addresses: AA:BB:CC:00:11:22");
         assert_eq!(lines[3], "Names: —");
         assert_eq!(lines[4], "Open TCP ports (latest completed scan): 22, 80");
+    }
+
+    #[test]
+    fn the_headings_and_the_summary_follow_the_language() {
+        super::i18n::set(super::i18n::Lang::German);
+        assert_eq!(event_label("first-seen").0, "Erstmals gesehen");
+        assert_eq!(event_label("finding-resolved").0, "Befund behoben");
+        assert_eq!(event_label("no-such-kind").0, "Ereignis");
+        let never = DeviceHistory {
+            scans: 4,
+            ..Default::default()
+        };
+        assert!(summary(&never)[0].starts_with("In keinem von 4 gespeicherten Scans"));
+        let seen = DeviceHistory {
+            first_seen: Some(1_000),
+            last_seen: Some(2_000),
+            sightings: 2,
+            scans: 3,
+            ..Default::default()
+        };
+        let lines = summary(&seen);
+        assert!(
+            lines[0].contains("in 2 von 3 gespeicherten Scans"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "Adressen: —");
+        super::i18n::set(super::i18n::Lang::English);
+        assert_eq!(event_label("first-seen").0, "First seen");
+        assert_eq!(summary(&seen)[1], "Addresses: —");
     }
 
     #[test]
