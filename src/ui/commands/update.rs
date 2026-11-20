@@ -69,7 +69,7 @@ mod tests {
         for want in [
             "https://github.com/Sparkz400/network-scope/releases/tag/v99.0.0",
             "gh attestation verify network-scope-99.0.0-linux-x86_64.tar.gz",
-            "slsa-verifier verify-artifact",
+            "--bundle network-scope-99.0.0.intoto.jsonl",
             "sha256sum -c --ignore-missing SHA256SUMS",
         ] {
             assert!(text.contains(want), "{want}");
@@ -79,7 +79,7 @@ mod tests {
         check_at(&opts, &serve(Box::leak(own.into_boxed_str()))).unwrap();
         let text = std::fs::read_to_string(&out).unwrap();
         assert!(text.contains("is up to date"), "{text}");
-        assert!(!text.contains("slsa-verifier"));
+        assert!(!text.contains("gh attestation"));
         // A failure is an error (exit status 1), not a notice.
         let e = check_at(&opts, &serve("not json")).unwrap_err();
         assert!(e.starts_with("Update check failed:"), "{e}");
