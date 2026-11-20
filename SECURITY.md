@@ -50,9 +50,11 @@ Release files and the container image are built by GitHub Actions from the tagge
     --bundle network-scope-0.5.1.sigstore.json
   ```
 
-- **SLSA level 3 provenance** from the isolated
-  [slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator), attached as
-  `network-scope-<version>.intoto.jsonl`. Verify with
+- **`network-scope-<version>.intoto.jsonl`** is the same provenance bundle under the in-toto
+  file name and verifies the same way (`--bundle network-scope-<version>.intoto.jsonl`).
+  Release v0.5.1 attached SLSA level 3 provenance from
+  [slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator) under this
+  name instead; verify that file with
   [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
 
   ```sh
