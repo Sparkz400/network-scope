@@ -79,6 +79,7 @@
 # Reference
 
 - [Comparison with other tools](comparison.md)
+- [Speed comparison](speed.md)
 - [Lab and testing](lab-and-testing.md)
 - [Contributing fingerprints](contributing-fingerprints.md)
 - [Supply chain: SBOM and reproducible builds](supply-chain.md)

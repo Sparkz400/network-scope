@@ -1,0 +1,4 @@
+{
+  "note": "Network Scope's median wall time in seconds per cell, per platform, from lab/speed_compare.py (copy a CI run's baseline-candidate.json here). A missing platform or cell passes with a notice.",
+  "platforms": {}
+}
