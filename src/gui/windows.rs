@@ -654,7 +654,7 @@ impl Scanner {
             .default_size(win_size([760.0, 620.0]))
             .default_pos([24.0, 40.0])
             .show(ctx, |ui| {
-                ui.label(tr!("Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP"));
+                ui.label(tr!("Passive: mDNS · SSDP · LLDP · CDP · NetBIOS · WS-Discovery · DHCP · DHCPv6 · ARP"));
                 ui.label(tr!(
                     "Requires Npcap and permission to capture on the selected Ethernet interface."
                 ));
