@@ -160,6 +160,18 @@ fn the_newer_json_outputs_carry_their_schema_and_match_it() {
 }
 
 #[test]
+fn the_unknown_banner_export_carries_its_schema_and_keeps_its_own_format() {
+    let f = Fixture::new("unknown");
+    let doc = f.check(
+        "unknown-banners",
+        &["fingerprints", "export-unknown", "--quiet"],
+        false,
+    );
+    assert_eq!(doc[0]["format"], "network-scope-unknown-banners");
+    assert!(doc[0]["entries"].is_array());
+}
+
+#[test]
 fn every_dry_run_prints_the_dry_run_schema() {
     let f = Fixture::new("dryrun");
     // A declared scope keeps the result independent of the developer's own scope file.
