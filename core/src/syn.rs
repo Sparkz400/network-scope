@@ -881,6 +881,7 @@ fn trace_loop<W: Wire>(
             if let Some(server_seq) = a.syn_ack {
                 // Close the half-open connection, as the SYN engine does.
                 let local = probe.base + u16::from(a.ttl);
+                gate.note(PacketKind::TcpSyn, "RST closing a half-open connection");
                 wire.send(&build(
                     source,
                     dest,

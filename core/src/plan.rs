@@ -185,7 +185,7 @@ pub fn host(
             PacketKind::NeighborLookup,
             "OS neighbor lookup",
             "the host",
-            "unless the sweep answered (the OS may emit an ARP or NDP request)",
+            "unless the sweep answered; the OS may emit an ARP/NDP request, and on Linux/macOS an absent entry triggers one 1-byte UDP datagram to port 9",
         );
     }
     let echoes = icmp_echoes(s);
@@ -214,6 +214,12 @@ pub fn host(
             "RST closing a half-open connection",
             &tcp,
             "for each open port answered with SYN-ACK",
+        );
+        plan.push(
+            PacketKind::NeighborLookup,
+            "OS neighbor lookup",
+            "the next hop",
+            "next-hop MAC resolution for the SYN engine",
         );
         plan.push(
             PacketKind::TcpConnect,
@@ -391,7 +397,8 @@ pub fn host(
 
     // Traceroute.
     if s.trace {
-        let t = crate::trace::plan(ip, &[], s);
+        // Any scanned port might turn out open, so those are the TCP candidates.
+        let t = crate::trace::plan(ip, ports, s);
         let (detail, to, when) = match t.method {
             TraceMethod::Icmp => (
                 "ICMP echo, TTL sweep",
@@ -413,6 +420,20 @@ pub fn host(
             ),
         };
         plan.push(PacketKind::Traceroute, detail, to, &when);
+        if t.method == TraceMethod::Tcp {
+            plan.push(
+                PacketKind::NeighborLookup,
+                "OS neighbor lookup",
+                "the next hop",
+                "next-hop MAC resolution for the TCP traceroute",
+            );
+            plan.push(
+                PacketKind::TcpSyn,
+                "RST closing a half-open connection",
+                "the traceroute port",
+                "if the target answers SYN-ACK",
+            );
+        }
         if t.method != TraceMethod::Icmp {
             plan.push(
                 PacketKind::Traceroute,
@@ -530,6 +551,12 @@ pub fn trace(ip: IpAddr, method: TraceMethod, port: Option<u16>, hops: u8) -> Ho
     );
     plan.push(PacketKind::Traceroute, detail, to, &when);
     if method == TraceMethod::Tcp {
+        plan.push(
+            PacketKind::NeighborLookup,
+            "OS neighbor lookup",
+            "the next hop",
+            "next-hop MAC resolution",
+        );
         plan.push(
             PacketKind::TcpSyn,
             "RST closing a half-open connection",
@@ -876,6 +903,52 @@ mod tests {
         ] {
             assert!(code.contains(call), "the scheduler must use {call}");
         }
+    }
+
+    /// Drift guard that needs no driver: every literal detail a sender passes with a packet kind
+    /// (`PacketKind::X, "detail"`) must appear in this file, so the plan can list it.
+    #[test]
+    fn every_literal_detail_a_sender_records_is_in_the_plan() {
+        let plan_source = include_str!("plan.rs");
+        let plan_code = plan_source.split("#[cfg(test)]").next().unwrap();
+        let senders = [
+            ("arp.rs", include_str!("arp.rs")),
+            ("core.rs", include_str!("core.rs")),
+            ("ot.rs", include_str!("ot.rs")),
+            ("syn.rs", include_str!("syn.rs")),
+            ("tls.rs", include_str!("tls.rs")),
+            ("trace.rs", include_str!("trace.rs")),
+            ("udp.rs", include_str!("udp.rs")),
+            ("service/mod.rs", include_str!("service/mod.rs")),
+            ("service/rdp.rs", include_str!("service/rdp.rs")),
+            ("service/smb/mod.rs", include_str!("service/smb/mod.rs")),
+        ];
+        let mut checked = 0;
+        for (name, source) in senders {
+            let code = source
+                .split(
+                    "#[cfg(test)]
+mod tests",
+                )
+                .next()
+                .unwrap();
+            for part in code.split("PacketKind::").skip(1) {
+                let rest = part.trim_start_matches(|c: char| c.is_alphanumeric());
+                let Some(after) = rest.strip_prefix(',') else {
+                    continue;
+                };
+                let Some(literal) = after.trim_start().strip_prefix('"') else {
+                    continue;
+                };
+                let detail = literal.split('"').next().unwrap();
+                checked += 1;
+                assert!(
+                    plan_code.contains(&format!("\"{detail}\"")),
+                    "{name} records {detail:?}, but plan.rs never lists it"
+                );
+            }
+        }
+        assert!(checked > 20, "the scan found only {checked} literals");
     }
 
     #[test]

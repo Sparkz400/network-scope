@@ -156,10 +156,7 @@ pub(super) fn dcp_plan(opts: &BTreeMap<String, String>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        sendlog::PacketKind,
-        ui::{run, testutil::args},
-    };
+    use crate::ui::{run, testutil::args};
 
     /// Runs a command whose output goes to a file and returns what it wrote.
     fn run_to_file(list: &[&str]) -> (String, crate::ui::ExitCode) {
@@ -311,7 +308,7 @@ mod tests {
 
     /// The proof that a dry run sends nothing: a real listener on loopback is named as the
     /// target of an everything-on scan, trace and DCP dry run, and never sees a connection or a
-    /// datagram; the process-wide sent log of the engine stays empty as well.
+    /// datagram.
     #[test]
     fn a_dry_run_sends_nothing() {
         let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -322,7 +319,6 @@ mod tests {
         let udp_port = udp.local_addr().unwrap().port();
         let ports = tcp_port.to_string();
         let udp_ports = udp_port.to_string();
-        let before = crate::sendlog::PacketKind::ALL.len();
         for list in [
             vec![
                 "scan",
@@ -367,7 +363,6 @@ mod tests {
             matches!(udp.recv_from(&mut buf), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
             "the dry run sent a datagram to the target"
         );
-        assert_eq!(before, PacketKind::ALL.len());
     }
 
     /// Structural half: the dry-run code reaches no sender.
