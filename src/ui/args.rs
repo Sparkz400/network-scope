@@ -6,7 +6,7 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 31] = [
+pub(super) const FLAGS: [&str; 32] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
@@ -38,6 +38,7 @@ pub(super) const FLAGS: [&str; 31] = [
     "no-backoff",
     "sent-log",
     "stream",
+    "early-stop",
 ];
 pub(super) const VALUES: [&str; 62] = [
     "feeds",
@@ -215,6 +216,7 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     s.s7_rack = number(opts, "rack", 0)?;
     s.s7_slot = number(opts, "slot", 2)?;
     s.scripts = opts.get("script").cloned().unwrap_or_default();
+    s.early_stop = opts.contains_key("early-stop");
     s.partial_events = opts.contains_key("stream");
     Ok(s)
 }

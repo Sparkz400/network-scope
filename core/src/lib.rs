@@ -118,6 +118,7 @@ pub mod passive;
 pub mod pcapfile;
 pub mod plan;
 pub(crate) mod platform;
+pub mod portorder;
 pub(crate) mod probes;
 pub mod report;
 pub mod risk;
