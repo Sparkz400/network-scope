@@ -100,7 +100,7 @@ With imported feeds (`feeds import`, see [Findings and CVE hints](findings-and-c
 
 ## Passive / DCP
 
-Select an Ethernet interface and a capture duration (needs Npcap/libpcap). Passive capture sends no discovery packets and decodes mDNS, SSDP/UPnP, LLDP, NetBIOS, DHCP and ARP. The separate **DCP Identify** button sends one read-only Profinet multicast request; it never assigns IPs or changes a device. MAC-keyed observations retain devices that advertise no IP.
+Select an Ethernet interface and a capture duration (needs Npcap/libpcap). Passive capture sends no discovery packets and decodes mDNS, SSDP/UPnP, LLDP (with LLDP-MED), CDP, NetBIOS (name service and browser announcements), WS-Discovery, DHCP, DHCPv6, ARP and IPv6 Neighbor Discovery. The separate **DCP Identify** button sends one read-only Profinet multicast request; it never assigns IPs or changes a device. MAC-keyed observations retain devices that advertise no IP.
 
 Capture visibility depends on the network interface, multicast delivery and switch mirroring; it does not expose all traffic on a switched LAN. Observations are bounded to 10,000; a full capture queue or the cap marks the capture partial and collection continues with what still fits.
 

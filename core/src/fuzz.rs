@@ -44,6 +44,9 @@ pub const TARGETS: &[Target] = &[
     ("mc_reply", mc_reply),
     ("dnp3_reply", dnp3_reply),
     ("ndp_message", ndp_message),
+    ("nbt_datagram", nbt_datagram),
+    ("lldp_tlvs", lldp_tlvs),
+    ("dhcpv6_message", dhcpv6_message),
     ("neighbor_cache", neighbor_cache),
     ("fox_hello", fox_hello),
     ("mqtt_connack", mqtt_connack),
@@ -453,6 +456,49 @@ pub fn ndp_message(data: &[u8]) {
     std::hint::black_box(passive::decode(&frame));
     // and the same bytes as a whole frame
     std::hint::black_box(passive::decode(data));
+}
+
+/// A NetBIOS datagram (UDP 138) in a valid Ethernet, IPv4 and UDP frame, so the browser
+/// announcement decoder of the passive listener sees every input.
+pub fn nbt_datagram(data: &[u8]) {
+    let data = &data[..data.len().min(1400)];
+    let mut frame = vec![0xff; 6];
+    frame.extend([
+        0x02, 0, 0, 0, 0, 1, 0x08, 0x00, 0x45, 0, 0, 0, 0, 1, 0, 0, 64, 17, 0, 0,
+    ]);
+    frame[16..18].copy_from_slice(&((28 + data.len()) as u16).to_be_bytes());
+    frame.extend([192, 168, 1, 10, 192, 168, 1, 255, 0, 138, 0, 138]);
+    frame.extend(((8 + data.len()) as u16).to_be_bytes());
+    frame.extend([0, 0]);
+    frame.extend_from_slice(data);
+    std::hint::black_box(passive::decode(&frame));
+}
+
+/// LLDP TLVs (including LLDP-MED) after an Ethernet header with the LLDP ethertype.
+pub fn lldp_tlvs(data: &[u8]) {
+    let mut frame = vec![
+        0x01, 0x80, 0xc2, 0, 0, 0x0e, 0x02, 0, 0, 0, 0, 1, 0x88, 0xcc,
+    ];
+    frame.extend_from_slice(data);
+    std::hint::black_box(passive::decode(&frame));
+}
+
+/// A DHCPv6 message in a valid Ethernet, IPv6 and UDP (546 to 547) frame.
+pub fn dhcpv6_message(data: &[u8]) {
+    let data = &data[..data.len().min(1400)];
+    let length = ((8 + data.len()) as u16).to_be_bytes();
+    let mut frame = vec![
+        0x33, 0x33, 0, 1, 0, 2, 0x02, 0, 0, 0, 0, 1, 0x86, 0xdd, 0x60, 0, 0, 0,
+    ];
+    frame.extend(length);
+    frame.extend([17, 1]);
+    frame.extend([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    frame.extend([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2]);
+    frame.extend([2, 0x22, 2, 0x23]);
+    frame.extend(length);
+    frame.extend([0, 0]);
+    frame.extend_from_slice(data);
+    std::hint::black_box(passive::decode(&frame));
 }
 
 /// The text of `ip -6 neigh show`, `ndp -an`, `/proc/net/if_inet6` and `ifconfig -a`.
