@@ -41,7 +41,7 @@ pub struct UnknownExport {
 }
 
 /// Replaces what identifies the host itself (its address, MAC address and host name) in `text`.
-fn redact(text: &str, host: &crate::scan::Host) -> String {
+pub(super) fn redact(text: &str, host: &crate::scan::Host) -> String {
     let mut out = text.replace(&host.ip.to_string(), "<ip>");
     if host.hostname.len() >= 3 {
         out = replace_ignore_case(&out, &host.hostname, "<host>");

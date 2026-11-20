@@ -325,6 +325,11 @@ impl Feeds {
         out
     }
 
+    /// A SHA-256 of the KEV and EPSS data (the content of the cache), for the provenance stamp.
+    pub fn fingerprint(&self) -> String {
+        crate::provenance::hash(&serde_json::to_vec(self).unwrap_or_default())
+    }
+
     /// Fills `Finding::exploit` for every finding that has CVE ids.
     pub fn enrich(&self, findings: &mut [Finding]) {
         for f in findings.iter_mut().filter(|f| !f.cve.is_empty()) {

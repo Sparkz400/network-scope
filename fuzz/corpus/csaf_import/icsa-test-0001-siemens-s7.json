@@ -1,0 +1,264 @@
+{
+  "document": {
+    "acknowledgments": [
+      {
+        "summary": "Synthetic advisory written by hand for the tests of Network Scope. It uses the CSAF 2.0 layout of the CISA ICS advisories, but the advisory id, the CVE ids (CVE-2099-*) and the firmware versions are invented. It is not a real advisory."
+      }
+    ],
+    "aggregate_severity": {
+      "text": "Critical"
+    },
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "distribution": {
+      "tlp": {
+        "label": "WHITE",
+        "url": "https://www.first.org/tlp/"
+      }
+    },
+    "lang": "en-US",
+    "notes": [
+      {
+        "category": "summary",
+        "text": "Synthetic test advisory for a Siemens S7-1200 style controller.",
+        "title": "Summary"
+      }
+    ],
+    "publisher": {
+      "category": "coordinator",
+      "name": "Test Publisher",
+      "namespace": "https://example.invalid/"
+    },
+    "references": [
+      {
+        "category": "self",
+        "summary": "ICSA-TEST-0001 (synthetic)",
+        "url": "https://example.invalid/csaf/icsa-test-0001.json"
+      }
+    ],
+    "title": "Synthetic S7-1200 test advisory",
+    "tracking": {
+      "current_release_date": "2026-01-01T00:00:00.000000Z",
+      "generator": {
+        "date": "2026-01-01T00:00:00.000Z",
+        "engine": {
+          "name": "hand written",
+          "version": "1"
+        }
+      },
+      "id": "ICSA-TEST-0001",
+      "initial_release_date": "2026-01-01T00:00:00.000000Z",
+      "revision_history": [
+        {
+          "date": "2026-01-01T00:00:00.000000Z",
+          "number": "1",
+          "summary": "Initial publication"
+        }
+      ],
+      "status": "final",
+      "version": "1"
+    }
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "branches": [
+          {
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "vers:intdot/<4.5.1",
+                "product": {
+                  "name": "Siemens SIMATIC S7-1200 CPU family: <V4.5.1",
+                  "product_id": "CSAFPID-0001"
+                }
+              }
+            ],
+            "category": "product_name",
+            "name": "SIMATIC S7-1200 CPU family"
+          },
+          {
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "vers:intdot/>=4.0|<4.4",
+                "product": {
+                  "name": "Siemens SIMATIC S7-1200 CPU 1214C: >=V4.0|<V4.4",
+                  "product_id": "CSAFPID-0002",
+                  "product_identification_helper": {
+                    "model_numbers": [
+                      "CPU 1214C"
+                    ]
+                  }
+                }
+              }
+            ],
+            "category": "product_name",
+            "name": "SIMATIC S7-1200 CPU 1214C"
+          },
+          {
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "vers:intdot/<2.9.2",
+                "product": {
+                  "name": "Siemens SIMATIC S7-1500 CPU family: <V2.9.2",
+                  "product_id": "CSAFPID-0003"
+                }
+              },
+              {
+                "category": "product_version",
+                "name": "V2.9.2",
+                "product": {
+                  "name": "Siemens SIMATIC S7-1500 CPU family: V2.9.2",
+                  "product_id": "CSAFPID-0004"
+                }
+              }
+            ],
+            "category": "product_name",
+            "name": "SIMATIC S7-1500 CPU family"
+          }
+        ],
+        "category": "vendor",
+        "name": "Siemens"
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2099-1001",
+      "cwe": {
+        "id": "CWE-306",
+        "name": "Missing Authentication for Critical Function"
+      },
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: the CPU accepts an unauthenticated request that changes its program.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-0001"
+        ]
+      },
+      "remediations": [
+        {
+          "category": "mitigation",
+          "details": "Restrict access to the CPU to trusted networks.",
+          "product_ids": [
+            "CSAFPID-0001"
+          ]
+        },
+        {
+          "category": "vendor_fix",
+          "details": "Update to V4.5.1 or later version",
+          "product_ids": [
+            "CSAFPID-0001"
+          ],
+          "url": "https://example.invalid/fix/s7-1200"
+        }
+      ],
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 9.8,
+            "baseSeverity": "CRITICAL",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-0001"
+          ]
+        }
+      ],
+      "title": "Missing authentication on the S7 protocol (synthetic)"
+    },
+    {
+      "cve": "CVE-2099-1002",
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: a crafted request makes the CPU 1214C stop.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-0002"
+        ]
+      },
+      "remediations": [
+        {
+          "category": "vendor_fix",
+          "details": "Update to V4.4 or later version",
+          "product_ids": [
+            "CSAFPID-0002"
+          ]
+        }
+      ],
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 7.5,
+            "baseSeverity": "HIGH",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-0002"
+          ]
+        }
+      ],
+      "title": "Denial of service of the CPU 1214C (synthetic)"
+    },
+    {
+      "cve": "CVE-2099-1003",
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: the S7-1500 is listed as not affected, its fixed version is listed as fixed.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "fixed": [
+          "CSAFPID-0004"
+        ],
+        "known_not_affected": [
+          "CSAFPID-0003"
+        ]
+      },
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 5.3,
+            "baseSeverity": "MEDIUM",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-0003"
+          ]
+        }
+      ],
+      "title": "Information disclosure, S7-1500 not affected (synthetic)"
+    },
+    {
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: a vulnerability without a CVE id, which the importer skips and counts.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-0001"
+        ]
+      },
+      "title": "Weakness without a CVE id (synthetic)"
+    }
+  ]
+}

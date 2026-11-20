@@ -20,6 +20,7 @@ mod rdp;
 mod smb;
 mod ssh;
 mod unknown;
+pub mod workbench;
 
 pub use http::parse_http;
 pub use lint::{
@@ -148,10 +149,14 @@ async fn negotiate_once(
         return vec![];
     };
     gate.note(sent.0, sent.1);
+    let peer = std::net::SocketAddr::new(ip, port);
+    gate.log().capture(peer, false, true, request, sent.1);
     if s.write_all(request).await.is_err() {
         return vec![];
     }
-    read_some(&mut s, limit, 4096).await
+    let reply = read_some(&mut s, limit, 4096).await;
+    gate.log().capture(peer, false, false, &reply, sent.1);
+    reply
 }
 
 // ---- detection ---------------------------------------------------------------------------
@@ -300,7 +305,15 @@ async fn tls_service(
         http_outcome(h, true, &mut out);
     } else if let Some(h) = {
         gate.note(PacketKind::HttpRequest, "GET /");
-        http_get(&mut stream, ip, port, limit).await
+        http_get(
+            &mut stream,
+            ip,
+            port,
+            limit,
+            gate.log(),
+            "HTTP GET / (inside TLS, decrypted)",
+        )
+        .await
     } {
         http_outcome(h, true, &mut out);
     } else {
@@ -372,7 +385,7 @@ async fn detect_with(
         && let Some(mut s) = connect(ip, port, limit, gate).await
         && let Some(h) = {
             gate.note(PacketKind::HttpRequest, "GET /");
-            http_get(&mut s, ip, port, limit).await
+            http_get(&mut s, ip, port, limit, gate.log(), "HTTP GET /").await
         }
     {
         http_outcome(h, false, &mut out);
@@ -410,10 +423,14 @@ async fn detect_with(
             None => connect(ip, port, limit, gate).await?,
         };
         gate.note(PacketKind::ServiceProbe, probe.name.clone());
+        let peer = std::net::SocketAddr::new(ip, port);
+        gate.log()
+            .capture(peer, false, true, &probe.payload, &probe.name);
         if stream.write_all(&probe.payload).await.is_err() {
             continue;
         }
         let reply = read_some(&mut stream, probe.wait, 4096).await;
+        gate.log().capture(peer, false, false, &reply, &probe.name);
         if let Some(mut svc) = ProbeDb::identify(probe, &reply) {
             drop(stream);
             if probe.name == "rdp"
@@ -436,7 +453,7 @@ async fn detect_with(
     if let Some(mut s) = connect(ip, port, limit, gate).await
         && let Some(h) = {
             gate.note(PacketKind::HttpRequest, "GET /");
-            http_get(&mut s, ip, port, limit).await
+            http_get(&mut s, ip, port, limit, gate.log(), "HTTP GET /").await
         }
     {
         http_outcome(h, false, &mut out);

@@ -14,6 +14,8 @@ pub(crate) use network_scope_core::{
     scope, score, script, search, sendlog, service, store, syn, sync, targets, topology, trace,
     update, wol,
 };
+// Research and security-research modules (ROADMAP section L).
+pub(crate) use network_scope_core::{csaf, otmodel, pivot, provenance, research, segmentation};
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::{localnets, netmap, pcapfile, schedule};
 

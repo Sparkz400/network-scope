@@ -83,6 +83,14 @@ pub struct Settings {
     /// a host, and a slower pace (or a pause for the rest of the scan) when the host starts
     /// resetting connections. It only ever slows a host down; `--no-backoff` turns it off.
     pub backoff: bool,
+    /// The tool version and the hashes of the rules and feeds the scan ran with (`provenance`);
+    /// stamped by the program that runs the scan, absent in older scans and in imports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<crate::provenance::Provenance>,
+    /// Keep the payloads the scan sends and receives (`scan --record`, see `record`). Not part of
+    /// a stored scan.
+    #[serde(skip)]
+    pub record: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -128,6 +136,8 @@ impl Default for Settings {
             trace_port: 0,
             jarm: false,
             backoff: true,
+            provenance: None,
+            record: false,
         }
     }
 }
@@ -494,6 +504,9 @@ pub fn start_stream(
     let cancel = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
     let sent = Arc::new(crate::sendlog::SentLog::new());
+    if settings.record {
+        sent.enable_recording();
+    }
     let run = Running {
         receiver,
         cancel: cancel.clone(),

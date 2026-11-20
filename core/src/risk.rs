@@ -297,6 +297,33 @@ fn valid_cve(s: &str) -> bool {
 }
 
 impl CveDb {
+    /// A SHA-256 of every CVE and CPE rule of this database in a canonical text form: what the
+    /// provenance stamp of a scan records (built-in rules and the user file merged).
+    pub fn fingerprint(&self) -> String {
+        let mut text = String::new();
+        for r in &self.rules {
+            text.push_str(&format!(
+                "rule|{}|{}|{}|{}|{}|{}|{}|{}\n",
+                r.id,
+                r.product,
+                r.exclude.join(","),
+                r.min.as_deref().unwrap_or(""),
+                r.max.as_deref().unwrap_or(""),
+                r.severity.name(),
+                r.cve.join(","),
+                r.title
+            ));
+        }
+        for c in &self.cpe {
+            text.push_str(&format!(
+                "cpe|{}|{}|{}\n",
+                c.id,
+                c.products.join(","),
+                c.template
+            ));
+        }
+        crate::provenance::hash(text.as_bytes())
+    }
     fn parse(json: &str, origin: &str) -> Result<Self, String> {
         let raw: RawCveDb = serde_json::from_str(json).map_err(|e| format!("{origin}: {e}"))?;
         let mut rules = vec![];
@@ -590,19 +617,82 @@ impl Out<'_> {
 }
 
 pub fn analyze_host(h: &Host) -> Vec<Finding> {
-    analyze_host_nvd(h, &cve_db(), &crate::nvd::active())
+    analyze_host_feeds(h, &cve_db(), &crate::nvd::active(), &crate::csaf::active())
 }
 
-/// The built-in/user CVE rules only (no imported NVD data); used by the tests.
+/// The built-in/user CVE rules only (no imported feed data); used by the tests.
 #[cfg_attr(not(test), allow(dead_code))]
 fn analyze_host_with(h: &Host, cves: &CveDb) -> Vec<Finding> {
-    analyze_host_nvd(h, cves, &crate::nvd::Nvd::default())
+    analyze_host_feeds(
+        h,
+        cves,
+        &crate::nvd::Nvd::default(),
+        &crate::csaf::Csaf::default(),
+    )
 }
 
-/// Every rule, with the CVE rules from `cves` and the imported NVD feed `nvd` (see
-/// [`crate::nvd`]): NVD hits for a port's `svc.<port>.cpe` come after the built-in rules and
-/// never repeat a CVE they already raised.
+/// The CVE rules and an imported NVD feed, without CSAF advisories; used by the tests.
+#[cfg_attr(not(test), allow(dead_code))]
 fn analyze_host_nvd(h: &Host, cves: &CveDb, nvd: &crate::nvd::Nvd) -> Vec<Finding> {
+    analyze_host_feeds(h, cves, nvd, &crate::csaf::Csaf::default())
+}
+
+/// Raises the version-based CVE findings of the hand-written rules `cves` for the product and
+/// version `candidates` of one port, skipping every CVE in `raised` (a feed already named it) and
+/// adding the ones it raises to `raised`.
+fn curated_cve_findings(
+    o: &mut Out,
+    cves: &CveDb,
+    candidates: Vec<(String, String)>,
+    port: Option<u16>,
+    raised: &mut std::collections::BTreeSet<String>,
+) {
+    let mut seen = std::collections::BTreeSet::new();
+    // What the feeds raised before; the CVEs this function adds must not hide each other.
+    let by_feeds = raised.clone();
+    for (prod, ver) in candidates {
+        let prod = prod.to_ascii_lowercase();
+        for rule in cves.rules.iter().filter(|r| {
+            // e.g. the portable-OpenSSH issues do not concern OpenSSH for Windows.
+            let excluded = r.exclude.iter().any(|x| prod.contains(x.as_str()));
+            prod.contains(r.product.as_str())
+                && !excluded
+                && in_range(&ver, r.min.as_deref(), r.max.as_deref())
+                && !r
+                    .cve
+                    .iter()
+                    .any(|c| by_feeds.contains(&c.to_ascii_uppercase()))
+        }) {
+            if seen.insert(rule.cve[0].clone()) {
+                raised.extend(rule.cve.iter().map(|c| c.to_ascii_uppercase()));
+                let cve: Vec<&str> = rule.cve.iter().map(String::as_str).collect();
+                o.add(
+                    rule.severity,
+                    &format!("cve-{}", rule.cve[0].to_ascii_lowercase()),
+                    &rule.title,
+                    port,
+                    format!("{prod} {ver}. {BACKPORT_NOTE}"),
+                    &cve,
+                    "Update to a fixed release or confirm the vendor backported the fix.",
+                );
+            }
+        }
+    }
+}
+
+const OT_ADVISORY_NOTE: &str = "Version-based hint: matched by vendor, product and firmware version against the advisory; confirm the exact hardware variant with the vendor.";
+
+/// Every rule, with the vulnerability sources in a fixed order (see [`crate::csaf`]): for one
+/// port or industrial device the imported feeds come first (CSAF advisories for the OT devices
+/// of the host, the NVD feed for the CPE of a port) and the hand-written rules of `cves` only
+/// raise the CVEs the feeds did not already raise there. Without imported feeds they are the
+/// only source, as before.
+fn analyze_host_feeds(
+    h: &Host,
+    cves: &CveDb,
+    nvd: &crate::nvd::Nvd,
+    csaf: &crate::csaf::Csaf,
+) -> Vec<Finding> {
     let mut o = Out {
         host: h,
         list: vec![],
@@ -911,43 +1001,17 @@ fn analyze_host_nvd(h: &Host, cves: &CveDb, nvd: &crate::nvd::Nvd) -> Vec<Findin
                 v.split_whitespace().next().unwrap_or("").to_string(),
             ));
         }
-        let mut seen = std::collections::BTreeSet::new();
-        // CVE ids the built-in rules raised on this port; the NVD lookup below skips them.
+        // 1. The imported NVD feed (`feeds import nvd`): CVEs whose vulnerable range holds the
+        //    version of the CPE the scanner derived for this port.
         let mut raised = std::collections::BTreeSet::<String>::new();
-        for (prod, ver) in candidates {
-            let prod = prod.to_ascii_lowercase();
-            for rule in cves.rules.iter().filter(|r| {
-                // e.g. the portable-OpenSSH issues do not concern OpenSSH for Windows.
-                let excluded = r.exclude.iter().any(|x| prod.contains(x.as_str()));
-                prod.contains(r.product.as_str())
-                    && !excluded
-                    && in_range(&ver, r.min.as_deref(), r.max.as_deref())
-            }) {
-                if seen.insert(rule.cve[0].clone()) {
-                    raised.extend(rule.cve.iter().map(|c| c.to_ascii_uppercase()));
-                    let cve: Vec<&str> = rule.cve.iter().map(String::as_str).collect();
-                    o.add(
-                        rule.severity,
-                        &format!("cve-{}", rule.cve[0].to_ascii_lowercase()),
-                        &rule.title,
-                        port,
-                        format!("{prod} {ver}. {BACKPORT_NOTE}"),
-                        &cve,
-                        "Update to a fixed release or confirm the vendor backported the fix.",
-                    );
-                }
-            }
-        }
-        // Imported NVD feed (`feeds import nvd`): CVEs whose vulnerable range holds the version
-        // of the CPE the scanner derived for this port.
         let cpe = get(format!("svc.{p}.cpe"));
         if !cpe.is_empty() {
             for hit in nvd
                 .lookup(cpe)
                 .into_iter()
-                .filter(|hit| !raised.contains(&hit.cve))
                 .take(crate::nvd::MAX_FINDINGS_PER_PORT)
             {
+                raised.insert(hit.cve.clone());
                 o.add(
                     hit.severity,
                     &format!("cve-{}", hit.cve.to_ascii_lowercase()),
@@ -963,6 +1027,8 @@ fn analyze_host_nvd(h: &Host, cves: &CveDb, nvd: &crate::nvd::Nvd) -> Vec<Findin
                 );
             }
         }
+        // 2. The hand-written rules: a fallback for the CVEs the feed did not raise.
+        curated_cve_findings(&mut o, cves, candidates, port, &mut raised);
         if let Some(v) = get(format!("http.{p}.powered_by")).strip_prefix("PHP/")
             && let Some(eol) = php_eol(v, &today())
         {
@@ -985,6 +1051,56 @@ fn analyze_host_nvd(h: &Host, cves: &CveDb, nvd: &crate::nvd::Nvd) -> Vec<Findin
         if crate::service::is_ot_port_candidate(p) && !ssh_on_ot_port {
             o.add(Severity::Medium, "ot-reachable", "Industrial protocol port is reachable from the scanner", port, format!("TCP {p} open"), &[], "OT services should only be reachable from the control network; check segmentation.");
         }
+    }
+    // Industrial devices the OT identification found (L68): CSAF advisories first, then the
+    // hand-written rules for the CVEs the advisories did not name.
+    for d in crate::otdevice::from_identity(id) {
+        let port = Some(d.port);
+        let mut raised = std::collections::BTreeSet::<String>::new();
+        for hit in csaf
+            .lookup(&d)
+            .into_iter()
+            .take(crate::csaf::MAX_FINDINGS_PER_DEVICE)
+        {
+            raised.insert(hit.cve.clone());
+            let range = if hit.range == "*" {
+                "all versions".to_string()
+            } else {
+                hit.range.clone()
+            };
+            let score = hit
+                .cvss
+                .map_or(String::new(), |c| format!(", CVSS {}.{}", c / 10, c % 10));
+            let fix = if hit.fix.is_empty() {
+                String::new()
+            } else {
+                format!(" Vendor remediation: {}.", hit.fix.trim_end_matches('.'))
+            };
+            o.add(
+                hit.severity,
+                &format!("cve-{}", hit.cve.to_ascii_lowercase()),
+                &hit.title,
+                port,
+                format!(
+                    "{}. Advisory {} lists it as affected ({range}{score}).{fix} {OT_ADVISORY_NOTE}",
+                    d.describe(),
+                    hit.advisories.join(", ")
+                ),
+                &[&hit.cve],
+                "Update the firmware as the advisory describes, or restrict network access to the device.",
+            );
+            if let Some(f) = o.list.last_mut()
+                && hit.url.starts_with("https://")
+            {
+                f.reference = Some(hit.url.clone());
+            }
+        }
+        let candidates: Vec<(String, String)> = d
+            .products
+            .iter()
+            .map(|name| (name.clone(), d.version.clone()))
+            .collect();
+        curated_cve_findings(&mut o, cves, candidates, port, &mut raised);
     }
     for &p in &h.udp_open {
         let info = get(format!("udp.{p}"));

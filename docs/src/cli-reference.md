@@ -8,6 +8,7 @@ General rules:
 - `--quiet` (before or after the command, any command) suppresses progress lines on stderr, including monitor's per-cycle lines; errors still print and the exit status is unchanged.
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
+- `--csaf FILE` selects the CSAF advisory cache (default `csaf.json` next to `feeds.json`); see [CISA ICS advisories](findings-and-cves.md#cisa-ics-advisories-for-ot-devices-csaf-offline).
 - `--nvd FILE` selects the NVD cache (default `nvd.json` next to `feeds.json`); see [NVD import](findings-and-cves.md#nvd-import-offline).
 - `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
 - `--json-schema v1` selects the version of the JSON output format (any command). Every JSON document carries a `schema` member; see [JSON output and schemas](json-output.md).
@@ -20,9 +21,9 @@ General rules:
 | 0 | Success |
 | 1 | Error: bad arguments, I/O, database (also: nothing was saved because the scan or capture failed before collecting anything) |
 | 2 | Partial result: a scan or capture stopped early and its results were saved (marked partial in the inventory). Also: the [scope guard](#scope-guard) refused to start because the targets are public or outside the declared scope and nothing confirmed them (nothing was sent or saved; the message on stderr says which) |
-| 3 | `findings` / `diff` found something at or above `--min-severity`, **only** when `--fail-on-findings` is given |
+| 3 | `findings` / `diff` found something at or above `--min-severity`; `ot-listen --model` raised an alert; `segmentation check` found a path that breaks the zone model. **Only** when `--fail-on-findings` is given |
 
-Without `--fail-on-findings`, `findings` and `diff` exit 0 however much they report. The flag is an error on any other command (status 1).
+Without `--fail-on-findings`, `findings` and `diff` exit 0 however much they report. The flag is an error on any command other than `findings`, `diff`, `ot-listen` (with `--model`) and `segmentation check` (status 1).
 
 What counts as partial (2): `scan` stopped with Q/Esc in the `--tui` view, or ended after errors (for example a terminal failure or a worker that disconnected) with at least some results; `listen` and `dcp` that hit a capture error after observing something. In each case the snapshot is saved with `complete = false` (shown as `partial`), the result is still written to stdout or `--output`, and an error line is printed on stderr. `listen --seconds N` running to the end is a normal, complete run (0). `ot-listen` and `monitor` are not covered by the partial-result code 2 (a scope-guard refusal does apply to `monitor`): `monitor` reports incomplete passive captures as `capture-incomplete` alerts and keeps running, and Ctrl+C or a process kill ends the process without saving (the shell's own status for the signal).
 
@@ -60,6 +61,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `findings ID [--min-severity low] [--sort exploited\|severity] [--fail-on-findings]` | Weak TLS/SSH, risky services, CVE hints |
 | `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
 | `feeds import nvd FILE... [--nvd FILE]` | Import NVD CVE JSON 2.0 feed files (unpack `.gz` first) into the NVD cache; CPE matches become `cve` findings. No network access |
+| `feeds import csaf FILE\|DIR... [--csaf FILE]` | Import CISA ICS advisories (CSAF 2.0 JSON) into the CSAF cache; S7, CIP, Modbus and OPC UA firmware is matched against them. No network access |
 | `feeds status [--feeds FILE] [--nvd FILE]` | Show what the feeds cache and the NVD cache hold (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
 | `service install\|uninstall\|run` | `monitor` as a Windows service, see [Service and scheduling](service-and-scheduling.md) |
@@ -67,6 +69,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `alerts [--db FILE]` | Alerts raised by monitor runs |
 | `scripts PATH` | Check Rhai scripts (use `--script PATH` with `scan`) |
 | `ot-listen --interface ID --seconds N` or `ot-listen --pcap FILE [--progress] [--no-reassembly]` | Passive OT asset discovery |
+| `ot-learn --pcap FILE` or `ot-learn --interface ID --seconds N` `[--model FILE] [--no-reassembly]` | Learn normal industrial traffic (peers, functions, rates, hours) from a capture and save the model; receive-only. See [Learning normal traffic](ot-industrial.md#learning-normal-traffic-ot-learn-ot-listen---model) |
+| `ot-listen ... --model FILE [--maintenance SPEC] [--format json\|text] [--fail-on-findings]` | Check the traffic against a learned model and print alerts (new station, first write, Stop outside the window, ...) instead of the asset list |
 | `ot-assets ID [--format json\|csv]` | OT asset inventory from a passive capture |
 | `devices ID [--format json\|csv]` | One record per device (active and passive merged), with its stable device key |
 | `devices --history MAC\|IP [--format text\|json]` | Timeline of one device across saved scans |
@@ -75,6 +79,15 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `probes [--probes FILE]` | List the TCP and UDP probe database |
 | `probes validate FILE` | Load a probe file like a scan with `--probes` would, then lint it; exit 1 on an error |
 | `probes lint [FILE]` | Safety lint: OT and printer ports, write-like payloads, payload and regex size, nested quantifiers (default: the built-in probes) |
+| `research query "SQL" [--top N] [--format json\|csv\|tsv]` | One read-only SQL statement on the [research tables](research.md); sends nothing |
+| `research schema`, `research rebuild` | Document the tables; derive the rows of scans saved before the tables existed |
+| `segmentation check --zones FILE --from ZONE [SCAN_ID] [--format text\|json] [--fail-on-findings]` | Lists every path from the scan's zone that the declared IEC 62443 zones and conduits do not allow; reads a stored scan, sends nothing. See [Segmentation check](segmentation.md) |
+| `research groups [--top N] [--format text\|json]` | Devices that share a key, certificate template, TLS/SSH stack, web interface or OT firmware across scans and sites; see [Fingerprints you can pivot on](research.md#fingerprints-you-can-pivot-on) |
+| `fingerprints groups [SCAN_ID]`, `fingerprints compare GROUP [SCAN_ID]` | The workbench for unidentified banners: group similar ones, compare the variants of a group across firmware versions (`--format text\|json`). See [Contributing fingerprints](contributing-fingerprints.md#the-workbench-group-compare-draft) |
+| `fingerprints draft GROUP [SCAN_ID] [--output FILE]` | A draft rule for the `banner` probe that passes `probes lint` (`FILE`) and a pull request checklist (`FILE.checklist.md`); sends nothing |
+| `fingerprints favicon FILE` | Shodan-compatible favicon hash (`http.favicon.hash:N`) of a local file; nothing is fetched |
+| `research export csv\|ndjson --output DIR` | One file per table (DuckDB layout) and a manifest |
+| `research export stix\|ocsf [SCAN_ID] [--output FILE]` | STIX 2.1 bundle or OCSF events of one scan |
 | `fingerprints export-unknown [SCAN_ID] [--output FILE]` | Banners of unidentified services from the local store as JSON, without host addresses, to review and redact before sharing; sends nothing. See [Contributing fingerprints](contributing-fingerprints.md) |
 | `update check` | Ask GitHub whether a newer release exists; prints the release page and the verification commands. Notify only: it never downloads or installs anything. See [Checking for updates](installation.md#checking-for-updates) |
 | `completions powershell\|bash` | Print a shell completion script |
@@ -272,6 +285,12 @@ See [Monitoring and alerts](monitoring-alerts.md).
 | `--pcap FILE` | | Read a pcap/pcapng file instead of an interface (`ot-listen`) |
 | `--progress` | off | Print percent, frames and frames/s on stderr while reading a file |
 | `--no-reassembly` | off | Disable OT TCP reassembly |
+| `--model FILE` | `ot-model.json` next to the database (`ot-learn`) | The learned traffic model: written by `ot-learn`, read by `ot-listen` |
+| `--record FILE.pcapng` | | `scan`: keep the payloads of the scan as pcapng; see [Reproducible scans](reproducible-scans.md) |
+| `--replay-check ID` | | `scan`: run stored scan ID again with its own targets and settings and compare; `--format text\|json`, `--fail-on-findings` |
+| `--zones FILE` | | `segmentation check`: the zones and conduits file |
+| `--from ZONE` | | `segmentation check`: the zone the scan was run from |
+| `--maintenance SPEC` | none | `ot-listen --model`: when Stops are expected, `"Sat 02:00-06:00"` (UTC unless `UTC+H`), several windows separated by `;` |
 
 ## trace options
 

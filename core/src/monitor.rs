@@ -787,7 +787,7 @@ pub fn run(
         let snapshot = Snapshot {
             targets: targets_text.to_string(),
             complete,
-            settings: settings.clone(),
+            settings: crate::provenance::stamped(&settings),
             hosts,
             observations,
             notes: BTreeMap::new(),

@@ -1,0 +1,223 @@
+{
+  "schema": 1,
+  "description": "Ground truth of the test plant (lab/plant.py): the devices and the weaknesses planted in them, used by lab/plant_benchmark.py. Every address is loopback (127.0.0.0/8), the only addresses the benchmark may touch. 'handler' names the function in lab/plant.py that serves the port. 'weaknesses' lists what a scan is expected to report, each as the risk-rule id the finding must have on that address (and port); 'recall' is the share of them found. 'traps' are things the scanner must not do: the benchmark fails when any write request reaches a device. The advisory-based weaknesses need the CSAF advisories of tests/fixtures/csaf (synthetic ids, CVE-2099-*), which the benchmark imports into a temporary cache.",
+  "scan": {
+    "ports": [
+      21,
+      22,
+      23,
+      102,
+      502,
+      8080,
+      44818
+    ]
+  },
+  "devices": [
+    {
+      "name": "plc-s7",
+      "address": "127.0.20.1",
+      "role": "S7 CPU 1214C with firmware 4.2.3 and an exposed engineering port",
+      "tcp": [
+        {
+          "port": 102,
+          "handler": "s7_plc"
+        }
+      ]
+    },
+    {
+      "name": "plc-modbus",
+      "address": "127.0.20.2",
+      "role": "Modbus PLC with writable registers, a console that names the default credentials and a cleartext web admin page",
+      "tcp": [
+        {
+          "port": 23,
+          "handler": "telnet_default_credentials"
+        },
+        {
+          "port": 502,
+          "handler": "modbus_writable"
+        },
+        {
+          "port": 8080,
+          "handler": "http"
+        }
+      ]
+    },
+    {
+      "name": "plc-enip",
+      "address": "127.0.20.3",
+      "role": "ControlLogix 1756-L81E with firmware 20.11",
+      "tcp": [
+        {
+          "port": 44818,
+          "handler": "enip_plc"
+        }
+      ]
+    },
+    {
+      "name": "hmi",
+      "address": "127.0.20.4",
+      "role": "HMI host with an old FTP server, SSH with weak algorithms and an old Apache with Basic authentication",
+      "tcp": [
+        {
+          "port": 21,
+          "handler": "ftp"
+        },
+        {
+          "port": 22,
+          "handler": "ssh"
+        },
+        {
+          "port": 8080,
+          "handler": "http"
+        }
+      ]
+    }
+  ],
+  "weaknesses": [
+    {
+      "id": "W01",
+      "address": "127.0.20.1",
+      "port": 102,
+      "finding": "cve-cve-2099-1001",
+      "kind": "old firmware",
+      "planted": "firmware 4.2.3 is inside the affected range of advisory ICSA-TEST-0001 (S7-1200 family, below 4.5.1)"
+    },
+    {
+      "id": "W02",
+      "address": "127.0.20.1",
+      "port": 102,
+      "finding": "cve-cve-2099-1002",
+      "kind": "old firmware",
+      "planted": "the CPU 1214C is named by a second vulnerability of the same advisory (4.0 up to, not including, 4.4)"
+    },
+    {
+      "id": "W03",
+      "address": "127.0.20.1",
+      "port": 102,
+      "finding": "ot-reachable",
+      "kind": "exposed engineering port",
+      "planted": "TCP 102 answers from the scanner's network"
+    },
+    {
+      "id": "W04",
+      "address": "127.0.20.2",
+      "port": 502,
+      "finding": "ot-reachable",
+      "kind": "exposed OT port",
+      "planted": "Modbus/TCP answers, with writable registers"
+    },
+    {
+      "id": "W05",
+      "address": "127.0.20.2",
+      "port": 23,
+      "finding": "telnet-open",
+      "kind": "cleartext admin with default credentials hint",
+      "planted": "the console banner names the factory credentials"
+    },
+    {
+      "id": "W06",
+      "address": "127.0.20.2",
+      "port": 8080,
+      "finding": "http-basic-cleartext",
+      "kind": "cleartext admin",
+      "planted": "HTTP Basic authentication over an unencrypted connection"
+    },
+    {
+      "id": "W07",
+      "address": "127.0.20.3",
+      "port": 44818,
+      "finding": "cve-cve-2099-2001",
+      "kind": "old firmware",
+      "planted": "firmware 20.11 is inside the affected range of advisory ICSA-TEST-0002 (20.0 up to, not including, 20.14)"
+    },
+    {
+      "id": "W08",
+      "address": "127.0.20.3",
+      "port": 44818,
+      "finding": "ot-reachable",
+      "kind": "exposed OT port",
+      "planted": "EtherNet/IP answers from the scanner's network"
+    },
+    {
+      "id": "W09",
+      "address": "127.0.20.4",
+      "port": 21,
+      "finding": "ftp-cleartext",
+      "kind": "cleartext service",
+      "planted": "FTP sends credentials in clear text"
+    },
+    {
+      "id": "W10",
+      "address": "127.0.20.4",
+      "port": 21,
+      "finding": "cve-cve-2011-2523",
+      "kind": "old software",
+      "planted": "vsFTPd 2.3.4"
+    },
+    {
+      "id": "W11",
+      "address": "127.0.20.4",
+      "port": 22,
+      "finding": "ssh-weak-algorithms",
+      "kind": "weak configuration",
+      "planted": "SSH offers diffie-hellman-group1-sha1, 3des and MD5"
+    },
+    {
+      "id": "W12",
+      "address": "127.0.20.4",
+      "port": 8080,
+      "finding": "cve-cve-2021-41773",
+      "kind": "old software",
+      "planted": "Apache 2.4.49"
+    },
+    {
+      "id": "W13",
+      "address": "127.0.20.4",
+      "port": 8080,
+      "finding": "http-basic-cleartext",
+      "kind": "cleartext admin",
+      "planted": "HTTP Basic authentication over an unencrypted connection"
+    },
+    {
+      "id": "W14",
+      "address": "127.0.20.2",
+      "port": 8080,
+      "finding": "cve-cve-2021-41773",
+      "kind": "old software",
+      "planted": "the PLC's admin page reports Apache 2.4.49"
+    },
+    {
+      "id": "W15",
+      "address": "127.0.20.4",
+      "port": 22,
+      "finding": "ssh-legacy-algorithms",
+      "kind": "weak configuration",
+      "planted": "SSH offers the SHA-1 key exchange and ssh-rsa/ssh-dss host keys of OpenSSH 7.4"
+    },
+    {
+      "id": "W16",
+      "address": "127.0.20.4",
+      "port": 22,
+      "finding": "cve-cve-2023-38408",
+      "kind": "old software",
+      "planted": "OpenSSH 7.4"
+    },
+    {
+      "id": "W17",
+      "address": "127.0.20.4",
+      "port": 22,
+      "finding": "cve-cve-2018-15473",
+      "kind": "old software",
+      "planted": "OpenSSH 7.4"
+    }
+  ],
+  "traps": [
+    {
+      "address": "127.0.20.2",
+      "port": 502,
+      "kind": "writable Modbus registers",
+      "rule": "the scanner must never send a write or diagnostics function code; the plant counts every one that arrives"
+    }
+  ]
+}

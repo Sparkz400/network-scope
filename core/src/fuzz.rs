@@ -6,8 +6,8 @@
 //! one-liners calling these, so the logic is built, linted and tested with the crate, and the
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
-    arp, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile, platform,
-    risk, service, syn, tls, udp, update,
+    arp, csaf, fingerprint, import, jarm, nmap, nvd, osfp, ot, otpassive, passive, pcapfile,
+    platform, risk, service, syn, tls, udp, update,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -49,6 +49,10 @@ pub const TARGETS: &[Target] = &[
     ("cves_json", cves_json),
     ("feeds_import", feeds_import),
     ("nvd_import", nvd_import),
+    ("csaf_import", csaf_import),
+    ("ot_model", ot_model),
+    ("zones_file", zones_file),
+    ("banner_groups", banner_groups),
     ("import_inventory", import_inventory),
     ("scope_file", scope_file),
     ("arp_reply", arp_reply),
@@ -128,6 +132,162 @@ pub fn nvd_import(data: &[u8]) {
     if let Ok(text) = std::str::from_utf8(data) {
         std::hint::black_box(nvd::parse_cpe(text));
         std::hint::black_box(nvd::compare_versions(text, "1.0.1e"));
+    }
+}
+
+/// Unidentified banners (one per line, as devices send them): the workbench's grouping, the
+/// comparison text and the draft rule for every group, including the check that the draft matches
+/// its banners and passes the probe linter.
+pub fn banner_groups(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let hosts: Vec<crate::scan::Host> = text
+        .lines()
+        .take(64)
+        .enumerate()
+        .map(|(i, line)| {
+            let mut identity = BTreeMap::new();
+            identity.insert(
+                format!("banner.{}", 1000 + i % 3),
+                line.chars().take(120).collect(),
+            );
+            crate::scan::Host {
+                ip: std::net::IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8 + 1]),
+                responding: true,
+                ping: None,
+                ttl: None,
+                hostname: String::new(),
+                mac: String::new(),
+                open: vec![],
+                closed: 0,
+                unanswered: 0,
+                errors: vec![],
+                ports_checked: true,
+                identity,
+                udp_open: vec![],
+                trace: vec![],
+            }
+        })
+        .collect();
+    let snapshot = crate::store::Snapshot {
+        targets: String::new(),
+        complete: true,
+        settings: crate::scan::Settings::default(),
+        hosts,
+        observations: vec![],
+        notes: BTreeMap::new(),
+        sent: vec![],
+    };
+    let groups = service::workbench::groups([&snapshot]);
+    for g in &groups {
+        std::hint::black_box(service::workbench::compare_text(g));
+        if let Ok(d) = service::workbench::draft(g) {
+            std::hint::black_box(service::workbench::checklist_markdown(&d, g));
+        }
+    }
+    std::hint::black_box(service::workbench::groups_text(&groups));
+}
+
+/// A zones and conduits file (`segmentation check --zones`) and a check of a small scan
+/// against whatever it declared.
+pub fn zones_file(data: &[u8]) {
+    if let Ok(model) = crate::segmentation::ZoneModel::parse(data) {
+        let host = |ip: [u8; 4]| crate::scan::Host {
+            ip: std::net::IpAddr::from(ip),
+            responding: true,
+            ping: None,
+            ttl: None,
+            hostname: String::new(),
+            mac: String::new(),
+            open: vec![22, 502],
+            closed: 0,
+            unanswered: 0,
+            errors: vec![],
+            ports_checked: true,
+            identity: BTreeMap::new(),
+            udp_open: vec![161],
+            trace: vec![],
+        };
+        let snapshot = crate::store::Snapshot {
+            targets: String::new(),
+            complete: true,
+            settings: crate::scan::Settings::default(),
+            hosts: vec![
+                host([10, 0, 0, 1]),
+                host([10, 0, 2, 9]),
+                host([192, 168, 1, 1]),
+            ],
+            observations: vec![],
+            notes: BTreeMap::new(),
+            sent: vec![],
+        };
+        for zone in ["enterprise", "a", "control"] {
+            std::hint::black_box(crate::segmentation::check(&model, zone, &snapshot, None).ok());
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        std::hint::black_box(crate::segmentation::Cidr::parse(text).ok());
+        std::hint::black_box(crate::segmentation::PortSpec::parse(text).ok());
+    }
+}
+
+/// An OT traffic model file (`ot-learn` output, loaded by `ot-listen --model`), a detector run
+/// against it, and the maintenance window parser on the raw text.
+pub fn ot_model(data: &[u8]) {
+    if let Ok(model) = crate::otmodel::Model::parse(data, "fuzz") {
+        let event = |ts: i64, function: &str, control: bool| crate::otpassive::OtEvent {
+            ts,
+            proto: "Modbus/TCP",
+            client: std::net::IpAddr::from([10, 0, 0, 50]),
+            server: std::net::IpAddr::from([10, 0, 0, 10]),
+            function: function.into(),
+            control,
+        };
+        let mut detector = crate::otmodel::Detector::new(std::sync::Arc::new(model), None);
+        for e in [
+            event(0, "Read Coils", false),
+            event(i64::MAX, "Write Single Coil", true),
+            event(i64::MIN, "PLC Stop", true),
+        ] {
+            detector.observe(&e);
+        }
+        std::hint::black_box(detector.finish());
+    }
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(window) = crate::otmodel::Maintenance::parse(text)
+    {
+        for ts in [0, 1_700_000_000, i64::MAX, i64::MIN] {
+            std::hint::black_box(window.contains(ts));
+        }
+    }
+}
+
+/// A CISA ICS advisory in CSAF 2.0 format (a JSON tree with bounded depth and size), the matching
+/// of what it produced against devices of every protocol, and the version-range parser on the
+/// raw text.
+pub fn csaf_import(data: &[u8]) {
+    if let Ok(parsed) = csaf::parse_csaf(data) {
+        let mut cache = csaf::Csaf::default();
+        if cache.merge(parsed, "fuzz.json").is_ok() {
+            for (protocol, vendor, product, version) in [
+                ("S7", "Siemens", "CPU 1214C", "4.2.3"),
+                ("EtherNet/IP", "Rockwell Automation", "1756-L81E", "20.11"),
+                ("OPC UA", "", "Example OPC UA Gateway", ""),
+            ] {
+                std::hint::black_box(cache.lookup(&crate::otdevice::OtDevice {
+                    protocol,
+                    port: 102,
+                    vendor: vendor.into(),
+                    products: vec![product.into()],
+                    version: version.into(),
+                }));
+            }
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        if let Some(range) = csaf::parse_range(text) {
+            std::hint::black_box(csaf::range_holds(&range, "4.2.3"));
+        }
+        std::hint::black_box(csaf::range_holds(text, "1.0"));
     }
 }
 
