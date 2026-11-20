@@ -53,6 +53,16 @@ pub const KINDS: &[&str] = &[
     "dry-run",
     "unknown-banners",
     "search",
+    "research-query",
+    "research-export",
+    "research-rebuild",
+    "ot-model",
+    "ot-alerts",
+    "research-groups",
+    "segmentation-report",
+    "banner-groups",
+    "fingerprint-draft",
+    "replay-check",
 ];
 
 /// The `schema` value of a kind at the current version.

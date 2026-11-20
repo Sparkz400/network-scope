@@ -129,11 +129,36 @@ const MAX_DETAIL: usize = 160;
 #[derive(Debug, Default)]
 pub struct SentLog {
     counts: Mutex<BTreeMap<(PacketKind, String), u64>>,
+    /// The payloads of the scan, when `scan --record` asked for them (see [`crate::record`]).
+    recorder: std::sync::OnceLock<std::sync::Arc<crate::record::Recorder>>,
 }
 
 impl SentLog {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Starts keeping the payloads of this scan (`scan --record`); the recorder is the same one
+    /// when called twice.
+    pub fn enable_recording(&self) -> std::sync::Arc<crate::record::Recorder> {
+        self.recorder.get_or_init(Default::default).clone()
+    }
+    /// The recorder, when recording was enabled.
+    pub fn recorder(&self) -> Option<&std::sync::Arc<crate::record::Recorder>> {
+        self.recorder.get()
+    }
+    /// Keeps `data` (sent to, or received from, `peer`) when recording is enabled; otherwise a
+    /// no-op that costs one atomic read. `note` says what it is.
+    pub fn capture(
+        &self,
+        peer: std::net::SocketAddr,
+        udp: bool,
+        outbound: bool,
+        data: &[u8],
+        note: &str,
+    ) {
+        if let Some(r) = self.recorder.get() {
+            r.add(peer, udp, outbound, data, note);
+        }
     }
     /// Counts one packet.
     pub fn record(&self, kind: PacketKind, detail: impl Into<String>) {

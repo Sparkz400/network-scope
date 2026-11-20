@@ -822,14 +822,205 @@ fn nvd_never_repeats_a_cve_the_builtin_rules_raised() {
     ));
     let with = analyze_host_nvd(&host, &CveDb::builtin(), &nvd);
     let without = analyze_host_with(&host, &CveDb::builtin());
+    let ids = |list: &[Finding]| -> Vec<String> {
+        let mut v: Vec<String> = list.iter().map(|f| f.id.clone()).collect();
+        v.sort();
+        v
+    };
     assert_eq!(
-        with.iter().map(|f| &f.id).collect::<Vec<_>>(),
-        without.iter().map(|f| &f.id).collect::<Vec<_>>(),
-        "NVD has the same two CVEs: the built-in findings are kept, none are added"
+        ids(&with),
+        ids(&without),
+        "NVD has the same two CVEs: each is raised once, none is added"
     );
     for id in ["cve-cve-2024-6387", "cve-cve-2021-41773"] {
         assert_eq!(with.iter().filter(|f| f.id == id).count(), 1, "{id}");
     }
+    // The feed is the source when it knows the CVE (L68); the curated rule is the fallback.
+    for f in &with {
+        assert!(f.evidence.contains("in the NVD range"), "{}", f.evidence);
+    }
+    for f in &without {
+        assert!(!f.evidence.contains("NVD"), "{}", f.evidence);
+    }
+}
+
+fn csaf_fixture() -> crate::csaf::Csaf {
+    let mut c = crate::csaf::Csaf::default();
+    for (name, text) in [
+        (
+            "siemens",
+            &include_bytes!("../../tests/fixtures/csaf/icsa-test-0001-siemens-s7.json")[..],
+        ),
+        (
+            "rockwell",
+            &include_bytes!("../../tests/fixtures/csaf/icsa-test-0002-rockwell-cip.json")[..],
+        ),
+        (
+            "opcua",
+            &include_bytes!("../../tests/fixtures/csaf/icsa-test-0003-opcua-gateway.json")[..],
+        ),
+    ] {
+        c.merge(crate::csaf::parse_csaf(text).unwrap(), name)
+            .unwrap();
+    }
+    c
+}
+
+fn s7_host(firmware: &str) -> Host {
+    let mut h = host_of(&spec(&[102], &[], &[]));
+    for (k, v) in [
+        ("S7.order_code", "6ES7 214-1AG40-0XB0"),
+        ("S7.module", "CPU 1214C DC/DC/DC"),
+        ("S7.firmware", firmware),
+    ] {
+        h.identity.insert(k.into(), v.into());
+    }
+    h
+}
+
+#[test]
+fn csaf_advisories_raise_cve_findings_for_ot_devices_in_their_range_only() {
+    let csaf = csaf_fixture();
+    let run =
+        |h: &Host| analyze_host_feeds(h, &CveDb::builtin(), &crate::nvd::Nvd::default(), &csaf);
+    let hit = run(&s7_host("4.2.3"));
+    let f = hit
+        .iter()
+        .find(|f| f.id == "cve-cve-2099-1001")
+        .expect("advisory CVE");
+    assert_eq!((f.port, f.severity), (Some(102), Severity::Critical));
+    assert_eq!(f.cve, ["CVE-2099-1001"]);
+    assert!(f.evidence.contains("ICSA-TEST-0001"), "{}", f.evidence);
+    assert!(
+        f.evidence.contains("<4.5.1") && f.evidence.contains("CVSS 9.8"),
+        "{}",
+        f.evidence
+    );
+    assert!(f.evidence.contains("Update to V4.5.1"), "{}", f.evidence);
+    assert_eq!(
+        f.reference.as_deref(),
+        Some("https://example.invalid/csaf/icsa-test-0001.json")
+    );
+    assert_eq!(f.confidence, 40, "a version-based hint");
+    assert!(
+        hit.iter().any(|f| f.id == "cve-cve-2099-1002"),
+        "the CPU 1214C advisory too"
+    );
+    // The fixed firmware, an unknown firmware and a newer one: no advisory finding.
+    for h in [s7_host("4.5.1"), s7_host(""), s7_host("V4.6")] {
+        assert!(
+            run(&h).iter().all(|f| !f.id.starts_with("cve-cve-2099")),
+            "{:?}",
+            h.identity
+        );
+    }
+    // Without imported advisories nothing is raised.
+    assert!(
+        analyze_host_with(&s7_host("4.2.3"), &CveDb::builtin())
+            .iter()
+            .all(|f| !f.id.starts_with("cve-"))
+    );
+    // A ControlLogix and an OPC UA gateway (all versions, no firmware).
+    let mut cip = host_of(&spec(&[44818], &[], &[]));
+    for (k, v) in [
+        ("EtherNet/IP.vendor", "Rockwell Automation/Allen-Bradley"),
+        ("EtherNet/IP.name", "1756-L81E"),
+        ("EtherNet/IP.firmware", "20.11"),
+    ] {
+        cip.identity.insert(k.into(), v.into());
+    }
+    assert!(
+        run(&cip)
+            .iter()
+            .any(|f| f.id == "cve-cve-2099-2001" && f.port == Some(44818))
+    );
+    let mut opc = host_of(&spec(&[4840], &[], &[]));
+    opc.identity.insert(
+        "OPC UA.endpoint_0.name".into(),
+        "Example OPC UA Gateway".into(),
+    );
+    let gateway = run(&opc);
+    let f = gateway
+        .iter()
+        .find(|f| f.id == "cve-cve-2099-3001")
+        .unwrap();
+    assert!(f.evidence.contains("all versions"), "{}", f.evidence);
+}
+
+/// L68's order: advisories first; the hand-written rules only for the CVEs the advisories did
+/// not name, so they are a fallback and never the main source.
+#[test]
+fn hand_written_rules_are_a_fallback_behind_the_advisories() {
+    let rules = r#"{"rules":[
+        {"id":"own-s7-1200","product":"cpu 1214c","min":"4.0","max":"4.5.1","severity":"low","cve":["CVE-2099-1001"],"title":"Own rule for the same CVE"},
+        {"id":"own-s7-other","product":"cpu 1214c","min":"4.0","max":"5.0","severity":"medium","cve":["CVE-2099-9999"],"title":"Own rule for another CVE"}
+    ],"cpe":[]}"#;
+    let db = CveDb::with_user_text(rules, "test rules").unwrap();
+    let csaf = csaf_fixture();
+    let h = s7_host("4.2.3");
+    let with = analyze_host_feeds(&h, &db, &crate::nvd::Nvd::default(), &csaf);
+    let one = with
+        .iter()
+        .filter(|f| f.id == "cve-cve-2099-1001")
+        .collect::<Vec<_>>();
+    assert_eq!(one.len(), 1, "raised once: {with:?}");
+    assert!(
+        one[0].evidence.contains("ICSA-TEST-0001"),
+        "the advisory's finding wins"
+    );
+    assert_eq!(
+        one[0].title,
+        "Missing authentication on the S7 protocol (synthetic)"
+    );
+    let other = with
+        .iter()
+        .find(|f| f.id == "cve-cve-2099-9999")
+        .expect("fallback rule fires");
+    assert_eq!(other.port, Some(102));
+    assert!(!other.evidence.contains("ICSA"), "{}", other.evidence);
+    // Without advisory data the hand-written rule for the CVE is raised as before.
+    let without = analyze_host_feeds(
+        &h,
+        &db,
+        &crate::nvd::Nvd::default(),
+        &crate::csaf::Csaf::default(),
+    );
+    let own = without
+        .iter()
+        .find(|f| f.id == "cve-cve-2099-1001")
+        .unwrap();
+    assert_eq!(own.title, "Own rule for the same CVE");
+    assert!(
+        own.evidence.contains("Version-based hint only"),
+        "{}",
+        own.evidence
+    );
+}
+
+/// KEV and EPSS rank CSAF findings like every other CVE finding.
+#[test]
+fn kev_and_epss_rank_advisory_findings() {
+    let csaf = csaf_fixture();
+    let mut list = analyze_host_feeds(
+        &s7_host("4.2.3"),
+        &CveDb::builtin(),
+        &crate::nvd::Nvd::default(),
+        &csaf,
+    );
+    // 1001 is critical, 1002 high; KEV on the lower one puts it first
+    let feeds = crate::feeds::Feeds {
+        version: 1,
+        imported_at: 0,
+        kev: Some(crate::feeds::Kev {
+            entries: [("CVE-2099-1002".to_string(), Default::default())].into(),
+            ..Default::default()
+        }),
+        epss: None,
+    };
+    feeds.enrich(&mut list);
+    crate::feeds::rank(&mut list);
+    assert_eq!(list[0].id, "cve-cve-2099-1002");
+    assert!(list[0].exploit.kev);
 }
 
 #[test]

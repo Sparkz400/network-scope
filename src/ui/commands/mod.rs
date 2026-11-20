@@ -16,9 +16,11 @@ mod mcp;
 mod monitor;
 mod ot;
 mod probes;
+mod research;
 pub(in crate::ui) mod scan;
 mod scripts;
 mod search;
+mod segmentation;
 mod service;
 #[cfg(windows)]
 mod service_scm;
@@ -54,12 +56,15 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("service", service::run),
     ("mcp", mcp::run),
     ("ot-listen", ot::listen),
+    ("ot-learn", ot::learn),
     ("ot-assets", ot::assets),
     ("devices", devices::devices),
     ("topology", devices::topology),
     ("trace", trace::run),
     ("probes", probes::run),
     ("fingerprints", fingerprints::run),
+    ("research", research::run),
+    ("segmentation", segmentation::run),
     ("update", update::run),
     ("search", search::run),
     ("wol", wol::run),

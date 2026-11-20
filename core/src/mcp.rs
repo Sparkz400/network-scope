@@ -1006,7 +1006,7 @@ impl Server {
             sent: run.sent.snapshot(),
             targets: targets_text.clone(),
             complete,
-            settings,
+            settings: crate::provenance::stamped(&settings),
             hosts,
             observations: vec![],
             notes: Default::default(),

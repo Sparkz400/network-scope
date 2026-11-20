@@ -1,0 +1,102 @@
+{
+  "document": {
+    "acknowledgments": [
+      {
+        "summary": "Synthetic advisory written by hand for the tests of Network Scope. The advisory id, the CVE id (CVE-2099-3001) and the product are invented. It is not a real advisory."
+      }
+    ],
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "distribution": {
+      "tlp": {
+        "label": "WHITE",
+        "url": "https://www.first.org/tlp/"
+      }
+    },
+    "lang": "en-US",
+    "publisher": {
+      "category": "coordinator",
+      "name": "Test Publisher",
+      "namespace": "https://example.invalid/"
+    },
+    "title": "Synthetic OPC UA gateway test advisory (no longer supported product)",
+    "tracking": {
+      "current_release_date": "2026-03-01T00:00:00.000000Z",
+      "id": "ICSA-TEST-0003",
+      "initial_release_date": "2026-03-01T00:00:00.000000Z",
+      "revision_history": [
+        {
+          "date": "2026-03-01T00:00:00.000000Z",
+          "number": "1",
+          "summary": "Initial publication"
+        }
+      ],
+      "status": "final",
+      "version": "1"
+    }
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "branches": [
+          {
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "vers:all/*",
+                "product": {
+                  "name": "Example Industrial Software Example OPC UA Gateway: vers:all/*",
+                  "product_id": "CSAFPID-0001"
+                }
+              }
+            ],
+            "category": "product_name",
+            "name": "Example OPC UA Gateway"
+          }
+        ],
+        "category": "vendor",
+        "name": "Example Industrial Software"
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2099-3001",
+      "notes": [
+        {
+          "category": "description",
+          "text": "Synthetic: the gateway accepts unsigned messages. The product is end of life, every version is affected.",
+          "title": "Vulnerability Summary"
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "CSAFPID-0001"
+        ]
+      },
+      "remediations": [
+        {
+          "category": "no_fix_planned",
+          "details": "The product is end of life; replace it.",
+          "product_ids": [
+            "CSAFPID-0001"
+          ]
+        }
+      ],
+      "scores": [
+        {
+          "cvss_v3": {
+            "baseScore": 7.4,
+            "baseSeverity": "HIGH",
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N",
+            "version": "3.1"
+          },
+          "products": [
+            "CSAFPID-0001"
+          ]
+        }
+      ],
+      "title": "Unsigned messages accepted (synthetic)"
+    }
+  ]
+}

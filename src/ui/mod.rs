@@ -143,8 +143,16 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     }
     let command = &args[0];
     let (pos, mut opts) = args::options(&args[1..])?;
-    if opts.contains_key("fail-on-findings") && !matches!(command.as_str(), "findings" | "diff") {
-        return Err("--fail-on-findings applies to the findings and diff commands only".into());
+    if opts.contains_key("fail-on-findings")
+        && !matches!(
+            command.as_str(),
+            "findings" | "diff" | "ot-listen" | "segmentation" | "scan"
+        )
+    {
+        return Err(
+            "--fail-on-findings applies to the findings and diff commands (and ot-listen --model, segmentation check, scan --replay-check) only"
+                .into(),
+        );
     }
     if let Some(version) = opts.get("json-schema") {
         crate::schema::check_version(version)?;
@@ -158,6 +166,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
             "--dry-run applies to {} and service install only",
             dryrun::COMMANDS.join(", ")
         ));
+    }
+    if (opts.contains_key("record") || opts.contains_key("replay-check")) && command != "scan" {
+        return Err("--record and --replay-check apply to scan only".into());
     }
     if opts.contains_key("sent-log") && !matches!(command.as_str(), "scan" | "trace" | "dcp") {
         return Err(
@@ -191,6 +202,12 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         && let Some(file) = opts.get("nvd")
     {
         crate::nvd::load_active(std::path::Path::new(file))?;
+    }
+    // CISA ICS advisories (`feeds import csaf`) raise CVE findings for industrial devices.
+    if command != "feeds"
+        && let Some(file) = opts.get("csaf")
+    {
+        crate::csaf::load_active(std::path::Path::new(file))?;
     }
     let handler =
         commands::find(command).ok_or_else(|| format!("Unknown command {command}. Use --help."))?;

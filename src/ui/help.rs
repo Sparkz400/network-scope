@@ -32,6 +32,7 @@ network-scope findings ID [--min-severity low] [--sort exploited|severity] [--fa
 network-scope findings ID --top N [--format text|json]   Risk scores and the "fix these first" list
 network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
 network-scope feeds import nvd FILE...   Offline NVD CVE JSON 2.0 feed files (unzip .gz first) for CVE findings
+network-scope feeds import csaf FILE|DIR...   Offline CISA ICS advisories (CSAF 2.0) matched against OT firmware
 network-scope feeds status                     What the feeds cache holds
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
@@ -47,6 +48,12 @@ network-scope mcp [--db FILE] [--no-scan]       MCP server on stdin/stdout for A
 network-scope scripts list|show NAME           The built-in script library (--script library:NAME)
 network-scope ot-listen --interface ID --seconds N | --pcap FILE [--progress] [--no-reassembly]
                                                Passive OT asset discovery
+network-scope ot-learn --pcap FILE | --interface ID --seconds N [--model FILE] [--no-reassembly]
+                                               Learn normal industrial traffic: who talks to each device, with
+                                               which functions, how often and when (saved as a model file)
+network-scope ot-listen --pcap FILE | --interface ID --model FILE [--maintenance "Sat 02:00-06:00"]
+        [--format json|text] [--fail-on-findings]   Report what the model has not seen: a new station, a first
+                                               write, a Stop outside the window (receive-only)
 network-scope ot-assets ID [--format json|csv]  OT asset inventory from a passive capture
 network-scope devices ID [--format json|csv]   One record per device (active + passive merged)
 network-scope devices --history MAC|IP [--format text|json]   Timeline of one device across saved scans
@@ -59,6 +66,20 @@ network-scope probes lint [FILE]               Safety lint (OT/printer ports, wr
 network-scope fingerprints export-unknown [SCAN_ID] [--output FILE]
                                                Banners nothing identified, from the local store, as JSON
                                                to review and redact (never uploaded)
+network-scope research query "SELECT ..." [--top N] [--format json|csv|tsv]   Read-only SQL on the research tables
+network-scope research schema | rebuild        Document the tables; fill them for scans saved before they existed
+network-scope research export csv|ndjson --output DIR   One file per table (DuckDB/pandas layout)
+network-scope research export stix|ocsf [SCAN_ID] [--output FILE]   STIX 2.1 bundle or OCSF events of one scan
+network-scope research groups [--top N] [--format text|json]   Devices that share a key, certificate template,
+                                               TLS/SSH stack, web interface or OT firmware, across scans and sites
+network-scope fingerprints groups [SCAN_ID]    The unidentified banners, grouped by similarity (the workbench queue)
+network-scope fingerprints compare GROUP [SCAN_ID]   One group side by side: what differs between firmware versions
+network-scope fingerprints draft GROUP [SCAN_ID] [--output FILE]   A draft probes.json rule (passes probes lint)
+                                               and the pull request checklist
+network-scope fingerprints favicon FILE        Shodan-compatible favicon hash of a local file (nothing is fetched)
+network-scope segmentation check --zones FILE --from ZONE [SCAN_ID] [--format text|json] [--fail-on-findings]
+                                               Paths from the scan's zone that the declared IEC 62443 zones and
+                                               conduits do not allow (reads a stored scan, sends nothing)
 network-scope update check                     Ask GitHub for the latest release (one HTTPS request); prints
                                                the release page and how to verify a download; never downloads
 network-scope completions powershell|bash      Print a shell completion script
@@ -87,6 +108,7 @@ Scan options:
   --cves FILE     Extra CVE/CPE rules, merged over data/cves.json by id; any command
   --feeds FILE    KEV/EPSS cache (default: feeds.json next to the user cves.json); any command
   --nvd FILE      NVD cache (default: nvd.json next to feeds.json); any command
+  --csaf FILE     CSAF advisory cache (default: csaf.json next to feeds.json); any command
   --script PATH   Rhai script (or folder of .rhai files) run against every host
   --db FILE       Defaults to LOCALAPPDATA/NetworkScope/inventory.sqlite
   --fast          Disable conservative rate limits (read-only OT still applies)
@@ -96,6 +118,10 @@ Scan options:
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
   --dry-run       scan, monitor, trace, dcp, wol: print per host which packet types would be sent
                   (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
+  --record FILE.pcapng  scan: keep the payloads the scan sent and received (OT requests and replies, service
+                  probes, HTTP) as pcapng. An application-level record, not a wire capture
+  --replay-check ID  scan: run stored scan ID again with its own targets and settings and compare the result
+                  and the version/rules stamp (--fail-on-findings: exit 3 when it is not reproduced)
   --sent-log      scan, trace, dcp: print the packets actually sent, by kind and detail (stderr)
   --no-backoff    Turn off the automatic back-off (per-device-type parallel limits and slowing or
                   pausing a host that resets connections; on by default, it only ever slows down)

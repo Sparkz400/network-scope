@@ -120,7 +120,7 @@ Network Scope never downloads the files. Files saved from the NVD API 2.0 (`/res
 
 **Cache.** The import writes a compact index (`nvd.json`, next to `feeds.json`; `--nvd FILE` on any command selects another one), not the whole feed: for each CVE the rating (CVSS 4.0, 3.1, 3.0 or 2, the newest present; `info` when NVD has not rated it), a short title and its vulnerable CPE ranges. The file is read while parsing, so memory use does not grow with the size of the feed (an unpacked year file is a few hundred MB). The cache is loaded only when a scan has a CPE to look up. It is a file for the same reason as `feeds.json`: a global lookup table, not part of a scan or the SQLite inventory (no store migration is involved).
 
-**What becomes a finding.** For every open port with a `svc.<port>.cpe`, each CVE whose vulnerable range contains the CPE's version becomes a finding `cve-cve-YYYY-NNNN` (see [Version-based CVE hint](findings/cve-hints.md)) with the NVD rating as its severity, the first sentence of the NVD description as its title and the matching range in the evidence ("8.5 <= v < 9.8"). KEV and EPSS data rank them like every CVE finding. At most 50 per port are listed, highest severity first. A CVE that a built-in rule already raised on the port is not repeated, and `data/cves.json` stays the fallback: without an imported cache nothing changes.
+**What becomes a finding.** For every open port with a `svc.<port>.cpe`, each CVE whose vulnerable range contains the CPE's version becomes a finding `cve-cve-YYYY-NNNN` (see [Version-based CVE hint](findings/cve-hints.md)) with the NVD rating as its severity, the first sentence of the NVD description as its title and the matching range in the evidence ("8.5 <= v < 9.8"). KEV and EPSS data rank them like every CVE finding. At most 50 per port are listed, highest severity first. The NVD feed comes before the hand-written rules (see [Order of sources](#order-of-sources)): a CVE the feed raises on a port is not raised again by a rule of `data/cves.json`, which stays the fallback for what the feed does not know. Without an imported cache nothing changes.
 
 **Matching is deliberately conservative:**
 
@@ -132,6 +132,32 @@ Network Scope never downloads the files. Files saved from the NVD API 2.0 (`/res
 Like every version-based hint, a match is **not** a confirmed vulnerability: distributions backport fixes without changing the version string, and the product and vendor names of the derived CPEs were written from memory and not checked against the NVD dictionary (see CPE names). The fixture in `tests/fixtures/nvd-sample.json` was written by hand following the NVD 2.0 schema (two real CVE ids with paraphrased text, the rest synthetic `CVE-2099-*`); the importer has not been run on a full real NVD download in this project's tests. The feed parser is fuzzed (`nvd_import`).
 
 NVD data is a work of the US government (NIST) and free to use; see [data/README.md](https://github.com/Sparkz400/network-scope/blob/main/data/README.md).
+
+## CISA ICS advisories for OT devices (CSAF, offline)
+
+Industrial devices are rarely in the NVD with usable version ranges, but CISA publishes its ICS advisories in the machine-readable CSAF 2.0 format (repository `cisagov/CSAF`). You download them and import them; the scanner matches the vendor, product and firmware that the S7, EtherNet/IP (CIP), Modbus and OPC UA identification already collected:
+
+```sh
+network-scope-cli feeds import csaf advisories/          # a folder of *.json, or single files
+network-scope-cli scan 10.0.0.0/24 --ot --ports 102,502,4840,44818
+network-scope-cli findings 12
+```
+
+`feeds import csaf` reads each file's `product_tree` (vendor, product family and name, version or `vers:` range, model numbers and SKUs from `product_identification_helper`) and its `vulnerabilities` (CVE, title, CVSS score per product, `product_status.known_affected`, the first remediation of each product), and keeps the result in a small cache (`csaf.json` next to `feeds.json`; `--csaf FILE` on any command selects another one). A file that is not a CSAF advisory is reported and skipped; a gzip file is refused with the `gunzip` hint; importing an advisory again replaces its earlier entries. `feeds status` shows what the cache holds. Network Scope never downloads the advisories.
+
+**What becomes a finding.** A device whose vendor agrees with the advisory (when both are known), whose product name, order code or model number matches an advisory product, and whose firmware lies in the affected range, gets a finding `cve-cve-YYYY-NNNN` on the protocol's port (102, 502, 4840 or 44818). The severity is the advisory's CVSS rating, the evidence names the advisory, the affected range, the score and the vendor's remediation, and the advisory's own address is the finding's reference link. KEV and EPSS data rank these findings like every other CVE finding. A device without a firmware version (OPC UA discovery gives none) matches only advisories that list **all versions**. A Siemens CPU is also known by its family (`CPU 1214C` is an S7-1200, `CPU 1511-1 PN` an S7-1500), because advisories name families rather than CPU models.
+
+**Limits.** Matching is by name: a hardware variant that an advisory does not tell apart can be reported although it is not affected, and a device that an advisory names only by a family this table does not know (for example by an order-number range) is missed. `relationships` in a CSAF file are not followed, and a product with no version information is skipped (importing counts these). Like every version-based hint, a match is **not** a confirmed vulnerability. The fixtures in `tests/fixtures/csaf/` were written by hand in the layout of the CISA advisories, with invented advisory ids and `CVE-2099-*` ids; the importer has not been run on the full CISA repository in this project's tests. The parser is fuzzed (`csaf_import`).
+
+## Order of sources
+
+For one port, or one industrial device, the sources are used in this order:
+
+1. imported **CSAF advisories** (OT devices),
+2. the imported **NVD feed** (ports with a CPE),
+3. the hand-written rules in `data/cves.json` and your own `--cves` file, **only for the CVEs the feeds did not already raise there**.
+
+The hand-written rules are therefore a fallback for what the feeds do not cover, not the main source. When an advisory or an NVD record names a CVE for the device, that is the finding you see (with the feed's severity, title and range); a hand-written rule for the same CVE is skipped, and a rule for another CVE still fires. Without imported feeds the rules are the only source, as before. A hand-written rule can also name an industrial device: its `product` text is matched against the device's names (order code, CPU or product name) and its `min`/`max` against the firmware.
 
 ## CPE names
 

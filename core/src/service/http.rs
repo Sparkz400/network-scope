@@ -88,9 +88,15 @@ pub(super) async fn http_get<S: AsyncRead + AsyncWrite + Unpin>(
     ip: IpAddr,
     port: u16,
     limit: Duration,
+    log: &crate::sendlog::SentLog,
+    note: &str,
 ) -> Option<Http> {
-    s.write_all(http_request(ip, port).as_bytes()).await.ok()?;
+    let request = http_request(ip, port);
+    let peer = std::net::SocketAddr::new(ip, port);
+    log.capture(peer, false, true, request.as_bytes(), note);
+    s.write_all(request.as_bytes()).await.ok()?;
     let data = read_some(s, limit, 32 * 1024).await;
+    log.capture(peer, false, false, &data, note);
     parse_http(&data)
 }
 

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:banner-groups:v1",
+  "title": "Groups of unidentified banners",
+  "description": "Output of `fingerprints groups --format json` and `fingerprints compare --format json`: responses that no rule identified, grouped by similarity.",
+  "type": "object",
+  "required": [
+    "schema",
+    "groups"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/banner-groups/v1"
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "template",
+          "ports",
+          "hosts",
+          "banners",
+          "vendors",
+          "variants",
+          "varying"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "First 8 hex digits of the SHA-256 of the template."
+          },
+          "template": {
+            "type": "string",
+            "description": "The commonest banner with version-like numbers written as the placeholder."
+          },
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "port_hint": {
+            "type": "string",
+            "description": "What the port number alone suggests; present only when the group sits on one port."
+          },
+          "hosts": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Distinct hosts in the group."
+          },
+          "banners": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Distinct banners in the group."
+          },
+          "vendors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "variants": {
+            "type": "array",
+            "description": "At most 50 distinct banners, the most widespread first.",
+            "items": {
+              "type": "object",
+              "required": [
+                "banner",
+                "versions",
+                "ports",
+                "hosts",
+                "vendors"
+              ],
+              "properties": {
+                "banner": {
+                  "type": "string"
+                },
+                "versions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "ports": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "hosts": {
+                  "type": "integer"
+                },
+                "vendors": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "varying": {
+            "type": "array",
+            "description": "Where the banners differ.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

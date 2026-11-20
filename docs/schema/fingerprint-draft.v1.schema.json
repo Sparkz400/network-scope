@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:fingerprint-draft:v1",
+  "title": "Draft probe rule",
+  "description": "Output of `fingerprints draft --format json`: a draft rule for the `banner` probe of data/probes.json, a probe file that holds it and the pull request checklist.",
+  "type": "object",
+  "required": [
+    "schema",
+    "group",
+    "rule",
+    "probe_file",
+    "checklist",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/fingerprint-draft/v1"
+    },
+    "group": {
+      "type": "string",
+      "description": "The group the rule was drafted from."
+    },
+    "rule": {
+      "type": "object",
+      "description": "The rule: re, service, product and, when the banner has a version, version.",
+      "required": [
+        "re",
+        "service",
+        "product"
+      ]
+    },
+    "probe_file": {
+      "type": "string",
+      "description": "A complete probe file (JSON text) with only this rule; `probes validate` takes it."
+    },
+    "checklist": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "description": "Where the rule had to be more general than the banners.",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
