@@ -95,8 +95,26 @@ impl Endpoint {
 
 const MAX_ENDPOINTS: usize = 4096;
 
+/// One request to an industrial device, as the decoders saw it (see `ot-learn`): one event per
+/// function in the message, or one with an empty function for traffic that carries none
+/// (a connection setup, a keep-alive, a protocol without function names here).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OtEvent {
+    pub ts: i64,
+    pub proto: &'static str,
+    pub client: IpAddr,
+    pub server: IpAddr,
+    pub function: String,
+    /// A write, program download, stop, restart or command (the same flag as `control_traffic`).
+    pub control: bool,
+}
+
+/// Receives the [`OtEvent`]s while a tracker decodes (see [`Tracker::set_event_sink`]).
+pub type EventSink = Box<dyn FnMut(&OtEvent) + Send>;
+
 #[derive(Default)]
 pub struct Tracker {
+    event_sink: Option<EventSink>,
     servers: BTreeMap<(Proto, IpAddr), Endpoint>,
     clients: BTreeMap<(Proto, IpAddr), Endpoint>,
     passive: Vec<Observation>,
@@ -110,6 +128,12 @@ pub struct Tracker {
 impl Tracker {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Sends every request to an industrial device to `sink` as it is decoded (requests to a
+    /// broadcast or multicast address are not requests to a device and are left out). Nothing is
+    /// stored here, so a long capture does not grow the tracker.
+    pub fn set_event_sink(&mut self, sink: EventSink) {
+        self.event_sink = Some(sink);
     }
     /// TCP reassembly-lite is on by default; `false` decodes every segment on its own.
     pub fn set_reassembly(&mut self, on: bool) {
@@ -159,6 +183,22 @@ impl Tracker {
     ) {
         let functions: Vec<(String, bool)> = functions.into_iter().collect();
         let server = (!self.dst_group).then_some(server);
+        if let (Some(sink), Some(server)) = (self.event_sink.as_mut(), server) {
+            let event = |function: String, control: bool| OtEvent {
+                ts,
+                proto: proto.name(),
+                client,
+                server,
+                function,
+                control,
+            };
+            if functions.is_empty() {
+                sink(&event(String::new(), false));
+            }
+            for (name, control) in &functions {
+                sink(&event(name.clone(), *control));
+            }
+        }
         if let Some(s) = server.and_then(|server| self.server(proto, server)) {
             s.touch(ts, Some(client));
             if let Some(u) = unit {

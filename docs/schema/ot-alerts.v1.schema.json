@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:ot-alerts:v1",
+  "title": "OT traffic alerts",
+  "description": "Output of `ot-listen --model`: what the traffic of a capture did that the learned model has not seen.",
+  "type": "object",
+  "required": [
+    "schema",
+    "source",
+    "events",
+    "alerts",
+    "dropped"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/ot-alerts/v1"
+    },
+    "source": {
+      "type": "string",
+      "description": "The capture file or interface that was checked."
+    },
+    "events": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Industrial messages checked."
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "kinds",
+          "severity",
+          "first_seen",
+          "last_seen",
+          "occurrences",
+          "protocol",
+          "client",
+          "server",
+          "function",
+          "control",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "new-asset",
+              "new-station",
+              "stop-outside-window",
+              "first-write",
+              "new-function",
+              "unusual-hour",
+              "rate-anomaly"
+            ]
+          },
+          "kinds": {
+            "type": "array",
+            "description": "Every reason this message was reported for, most telling first.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "first_seen": {
+            "type": "integer"
+          },
+          "last_seen": {
+            "type": "integer"
+          },
+          "occurrences": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "client": {
+            "type": "string"
+          },
+          "server": {
+            "type": "string"
+          },
+          "function": {
+            "type": "string"
+          },
+          "control": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dropped": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Alerts that did not fit the limit and are not listed."
+    }
+  }
+}

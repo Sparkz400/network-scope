@@ -53,6 +53,7 @@ pub(super) const COMMANDS: &[(&str, Handler)] = &[
     ("service", service::run),
     ("mcp", mcp::run),
     ("ot-listen", ot::listen),
+    ("ot-learn", ot::learn),
     ("ot-assets", ot::assets),
     ("devices", devices::devices),
     ("topology", devices::topology),

@@ -271,6 +271,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ot_model"
+path = "fuzz_targets/ot_model.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mcp_message"
 path = "fuzz_targets/mcp_message.rs"
 test = false

@@ -50,6 +50,7 @@ pub const TARGETS: &[Target] = &[
     ("feeds_import", feeds_import),
     ("nvd_import", nvd_import),
     ("csaf_import", csaf_import),
+    ("ot_model", ot_model),
     ("import_inventory", import_inventory),
     ("scope_file", scope_file),
     ("arp_reply", arp_reply),
@@ -127,6 +128,37 @@ pub fn nvd_import(data: &[u8]) {
     if let Ok(text) = std::str::from_utf8(data) {
         std::hint::black_box(nvd::parse_cpe(text));
         std::hint::black_box(nvd::compare_versions(text, "1.0.1e"));
+    }
+}
+
+/// An OT traffic model file (`ot-learn` output, loaded by `ot-listen --model`), a detector run
+/// against it, and the maintenance window parser on the raw text.
+pub fn ot_model(data: &[u8]) {
+    if let Ok(model) = crate::otmodel::Model::parse(data, "fuzz") {
+        let event = |ts: i64, function: &str, control: bool| crate::otpassive::OtEvent {
+            ts,
+            proto: "Modbus/TCP",
+            client: std::net::IpAddr::from([10, 0, 0, 50]),
+            server: std::net::IpAddr::from([10, 0, 0, 10]),
+            function: function.into(),
+            control,
+        };
+        let mut detector = crate::otmodel::Detector::new(std::sync::Arc::new(model), None);
+        for e in [
+            event(0, "Read Coils", false),
+            event(i64::MAX, "Write Single Coil", true),
+            event(i64::MIN, "PLC Stop", true),
+        ] {
+            detector.observe(&e);
+        }
+        std::hint::black_box(detector.finish());
+    }
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(window) = crate::otmodel::Maintenance::parse(text)
+    {
+        for ts in [0, 1_700_000_000, i64::MAX, i64::MIN] {
+            std::hint::black_box(window.contains(ts));
+        }
     }
 }
 
