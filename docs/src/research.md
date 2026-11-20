@@ -150,12 +150,28 @@ A database written by an earlier version gets the tables empty. `research rebuil
 
 ## Exports
 
-`research export csv|ndjson --output DIR` writes one file per table (`hosts.ndjson`, `services.ndjson`, ...) and a `manifest.json` listing them (it carries the usual `schema` member; the table files are plain rows without it, so they load as tables). CSV files have a header row, `NULL` is an empty cell, and cells that a spreadsheet would read as a formula are prefixed with `'` like every other CSV export. There is no Parquet writer in the program (that would need a library); DuckDB converts the files in one line:
+`research export csv|ndjson|parquet --output DIR` writes one file per table (`hosts.ndjson`, `services.parquet`, ...) and a `manifest.json` listing them (it carries the usual `schema` member; the table files are plain rows without it, so they load as tables). CSV files have a header row, `NULL` is an empty cell, and cells that a spreadsheet would read as a formula are prefixed with `'` like every other CSV export.
+
+Parquet files come from a small writer inside the program (no library): uncompressed, PLAIN encoding, no statistics or dictionaries, one data page per column and row group, at most 50 000 rows per row group (so memory does not grow with the table; an empty table is a file without row groups). Columns follow the declared SQL types: `INTEGER` is a 64-bit integer (`scan_time` stays Unix seconds, `BIGINT` in DuckDB), `REAL` a double, `TEXT` a UTF-8 string; `NOT NULL` columns are required, the others optional. The files are bigger than a compressed Parquet file would be; DuckDB or pandas can recompress them (`COPY (SELECT * FROM 'hosts.parquet') TO 'hosts.zstd.parquet' (COMPRESSION zstd)`):
 
 ```sh
-duckdb -c "COPY (SELECT * FROM read_ndjson('hosts.ndjson')) TO 'hosts.parquet'"
+duckdb -c "SELECT ip, port, name FROM 'services.parquet' WHERE name = 'S7'"
+python -c "import pandas; print(pandas.read_parquet('hosts.parquet'))"
 ```
 
-`research export stix [SCAN_ID]` writes a STIX 2.1 bundle of one scan (default: the newest completed scan). Each responding host becomes an `infrastructure` object that `consists-of` its `ipv4-addr`/`ipv6-addr` (and `mac-addr`); an `observed-data` object lists the host's observables and the `software` it runs (including identified OT firmware); each CVE of a finding becomes a `vulnerability` object that the infrastructure `has`. Identifiers are UUIDv5, so exporting the same scan twice gives the same bundle. Observables use the STIX namespace over the canonical JSON of their identifying properties, as the specification prescribes; this was derived from the specification text and has not been compared with another implementation's output.
+`research export stix [SCAN_ID]` writes a STIX 2.1 bundle of one scan (default: the newest completed scan). Each responding host becomes an `infrastructure` object that `consists-of` its `ipv4-addr`/`ipv6-addr` (and `mac-addr`); an `observed-data` object lists the host's observables and the `software` it runs (including identified OT firmware); each CVE of a finding becomes a `vulnerability` object that the infrastructure `has`. Identifiers are UUIDv5, so exporting the same scan twice gives the same bundle. Observables use the STIX namespace over the canonical JSON of their identifying properties, as the specification prescribes.
 
-`research export ocsf [SCAN_ID]` writes OCSF 1.3 events, one JSON object per line: a Device Inventory Info event (class 5001) per responding host and a Vulnerability Finding event (class 2002) per finding. The layouts follow the published class definitions as understood when this was written; they have not been run through the OCSF validator, and fields without a safe mapping are under `unmapped`.
+`research export ocsf [SCAN_ID]` writes OCSF 1.3 events, one JSON object per line: a Device Inventory Info event (class 5001) per responding host, a Vulnerability Finding event (class 2002) per finding that names a CVE (OCSF requires a CVE or CWE in that class) and a Detection Finding event (class 2004) per finding without one. Fields without a safe mapping are under `unmapped`.
+
+### What was checked, and with what
+
+Checked on 2026-11-20 (Windows, Python 3.13), on a scan of the lab simulators (`lab/simulators.py`, `--fast --deep --ot`: one host, 10 services, 12 findings) and on a 163 840-row `services` table, with `scripts/validate_research_exports.py` (it needs `pip install pyarrow duckdb stix2-validator stix2 jsonschema` and is not part of CI):
+
+| Export | Checked with | Result |
+|---|---|---|
+| Parquet | pyarrow 26.0.1 and DuckDB 2.0.0 read every table; the rows equal the NDJSON export; the 163 840-row table (4 row groups) equals the SQLite rows | identical |
+| STIX 2.1 | `stix2-validator` 3.3.2 (version 2.1) | valid, 0 errors, 16 warnings, all "identifier is not a UUIDv4": the bundle, infrastructure, relationship, observed-data and vulnerability objects use deterministic UUIDv5 ids on purpose |
+| STIX 2.1 observable ids | `stix2` 3.0.2 (OASIS cti-python-stix2) computes the id of each `ipv4-addr` and `software` object | the 7 ids are identical (no `mac-addr` or `ipv6-addr` was in the bundle) |
+| OCSF 1.3 | the compiled OCSF 1.3.0 schema from `schema.ocsf.io` (built from `ocsf/ocsf-schema`, tag v1.3.0) turned into a JSON Schema per class, validated with `jsonschema` 4.26.0 | 13 of 13 events valid |
+
+The OCSF check found a real defect that is fixed: findings without a CVE were Vulnerability Findings without the required `vulnerabilities` (7 of 13 events invalid); they are now Detection Findings. The scan had no TLS service, so the `certificates` table and certificate-related fields were not part of these runs. Two cautions: the OCSF check uses a JSON Schema derived from the server's compiled schema by `scripts/validate_research_exports.py`, not an official OCSF JSON Schema file for events (the `metaschema/` folder of the OCSF repository validates schema definitions, not events, and the class pages of `schema.ocsf.io` answered HTML, or `406 Not Acceptable` to `Accept: application/json`, on 2026-11-20), and passing a validator is not a statement that a particular SIEM ingests the events unchanged.
