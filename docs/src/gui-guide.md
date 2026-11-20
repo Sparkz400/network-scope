@@ -43,6 +43,8 @@ The picker shows **Custom** as soon as a setting differs from every preset. Inte
 
 **Scan → Import address list…** reads a text file into the Addresses field (one entry per line or separated by spaces or commas; `#` and `;` start a comment). The CLI has `scan --targets-file FILE`. **Probe the addresses in random order** in Settings (CLI: `scan --randomize`) changes only the order in which the addresses are probed, not which addresses or probes.
 
+**Record the scan's traffic** in Settings (CLI: `scan --record FILE --record-wire`) writes a pcapng file per scan to `NetworkScope/recordings/scan-<unix time>.pcapng`, next to the preferences. When the capture driver allows it (Npcap on Windows, libpcap elsewhere) and there are at most 256 targets, it is a wire capture of the targets while the scan runs; otherwise, or when the capture saw no frame, it is the scan's own application-level record (its requests and replies, labelled as not a wire capture). The status line says which one was written and why. Recording sends nothing extra. See [Reproducible scans](reproducible-scans.md).
+
 ### Settings and controls
 
 - **Settings** enables ARP discovery, industrial identification, services/UDP/OS detection, traceroute and the opt-in transmitting features (ARP sweep, adaptive SYN, trace method and port; these are greyed out in Safe Mode).
