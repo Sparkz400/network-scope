@@ -53,9 +53,13 @@ pub const MAX_SCAN_PORTS: usize = 1024;
 /// this is about seven minutes, so it also bounds the run time.
 pub const MAX_SCAN_PROBES: u64 = 4000;
 /// Default and largest wall-clock limit of a `scan` call, in seconds; a scan that is still
-/// running then is cancelled and saved as partial.
-const DEFAULT_SCAN_SECONDS: u64 = 240;
+/// running then is cancelled and saved as partial. The default stays under the 60 s request
+/// timeout many MCP clients use, so the summary arrives instead of being dropped; the session
+/// answers nothing else while a scan runs.
+const DEFAULT_SCAN_SECONDS: u64 = 50;
 const MAX_SCAN_SECONDS: u64 = 600;
+/// How long a cancelled scan may take to wind down before the tool stops waiting for it.
+const CANCEL_GRACE: Duration = Duration::from_secs(15);
 const DEFAULT_SCAN_PORTS: &str = "22,80,443,445,3389";
 
 const SERVER_INSTRUCTIONS: &str = "Read-only queries over a local Network Scope inventory (scans, devices, findings, history), plus a `scan` tool that always runs in Safe Mode, only on private addresses and within small limits. Findings are hints from read-only probes; verify before acting.";
@@ -457,7 +461,7 @@ impl Server {
                             "description": "Return the plan (which packet kinds would go to which ports) and send and save nothing. The scope and size limits still apply"},
                         "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": MAX_SCAN_SECONDS,
                             "default": DEFAULT_SCAN_SECONDS,
-                            "description": "Cancel the scan (saved as partial) after this long"},
+                            "description": "Cancel the scan (saved as partial) after this long. Above about 55 s many clients stop waiting for the answer (the scan is still saved)"},
                     }),
                     &["targets"],
                 ),
@@ -532,9 +536,19 @@ impl Server {
         if !self.cfg.db.exists() {
             return Err("The inventory has no scans yet".into());
         }
-        let snapshot =
-            store::load(&self.cfg.db, id).map_err(|_| format!("No scan with ID {id}"))?;
-        Ok((id, snapshot))
+        Ok((id, self.load(id)?))
+    }
+
+    /// A saved scan. Only a missing one is "No scan with ID": a locked or damaged inventory
+    /// says what is wrong.
+    fn load(&self, id: i64) -> Result<store::Snapshot, String> {
+        store::load(&self.cfg.db, id).map_err(|e| {
+            if e == rusqlite::Error::QueryReturnedNoRows.to_string() {
+                format!("No scan with ID {id}")
+            } else {
+                format!("Could not read scan {id}: {e}")
+            }
+        })
     }
 
     fn list_scans(&self, args: &Value) -> Result<Value, String> {
@@ -600,10 +614,8 @@ impl Server {
         if !self.cfg.db.exists() {
             return Err("The inventory has no scans yet".into());
         }
-        let load =
-            |id: i64| store::load(&self.cfg.db, id).map_err(|_| format!("No scan with ID {id}"));
         let ignore = store::IgnoreList::parse(text_arg(args, "ignore").unwrap_or(""));
-        let report = store::diff_report(&load(old_id)?, &load(new_id)?, &ignore)?;
+        let report = store::diff_report(&self.load(old_id)?, &self.load(new_id)?, &ignore)?;
         let mut value = enveloped("diff", &report)?;
         // Long lists are cut so the answer stays readable; the summary has the full counts.
         let mut truncated = false;
@@ -636,8 +648,13 @@ impl Server {
         let mut matches = vec![];
         let mut checked = 0;
         let mut truncated = scans_total > SEARCH_SCANS;
+        // One connection for every scan read, opened only when there is one (asking never
+        // creates the inventory).
+        let conn = (!entries.is_empty())
+            .then(|| store::open(&self.cfg.db))
+            .transpose()?;
         'scans: for entry in entries.iter().take(SEARCH_SCANS) {
-            let Ok(snapshot) = store::load(&self.cfg.db, entry.id) else {
+            let Some(Ok(snapshot)) = conn.as_ref().map(|c| store::load_on(c, entry.id)) else {
                 continue;
             };
             checked += 1;
@@ -689,13 +706,13 @@ impl Server {
             .trim()
             .to_string();
         let (since, since_date) = parse_since(args.get("since").unwrap_or(&Value::Null))?;
-        let entries = self.scans()?;
-        let mut scopes: Vec<String> = vec![];
-        for e in entries.iter().filter(|e| e.complete) {
-            if !scopes.contains(&e.targets) {
-                scopes.push(e.targets.clone());
-            }
-        }
+        // Asked of the database, not of `list_scans` (the newest 500 only): a monitor makes 500
+        // scans in under two days and the baseline would seem not to exist.
+        let scopes = if self.cfg.db.exists() {
+            store::latest_complete_per_scope(&self.cfg.db)?
+        } else {
+            vec![]
+        };
         let matching = |snapshot: &store::Snapshot| -> Vec<risk::Finding> {
             risk::analyze_snapshot(snapshot)
                 .into_iter()
@@ -703,17 +720,15 @@ impl Server {
                 .collect()
         };
         let (mut hosts, mut scope_rows, mut notes) = (vec![], vec![], vec![]);
-        for scope in scopes {
-            // Entries are newest first: the first complete scan of the scope is the latest one;
-            // the baseline is the first one that is older than the date.
-            let complete = entries.iter().filter(|e| e.complete && e.targets == scope);
-            let Some(latest) = complete.clone().next().filter(|e| e.timestamp >= since) else {
+        for (scope, latest_id, latest_timestamp) in scopes {
+            // The latest complete scan of the scope must be on or after the date; the baseline
+            // is the newest complete one before it.
+            if latest_timestamp < since {
                 continue;
-            };
-            let baseline = complete.clone().find(|e| e.timestamp < since);
-            let load = |id: i64| store::load(&self.cfg.db, id);
+            }
+            let baseline = store::latest_complete_before_time(&self.cfg.db, &scope, since)?;
             let before: Vec<(IpAddr, Option<u16>)> = match baseline {
-                Some(b) => matching(&load(b.id)?)
+                Some(b) => matching(&self.load(b)?)
                     .iter()
                     .map(|f| (f.ip, f.port))
                     .collect(),
@@ -724,19 +739,19 @@ impl Server {
                     "No complete scan of {scope} before {since_date}: every host with the finding is listed, but when it appeared is unknown."
                 ));
             }
-            for f in matching(&load(latest.id)?) {
+            for f in matching(&self.load(latest_id)?) {
                 if before.contains(&(f.ip, f.port)) {
                     continue;
                 }
                 hosts.push(json!({
                     "ip": f.ip, "port": f.port, "severity": f.severity, "title": f.title,
-                    "evidence": f.evidence, "scan_id": latest.id,
-                    "baseline_scan_id": baseline.map(|b| b.id),
+                    "evidence": f.evidence, "scan_id": latest_id,
+                    "baseline_scan_id": baseline,
                 }));
             }
             scope_rows.push(json!({
-                "targets": scope, "latest_scan_id": latest.id,
-                "baseline_scan_id": baseline.map(|b| b.id),
+                "targets": scope, "latest_scan_id": latest_id,
+                "baseline_scan_id": baseline,
             }));
         }
         if scope_rows.is_empty() {
@@ -978,6 +993,23 @@ impl Server {
         let deadline = started + Duration::from_secs(seconds);
         let (mut hosts, mut notes, mut complete) = (vec![], vec![], true);
         loop {
+            // Checked on every turn, not only when the channel is idle: a busy scan still stops.
+            let now = Instant::now();
+            if now >= deadline && !run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                run.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                notes.push(format!(
+                    "Stopped after the {seconds} s time limit; the result is partial."
+                ));
+                complete = false;
+                // Drain until the scan reports Done (it ends quickly once cancelled).
+            }
+            if now >= deadline + CANCEL_GRACE {
+                notes.push(format!(
+                    "The scan did not stop within {} s of being cancelled; saved what had arrived.",
+                    CANCEL_GRACE.as_secs()
+                ));
+                break;
+            }
             match run.receiver.recv_timeout(Duration::from_millis(250)) {
                 Ok(scan::Event::Host(h)) => hosts.push(h),
                 Ok(scan::Event::Partial(_)) => {}
@@ -986,18 +1018,7 @@ impl Server {
                     notes.push(e);
                     complete = false;
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if Instant::now() >= deadline
-                        && !run.cancel.load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        run.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                        notes.push(format!(
-                            "Stopped after the {seconds} s time limit; the result is partial."
-                        ));
-                        complete = false;
-                        // Drain until the scan reports Done (it ends quickly once cancelled).
-                    }
-                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     notes.push("The scan ended unexpectedly.".into());
                     complete = false;
