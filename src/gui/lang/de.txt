@@ -510,3 +510,17 @@ UDP silent || UDP still
 Finding appeared || Befund aufgetreten
 Finding resolved || Befund behoben
 Event || Ereignis
+
+# Scan details (provenance stamp, ROADMAP L72)
+Scan details || Scan-Details
+No scan on screen. || Kein Scan im Fenster.
+running || läuft
+Saved scan #{} · {} · {} || Gespeicherter Scan #{} · {} · {}
+Scan not saved yet · {} · {} || Scan noch nicht gespeichert · {} · {}
+No provenance stamp: the scan was saved before stamps existed or it is an import, so the rules it ran with are not known. || Kein Herkunftsstempel: Der Scan wurde gespeichert, bevor es Stempel gab, oder er ist ein Import; womit er gelaufen ist, ist daher nicht bekannt.
+Tool: {} || Programm: {}
+Rules {}: {} || Regeln {}: {}
+Data feeds: none in use || Datenquellen: keine in Benutzung
+Feed {}: {} || Datenquelle {}: {}
+Combined hash (cite this): || Gesamt-Hash (zum Zitieren):
+Copy || Kopieren

@@ -1,6 +1,6 @@
 use super::{Job, Scanner, home, i18n::tr, tables, win_size};
-use crate::{capture, devices, passive, risk, store};
-use eframe::egui;
+use crate::{capture, devices, passive, risk, scan, store};
+use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{atomic::Ordering, mpsc::TryRecvError};
 /// Combines non-empty, distinct scopes ("10.0.0.0/24 + listen:eth0").
@@ -12,6 +12,58 @@ fn combined_scope(scan: &str, capture: &str) -> String {
         (false, false) => format!("{scan} + {capture}"),
     }
 }
+/// The settings a scan that starts now runs with: the ones in the window, stamped with the
+/// provenance (tool version and hashes of the rules and feeds in effect, ROADMAP L72) like a
+/// scan from the CLI, the monitor or MCP. The preferences keep the unstamped settings.
+pub(super) fn settings_for_scan(current: &scan::Settings) -> scan::Settings {
+    crate::provenance::stamped(current)
+}
+
+/// A hash cut to `sha256:` and its first 16 digits.
+fn short_hash(hash: &str) -> String {
+    let (algorithm, digits) = hash.split_once(':').unwrap_or(("", hash));
+    let cut: String = digits.chars().take(16).collect();
+    let more = if digits.chars().count() > 16 {
+        "…"
+    } else {
+        ""
+    };
+    if algorithm.is_empty() {
+        format!("{cut}{more}")
+    } else {
+        format!("{algorithm}:{cut}{more}")
+    }
+}
+
+/// What the "Scan details" section says about the provenance of the scan on screen.
+pub(super) fn provenance_lines(provenance: Option<&crate::provenance::Provenance>) -> Vec<String> {
+    let Some(p) = provenance else {
+        return vec![
+            tr!(
+                "No provenance stamp: the scan was saved before stamps existed or it is an import, so the rules it ran with are not known."
+            )
+            .to_string(),
+        ];
+    };
+    let mut lines = vec![tr!("Tool: {}", p.tool)];
+    for (name, hash) in &p.rules {
+        lines.push(tr!("Rules {}: {}", name, short_hash(hash)));
+    }
+    if p.feeds.is_empty() {
+        lines.push(tr!("Data feeds: none in use").to_string());
+    }
+    for (name, hash) in &p.feeds {
+        lines.push(tr!("Feed {}: {}", name, short_hash(hash)));
+    }
+    lines
+}
+
+/// The line to cite a scan by (tool and combined hash), also what the Copy button puts on the
+/// clipboard.
+pub(super) fn provenance_cite(p: &crate::provenance::Provenance) -> String {
+    format!("{} {}", p.tool, p.combined)
+}
+
 impl Scanner {
     /// Everything on screen: active results plus passive observations (exports, reports).
     pub(super) fn snapshot(&self) -> store::Snapshot {
@@ -447,6 +499,7 @@ impl Scanner {
                             ui.label(change);
                         }
                     });
+                self.scan_details(ui);
                 ui.horizontal(|ui| {
                     for format in ["json", "csv", "html"] {
                         if ui.button(tr!("Export {}", format)).clicked() {
@@ -456,6 +509,43 @@ impl Scanner {
                 });
             });
         self.history_open = open;
+    }
+    /// Where the scan on screen came from: its source, whether it finished and the provenance
+    /// stamp (tool version and rule hashes) with a button that copies the line to cite it by.
+    fn scan_details(&self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new(tr!("Scan details"))
+            .id_salt("scan_details")
+            .default_open(self.screenshot.is_some())
+            .show(ui, |ui| {
+                if self.results.is_empty() && self.scan_scope.is_empty() {
+                    ui.label(tr!("No scan on screen."));
+                    return;
+                }
+                let state = if self.run.is_some() {
+                    tr!("running")
+                } else if self.scan_complete {
+                    tr!("complete")
+                } else {
+                    tr!("partial")
+                };
+                ui.label(match self.loaded_scan {
+                    Some(id) => tr!("Saved scan #{} · {} · {}", id, self.scan_scope, state),
+                    None => tr!("Scan not saved yet · {} · {}", self.scan_scope, state),
+                });
+                let provenance = self.scan_settings.provenance.as_ref();
+                for line in provenance_lines(provenance) {
+                    ui.label(line);
+                }
+                if let Some(p) = provenance {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(tr!("Combined hash (cite this):"));
+                        ui.label(RichText::new(&p.combined).monospace().small());
+                        if ui.button(tr!("Copy")).clicked() {
+                            ui.ctx().copy_text(provenance_cite(p));
+                        }
+                    });
+                }
+            });
     }
     pub(super) fn poll_capture(&mut self) {
         let mut done = false;
@@ -704,5 +794,139 @@ mod tests {
             "10.0.0.0/24 + listen:eth0"
         );
         assert_eq!(combined_scope("", ""), "");
+    }
+
+    #[test]
+    fn a_gui_scan_carries_the_provenance_stamp_like_a_cli_scan() {
+        let window = scan::Settings {
+            ports: "22,80".into(),
+            ..Default::default()
+        };
+        assert!(window.provenance.is_none());
+        let used = settings_for_scan(&window);
+        let p = used.provenance.clone().expect("a stamp");
+        assert_eq!(p, crate::provenance::Provenance::current(&window));
+        assert!(p.tool.starts_with("network-scope "), "{}", p.tool);
+        assert!(p.combined.starts_with("sha256:"), "{}", p.combined);
+        for rules in ["probes.json", "cves.json", "compliance.json"] {
+            assert!(p.rules.contains_key(rules), "{rules}");
+        }
+        // Everything else is what the window had, and the same call as the CLI makes.
+        assert_eq!(used.ports, "22,80");
+        assert_eq!(
+            serde_json::to_string(&used).unwrap(),
+            serde_json::to_string(&crate::provenance::stamped(&window)).unwrap()
+        );
+        // The settings in the window (and so the preferences file) never get the stamp.
+        assert!(window.provenance.is_none());
+        let saved = super::super::Saved {
+            settings: window,
+            ..Default::default()
+        };
+        let prefs = String::from_utf8(saved.to_disk()).unwrap();
+        assert!(!prefs.contains("provenance"), "{prefs}");
+    }
+
+    #[test]
+    fn every_gui_scan_start_goes_through_the_stamping_helper() {
+        let code = include_str!("mod.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(
+            code.contains("self.scan_settings = windows::settings_for_scan(&self.saved.settings);")
+        );
+        assert!(
+            !code.contains("self.scan_settings = self.saved.settings.clone()"),
+            "a scan would be saved without its provenance"
+        );
+    }
+
+    #[test]
+    fn the_details_show_the_stamp_or_say_there_is_none() {
+        let none = provenance_lines(None);
+        assert_eq!(none.len(), 1);
+        assert!(none[0].starts_with("No provenance stamp"), "{none:?}");
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert("cves.json".to_string(), crate::provenance::hash(b"rules"));
+        let p = crate::provenance::Provenance::with(rules, Default::default());
+        let lines = provenance_lines(Some(&p));
+        assert!(lines[0].starts_with("Tool: network-scope "), "{lines:?}");
+        assert!(
+            lines[1].starts_with("Rules cves.json: sha256:"),
+            "{lines:?}"
+        );
+        assert!(lines[1].ends_with('…'), "a long hash is cut: {lines:?}");
+        assert_eq!(lines[2], "Data feeds: none in use");
+        assert_eq!(lines.len(), 3);
+        let mut feeds = std::collections::BTreeMap::new();
+        feeds.insert("nvd".to_string(), crate::provenance::hash(b"feed"));
+        let with_feed = crate::provenance::Provenance::with(Default::default(), feeds);
+        let lines = provenance_lines(Some(&with_feed));
+        assert!(
+            lines.iter().any(|l| l.starts_with("Feed nvd: sha256:")),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.contains("none in use")));
+        // What the Copy button gives: the tool and the full combined hash.
+        let cite = provenance_cite(&p);
+        assert_eq!(cite, format!("{} {}", p.tool, p.combined));
+        assert_eq!(cite.len(), p.tool.len() + 1 + 71);
+        assert_eq!(
+            short_hash("sha256:0123456789abcdef0123"),
+            "sha256:0123456789abcdef…"
+        );
+        assert_eq!(short_hash("sha256:0123"), "sha256:0123");
+    }
+
+    #[test]
+    fn the_stamp_survives_the_inventory_and_shows_when_the_scan_is_opened_again() {
+        let path = std::env::temp_dir().join(format!(
+            "ns-gui-provenance-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let snapshot = |settings: scan::Settings| store::Snapshot {
+            sent: vec![],
+            targets: "10.0.0.0/24".into(),
+            complete: true,
+            settings,
+            hosts: vec![],
+            observations: vec![],
+            notes: Default::default(),
+        };
+        let stamped = settings_for_scan(&scan::Settings::default());
+        let with = store::save(&path, &snapshot(stamped.clone())).unwrap();
+        let without = store::save(&path, &snapshot(scan::Settings::default())).unwrap();
+        let opened = store::load(&path, with).unwrap();
+        assert_eq!(opened.settings.provenance, stamped.provenance);
+        assert_eq!(
+            provenance_lines(opened.settings.provenance.as_ref()),
+            provenance_lines(stamped.provenance.as_ref())
+        );
+        // A scan stored without a stamp is not given one when it is opened.
+        let old = store::load(&path, without).unwrap();
+        assert!(old.settings.provenance.is_none());
+        assert!(provenance_lines(old.settings.provenance.as_ref())[0].starts_with("No provenance"));
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(p));
+        }
+    }
+
+    #[test]
+    fn stamping_is_cheap_enough_for_the_ui_thread() {
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            let _ = settings_for_scan(&scan::Settings::default());
+        }
+        let each = started.elapsed() / 5;
+        eprintln!("provenance stamp: {each:?} each (debug build)");
+        assert!(each < std::time::Duration::from_millis(500), "{each:?}");
     }
 }

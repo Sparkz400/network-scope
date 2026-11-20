@@ -4,7 +4,7 @@ A finding you cite in a report should be possible to check later. Network Scope 
 
 ## The stamp
 
-Scans started by `scan`, `monitor` and the MCP `scan` tool carry `settings.provenance`, so it is in the stored snapshot and in every JSON export:
+Scans started by `scan`, `monitor`, the MCP `scan` tool and the desktop app carry `settings.provenance`, so it is in the stored snapshot and in every JSON export:
 
 ```json
 "provenance": {
@@ -15,7 +15,7 @@ Scans started by `scan`, `monitor` and the MCP `scan` tool carry `settings.prove
 }
 ```
 
-What is hashed is the rule set *in effect*: the built-in service probes merged with the user file, the built-in CVE rules merged with the user's `--cves` file, the embedded compliance table, and, when imported, the KEV/EPSS data, the NVD cache and the CSAF advisories (`feeds`; absent when not in use). The NVD hash covers the import time, the source files and every CVE with its rating, not the CPE ranges (the cache can be a gigabyte). `combined` is one hash over the tool string and all entries: the value to cite. Imports (nmap XML, device lists) and scans saved by older versions have no stamp, and the GUI does not stamp its scans yet.
+What is hashed is the rule set *in effect*: the built-in service probes merged with the user file, the built-in CVE rules merged with the user's `--cves` file, the embedded compliance table, and, when imported, the KEV/EPSS data, the NVD cache and the CSAF advisories (`feeds`; absent when not in use). The NVD hash covers the import time, the source files and every CVE with its rating, not the CPE ranges (the cache can be a gigabyte). `combined` is one hash over the tool string and all entries: the value to cite. Imports (nmap XML, device lists) and scans saved by older versions have no stamp. In the desktop app the stamp is taken when a scan starts (scheduled scans included) and shown in the *Scan details* section of the Inventory window, with a button that copies the tool and the combined hash to cite; a scan opened from the inventory shows the stamp it was saved with, or says it has none, and is never stamped again.
 
 ## `scan --replay-check ID`
 
@@ -33,4 +33,4 @@ Recorded: the read-only OT requests and their replies (Modbus, S7, EtherNet/IP, 
 
 ## Tested and not tested
 
-Tested with real scans of a loopback listener (the record reads back as frames holding the request and its reply and the passive decoders decode a recorded Modbus request; a replay is reproduced, and a stamp of other rules is reported) and with synthetic scans. Not tested: a replay against a changing real network, the GUI, and the pcapng file in Wireshark itself (it was read back with this program's reader and its checksums verified, not opened in another tool).
+Tested with real scans of a loopback listener (the record reads back as frames holding the request and its reply and the passive decoders decode a recorded Modbus request; a replay is reproduced, and a stamp of other rules is reported) and with synthetic scans. The desktop app's stamp is covered by unit tests (the stamp equals the CLI's, survives the inventory, the preferences never hold it) and was looked at in screenshots, but a scan started by clicking Start in the window was not run in this check. Not tested: a replay against a changing real network, and the pcapng file in Wireshark itself (it was read back with this program's reader and its checksums verified, not opened in another tool).
