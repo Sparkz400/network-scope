@@ -527,6 +527,7 @@ Copy as text || Als Text kopieren
 Reading the saved inventory… || Lese das gespeicherte Inventar…
 No events yet: the device was not seen in a saved scan. || Noch keine Ereignisse: Das Gerät wurde in keinem gespeicherten Scan gesehen.
 Not seen in any of {} saved scans (a scan that never reached it, or none saved yet). || In keinem von {} gespeicherten Scans gesehen (kein Scan hat es erreicht, oder es ist noch keiner gespeichert).
+{} of the saved scans could not be read; the history may be incomplete. || {} der gespeicherten Scans konnten nicht gelesen werden; der Verlauf ist möglicherweise unvollständig.
 First seen {} · last seen {} · in {} of {} saved scans || Erstmals gesehen {} · zuletzt gesehen {} · in {} von {} gespeicherten Scans
 Addresses: {} || Adressen: {}
 MAC addresses: {} || MAC-Adressen: {}
