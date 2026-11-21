@@ -1,6 +1,6 @@
 name: bench
 
-# Performance tests (roadmap B18): the criterion benchmarks of core/benches run on every pull
+# Performance tests (roadmap B18): the criterion benchmarks of bench/benches run on every pull
 # request, once on the base branch (saved as the baseline) and once on the change, in the same job
 # on the same runner, and the job fails when a benchmark got more than 15 percent slower
 # (scripts/bench_compare.py). Shared runners are noisy: the threshold leaves room for that, a
@@ -43,8 +43,10 @@ jobs:
       - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The base branch in its own folder, so its benchmarks run with its own code. A base without
-      # core/benches (the pull request that introduces them) has no baseline.
+      # The base branch in its own folder, so its benchmarks run with its own code. A base from
+      # before the benchmarks got their own package (bench/) has them in the core crate; the
+      # benchmark names are the same, so the comparison works across the move. A base without any
+      # (the pull request that introduces them) has no baseline.
       - name: Baseline on the base branch
         id: base
         if: github.event_name == 'pull_request'
@@ -52,9 +54,15 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           git worktree add "$RUNNER_TEMP/base" "$BASE"
-          if [ -f "$RUNNER_TEMP/base/core/benches/hot_paths.rs" ]; then
+          package=
+          if [ -f "$RUNNER_TEMP/base/bench/Cargo.toml" ]; then
+            package=network-scope-bench
+          elif [ -f "$RUNNER_TEMP/base/core/benches/hot_paths.rs" ]; then
+            package=network-scope-core
+          fi
+          if [ -n "$package" ]; then
             (cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
-              cargo bench --locked -p network-scope-core --bench hot_paths -- --save-baseline base)
+              cargo bench --locked -p "$package" --bench hot_paths -- --save-baseline base)
             echo "saved=true" >> "$GITHUB_OUTPUT"
           else
             echo "The base branch has no benchmarks yet; nothing to compare with."
@@ -62,9 +70,9 @@ jobs:
       - name: Benchmarks of the change
         run: |
           if [ "${{ steps.base.outputs.saved }}" = "true" ]; then
-            cargo bench --locked -p network-scope-core --bench hot_paths -- --baseline base
+            cargo bench --locked -p network-scope-bench --bench hot_paths -- --baseline base
           else
-            cargo bench --locked -p network-scope-core --bench hot_paths
+            cargo bench --locked -p network-scope-bench --bench hot_paths
           fi
       - name: Fail on a regression above 15 percent
         run: python -I scripts/bench_compare.py "$CRITERION_HOME" --threshold 15
