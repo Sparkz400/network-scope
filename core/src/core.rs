@@ -948,7 +948,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         let mut launched = 0usize;
         // Linux: when this host has answered nothing once the kernel's ARP for these probes has
         // had its time, an entry still without a MAC means the address is unused. Checked once.
+        // `--tcp-only` keeps its meaning: no discovery of any kind, every address gets every port.
         let mut watch = (crate::platform::NEIGHBOR_WATCH
+            && !s.tcp_only
             && !h.responding
             && ip.is_ipv4()
             && syn_engine.is_none())
@@ -970,28 +972,47 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 early = Some(why);
                 break;
             }
-            if let Some(since) = watch
-                && since.elapsed() >= NEIGHBOR_WAIT
-            {
-                watch = None;
-                if !answered(&h, &results)
-                    && run_blocking(&ctx.blocking, move || {
-                        crate::platform::neighbor_unresolved(ip)
-                    })
-                    .await
-                        == Some(true)
-                {
-                    unused = true;
-                    unprobed = order.remaining() + 1;
-                    break;
-                }
-            }
             if launched == PILOT_PORTS
                 && let Some(r) = &host_rtt
             {
                 r.wait_for_sample(timeout.min(PILOT_WAIT)).await;
             }
-            let Some(permit) = gov.admit().await else {
+            // With the check pending, wait for a probe slot only until its time (`admit` holds
+            // nothing while it waits, so giving up on it is safe).
+            let mut admitted = None;
+            if let Some(since) = watch {
+                tokio::select! {
+                    p = gov.admit() => admitted = Some(p),
+                    () = sleep(NEIGHBOR_WAIT.saturating_sub(since.elapsed())) => {}
+                }
+                if since.elapsed() >= NEIGHBOR_WAIT {
+                    watch = None;
+                    while let Some(done) = probes.try_join_next() {
+                        if let Ok(item) = done {
+                            order.observe(item.0, item.1.state == PortState::Open);
+                            tally(&mut h, &mut results, item);
+                        }
+                    }
+                    if !answered(&h, &results)
+                        && run_blocking(&ctx.blocking, move || {
+                            crate::platform::neighbor_unresolved(ip)
+                        })
+                        .await
+                            == Some(true)
+                    {
+                        unused = true;
+                        // Their SYNs wait for an ARP answer that is not coming.
+                        probes.abort_all();
+                        unprobed = order.remaining() + 1;
+                        break;
+                    }
+                }
+            }
+            let admitted = match admitted {
+                Some(p) => p,
+                None => gov.admit().await,
+            };
+            let Some(permit) = admitted else {
                 // The host is paused: it gets no further probes in this scan.
                 unprobed = order.remaining() + 1;
                 break;
