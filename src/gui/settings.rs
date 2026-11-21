@@ -235,6 +235,10 @@ impl Scanner {
                     );
                     ui.checkbox(&mut s.adaptive, tr!("Adapt port timeout to measured ping"));
                     ui.checkbox(
+                        &mut s.tcp_adaptive,
+                        tr!("Adapt port timeout to the device's connect answers"),
+                    );
+                    ui.checkbox(
                         &mut s.backoff,
                         tr!("Back off when a device resets connections (lower limits for OT/printers)"),
                     );
