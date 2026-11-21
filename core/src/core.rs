@@ -409,7 +409,10 @@ pub async fn execute(
     let arp_error = (!arp_errors.is_empty()).then(|| arp_errors.join("; "));
     let ctx = Arc::new(Ctx {
         gate,
-        blocking: Arc::new(Semaphore::new(256)),
+        // As many as the runtime's blocking threads (`max_blocking_threads` in `scan::start`):
+        // with 256, a /24 in --fast queued its ping and ARP calls for several rounds (Windows home
+        // /24 with 2 ports: 8.0-10.2 s, now 5.8-6.3 s, same results). Safe Mode runs 8 hosts.
+        blocking: Arc::new(Semaphore::new(512)),
         sockets: Arc::new(Semaphore::new(4096)),
         dhcp: Semaphore::new(1),
         syn,
