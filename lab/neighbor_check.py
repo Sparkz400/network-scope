@@ -35,7 +35,8 @@ def docker(*args: str) -> str:
 def container(name: str, *args: str) -> str:
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     docker("run", "-d", "--name", name, *args)
-    return docker("inspect", "-f", "{{.NetworkSettings.IPAddress}}", name)
+    # Per network: newer Docker releases dropped the top-level IPAddress field.
+    return docker("inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name)
 
 
 def wait_open(ip: str, port: int) -> None:

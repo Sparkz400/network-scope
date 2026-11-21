@@ -869,7 +869,7 @@ pub fn parse_proc_arp(text: &str, ip: IpAddr) -> Option<String> {
 /// flag, i.e. the kernel is resolving it or gave up (INCOMPLETE or FAILED, MAC all zero). The
 /// entry appears with the first packet, so this means "unused" only after ARP has had its
 /// ~3 s; a missing entry means nothing.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn proc_arp_unresolved(text: &str, ip: IpAddr) -> bool {
     let wanted = ip.to_string();
     text.lines().skip(1).any(|line| {
@@ -882,7 +882,7 @@ pub fn proc_arp_unresolved(text: &str, ip: IpAddr) -> bool {
 }
 /// The interface of the route `ip` takes when that route is direct (no gateway): longest
 /// prefix, then lowest metric. `None` for a routed address or no route.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn direct_interface(routes: &[Route], ip: std::net::Ipv4Addr) -> Option<&str> {
     let v = u32::from(ip);
     routes
