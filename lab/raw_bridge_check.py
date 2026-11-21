@@ -165,7 +165,7 @@ def main() -> None:
     time.sleep(3)
     clients = {
         "busybox udhcpc6": ["docker", "run", "--rm", "--network", "raw-v6", "--cap-add", "NET_ADMIN",
-                            BUSYBOX, "sh", "-c", "timeout 8 udhcpc6 -i eth0 -n -q -t 3 -x hostname:ns-v6-busybox"],
+                            BUSYBOX, "sh", "-c", "timeout 8 udhcpc6 -i eth0 -n -q -t 3"],
         "ISC dhclient": ["docker", "run", "--rm", "--network", "raw-v6", "--cap-add", "NET_ADMIN",
                          ALPINE, "sh", "-c", "apk add --no-cache dhclient >/dev/null"
                          " && timeout 8 dhclient -6 -1 -v eth0"],
