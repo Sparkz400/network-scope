@@ -3,7 +3,7 @@
 //! matching. Nothing here touches a network. CI compares them with the base branch
 //! (`scripts/bench_compare.py`, `.github/workflows/bench.yml`).
 //!
-//! `cargo bench -p network-scope-core` runs them; `-- --save-baseline NAME` and
+//! `cargo bench -p network-scope-bench` runs them; `-- --save-baseline NAME` and
 //! `-- --baseline NAME` are criterion's own baseline switches.
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use network_scope_core::{

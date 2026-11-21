@@ -10,7 +10,7 @@ cargo fmt --check
 
 The tests exercise real loopback networking and protocol fixtures, SQLite round trips, scan changes, parser bounds, report escaping, and the SYN, ARP and TCP-traceroute I/O loops against a fake wire. A source-level test fails the build if the passive capture modules contain socket or send code.
 
-CI ([`.github/workflows/ci.yml`](https://github.com/Sparkz400/network-scope/blob/main/.github/workflows/ci.yml)) runs format, clippy with `-D warnings`, the tests and the lab check below on Windows, Linux and macOS, uploads both binaries as build artifacts, measures coverage (below) and builds the Windows installer, then installs it silently, runs both installed binaries (`--version`) and uninstalls it (`scripts/installer_smoke.ps1`). On Linux it also runs the [accuracy benchmark](#accuracy-benchmark) and fails when an accuracy metric drops below the baseline; if nmap can be installed with apt it also runs the [nmap comparison](#comparison-with-nmap) and fails on an unexplained difference. Tagged releases are built by `release.yml`.
+CI ([`.github/workflows/ci.yml`](https://github.com/Sparkz400/network-scope/blob/main/.github/workflows/ci.yml)) runs format, clippy with `-D warnings`, the tests and the lab check below on Windows, Linux and macOS, uploads both binaries as build artifacts, measures coverage (below) and builds the Windows installer, then installs it silently, runs both installed binaries (`--version`) and uninstalls it (`scripts/installer_smoke.ps1`). On Linux it also runs the [accuracy benchmark](#accuracy-benchmark) and fails when an accuracy metric drops below the baseline; if nmap can be installed with apt it also runs the [nmap comparison](#comparison-with-nmap) and fails on an unexplained difference. Tagged releases are built by `release.yml`; a manual run of it with `-f version=...` rehearses the release without publishing anything.
 
 ## Real industrial traffic
 
@@ -210,7 +210,7 @@ python -I -m unittest discover -s lab -p "test_plant.py"
 
 `--check` also fails when the recall is below `lab/plant_baseline.json` (a separate file: `benchmark_baseline.json` and `ground_truth.json` are not touched). The machine must be clean: if something already listens on a plant address and port (a wildcard listener such as Siemens software on 102 or 4840), the run refuses; `--allow-busy` skips that check on a development machine and then fails unless a connection of the scan reached every plant device.
 
-Measured on Windows 11 (10.0.26300), 2026-11-20, debug build of the CLI, `--allow-busy` because Siemens software listens on 102 and 4840 of this machine: recall 17 of 17 in Safe Mode (14.3 s for the scan, which includes the Safe Mode pacing) and 17 of 17 with `--fast` (4.4 s), 0 writes, the replay reported exactly the two injected events and nothing for the normal capture. The three extra findings were `ot-reachable` on port 102 of the other three plant addresses, answered by that foreign listener, not by the plant. The CI step (Linux) has not run yet.
+Measured on Windows 11 (10.0.26300), 2026-11-20, debug build of the CLI, `--allow-busy` because Siemens software listens on 102 and 4840 of this machine: recall 17 of 17 in Safe Mode (14.3 s for the scan, which includes the Safe Mode pacing) and 17 of 17 with `--fast` (4.4 s), 0 writes, the replay reported exactly the two injected events and nothing for the normal capture. The three extra findings were `ot-reachable` on port 102 of the other three plant addresses, answered by that foreign listener, not by the plant. The CI step (Linux) passes.
 
 What the plant is not: the devices emulate what a scanner can observe, not real PLC software. A lab with real controller software (OpenPLC) is prepared in `lab/docker-compose.yml` (profile `plant-ci`) and has **not** been run: there is no Docker on the development machine, and the image name and tag there were written from memory and must be checked before use. There is no OPC UA, DNP3 or IEC 104 device in the plant.
 
@@ -254,7 +254,7 @@ The CI job `real-servers` installs the servers with apt and runs [`lab/real_serv
 | nginx (6443) | TLS 1.2 `ECDHE-RSA-AES128-GCM-SHA256`, TLS 1.3 two suites | the suites, product `nginx`, a `cpe:2.3:a:f5:nginx:` CPE |
 | OpenSSH (`sshd`, port 2200) | one ed25519 host key | product `OpenSSH`, the CPE, and `ssh.<port>.hassh` equal to HASSHServer computed from the server's KEXINIT over a raw socket with `hashlib.md5` |
 
-The ports, suites and names are defined once, in the `LAB` table of `real_servers_check.py`; the shell script reads them from there, so a server's configuration and the expected result cannot drift apart. Only the lab scripts' own unit tests (`python -I -m unittest discover -s lab -p "test_*.py"`, fake peers and synthetic scans) run anywhere; `INSTALL=1 bash lab/real_servers.sh` needs a Linux machine with sudo. The `openssl s_server` part (`PARTS=tls`) was run on Windows with Git's OpenSSL 3.5: the TLS 1.3 suites came out in the configured order (that run compared the earlier JA4S with an independent computation; it was not repeated for JA3S, which was checked as described in [JA3S](#ja3s)). **The Samba, OpenSSH and nginx parts, and the job itself, have not been run**; they were written for the Ubuntu 24.04 runner image (Samba 4.19, OpenSSH 9.6, nginx 1.24) and may need an adjusted expectation on the first run (for example a Samba parameter name).
+The ports, suites and names are defined once, in the `LAB` table of `real_servers_check.py`; the shell script reads them from there, so a server's configuration and the expected result cannot drift apart. Only the lab scripts' own unit tests (`python -I -m unittest discover -s lab -p "test_*.py"`, fake peers and synthetic scans) run anywhere; `INSTALL=1 bash lab/real_servers.sh` needs a Linux machine with sudo. The `openssl s_server` part (`PARTS=tls`) was run on Windows with Git's OpenSSL 3.5: the TLS 1.3 suites came out in the configured order (that run compared the earlier JA4S with an independent computation; it was not repeated for JA3S, which was checked as described in [JA3S](#ja3s)). The whole job, with the Samba, OpenSSH and nginx parts, passes on the Ubuntu 24.04 runner image (Samba 4.19, OpenSSH 9.6, nginx 1.24).
 
 ### JA3S
 
@@ -296,17 +296,34 @@ Verified on a real home network (2026-11-20, Windows 11, Npcap, wired 5 GbE adap
 
 Defects found and fixed in that run: SYN and TCP traceroute to an address of this computer (the source address, or another adapter's address reached through the first adapter's engine) now fall back to TCP connect (scan) or say why (`trace`) instead of reporting every port unanswered; `dcp --sent-log` now prints the sent log like `scan` and `trace`.
 
+## Capture features on Linux (CI)
+
+GitHub's Linux runner has a real Ethernet-type link of its own: the Docker bridge. The `cli-only` job runs [`lab/raw_bridge_check.py`](https://github.com/Sparkz400/network-scope/blob/main/lab/raw_bridge_check.py) there as root with libpcap, after the unused-address checks ([details](scanning-engine.md#unused-addresses-on-the-local-network-windows-linux)). Everything stays on the runner. The routed target is an address on a router container's loopback, in a private range that exists only behind that container. The first runs, 2026-11-21:
+
+| Feature | Case | Result |
+| --- | --- | --- |
+| SYN scan | live container, ports 22, 80, 8080 | 8080 open, 22 and 80 closed, no fallback to TCP connect |
+| SYN scan | an unused address | silent |
+| SYN scan | routed target, through the router container's MAC | 8080 open, no fallback |
+| ARP sweep | the bridge /28 | both containers found with their MAC |
+| TCP traceroute | live container | hop 1 is the target |
+| DCP | `dcp` on the bridge | exactly one Identify All frame on the wire (tcpdump) |
+| Live OT capture | `ot-listen` while a container reads a holding register from the lab simulator | the Modbus/TCP server and client are assets |
+| DHCPv6 | `listen` on an IPv6 bridge while a client asks for an address | ISC `dhclient`'s Solicit decoded: message type, DUID-LLT, its MAC |
+
+The images are pinned by digest. The router and DHCPv6 containers install packages with `apk` at test time.
+
 ## What has not been tested
 
 Be aware of these gaps before relying on a feature:
 
-- Npcap/libpcap features not yet run on a real network: SYN and TCP traceroute to routed targets (via the gateway MAC), DCP and live OT capture with real industrial devices answering; and everything with libpcap on Linux/macOS.
+- Npcap/libpcap features not yet run on a real network: SYN to routed targets with Npcap, TCP traceroute to routed targets, DCP and live OT capture with real industrial devices answering. libpcap on Linux runs in CI on the runner's Docker bridge ([Capture features on Linux](#capture-features-on-linux-ci)); macOS does not/macOS.
 - UDP traceroute with administrator/root rights; ICMPv6 hop-limit expiry from a real router on Windows.
-- Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine (CI is the first compile) and not exercised on a real network.
-- The GUI binary's console attach when started from a shell (use `network-scope-cli` for scripting).
-- The silent install, run and uninstall test of the installer (`scripts/installer_smoke.ps1`; Inno Setup was not available on the development machine) and the code signing and package-manifest steps of `release.yml`; the CI, release and documentation workflows (not run yet). That includes the accuracy benchmark steps in `ci.yml` and `release.yml` and the test plant step; the benchmark itself has only been run on Windows, so the Linux baseline is not recorded yet. The nmap comparison has also only been run on Windows with nmap 7.98; its explanations are calibrated on that run and may not cover the older nmap of Ubuntu's apt repository.
-- The ClusterFuzzLite build (`.clusterfuzzlite/`) and workflow (`cflite.yml`): not run yet. The fuzz targets themselves were built and run locally on Windows (cargo-fuzz, AddressSanitizer), every target for at least 3 minutes, without a crash (the later `mcp_message` target: 60 seconds, about 28,000 runs, without a crash).
-- Webhook/syslog delivery against real receivers. SMB against Samba, and the TLS 1.3 and SSH checks against nginx and OpenSSH, are written ([Real servers](#real-servers)) but the CI job has not run yet; TLS 1.3 enumeration was run against OpenSSL (Git's build) and Windows Schannel. JA3S is checked against the reference `ja3s.py` on a wire capture of local servers (see [JA3S](#ja3s)). CPE names were looked up in the NVD CPE API once; the dictionary check runs in CI only.
+- Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine (CI is the first compile) and not exercised on a real network. The exception is the Linux unused-address check, run in CI on the runner's own Docker bridge (`lab/neighbor_check.py` in the `cli-only` job: unused, live, ICMP host-prohibited and just-stopped containers, a 3-port case and a Safe Mode sweep of the /27); a physical LAN or Wi-Fi is still untried.
+- The GUI binary's console attach when started from a shell, as seen in an interactive console window (use `network-scope-cli` for scripting). Checked on 2026-11-21 (Windows 11, PowerShell 7) without a console window: with its output piped or redirected to a file and the process waited for (`Start-Process -Wait`), the release `network-scope.exe` printed `--version` and `interfaces` and exited 0; `cmd /c ... > file` returned before the output was written, because shells do not wait for a GUI-subsystem program, as documented.
+- `release.yml` has not run: no release has been tagged since its signing, packaging and installer-test jobs were added. A manual run (`gh workflow run release.yml -f version=<Cargo.toml version>`, possible once the workflow is on the default branch) rehearses every job except publishing the release and the container image. Signing stays off until its secrets exist. The CI workflow runs on every push, including the installer's silent install, run and uninstall test (`scripts/installer_smoke.ps1`), the accuracy benchmark against its Linux baseline, the test plant and the nmap comparison (Ubuntu's nmap 7.94; every difference explained).
+- Long fuzzing: ClusterFuzzLite (`cflite.yml`) runs a short session on pull requests, and the first 24-hour `fuzz-long` run was started on 2026-11-21. The fuzz targets themselves were built and run locally on Windows (cargo-fuzz, AddressSanitizer), every target for at least 3 minutes, without a crash (the later `mcp_message` target: 60 seconds, about 28,000 runs, without a crash).
+- Webhook/syslog delivery against real receivers. SMB against Samba, and the TLS 1.3 and SSH checks against nginx and OpenSSH, pass in CI ([Real servers](#real-servers)); TLS 1.3 enumeration was run against OpenSSL (Git's build) and Windows Schannel. JA3S is checked against the reference `ja3s.py` on a wire capture of local servers (see [JA3S](#ja3s)). CPE names were looked up in the NVD CPE API once; the dictionary check runs in CI only.
 - OT decoders and reassembly against real industrial traffic (synthetic frames only); industrial-device interoperability in general.
 
 No industrial production network was scanned during development. Reports from real-world use, especially from OT networks, are very welcome; see the protocol support issue template.
@@ -348,12 +365,12 @@ The GUI test cannot drive the real window (that needs a display): it draws the s
 
 ## Performance tests
 
-`core/benches/hot_paths.rs` holds [criterion](https://criterion-rs.github.io/book/) benchmarks of the hot paths: parsing a 2,000-frame pcap, decoding 2,000 passive frames, the risk analysis of a 1,000-host snapshot, the diff of two 1,000-host snapshots, expanding and parsing targets, and matching banners against every service probe. They touch no network.
+`bench/benches/hot_paths.rs` holds [criterion](https://criterion-rs.github.io/book/) benchmarks of the hot paths: parsing a 2,000-frame pcap, decoding 2,000 passive frames, the risk analysis of a 1,000-host snapshot, the diff of two 1,000-host snapshots, expanding and parsing targets, and matching banners against every service probe. They touch no network.
 
 ```sh
-cargo bench -p network-scope-core                                  # run them
-cargo bench -p network-scope-core -- --save-baseline before        # keep the numbers
-cargo bench -p network-scope-core -- --baseline before             # compare with them
+cargo bench -p network-scope-bench                                 # run them
+cargo bench -p network-scope-bench -- --save-baseline before        # keep the numbers
+cargo bench -p network-scope-bench -- --baseline before             # compare with them
 python -I scripts/bench_compare.py target/criterion --threshold 15 # exit 1 on a regression
 ```
 

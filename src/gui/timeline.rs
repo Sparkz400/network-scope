@@ -76,11 +76,19 @@ pub(super) fn rows(h: &DeviceHistory) -> Vec<Row> {
 
 /// The header lines: first and last sighting, addresses, MACs, names and open ports.
 pub(super) fn summary(h: &DeviceHistory) -> Vec<String> {
+    let unreadable = (h.unreadable > 0).then(|| {
+        tr!(
+            "{} of the saved scans could not be read; the history may be incomplete.",
+            h.unreadable
+        )
+    });
     let (Some(first), Some(last)) = (h.first_seen, h.last_seen) else {
-        return vec![tr!(
+        let mut lines = vec![tr!(
             "Not seen in any of {} saved scans (a scan that never reached it, or none saved yet).",
             h.scans
         )];
+        lines.extend(unreadable);
+        return lines;
     };
     let join = |v: Vec<String>| {
         if v.is_empty() {
@@ -108,6 +116,9 @@ pub(super) fn summary(h: &DeviceHistory) -> Vec<String> {
             join(h.open_tcp.iter().map(u16::to_string).collect())
         ),
     ]
+    .into_iter()
+    .chain(unreadable)
+    .collect()
 }
 
 /// What a host's history is looked up by: its MAC address when it has one (it survives an
@@ -344,6 +355,20 @@ mod tests {
         assert_eq!(lines[2], "MAC addresses: AA:BB:CC:00:11:22");
         assert_eq!(lines[3], "Names: —");
         assert_eq!(lines[4], "Open TCP ports (latest completed scan): 22, 80");
+        assert_eq!(lines.len(), 5);
+        let partial = DeviceHistory {
+            unreadable: 1,
+            ..seen
+        };
+        assert_eq!(
+            summary(&partial)[5],
+            "1 of the saved scans could not be read; the history may be incomplete."
+        );
+        let never_partial = DeviceHistory {
+            unreadable: 2,
+            ..never
+        };
+        assert!(summary(&never_partial)[1].starts_with("2 of the saved scans"));
     }
 
     #[test]
