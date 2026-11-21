@@ -560,6 +560,8 @@ fn maintenance_windows_parse_and_contain_times() {
         "Sat 02:00-02:00",
         "Sat 02:00-06:00 CET",
         "Sat 02:00-06:00 UTC+20",
+        "Sat 02:00-06:00 UTC+-99999999",
+        "Sat 02:00-06:00 UTC+1:-99999999",
         "Sat 02:00-06:00 UTC+1 extra",
         "Sat 02:61-06:00",
     ] {
