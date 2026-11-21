@@ -1324,11 +1324,11 @@ fn the_scan_tool_refuses_public_oversized_and_unusual_requests() {
         ),
         (
             json!({"targets": "10.0.0.0/24", "ports": "1-100"}),
-            "limit is 4000",
+            "limit is 5000",
         ),
         (
             json!({"targets": "10.0.0.1-50", "ports": "1-1024"}),
-            "limit is 4000",
+            "limit is 5000",
         ),
         (json!({"targets": "10.0.0.1", "ports": "0"}), "Invalid port"),
         (
@@ -1447,6 +1447,16 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
         "{kinds:?}"
     );
     assert!(listener.accept().is_err(), "the dry run connected");
+    // One host, one port tried twice, one ping: 3 probes at 0.12 s.
+    assert_eq!(plan["estimated_seconds"], 1);
+    // The /24 measured on a real network (2,755 probes in 331 s): 254 x (1 + 5 x 2) probes.
+    let lan = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "10.0.0.0/24", "dry_run": true}),
+        "dry-run",
+    );
+    assert_eq!(lan["estimated_seconds"], 336);
     assert!(!db.exists(), "a dry run saves nothing");
     remove_db(&db);
 }
