@@ -1,0 +1,20 @@
+[package]
+name = "network-scope-bench"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "Criterion benchmarks of the Network Scope engine's hot paths (roadmap B18)"
+publish = false
+# A package of its own, not a bench target of `network-scope-core`: see the note on `members` in
+# the workspace manifest. `cargo bench -p network-scope-bench` runs it.
+autobins = false
+
+[dev-dependencies]
+network-scope-core = { path = "../core" }
+# No plotting and no rayon: the numbers and the baseline comparison need neither, and it keeps the
+# dependency tree small.
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "hot_paths"
+harness = false
