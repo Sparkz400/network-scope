@@ -868,13 +868,15 @@ pub fn parse_proc_arp(text: &str, ip: IpAddr) -> Option<String> {
 /// Linux `/proc/net/arp`: true when the table has an entry for `ip` without the "complete"
 /// flag, i.e. the kernel is resolving it or gave up (INCOMPLETE or FAILED, MAC all zero). The
 /// entry appears with the first packet, so this means "unused" only after ARP has had its
-/// ~3 s; a missing entry means nothing.
+/// ~3 s; a missing entry means nothing. Only the entry on `iface` (the route's interface)
+/// counts: a stale one on another interface says nothing about this route.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn proc_arp_unresolved(text: &str, ip: IpAddr) -> bool {
+pub fn proc_arp_unresolved(text: &str, ip: IpAddr, iface: &str) -> bool {
     let wanted = ip.to_string();
     text.lines().skip(1).any(|line| {
         let f: Vec<&str> = line.split_whitespace().collect();
         f.first() == Some(&wanted.as_str())
+            && f.get(5) == Some(&iface)
             && f.get(2)
                 .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
                 .is_some_and(|flags| flags & 2 == 0)
@@ -1391,7 +1393,7 @@ pub fn neighbor_unresolved(ip: IpAddr) -> bool {
         let arps = sys("flags")
             .and_then(|f| u32::from_str_radix(f.trim().trim_start_matches("0x"), 16).ok())
             .is_some_and(|f| f & 0x80 == 0);
-        ether && arps && proc_arp_unresolved(&arp, ip)
+        ether && arps && proc_arp_unresolved(&arp, ip, iface)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -1443,12 +1445,16 @@ mod tests {
         assert_eq!(parse_proc_arp(text, "192.168.1.7".parse().unwrap()), None);
         assert_eq!(parse_proc_arp(text, "192.168.1.9".parse().unwrap()), None);
         // Unresolved: an entry without the complete flag. Resolved or missing is not.
-        let unresolved = |ip: &str| proc_arp_unresolved(text, ip.parse().unwrap());
+        let unresolved = |ip: &str| proc_arp_unresolved(text, ip.parse().unwrap(), "eth0");
         assert!(unresolved("192.168.1.7"));
         assert!(!unresolved("192.168.1.1"));
         assert!(!unresolved("192.168.1.9"), "no entry proves nothing");
         assert!(!unresolved("192.168.1.70"), "no prefix match");
-        assert!(!proc_arp_unresolved(text, "::1".parse().unwrap()));
+        assert!(!proc_arp_unresolved(text, "::1".parse().unwrap(), "eth0"));
+        assert!(
+            !proc_arp_unresolved(text, "192.168.1.7".parse().unwrap(), "wlan0"),
+            "an entry on another interface says nothing about this route"
+        );
     }
 
     #[test]
