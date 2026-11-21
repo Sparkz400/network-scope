@@ -61,8 +61,20 @@ struct Saved {
     dark: bool,
     /// Interface scale on top of the system's scale factor; 0 means 1.0.
     zoom: f32,
+    /// Adaptive TCP connect timing became the default after these preferences could already
+    /// hold its old value; set once the saved settings were switched over (see [`Saved::migrate`]).
+    adaptive_tcp_migrated: bool,
 }
 impl Saved {
+    /// One-time changes to preferences saved by an older version. The saved `false` for
+    /// adaptive TCP timing was never a choice (there was no checkbox), so it is switched on
+    /// once; turning it off afterwards is remembered.
+    fn migrate(&mut self) {
+        if !self.adaptive_tcp_migrated {
+            self.settings.tcp_adaptive = true;
+            self.adaptive_tcp_migrated = true;
+        }
+    }
     /// What goes to disk: empty notes are dropped.
     fn to_disk(&self) -> Vec<u8> {
         let mut copy = self.clone();
@@ -578,7 +590,9 @@ impl Scanner {
             Saved::default()
         };
         prune_notes(&mut saved.notes);
+        // Taken before the migration, so a migrated file differs and is written right away.
         let prefs_written = saved.to_disk();
+        saved.migrate();
         i18n::set(i18n::detect(&saved.language));
         let mut app = Self {
             saved,
@@ -2171,6 +2185,25 @@ mod tests {
         assert_eq!(disk.cves_file, "C:\\rules\\cves.json");
         let old: Saved = serde_json::from_str(r#"{"favorites":["10.0.0.1"]}"#).unwrap();
         assert!(old.cves_file.is_empty());
+    }
+
+    #[test]
+    fn old_preferences_get_adaptive_tcp_once_and_a_later_choice_sticks() {
+        // Saved before the setting had a checkbox: an explicit false that nobody chose.
+        let mut old: Saved =
+            serde_json::from_str(r#"{"settings":{"ports":"22","tcp_adaptive":false}}"#).unwrap();
+        assert!(!old.settings.tcp_adaptive);
+        old.migrate();
+        assert!(old.settings.tcp_adaptive && old.adaptive_tcp_migrated);
+        // The user turns it off; saved and loaded again, it stays off.
+        old.settings.tcp_adaptive = false;
+        let mut again: Saved = serde_json::from_slice(&old.to_disk()).unwrap();
+        again.migrate();
+        assert!(!again.settings.tcp_adaptive);
+        // A new install starts with it on.
+        let mut fresh = Saved::default();
+        fresh.migrate();
+        assert!(fresh.settings.tcp_adaptive);
     }
 
     #[test]
