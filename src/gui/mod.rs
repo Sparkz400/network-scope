@@ -1913,6 +1913,9 @@ fn badge_color(safe: bool, dark: bool) -> Color32 {
 fn host_status(host: &scan::Host) -> &'static str {
     if host.responding {
         tr!("Responding")
+    } else if host.errors.iter().all(|e| e == scan::UNUSED_ADDRESS_NOTE) && !host.errors.is_empty()
+    {
+        tr!("Unused (no ARP answer)")
     } else if !host.errors.is_empty() {
         tr!("Probe error")
     } else {
@@ -1963,6 +1966,16 @@ mod tests {
             udp_open: vec![],
             trace: vec![],
         }
+    }
+
+    #[test]
+    fn an_unused_address_is_not_shown_as_a_probe_error() {
+        let mut h = host("10.0.0.9", false, vec![], "");
+        assert_eq!(host_status(&h), "No reply");
+        h.errors = vec![scan::UNUSED_ADDRESS_NOTE.into()];
+        assert_eq!(host_status(&h), "Unused (no ARP answer)");
+        h.errors.push("TCP 80: refused by policy".into());
+        assert_eq!(host_status(&h), "Probe error");
     }
 
     #[test]

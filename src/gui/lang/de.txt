@@ -69,6 +69,7 @@ DNS lookups || DNS-Abfragen
 Responding || Antwortet
 Probe error || Probenfehler
 No reply || Keine Antwort
+Unused (no ARP answer) || Unbenutzt (keine ARP-Antwort)
 
 # Menus and the scan controls
 Scan || Scan
