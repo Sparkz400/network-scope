@@ -1913,8 +1913,9 @@ fn badge_color(safe: bool, dark: bool) -> Color32 {
 fn host_status(host: &scan::Host) -> &'static str {
     if host.responding {
         tr!("Responding")
-    } else if host.errors.iter().all(|e| e == scan::UNUSED_ADDRESS_NOTE) && !host.errors.is_empty()
-    {
+    } else if host.errors.iter().any(|e| scan::is_unused_note(e)) {
+        // It wins over other notes: on Linux an unprivileged scan also notes that ICMP is not
+        // permitted, and that is not what went wrong with this address.
         tr!("Unused (no ARP answer)")
     } else if !host.errors.is_empty() {
         tr!("Probe error")
@@ -1974,7 +1975,16 @@ mod tests {
         assert_eq!(host_status(&h), "No reply");
         h.errors = vec![scan::UNUSED_ADDRESS_NOTE.into()];
         assert_eq!(host_status(&h), "Unused (no ARP answer)");
-        h.errors.push("TCP 80: refused by policy".into());
+        h.errors = vec![
+            "ICMP needs root or net.ipv4.ping_group_range".into(),
+            scan::UNUSED_AFTER_PROBES_NOTE.into(),
+        ];
+        assert_eq!(
+            host_status(&h),
+            "Unused (no ARP answer)",
+            "Linux, unprivileged"
+        );
+        h.errors = vec!["TCP 80: refused by policy".into()];
         assert_eq!(host_status(&h), "Probe error");
     }
 
