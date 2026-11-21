@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Home LAN speed comparison with nmap and Advanced IP Scanner** (Windows, 2026-11-21). On a /24 with nmap's top 100 ports:
+  - Network Scope `--fast`: 21 to 48 s with host discovery, 28 s with every address treated as up.
+  - nmap `-sT -T4` (7.80): 301 s with discovery; it did not finish in 30 minutes with `-Pn`.
+  - Advanced IP Scanner (with its service scan): 85 to 98 s, finding the same 12 to 13 devices as Network Scope `--arp`, which took 7.5 to 10.5 s.
+
+  `lab/speed_compare.py --lan --fast` now times nmap too.
 - **Capture features on Linux tested on a real link in CI** (roadmap 1 and 7): `lab/raw_bridge_check.py` runs as root with libpcap on the runner's Docker bridge. It covers SYN on-link and to a routed target through a router container's MAC, the ARP sweep, TCP traceroute, DCP (exactly one frame on the wire), live OT capture of a Modbus/TCP exchange, and DHCPv6 decoding of a real client's Solicit (ISC `dhclient`). All passed on the first full run.
 
 ### Changed
