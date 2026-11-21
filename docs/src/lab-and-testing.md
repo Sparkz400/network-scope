@@ -348,12 +348,12 @@ The GUI test cannot drive the real window (that needs a display): it draws the s
 
 ## Performance tests
 
-`core/benches/hot_paths.rs` holds [criterion](https://criterion-rs.github.io/book/) benchmarks of the hot paths: parsing a 2,000-frame pcap, decoding 2,000 passive frames, the risk analysis of a 1,000-host snapshot, the diff of two 1,000-host snapshots, expanding and parsing targets, and matching banners against every service probe. They touch no network.
+`bench/benches/hot_paths.rs` holds [criterion](https://criterion-rs.github.io/book/) benchmarks of the hot paths: parsing a 2,000-frame pcap, decoding 2,000 passive frames, the risk analysis of a 1,000-host snapshot, the diff of two 1,000-host snapshots, expanding and parsing targets, and matching banners against every service probe. They touch no network.
 
 ```sh
-cargo bench -p network-scope-core                                  # run them
-cargo bench -p network-scope-core -- --save-baseline before        # keep the numbers
-cargo bench -p network-scope-core -- --baseline before             # compare with them
+cargo bench -p network-scope-bench                                 # run them
+cargo bench -p network-scope-bench -- --save-baseline before        # keep the numbers
+cargo bench -p network-scope-bench -- --baseline before             # compare with them
 python -I scripts/bench_compare.py target/criterion --threshold 15 # exit 1 on a regression
 ```
 
