@@ -11,12 +11,14 @@ and a private routed network (10.200.0.0/24) that exists only behind a router co
 - DCP Identify: exactly the one read-only frame on the wire (tcpdump)
 - live OT capture (`ot-listen`): a Modbus/TCP request between a container and the host's lab
   simulator shows up as a Modbus asset
+- DHCPv6 (`listen`): Solicits of real clients (busybox udhcpc6, ISC dhclient) on an IPv6 bridge
 
 Usage (CI, after building the CLI and installing libpcap):
     sudo python3 -I lab/raw_bridge_check.py --cli target/release/network-scope-cli
 """
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -126,7 +128,9 @@ def main() -> None:
     time.sleep(1)
     dump.terminate()
     dump.wait()
-    frames = sh("tcpdump", "-r", str(pcap), check=False).stdout.strip().splitlines()
+    # One line per frame starts with its timestamp; tcpdump may add continuation lines.
+    frames = [line for line in sh("tcpdump", "-r", str(pcap), check=False).stdout.splitlines()
+              if re.match(r"\d\d:\d\d:\d\d", line)]
     print("== dcp (exit", dcp.returncode, ")\n" + dcp.stdout + dcp.stderr[-400:] + "\n" + "\n".join(frames))
     check(dcp.returncode == 0 and len(frames) == 1, f"DCP: one Identify frame on the wire ({len(frames)})")
 
@@ -149,6 +153,35 @@ def main() -> None:
     print(json.dumps(assets, indent=1)[:1500])
     check(any("modbus" in json.dumps(a).lower() and source_ip in json.dumps(a) for a in assets),
           "live OT capture: the Modbus server is an asset")
+
+    # DHCPv6 from real client implementations: a Solicit on an IPv6 bridge, decoded by `listen`.
+    sh("docker", "network", "rm", "raw-v6", check=False)
+    net = sh("docker", "network", "create", "--ipv6", "--subnet", "fd00:5c::/64", "raw-v6").stdout.strip()
+    bridge = f"br-{net[:12]}"
+    v6_out = work / "v6.json"
+    capture = subprocess.Popen([cli, "listen", "--interface", bridge, "--seconds", "40",
+                                "--db", str(work / "v6.sqlite"), "--output", str(v6_out)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(3)
+    clients = {
+        "busybox udhcpc6": ["docker", "run", "--rm", "--network", "raw-v6", "--cap-add", "NET_ADMIN",
+                            BUSYBOX, "sh", "-c", "timeout 8 udhcpc6 -i eth0 -n -q -t 3 -x hostname:ns-v6-busybox"],
+        "ISC dhclient": ["docker", "run", "--rm", "--network", "raw-v6", "--cap-add", "NET_ADMIN",
+                         ALPINE, "sh", "-c", "apk add --no-cache dhclient >/dev/null"
+                         " && timeout 8 dhclient -6 -1 -v eth0"],
+    }
+    for name, command in clients.items():
+        run = subprocess.run(command, capture_output=True, text=True)
+        print(f"== DHCPv6 client {name} (exit {run.returncode}):", (run.stdout + run.stderr)[-400:])
+    out, err = capture.communicate(timeout=90)
+    print("== listen on", bridge, "(exit", capture.returncode, ")", err[-300:])
+    observations = json.loads(v6_out.read_text()).get("observations", []) if v6_out.exists() else []
+    v6 = [o for o in observations if o.get("protocol") == "DHCPv6"]
+    for o in v6:
+        print("  ", o.get("mac"), o.get("ip"), o.get("fields"))
+    check(any(o.get("fields", {}).get("message_type") == "solicit" and o.get("fields", {}).get("duid_type")
+              for o in v6), f"DHCPv6: a real client's Solicit decoded ({len(v6)} DHCPv6 observations)")
+    sh("docker", "network", "rm", "raw-v6", check=False)
 
     sh("ip", "route", "del", "10.200.0.0/24", check=False)
     for name in ("raw-live", "raw-router"):
