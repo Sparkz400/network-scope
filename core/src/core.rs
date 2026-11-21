@@ -483,6 +483,14 @@ async fn neighbor_lookup(h: &mut Host, ctx: &Ctx) -> bool {
         .is_some_and(|answer| apply_neighbor(h, answer))
 }
 
+/// A task that is aborted when its handle is dropped (a stopped scan, or an answer not needed).
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Records a neighbor lookup's answer on the host; true when the address is known to be unused.
 fn apply_neighbor(
     h: &mut Host,
@@ -823,15 +831,16 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     let mut rtts = vec![];
     // The ARP check runs alongside the ping, not after it: an unused address then holds its
     // slot for the longer of the two (about 4 s), not for both (about 6 s). Its answer is used
-    // only when the ping gets none, so hosts that answer ping come out exactly as before.
+    // only when the ping gets none, so hosts that answer ping come out exactly as before; it is
+    // aborted when the ping answers or the scan stops, so nothing is sent for nothing.
     let arp_check = (crate::plan::arp_check(&s) && ip.is_ipv4()).then(|| {
         let ctx = ctx.clone();
-        tokio::spawn(async move {
+        AbortOnDrop(tokio::spawn(async move {
             ctx.gate
                 .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
                 .await;
             run_blocking(&ctx.blocking, move || crate::platform::neighbor_probe(ip)).await
-        })
+        }))
     });
     if crate::plan::icmp_echoes(&s) > 0 {
         let timeout = s.ping_timeout.clamp(1, 10000);
@@ -863,11 +872,14 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
-    if let Some(task) = arp_check
+    // Only "unused" is taken from the check. An ARP answer may come from the OS's neighbor
+    // cache (a device that just went offline), so it is not proof of life and records no MAC:
+    // without --arp/--mac the host is reported as it was before the check existed.
+    if let Some(mut task) = arp_check
         && !h.responding
-        && let Ok(Some(answer)) = task.await
+        && let Ok(Some((_, silent))) = (&mut task.0).await
     {
-        unused = apply_neighbor(&mut h, answer);
+        unused = silent;
     }
     // The host answered: show it now, the ports follow as they are found.
     if h.responding {
