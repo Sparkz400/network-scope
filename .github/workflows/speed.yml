@@ -50,8 +50,15 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
+      # GNU time measures peak memory (lab/speed_compare.py explains why wait4's figure is not
+      # used); installed before the unit tests so their control test runs instead of skipping.
+      - name: Install GNU time
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends time
+          test -x /usr/bin/time
       - name: Unit tests of the comparison script
-        run: python -I -m unittest discover -s lab -p "test_speed_compare.py"
+        run: python -I -m unittest discover -s lab -p "test_speed_compare.py" -v
       - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
