@@ -471,6 +471,20 @@ struct PortProbe {
     fp: Option<TcpFp>,
 }
 
+/// Counts a closed or unanswered port without a note at once and keeps every other result for
+/// the port-ordered pass in `scan_host`: with `--fast` every host of a /24 runs at the same
+/// time, and keeping all results held one record per probe (about 120 bytes each).
+fn tally(h: &mut Host, kept: &mut Vec<(u16, PortProbe)>, item: (u16, PortProbe)) {
+    match (&item.1.state, &item.1.note) {
+        (PortState::Closed, None) => {
+            h.closed += 1;
+            h.responding = true;
+        }
+        (PortState::Unanswered, None) => h.unanswered += 1,
+        _ => kept.push(item),
+    }
+}
+
 /// Ports probed before the rest of a host's ports when `tcp_adaptive` is on, so the
 /// host's connect RTT is known when the remaining probes choose their timeout.
 const PILOT_PORTS: usize = 3;
@@ -866,7 +880,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             while let Some(done) = probes.try_join_next() {
                 if let Ok(item) = done {
                     order.observe(item.0, item.1.state == PortState::Open);
-                    results.push(item);
+                    tally(&mut h, &mut results, item);
                 }
             }
             if s.early_stop
@@ -920,7 +934,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
         while let Some(result) = probes.join_next().await {
             if let Ok(item) = result {
-                results.push(item);
+                tally(&mut h, &mut results, item);
             }
         }
         results.sort_by_key(|(port, _)| *port);
