@@ -579,6 +579,22 @@ async fn probe_port(
     }
 }
 
+/// How long a host's own probes give the kernel's ARP before an entry without a MAC counts as
+/// unused (Linux sends 3 requests 1 s apart, then marks the entry FAILED).
+const NEIGHBOR_WAIT: Duration = Duration::from_millis(3500);
+
+/// Whether the host answered any probe so far: open, refused or reset. Silence and local
+/// errors ("no route to host") are not answers.
+fn answered(h: &Host, results: &[(u16, PortProbe)]) -> bool {
+    h.closed > 0
+        || results.iter().any(|(_, p)| {
+            matches!(
+                p.state,
+                PortState::Open | PortState::Closed | PortState::Reset
+            )
+        })
+}
+
 /// Longest window of probes in flight per host with `--early-stop`: a smaller window means the
 /// first answers arrive while ports are still left to skip.
 const EARLY_WINDOW: usize = 16;
@@ -930,6 +946,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         );
         let mut results = vec![];
         let mut launched = 0usize;
+        // Linux: when this host has answered nothing once the kernel's ARP for these probes has
+        // had its time, an entry still without a MAC means the address is unused. Checked once.
+        let mut watch = (crate::platform::NEIGHBOR_WATCH
+            && !h.responding
+            && ip.is_ipv4()
+            && syn_engine.is_none())
+        .then(Instant::now);
         while let Some(port) = order.next_port() {
             // Probes that finished since the last launch: their open ports steer the order, and
             // with --early-stop they can end the scan of this host.
@@ -946,6 +969,22 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 unprobed = order.remaining() + 1;
                 early = Some(why);
                 break;
+            }
+            if let Some(since) = watch
+                && since.elapsed() >= NEIGHBOR_WAIT
+            {
+                watch = None;
+                if !answered(&h, &results)
+                    && run_blocking(&ctx.blocking, move || {
+                        crate::platform::neighbor_unresolved(ip)
+                    })
+                    .await
+                        == Some(true)
+                {
+                    unused = true;
+                    unprobed = order.remaining() + 1;
+                    break;
+                }
             }
             if launched == PILOT_PORTS
                 && let Some(r) = &host_rtt
@@ -993,6 +1032,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 tally(&mut h, &mut results, item);
             }
         }
+        // A probe still in flight at the check answered after all: the host is there.
+        let late_answer = unused && answered(&h, &results);
+        unused &= !late_answer;
         results.sort_by_key(|(port, _)| *port);
         for (port, probe) in results {
             if let Some(text) = probe.note {
@@ -1037,8 +1079,21 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                         "early stop: {why}; {unprobed} port(s) were not probed in this scan; their state is unknown, not closed"
                     ),
                 ),
+                // The unused note below says why.
+                None if unused => {}
+                None if late_answer => note(
+                    &mut h,
+                    format!(
+                        "{unprobed} port(s) were not probed: ARP looked unanswered, but the host answered later; their state is unknown, not closed"
+                    ),
+                ),
                 None => gov.note_unprobed(unprobed),
             }
+        }
+        if unused {
+            // The per-port "no route to host" errors are this same ARP failure.
+            h.errors.retain(|e| !e.starts_with("TCP "));
+            note_first(&mut h, crate::scan::UNUSED_AFTER_PROBES_NOTE.into());
         }
     }
     flush_backoff_notes(&gov, &mut h);
