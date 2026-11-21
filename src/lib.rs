@@ -18,6 +18,10 @@ pub(crate) use network_scope_core::{
 pub(crate) use network_scope_core::{csaf, otmodel, pivot, provenance, research, segmentation};
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::{localnets, netmap, pcapfile, schedule};
+// The pcap writers of the core crate's tests, compiled into the GUI tests of this crate as well.
+#[cfg(all(test, feature = "gui"))]
+#[path = "../core/src/pcapfile_testutil.rs"]
+mod pcap_testutil;
 
 /// The fuzz entry points (`network_scope::fuzz::*`, called by the targets in `fuzz/`).
 #[doc(hidden)]
