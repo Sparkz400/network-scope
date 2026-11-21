@@ -41,14 +41,15 @@ Ports that stay silent are retried (`--retries`, default 1). Each retry doubles 
 
 ### Adaptive TCP connect timing
 
-`--adaptive-tcp` (opt-in, also usable in Safe Mode; named like `--adaptive-syn`, since `--timeout` already adapts to the ping RTT by default):
+On by default, also in Safe Mode; `--no-adaptive-tcp` (or the desktop setting "Adapt port timeout to the device's connect answers") turns it off, and `--adaptive-tcp` is still accepted. It does for every host what `--timeout` already does for hosts that answer ping: the default port timeout adapts to the ping RTT, so before this, only a host that drops ping waited the full port timeout on every silent port.
 
 - Each host keeps its own RFC 6298 estimate (the same estimator as `--adaptive-syn`) from its completed connects. An accepted connect (SYN-ACK) and a refused one (RST) are both samples; a timeout or a local error is not.
 - A probe's first connect waits `SRTT + 4·RTTVAR`, clamped between the minimum timeout (100 ms) and the port timeout, and never longer than the wait the scan would use without the flag. Retries still double up to the port timeout, so a slow answer is found on a retry.
 - Before the first sample exists a host's first three ports are probed alone, so the remaining ports already get the measured timeout: a fast LAN host does not wait the full port timeout on filtered ports. A host that answers nothing waits at most 250 ms extra, once.
 - It only shortens waits. Rate limits are unchanged: every attempt, retries included, still takes a gate token (Safe Mode: 100 ms spacing, 8 hosts, 4 parallel probes), and nothing is sent faster.
 - The SYN engine ignores it (use `--adaptive-syn`); when SYN falls back to TCP connect it applies.
-- Trade-off: a closed port that answers later than the measured RTT is reported as unanswered, not closed. Windows reports a refused connect only after about 2 s (it retransmits the SYN), so with this flag closed ports on a host that also has open ports usually show as unanswered there; open ports are unaffected. Use it on Linux/macOS scanners, or where distinguishing closed from filtered does not matter.
+- Trade-off: a port that answers later than the measured RTT on both the first attempt and the retry is reported as unanswered. The short ping-based timeout has the same exposure. Windows' habit of reporting a refused connect only after about 2 s no longer matters, because probe sockets do not retransmit the SYN (see above).
+- Measured on a home LAN (Windows, Ethernet, 2026-11-21; scans of the 10 to 11 devices that answer, top 100 ports, `--fast`, 5 rounds interleaved): 6.8 to 7.2 s against 18.1 to 18.7 s with `--no-adaptive-tcp`; 12.8 s in the one run where a power-saving device answered ping but no port. The gain is the two devices that drop ping and every port but one (18.0 s each on their own, 6.9 s with adaptive timing). Open ports were the same in all 10 runs; one closed port of a power-saving device showed as unanswered once. A whole /24 did not get faster (21 to 22 s either way), because that power-saving device answers ping in about 580 ms and so bounds the scan by itself.
 
 ## Very large scans
 

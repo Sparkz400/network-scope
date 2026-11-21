@@ -114,7 +114,8 @@ Scan options:
   --fast          Disable conservative rate limits (read-only OT still applies)
   --syn           IPv4 SYN via Npcap (routed targets via the gateway MAC); else TCP connect
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
-  --adaptive-tcp  Per-host TCP connect timeout from the measured connect RTT (shortens waits only)
+  --no-adaptive-tcp  Wait the full port timeout on every port; by default a host's connect timeout
+                  follows its measured connect RTT (shortens waits only; --adaptive-tcp is accepted)
   --jarm          JARM-style TLS fingerprint (10 hellos per TLS port; with --services --fast)
   --snmp-community STRING  Read responding hosts over SNMP v2c (sysDescr, interfaces, LLDP neighbours) with
                   this community; read-only (Get/GetNext/GetBulk), never guessed; allowed in Safe Mode

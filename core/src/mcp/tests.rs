@@ -1562,7 +1562,8 @@ fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
     let s = &saved.settings;
     assert!(s.safe && s.delay >= 100, "{s:?}");
     assert!(!s.syn && !s.arp_sweep && !s.arp && !s.ot && !s.udp && !s.trace && !s.os_detect);
-    assert!(!s.syn_adaptive && !s.tcp_adaptive && s.scripts.is_empty() && s.probe_file.is_empty());
+    assert!(!s.syn_adaptive && s.scripts.is_empty() && s.probe_file.is_empty());
+    assert!(s.tcp_adaptive, "the default: it only shortens waits");
     assert!(s.interface.is_empty() && s.source_ip.is_empty() && s.max_rate == 0);
     assert!(
         !saved.sent.is_empty(),
