@@ -72,7 +72,7 @@ The pull-request runs cover only the /24 cells. The weekly and manual runs add `
 The job fails only for Network Scope, in two cases:
 
 - it reports a wrong open set
-- its median is more than 50 % above its own baseline in `lab/speed_baseline.json` (a platform or cell missing from the baseline passes with a notice)
+- its median is more than 50 % above its own baseline in `lab/speed_baseline.json` (a platform or cell missing from the baseline passes with a notice). Shared runners differ in speed from run to run (one run had every tool two to three times slower), so when nmap `-sT` ran in the same cell, the ratio of the two times is compared with the baseline's ratio instead of the seconds
 
 The other tools are reported, never gated: their speed is not this project's to regress, and a tool that cannot be installed is skipped with a warning. The baseline holds the Linux medians of the run in the table below; there is no Windows or macOS baseline.
 

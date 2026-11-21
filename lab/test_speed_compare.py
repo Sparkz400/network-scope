@@ -100,6 +100,18 @@ class Gate(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertIn("16-top100", notices[0])
 
+    def test_regressions_relative_to_the_reference_tool(self):
+        base = {"24-top100": {"seconds": 0.17, "reference_seconds": 0.20}}
+        # A runner twice as slow for every tool: no regression.
+        self.assertEqual(sc.regressions({"24-top100": 0.34}, base, 0.5, {"24-top100": 0.40})[0], [])
+        # Slower than the reference by more than the tolerance: a regression.
+        failures, _ = sc.regressions({"24-top100": 0.34}, base, 0.5, {"24-top100": 0.20})
+        self.assertEqual(len(failures), 1)
+        self.assertIn("nmap -sT", failures[0])
+        # Without the reference in this run, the seconds are compared.
+        self.assertEqual(len(sc.regressions({"24-top100": 0.34}, base, 0.5)[0]), 1)
+        self.assertEqual(sc.regressions({"24-top100": 0.20}, base, 0.5)[0], [])
+
 
 if __name__ == "__main__":
     unittest.main()

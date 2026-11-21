@@ -255,16 +255,34 @@ def rustscan_open(text):
     return found
 
 
-def regressions(cells, baseline, tolerance):
-    """(failures, notices) for Network Scope's medians against the baseline of this platform."""
+# Shared runners differ in speed from run to run (seen: every tool 2 to 3 times slower in one run), so
+# Network Scope is gated relative to this tool's time in the same run when both are in the baseline.
+REFERENCE = "nmap -sT -T4"
+
+
+def regressions(cells, baseline, tolerance, refs=None):
+    """(failures, notices) for Network Scope's medians against the baseline of this platform.
+
+    A baseline cell is seconds, or {"seconds", "reference_seconds"}: then, when the reference tool ran
+    in this cell (refs), the ratio of the two times is compared instead of the seconds."""
     failures, notices = [], []
+    refs = refs or {}
+    allowed = f"allowed +{100 * tolerance:.0f}%"
     for cell, median in cells.items():
         base = baseline.get(cell)
         if base is None:
             notices.append(f"{cell}: no baseline for this platform; measured {median:.2f} s")
-        elif median > base * (1 + tolerance):
-            failures.append(f"{cell}: Network Scope took {median:.2f} s, baseline {base:.2f} s "
-                            f"(+{100 * (median / base - 1):.0f}%, allowed +{100 * tolerance:.0f}%)")
+            continue
+        seconds, ref_base = (base.get("seconds"), base.get("reference_seconds")) if isinstance(base, dict) else (base, None)
+        ref = refs.get(cell)
+        if ref and ref_base:
+            ratio, base_ratio = median / ref, seconds / ref_base
+            if ratio > base_ratio * (1 + tolerance):
+                failures.append(f"{cell}: Network Scope took {median:.2f} s, {ratio:.2f} x {REFERENCE} ({ref:.2f} s) "
+                                f"in this run; baseline {base_ratio:.2f} x (+{100 * (ratio / base_ratio - 1):.0f}%, {allowed})")
+        elif median > seconds * (1 + tolerance):
+            failures.append(f"{cell}: Network Scope took {median:.2f} s, baseline {seconds:.2f} s "
+                            f"(+{100 * (median / seconds - 1):.0f}%, {allowed})")
     return failures, notices
 
 
@@ -458,7 +476,7 @@ def main():
 
     result = {"machine": machine(), "versions": versions, "port_source": port_source, "repeat": args.repeat,
               "limit_s": args.limit, "commands": {}, "cells": {}}
-    ns_medians, failures = {}, []
+    ns_medians, ref_medians, failures = {}, {}, []
     for cell in cells:
         cidr, n = CELLS[cell]
         cidr = args.lan or cidr
@@ -541,6 +559,9 @@ def main():
                             f"{ns['missed_sample']}, {ns['extra']} reported open but not listening {ns['extra_sample']})")
         else:
             ns_medians[cell] = ns["median_s"]
+            ref = cell_result["tools"].get(REFERENCE, {})
+            if ref.get("correct") and ref.get("median_s"):
+                ref_medians[cell] = ref["median_s"]
         result["cells"][cell] = cell_result
 
     plat = PLATFORMS.get(sys.platform, sys.platform)
@@ -549,7 +570,7 @@ def main():
             baseline = json.load(f).get("platforms", {}).get(plat, {})
     except FileNotFoundError:
         baseline = {}
-    slow, notices = regressions(ns_medians, baseline, args.tolerance)
+    slow, notices = regressions(ns_medians, baseline, args.tolerance, ref_medians)
     failures += slow
     result.update(failures=failures, notices=notices)
     table = markdown(result)
@@ -560,7 +581,9 @@ def main():
         print(f"  {label}: {cmd}")
     for n in notices:
         print(f"notice: {n}")
-    candidate = {"platforms": {plat: ns_medians}}
+    candidate = {"platforms": {plat: {
+        cell: {"seconds": s, "reference_seconds": ref_medians[cell]} if cell in ref_medians else s
+        for cell, s in ns_medians.items()}}}
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
         for name, data in (("speed.json", result), ("baseline-candidate.json", candidate)):
