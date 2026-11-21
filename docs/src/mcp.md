@@ -35,22 +35,22 @@ On Linux or macOS the `command` is the path of the binary, for example `/usr/loc
 
 ## Tools
 
-All results are JSON with a `schema` identifier (see [JSON output and schemas](json-output.md)) in `structuredContent`; the same JSON is in the text content for clients that only show text. Lists are capped (`limit`) and say when they were cut.
+All results are JSON with a `schema` identifier (see [JSON output and schemas](json-output.md)) in `structuredContent`; the same JSON is in the text content for clients that only show text (the specification recommends this for every revision, including 2026-07-28). Lists are capped (`limit`, with small defaults so an answer stays readable for an assistant) and say when they were cut.
 
 | Tool | Arguments | Answers |
 | --- | --- | --- |
-| `list_scans` | `limit` | The saved scans, newest first |
-| `list_devices` | `scan_id`, `limit` | One record per device of a scan (default: the newest) |
+| `list_scans` | `limit` (default 20) | The saved scans, newest first |
+| `list_devices` | `scan_id`, `ip`, `detail`, `limit` (default 50) | One short record per device of a scan (default: the newest; schema `mcp-devices`): addresses, vendor, type, OS, open ports, services. `detail: true` returns the full records (schema `devices`, with evidence, identifiers and passive observations, about ten times larger); combine it with `ip` |
 | `device_history` | `query` (MAC or IP) | One device across all saved scans: first/last seen, addresses, events |
-| `list_findings` | `scan_id`, `min_severity`, `finding_id`, `ip`, `limit` | Findings of a scan, filtered |
+| `list_findings` | `scan_id`, `min_severity`, `finding_id`, `ip`, `limit` (default 50) | Findings of a scan, filtered |
 | `diff_scans` | `old_id`, `new_id`, `ignore` | What changed between two completed scans of the same targets |
-| `search_inventory` | `query` (IP, MAC or hostname part), `limit` | Every saved scan in which it appeared (newest 200 scans) |
+| `search_inventory` | `query` (IP, MAC or hostname part), `limit` (default 50) | Every saved scan in which it appeared (newest 200 scans). A scan that cannot be read (locked or damaged inventory) is counted in `scans_skipped`, sets `truncated` and is explained in `notes`, so it never looks like "not seen there" |
 | `findings_gained` | `finding_id`, `since` (`YYYY-MM-DD` or Unix seconds) | Hosts that have the finding in the newest complete scan of their targets but did not in the last complete scan before the date |
 | `scan` | `targets`, `ports`, `services`, `timeout_seconds` | A Safe Mode scan of a private range, saved to the inventory (omitted with `--no-scan`) |
 
 `findings_gained` is a comparison of two saved scans, so it can only answer for scopes that were scanned before and after the date. When no complete scan of a scope exists before the date, the hosts that have the finding are listed anyway, with `baseline_scan_id: null` and a note that when it appeared is unknown. Scans that did not complete are never used. A host the baseline scan did not cover counts as "gained".
 
-The query tools only read. They never send traffic and never write to the inventory; asking against a database that does not exist reports an empty inventory and does not create the file.
+The query tools only read. They never send traffic and never write to the inventory; asking against a database that does not exist reports an empty inventory and does not create the file. They open the inventory read-only, so a write-protected file works too. An inventory saved by an older version is read as it is and is not upgraded (the app upgrades it the next time it saves a scan). `device_history` counts saved scans it could not read in `unreadable`, so a damaged inventory is not mistaken for "not seen".
 
 ## The scan tool
 
@@ -66,8 +66,22 @@ A client should ask you before it calls `scan`; most MCP clients prompt before a
 
 ## Protocol details
 
-JSON-RPC 2.0, one message per line. `initialize` accepts the protocol revisions 2025-06-18, 2025-03-26 and 2024-11-05: the client's version is echoed when supported, otherwise the server answers with 2025-06-18 and the client decides. Implemented: `initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`. Not implemented (not advertised): resources, prompts, logging, completion, sampling, progress and cancellation notifications. Tool failures are results with `isError: true`; protocol errors use the JSON-RPC codes (-32700 parse error with a null id, -32600 invalid request, -32601 unknown method, -32602 unknown tool or bad parameters, -32002 used before `initialize`). Lines longer than 1 MiB are refused and skipped; batches (older revisions) are answered as batches, up to 32 messages. A `scan` blocks the session until it ends (requests are handled one at a time).
+JSON-RPC 2.0, one message per line. The server is *dual-era* in the sense of the 2026-07-28 specification: it serves clients with and without the `initialize` handshake on the same process, and decides per request.
 
-The tool input schemas are JSON Schema; the server validates arguments against them before it runs a tool. The message reader is a parser of untrusted input and has a fuzz target (`mcp_message`).
+- **Legacy clients (handshake).** `initialize` accepts the revisions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05: the client's version is echoed when supported, otherwise the server answers with 2025-11-25 and the client decides. Implemented: `initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`. `tools/list` and `tools/call` before `initialize` get -32002.
+- **Modern clients (2026-07-28, stateless).** A request whose `params._meta` carries `io.modelcontextprotocol/protocolVersion` needs no handshake. The version must be 2026-07-28; any other (a handshake revision included) gets error -32022 with `data.supported` (every revision, newest first) and `data.requested`. `io.modelcontextprotocol/clientCapabilities` is required (-32602 without it). Implemented: `server/discover` (supported versions, the `tools` capability, instructions), `tools/list` (with `ttlMs` and `cacheScope`) and `tools/call`; every result carries `resultType: "complete"` and the server info in `_meta`. `ping` is not part of this revision. A modern request never depends on, or opens, a legacy session. Only the version key selects the modern era: legacy clients also send `_meta` (a progress token), and `initialize` is always the handshake.
 
-**What is tested and what is not.** The protocol and every tool are tested in process with scripted JSON-RPC lines (handshake and version negotiation, errors, batches, oversized and mutated input, every tool against a fixture inventory with the output checked against the schemas) and once as a real process over pipes. The server has **not** been tried with Claude Desktop, Claude Code or any other real MCP client yet; client-specific behaviour (how a client displays `structuredContent`, whether it asks before `scan`) is unverified.
+Not implemented (not advertised): resources, prompts, logging, completion, sampling, subscriptions, progress and cancellation notifications. Tool failures, including arguments that do not fit the input schema, are results with `isError: true` (the assistant can read and correct them); protocol errors use the JSON-RPC codes (-32700 parse error with a null id, -32600 invalid request, -32601 unknown method, -32602 unknown tool or malformed parameters, -32002 legacy request before `initialize`, -32022 unsupported modern version). Lines longer than 1 MiB are refused and skipped; batches (older revisions) are answered as batches, up to 32 messages. A `scan` blocks the process until it ends (requests are handled one at a time).
+
+The tool input schemas are JSON Schema in the default dialect (2020-12, no `$schema`), and tool names use only letters, digits and `_`, as 2025-11-25 recommends; the server validates arguments against the schemas before it runs a tool. The message reader is a parser of untrusted input and has a fuzz target (`mcp_message`).
+
+**What is tested and what is not.** The protocol and every tool are tested in process with scripted JSON-RPC lines (handshake and version negotiation, the modern era without a handshake: `server/discover`, `tools/list`, `tools/call`, unsupported versions and malformed metadata, both eras on one process, errors, batches, oversized and mutated input, every tool against a fixture inventory with the output checked against the schemas, the default `list_devices` size for a full /24) and once as a real process over pipes. On a real home /24 (2026-11-20, Windows) a process over pipes ran `scan` with the default 5 ports: Safe Mode, 336 s, complete, 12 responding hosts; then `list_devices`, `list_findings` and `device_history` for the gateway answered from that scan. That /24 needs `timeout_seconds` of about 400; with the default 50 the same call stopped at 50 s and returned a partial result (`complete: false`, a note saying so, not an error), so expect a partial /24 from clients that stop waiting after 60 s.
+
+It was also tried with a real client: **Claude Code 2.1.302** (`claude -p` with a temporary `--mcp-config` and `--strict-mcp-config`, a temporary inventory filled by scans of 127.0.0.1, the server started with `--scope 127.0.0.1/32`, every message logged by a pass-through shim). Verified there:
+
+- **Modern era.** Claude Code probes with `server/discover` (version 2026-07-28), then sends `tools/list` and `tools/call` with the version in `_meta` and never sends `initialize`. All eight tools were called this way and answered: `list_scans`, `list_devices`, `device_history`, `list_findings`, `diff_scans`, `search_inventory` (including the whitespace-only query, which came back as the readable tool error), `findings_gained` and `scan`.
+- **Legacy fallback.** With `server/discover` refused by the shim, Claude Code falls back to `initialize` with 2025-11-25, the server echoes it, and the tool calls work over the handshake.
+- **What the model sees.** The model receives the text content (the JSON as text). `structuredContent` is not passed to the model, so the JSON stays in the text block.
+- **Asking before `scan`.** In `claude -p` with only the read-only tools allowed, the `scan` call was denied by Claude Code's permission check and never reached the server. With `scan` allowed, it scanned 127.0.0.1 in Safe Mode and saved the result.
+
+Not tried: Claude Desktop and other MCP clients, Claude Code's interactive permission prompt (only the non-interactive denial was observed), and a long scan against a client's request timeout.

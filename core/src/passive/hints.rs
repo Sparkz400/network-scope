@@ -13,8 +13,8 @@
 //!
 //! All tables below are **heuristics written for this project** from public protocol
 //! documentation and common knowledge of how devices announce themselves. They are not copied
-//! from a fingerprint database, they have been checked against hand-built frames only (no real
-//! captures), and a match is a hint, not proof. A device can announce services it does not
+//! from a fingerprint database, they have been checked against hand-built frames (and the NetBIOS
+//! browser decoder against one real capture), and a match is a hint, not proof. A device can announce services it does not
 //! really offer.
 use std::collections::BTreeMap;
 

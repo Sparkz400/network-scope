@@ -24,7 +24,7 @@ Each finding states its evidence (what was observed) and a `confidence` from 0 t
 
 ## Reference links
 
-Some findings carry an optional `reference`: a link to official documentation on the problem and how to fix it. Currently `smb1-enabled` and `smb-signing` (Microsoft Learn), `rdp-no-nla` (Microsoft Learn), `telnet-open` (CISA) and the weak-TLS rules `tls-sslv3`, `tls-deprecated-protocol`, `tls-broken-cipher`, `tls-3des`, `tls-no-pfs`, `tls-weak-signature` and `tls-weak-key` (Mozilla Server Side TLS). The link appears in the HTML report, in a `Reference` column of the Markdown summary, as `reference` in the JSON and JSONL exports (omitted when a finding has none) and in the Findings window. Only HTTPS links are shown. Exports written before this field existed still load.
+Findings carry a `reference`: a link to official documentation on the problem and how to fix it (a vendor advisory or manual, CISA, NIST, an RFC or the Mozilla TLS guidelines). Every built-in rule has one, and it is also listed under References on the rule's page in the [Finding reference](findings/index.md), next to the fix steps. CVE hints link to the CVE's NVD entry, findings from a CISA ICS advisory to that advisory; only findings of user scripts have none. The link appears in the HTML report, in a `Reference` column of the Markdown summary, as `reference` in the JSON and JSONL exports (omitted when a finding has none) and in the Findings window. Only HTTPS links are shown. Exports written before this field existed still load.
 
 ## CVE hints
 

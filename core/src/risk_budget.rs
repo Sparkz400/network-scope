@@ -1083,6 +1083,42 @@ fn false_alarm_budget_is_zero_for_every_rule() {
     println!("{}", report.join("\n"));
 }
 
+/// ROADMAP D27: every rule carries an official reference link that its documentation page also
+/// lists, and fix advice. docs/check_finding_pages.py checks the pages' fix steps.
+#[test]
+fn every_rule_has_a_reference_listed_on_its_page_and_advice() {
+    let (ids, _) = source_rule_ids();
+    let pages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/src/findings");
+    for id in &ids {
+        let url = reference_for(id).unwrap_or_else(|| panic!("{id} has no entry in reference_for"));
+        assert!(url.starts_with("https://"), "{id}: {url}");
+        let page = std::fs::read_to_string(pages.join(format!("{id}.md"))).unwrap();
+        let refs = page.split("## References").nth(1).unwrap_or("");
+        assert!(
+            refs.contains(&format!("]({url})")),
+            "docs/src/findings/{id}.md does not list {url} under References"
+        );
+    }
+    for case in cases().iter().filter(|c| !SNAPSHOT_ONLY.contains(&c.id)) {
+        let found = analyze_host_with(&host_of(&case.hit), &CveDb::builtin());
+        let f = found.iter().find(|f| f.id == case.id).unwrap();
+        assert_eq!(
+            f.reference.as_deref(),
+            reference_for(case.id),
+            "{}",
+            case.id
+        );
+        assert!(!f.advice.trim().is_empty(), "{} has no advice", case.id);
+    }
+    // The cve- family links to the NVD entry of the rule's first CVE.
+    for rule in &CveDb::builtin().rules {
+        assert!(
+            nvd_url(&rule.cve[0].to_ascii_uppercase()).is_some(),
+            "{rule:?}"
+        );
+    }
+}
+
 #[test]
 fn every_rule_has_a_confidence_and_findings_explain_themselves() {
     let (ids, _) = source_rule_ids();

@@ -8,16 +8,16 @@ End goals for Network Scope after 0.5.0. Each goal has a "done when" test where 
 
 ## Priority order
 
-1. Real-hardware testing to clear the changelog's "Untested" section (A1, A7)
+1. Real-hardware testing to clear the changelog's "Untested" section (A1, A7) *Status: on-link SYN, the ARP sweep, TCP traceroute, live OT capture and DCP ran on a real home LAN (Windows 11, Npcap, not elevated, 2026-11-20); SYN and traceroute to routed targets and libpcap on Linux/macOS remain.*
 2. Ground-truth accuracy benchmark in CI (A2)
 3. Published speed comparison (B10)
 4. Fuzz the parsers (A5)
-5. Code signing and winget (I55, I56)
+5. Code signing and winget (I55, I56) *Status: every parser has a cargo-fuzz target; the weekly `fuzz-long` workflow fuzzes all of them for about 24 h in five shards. Done once a full run ends without a crash.*
 6. "What changed" home screen plus approved baseline (E31, E32)
 7. Passive mDNS/SSDP/LLDP/DHCP discovery (C19)
 8. CISA KEV/EPSS ranking (D25)
 9. Explain every conclusion (A9)
-10. Library crate and split the largest files (G50, J61)
+10. Library crate and split the largest files (G50, J61) *Status: `lab/speed_compare.py`, the `speed` workflow (nmap 7.94 and RustScan 2.4.1 on Ubuntu) and `docs/src/speed.md`; only Network Scope is measured so far (Windows loopback, and a home /24 with the top 100 ports: 28 s median with `--fast`); the nmap/RustScan table comes from the first `speed` run. Advanced IP Scanner has no CLI and is not measured.*
 
 Items 1–4 are what back a claim of "fastest and most accurate". The rest make it the most useful.
 
@@ -43,15 +43,15 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 13. **Probe the likeliest ports first** for each device type, and stop early once the device is identified. *Status: done (`--early-stop` opt-in).*
 14. **Fast repeat scans:** skip hosts that haven't changed and only check what's likely to have changed. This makes monitoring cheap. *Status: done (`--incremental`).*
 15. **Scale:** handle a /8 or 1M+ targets with flat memory use, by generating targets on the fly and writing to SQLite in batches. *Status: done (batched writing above 65,536 addresses).*
-16. **Scan several subnets and network interfaces at the same time.** *Status: done for several subnets and `--interface a,b`; two real interfaces not tested.*
+16. **Scan several subnets and network interfaces at the same time.** *Status: done for several subnets and `--interface a,b`; one scan over a real Ethernet adapter and a VMware adapter checked (2026-11-20).*
 17. **Resource budgets checked in CI:** starts in under 150 ms, uses under 200 MB on a /16, and the GUI stays at 60 fps with 65k rows. *Status: done (budgets in CI).*
 18. **Performance tests in CI** (criterion benchmarks) so a slow change can't be merged unnoticed. *Status: done (criterion benchmarks in CI).*
 
 ## C. Discovery breadth (find more, send less)
 
-19. **Learn from traffic that's already there:** mDNS/Bonjour, SSDP/UPnP, LLDP/CDP, NetBIOS, WS-Discovery and DHCP fingerprints. This identifies devices without sending a single packet. *Status: done for CDP, WS-Discovery, DHCP, mDNS, SSDP, NetBIOS, LLDP capabilities; not yet NetBIOS browser announcements, LLDP-MED, DHCPv6.*
+19. **Learn from traffic that's already there:** mDNS/Bonjour, SSDP/UPnP, LLDP/CDP, NetBIOS, WS-Discovery and DHCP fingerprints. This identifies devices without sending a single packet. *Status: done (also NetBIOS browser announcements, LLDP-MED and DHCPv6; the last two checked on spec-built frames only).*
 20. **SNMP read-only** (v1/v2c/v3 with user-supplied credentials): system description, interfaces, and LLDP neighbours to build a real topology. *Status: done (read-only v1/v2c/v3, LLDP links, checked against pysnmp).*
-21. **Full IPv6 discovery:** NDP and multicast ping (ff02::1). *Status: done (`--ipv6-discover`, passive NDP; not run on Linux/macOS or against a real neighbour).*
+21. **Full IPv6 discovery:** NDP and multicast ping (ff02::1). *Status: done (`--ipv6-discover`, passive NDP; checked against real neighbours on a home LAN on Windows; not run on Linux/macOS).*
 22. **Optional logins for exact versions:** read-only SSH, WinRM or WMI give the exact OS and patch level, which makes CVE hints far more accurate. *Declined (2026-11-19): the tool stays credential-free.*
 23. **More OT protocols, all read-only:** DNP3, IEC 61850 MMS, Omron FINS, Mitsubishi MELSEC, CODESYS, KNX, MQTT, Niagara Fox, plus fuller Profinet. *Status: done for FINS (UDP/TCP), Fox, MQTT, KNX, MELSEC MC and DNP3 (opt-in), passive MMS and CODESYS V2; active MMS Identify not done (no capture to verify against).*
 24. **Device identity that survives IP changes and randomized MAC addresses.** *Status: done.*
@@ -60,7 +60,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 25. **Offline CVE feeds:** import NVD plus CISA KEV and EPSS, and rank findings by "being exploited right now". *Status: done (KEV, EPSS and NVD).*
 26. **A risk score per host and per network**, plus a "fix these 10 things first" list. *Status: done.*
-27. **Fix steps and reference links for every finding.** *Status: reference links for SMB, RDP, Telnet and TLS rules; per-finding fix steps in the docs (K66).*
+27. **Fix steps and reference links for every finding.** *Status: done (an official reference link and fix steps for every rule; a test fails for a rule without them).*
 28. **HTTPS webhooks** via the OS certificate store (`rustls-platform-verifier`). Removes an item from "Not done". *Status: done.*
 29. **Close the rest of "Not done":** verify the signature on self-signed certificates, and add optional JARM fingerprints when Safe Mode is off. *Status: done.*
 30. **Compliance exports:** asset inventory mapped to IEC 62443, NIS2 and the CIS Controls. *Status: done.*
@@ -80,16 +80,16 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 38. **Everyday convenience features:** openers (browser, SSH, RDP, ping), favorites, reading targets from an IP list file, random order and Wake-on-LAN. *Status: done.*
 39. **Command palette and search across all scans** ("where did 10.0.5.17 last appear?"). *Status: done.*
 40. **Scan presets:** Quick, Office, Plant (passive), Full audit. *Status: done.*
-41. **Plain-language findings** with an "explain this" tooltip, written for non-experts.
+41. **Plain-language findings** with an "explain this" tooltip, written for non-experts. *Status: done (an "explain this" button per finding, English and German, tied to the finding pages by a test).*
 42. **Translations** (German, for example) and accessibility: keyboard-only use, screen readers, high DPI. *Status: done (German, dark theme, scale, screen reader names checked in the accessibility tree).*
-43. **A visible Safe Mode indicator** that always shows what the scan is about to send.
+43. **A visible Safe Mode indicator** that always shows what the scan is about to send. *Status: done (the status-bar badge lists what the next scan sends, computed from the dry-run plan and updated live).*
 
 ## G. Automation and integration
 
 44. **A versioned JSON output format and stable exit codes,** so the tool is reliable in scripts and CI. *Status: done (exit codes and versioned JSON with schema files).*
 45. **Headless server mode with a REST API and web UI.** *Declined (2026-11-19).*
 46. **Remote sensors:** lightweight scanners at each site that report to one central inventory. *Declined (2026-11-19).*
-47. **An MCP server,** so AI assistants can query the inventory ("which hosts gained SMBv1 this month?"). *Status: done (stdio, read-only queries and a Safe Mode scan).*
+47. **An MCP server,** so AI assistants can query the inventory ("which hosts gained SMBv1 this month?"). *Status: done (stdio, read-only queries and a Safe Mode scan; protocol revisions up to 2025-11-25 and the stateless 2026-07-28; tried with Claude Code 2.1.302).*
 48. **A Windows service and systemd unit for `monitor`,** and a scheduler in the GUI. *Status: done.*
 49. **A shared library of Rhai scripts,** plus scripts that run when an alert fires. *Status: done.*
 50. **Split the engine into a library crate** (`network-scope-core`) so other tools can build on it. *Status: done.*
@@ -103,10 +103,10 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 ## I. Distribution and trust
 
-55. **Code signing:** Windows Authenticode and macOS notarization, so SmartScreen stops warning.
-56. **Package managers:** winget, Scoop, Chocolatey, Homebrew, AUR/apt, `cargo install` and a Docker image.
+55. **Code signing:** Windows Authenticode and macOS notarization, so SmartScreen stops warning. *Status: signing steps in the release workflow (Azure Artifact Signing, macOS notarization) that run once the secrets exist; no certificate or account yet.*
+56. **Package managers:** winget, Scoop, Chocolatey, Homebrew, AUR/apt, `cargo install` and a Docker image. *Status: winget, Scoop, Chocolatey, Homebrew and AUR manifests rendered for every release; submitting them is manual (`packaging/README.md`); Docker image done.*
 57. **Supply-chain checks:** reproducible builds, an SBOM (CycloneDX), `cargo-deny`/`cargo-audit` in CI, and signed releases. *Status: done (SBOM; two Windows builds byte-identical; Linux check in CI).*
-58. **Build and test the installer in CI** (`installer/network-scope.iss` has never been compiled with `iscc`).
+58. **Build and test the installer in CI** (`installer/network-scope.iss` has never been compiled with `iscc`). *Status: done (CI compiles the installer, installs it silently, runs both binaries and uninstalls it).*
 59. **Opt-in auto-update** that checks signatures. *Status: done (notify only).*
 60. **A small CLI-only build** without the GUI dependencies, for servers and jump hosts. *Status: done.*
 

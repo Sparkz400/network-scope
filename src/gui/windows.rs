@@ -242,6 +242,8 @@ impl Scanner {
                                 ui.label(format!("{}{}", f.ip, f.port.map_or(String::new(), |p| format!(":{p}"))));
                             });
                             row.col(|ui| {
+                                // The "?" first: the column clips long titles.
+                                super::explain_button(ui, &f.id);
                                 ui.label(&f.title).on_hover_text(&f.advice);
                             });
                             row.col(|ui| {
@@ -654,7 +656,7 @@ impl Scanner {
             .default_size(win_size([760.0, 620.0]))
             .default_pos([24.0, 40.0])
             .show(ctx, |ui| {
-                ui.label(tr!("Passive: mDNS · SSDP · LLDP · NetBIOS · DHCP · ARP"));
+                ui.label(tr!("Passive: mDNS · SSDP · LLDP · CDP · NetBIOS · WS-Discovery · DHCP · DHCPv6 · ARP"));
                 ui.label(tr!(
                     "Requires Npcap and permission to capture on the selected Ethernet interface."
                 ));

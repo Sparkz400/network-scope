@@ -1,0 +1,124 @@
+name: fuzz-long
+
+# Roadmap A5: at least 24 hours of fuzzing per week over every target in fuzz/fuzz_targets.
+# GitHub stops a job after 6 hours, so five shards fuzz disjoint sets of targets for about
+# 4 h 50 min each (24 h 10 min in all). cargo-fuzz with libFuzzer and AddressSanitizer, the
+# same build flags as .clusterfuzzlite/build.sh. Every shard starts from the corpora that all
+# shards of the previous run kept (artifacts), so a target keeps its corpus when it moves to
+# another shard. A crash, timeout or leak fails the shard and uploads the input that caused it.
+# The ClusterFuzzLite jobs (cflite.yml) stay as they are: short runs on pull requests.
+on:
+  schedule:
+    - cron: "17 1 * * 6" # weekly, Saturday 01:17 UTC
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Fuzzing seconds per shard (17400 for the full run; e.g. 600 to try the workflow)
+        default: "17400"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  SHARDS: 5
+  # Per shard; the build takes the rest of the 6 hours.
+  FUZZ_SECONDS: ${{ inputs.seconds || 17400 }}
+  # Same nightly as .clusterfuzzlite/Dockerfile; bump them together.
+  RUSTUP_TOOLCHAIN: nightly-2026-11-19
+  CARGO_FUZZ_VERSION: "0.13.2"
+
+jobs:
+  fuzz:
+    name: fuzz shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      actions: read # download the corpora of the previous run
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Linux GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Rust nightly and cargo-fuzz
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - name: Corpora of the previous runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The last few completed runs, oldest first: a cancelled run or a shard that died early
+          # left little or nothing, and must not cut the chain. libFuzzer names corpus files by
+          # their content hash, so overlaying runs only adds files.
+          runs=$(gh run list --workflow fuzz-long.yml --branch "$GITHUB_REF_NAME" --status completed \
+            --limit 4 --json databaseId --jq 'reverse | .[].databaseId' || true)
+          for run in $runs; do
+            rm -rf prev
+            if gh run download "$run" --pattern 'corpus-*' --dir prev; then
+              for d in prev/corpus-*; do cp -r "$d"/. fuzz/corpus/; done
+              echo "corpora of run $run merged"
+            fi
+          done
+          echo "corpus: $(find fuzz/corpus -type f | wc -l) files"
+      - name: Build the fuzz targets
+        run: cargo fuzz build -O --debug-assertions
+      - name: Fuzz
+        timeout-minutes: 310
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          targets=$(cargo fuzz list | awk -v s="$SHARD" -v n="$SHARDS" '(NR - 1) % n == s')
+          count=$(echo "$targets" | wc -l)
+          per=$((FUZZ_SECONDS / count))
+          echo "shard $SHARD: $count targets, $per s each" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "$targets" > shard-targets.txt
+          failed=""
+          for t in $targets; do
+            mkdir -p "fuzz/corpus/$t"
+            # fuzz/options/<target>.options: libFuzzer options as "key = value" lines.
+            opts=""
+            if [ -f "fuzz/options/$t.options" ]; then
+              opts=$(sed -n 's/^\([a-z_]*\) *= *\(.*\)$/-\1=\2/p' "fuzz/options/$t.options")
+            fi
+            # shellcheck disable=SC2086 # $opts holds several arguments
+            # The corpus is cargo-fuzz's default, fuzz/corpus/<target>.
+            if ! cargo fuzz run -O --debug-assertions "$t" -- \
+                -max_total_time="$per" -print_final_stats=1 $opts; then
+              failed="$failed $t"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::fuzz targets that crashed:$failed" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "no crashes" >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep this shard's corpora
+        if: always()
+        run: |
+          mkdir -p keep
+          if [ -f shard-targets.txt ]; then
+            while read -r t; do
+              if [ -d "fuzz/corpus/$t" ]; then cp -r "fuzz/corpus/$t" keep/; fi
+            done < shard-targets.txt
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: corpus-${{ matrix.shard }}
+          path: keep
+          retention-days: 90
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: crashes-${{ matrix.shard }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore

@@ -7,7 +7,7 @@
 //! `-- --baseline NAME` are criterion's own baseline switches.
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use network_scope_core::{
-    passive, pcapfile,
+    devices, passive, pcapfile,
     scan::{self, Host, Settings},
     service::ProbeDb,
     store::{self, IgnoreList, Snapshot},
@@ -131,6 +131,15 @@ fn benches(c: &mut Criterion) {
     let (old, new) = (snapshot(0), snapshot(1));
     c.bench_function("risk analysis, 1000 hosts", |b| {
         b.iter(|| black_box(network_scope_core::risk::analyze_snapshot(black_box(&new))))
+    });
+    // One step of `store::device_history`: a device found in a 1000-host scan (B18 / MCP audit).
+    c.bench_function("device history, one sighting in a 1000-host scan", |b| {
+        b.iter(|| {
+            let key = devices::HistoryKey::parse("10.0.0.5").unwrap();
+            let mut h = devices::HistoryBuilder::new(key, "10.0.0.5");
+            h.add(1, 0, black_box(&new));
+            assert_eq!(h.finish().sightings, 1);
+        })
     });
     let ignore = IgnoreList::new(&[]);
     c.bench_function("diff of two 1000-host snapshots", |b| {
