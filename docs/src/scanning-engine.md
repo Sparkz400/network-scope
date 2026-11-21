@@ -22,10 +22,10 @@ So on Windows an IPv4 address also gets one OS neighbor lookup alongside its pin
 
 `--tcp-only` keeps its meaning, no host discovery of any kind: every address gets every port. `--arp`, `--mac` and `--os` already do the lookup and use its answer the same way; the ARP sweep's silence on an on-link address counts as unused too. Measured on a home /24 (Windows, `--fast`, top 100 ports, 2026-11-21): 29.9 s → 19.1 s with the same open ports on every host that answered.
 
-**Linux** reaches the same verdict without a lookup of its own: no packet is added. The first port probes of an address that did not answer ping make the kernel resolve it by ARP (three requests, 1 s apart). If, 3.5 s after the first probe, the host has answered nothing (no open, refused or reset port) and the kernel's neighbor entry for it still has no MAC (`/proc/net/arp`), the address is unused when it is IPv4 on a direct route through an interface that does ARP (Ethernet type, no `NOARP` flag). The probes still waiting for that ARP are stopped, the other ports, UDP and the BACnet Who-Is are skipped, and the host gets a note ("no ARP answer on the local link to its first port probes"). The same rules as on Windows keep everything else on the normal path:
+**Linux** reaches the same verdict without a lookup of its own: no packet is added. The first port probes of an address that did not answer ping make the kernel resolve it by ARP (three requests, 1 s apart). If, 3.5 s after its first port probe got past the rate gate (Safe Mode spaces probes, so that can be later than the host's turn), the host has answered nothing (no open, refused or reset port) and the kernel's neighbor entry for it still has no MAC (`/proc/net/arp`), the address is unused when it is IPv4 on a direct route through an interface that does ARP (Ethernet type, no `NOARP` flag). The verdict also comes when all ports were launched before that time (a short port list): the scan of the host waits for it. The probes still waiting for that ARP are stopped, the other ports, UDP and the BACnet Who-Is are skipped, and the host gets a note ("no ARP answer on the local link to its first port probes"). The same rules as on Windows keep everything else on the normal path:
 
 - **A neighbor entry with a MAC** (live, or still cached for a device that just went away): nothing changes.
-- **No entry at all** (loopback, tunnels, VPNs), **a routed address**, **IPv6**, **the SYN engine**, `--tcp-only`: nothing changes.
+- **No entry at all** (loopback, tunnels, VPNs), **an entry on another interface than the route's**, **a routed address**, **IPv6**, **the SYN engine**, `--tcp-only`: nothing changes. An unprivileged Linux scan notes that ICMP is not permitted and suggests TCP probing; that means leaving out `--tcp-only` keeps this skip, adding it turns the skip off.
 - **An answer that still arrives** from a probe that was in flight: the host is reported with it, and the ports not probed are noted as unknown.
 - A host that rejects ports with ICMP "host prohibited" (firewalld's default) makes the kernel report "no route to host", like a failed ARP. Such a host has a MAC in the neighbor table, so it is probed in full.
 
@@ -37,6 +37,8 @@ CI checks this on the GitHub runner's own Docker bridge (`lab/neighbor_check.py`
 | Live container | found as before |
 | Container that rejects every port but one with ICMP host-prohibited | open port found, not unused |
 | Container stopped just before the scan | not unused (its MAC is still cached) |
+| Unused address, 3 ports | marked unused |
+| Safe Mode sweep of the bridge /27, 3 ports | all 26 unused addresses marked, the live and host-prohibited containers found; 22.1 s |
 
 It was not tried on a physical LAN or Wi-Fi. macOS is unchanged.
 
