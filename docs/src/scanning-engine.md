@@ -10,6 +10,38 @@
 
 A timeout never proves that a device is offline or a port closed.
 
+### Unused addresses on the local network (Windows, Linux)
+
+The CLI (and `monitor`, the desktop with "Check ports even when ping gets no reply", and the MCP `scan` tool) also probes the ports of addresses that did not answer ping, because many devices drop ICMP. On a local Ethernet or Wi-Fi subnet that wastes the whole port list on addresses nobody uses: the OS has to resolve an address by ARP before it can send it a single TCP packet, and an unused address never answers, so every probe just waits out its timeout.
+
+So on Windows an IPv4 address also gets one OS neighbor lookup alongside its ping (`SendARP`, the same ARP request the first connect would cause; one `neighbor-lookup` in the sent log and the dry run). Its answer is used only when the ping gets none, so a host that answers ping is reported exactly as before; running both at once means an unused address holds its scan slot for about 4 s instead of 6 s:
+
+- **ARP answer**: nothing changes, the ports are probed as before. The answer can come from the OS's neighbor cache (a device that went offline minutes ago), so it is not taken as proof that the device is up and no MAC is recorded from it; `--arp` and `--mac` record it as before.
+- **No ARP answer, and the address is on a directly attached Ethernet or Wi-Fi subnet** (the OS route has no gateway, and the address is not one of this computer's): the address is unused. Its ports, UDP and the BACnet Who-Is of `--ot` are skipped, and the host says so in a note ("no ARP answer on the local link"). It is not responding, exactly like an address that stays silent today.
+- **Anything else** (a routed address, a VPN, tunnel or loopback adapter, IPv6, any other error): nothing changes, the ports are probed as before.
+
+`--tcp-only` keeps its meaning, no host discovery of any kind: every address gets every port. `--arp`, `--mac` and `--os` already do the lookup and use its answer the same way; the ARP sweep's silence on an on-link address counts as unused too. Measured on a home /24 (Windows, `--fast`, top 100 ports, 2026-11-21): 29.9 s → 19.1 s with the same open ports on every host that answered.
+
+**Linux** reaches the same verdict without a lookup of its own: no packet is added. The first port probes of an address that did not answer ping make the kernel resolve it by ARP (three requests, 1 s apart). If, 3.5 s after its first port probe got past the rate gate (Safe Mode spaces probes, so that can be later than the host's turn), the host has answered nothing (no open, refused or reset port) and the kernel's neighbor entry for it still has no MAC (`/proc/net/arp`), the address is unused when it is IPv4 on a direct route through an interface that does ARP (Ethernet type, no `NOARP` flag). The verdict also comes when all ports were launched before that time (a short port list): the scan of the host waits for it. The probes still waiting for that ARP are stopped, the other ports, UDP and the BACnet Who-Is are skipped, and the host gets a note ("no ARP answer on the local link to its first port probes"). The same rules as on Windows keep everything else on the normal path:
+
+- **A neighbor entry with a MAC** (live, or still cached for a device that just went away): nothing changes.
+- **No entry at all** (loopback, tunnels, VPNs), **an entry on another interface than the route's**, **a routed address**, **IPv6**, **the SYN engine**, `--tcp-only`: nothing changes. An unprivileged Linux scan notes that ICMP is not permitted and suggests TCP probing; that means leaving out `--tcp-only` keeps this skip, adding it turns the skip off.
+- **An answer that still arrives** from a probe that was in flight: the host is reported with it, and the ports not probed are noted as unknown.
+- A host that rejects ports with ICMP "host prohibited" (firewalld's default) makes the kernel report "no route to host", like a failed ARP. Such a host has a MAC in the neighbor table, so it is probed in full.
+
+CI checks this on the GitHub runner's own Docker bridge (`lab/neighbor_check.py`, in the `cli-only` job). The results on 2026-11-21:
+
+| Case | Result |
+| --- | --- |
+| Unused address | marked unused in 3.6 s, against 12.3 s before |
+| Live container | found as before |
+| Container that rejects every port but one with ICMP host-prohibited | open port found, not unused |
+| Container stopped just before the scan | not unused (its MAC is still cached) |
+| Unused address, 3 ports | marked unused |
+| Safe Mode sweep of the bridge /27, 3 ports | all 26 unused addresses marked, the live and host-prohibited containers found; 22.1 s |
+
+It was not tried on a physical LAN or Wi-Fi. macOS is unchanged.
+
 ## Rate control
 
 Safe Mode uses a token bucket: one probe per 100 ms or the configured spacing, never faster. Outside Safe Mode there is no limiter unless you set `--rate PPS` (desktop: "Rate cap").
@@ -29,14 +61,18 @@ Ports that stay silent are retried (`--retries`, default 1). Each retry doubles 
 
 ### Adaptive TCP connect timing
 
-`--adaptive-tcp` (opt-in, also usable in Safe Mode; named like `--adaptive-syn`, since `--timeout` already adapts to the ping RTT by default):
+On by default, also in Safe Mode. `--no-adaptive-tcp` (or the desktop setting "Adapt port timeout to the device's connect answers") turns it off; `--adaptive-tcp` is still accepted. It applies where the ping RTT does not already set the timeout: hosts that drop ping, `--tcp-only` scans, and scans with ping adaptation turned off. A host that answers ping keeps its ping-based timeout (three times the ping RTT, at least 100 ms) and is probed exactly as without the flag.
 
-- Each host keeps its own RFC 6298 estimate (the same estimator as `--adaptive-syn`) from its completed connects. An accepted connect (SYN-ACK) and a refused one (RST) are both samples; a timeout or a local error is not.
+- Each such host keeps its own RFC 6298 estimate (the same estimator as `--adaptive-syn`) from its completed connects. An accepted connect (SYN-ACK) and a refused one (RST) are both samples; a timeout or a local error is not.
 - A probe's first connect waits `SRTT + 4·RTTVAR`, clamped between the minimum timeout (100 ms) and the port timeout, and never longer than the wait the scan would use without the flag. Retries still double up to the port timeout, so a slow answer is found on a retry.
-- Before the first sample exists a host's first three ports are probed alone, so the remaining ports already get the measured timeout: a fast LAN host does not wait the full port timeout on filtered ports. A host that answers nothing waits at most 250 ms extra, once.
-- It only shortens waits. Rate limits are unchanged: every attempt, retries included, still takes a gate token (Safe Mode: 100 ms spacing, 8 hosts, 4 parallel probes), and nothing is sent faster.
+- Before the first sample exists a host's first three ports are probed alone, so the remaining ports already get the measured timeout. A host that answers nothing waits at most 250 ms extra, once, and then the full port timeout as before.
+- Safe Mode's rate limits are unchanged: every attempt, retries included, still takes a gate token (100 ms spacing, 8 hosts, 4 parallel probes). With `--fast` there is no rate gate, so a shorter wait frees the host's probe slots sooner: a host that drops ping but answers some ports gets its probes faster (at most 32 in flight for an unclassified host, as before).
 - The SYN engine ignores it (use `--adaptive-syn`); when SYN falls back to TCP connect it applies.
-- Trade-off: a closed port that answers later than the measured RTT is reported as unanswered, not closed. Windows reports a refused connect only after about 2 s (it retransmits the SYN), so with this flag closed ports on a host that also has open ports usually show as unanswered there; open ports are unaffected. Use it on Linux/macOS scanners, or where distinguishing closed from filtered does not matter.
+- Trade-off: a port that answers later than the measured RTT on the first attempt and on the retry is reported as unanswered. Windows' habit of reporting a refused connect only after about 2 s no longer matters, because probe sockets do not retransmit the SYN (see above).
+- Why not for hosts that answer ping: on a power-saving Wi-Fi device (ping about 23 ms), the first version, which applied to every host, showed 2 closed ports as unanswered in 5 of 20 runs (0 of 20 without it), for no gain, since its timeout was the 100 ms minimum either way.
+- Where no host has a ping RTT, every host takes this path, power-saving devices included: with `--tcp-only`, and on Linux without the right to send ICMP (an unprivileged user outside `net.ipv4.ping_group_range`, as on GitHub's runners). The risk measured above (a few closed ports of such a device shown as unanswered) applies there; open ports were not affected in any run. `--no-adaptive-tcp` avoids it.
+- Measured on a home LAN (Windows, Ethernet, 2026-11-21, top 100 ports, `--fast`, interleaved): the 10 to 11 devices that answer took 6.7 to 6.9 s instead of 17.7 to 19.3 s (10 rounds each). The gain is the two devices that drop ping and every port but one (18.0 s each on their own, 6.9 s now). In the runs where a power-saving device that answers ping in about 580 ms, and no port, was present, both modes took 9.5 to 18.7 s: that device is unchanged and bounds the scan. Open ports were the same in all 20 runs. Bursts of closed ports shown as unanswered (3, 23 and 31 ports) came from power-saving devices that answer ping, in both modes. A whole /24 did not get faster (21 to 22 s either way) for the same reason.
+- Safe Mode, the same answering devices, one run each way: 122.5 s instead of 191.9 s, with identical results. Safe Mode's pacing is unchanged; the probe slots are just freed sooner.
 
 ## Very large scans
 
