@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Adaptive TCP connect timing is on by default** for hosts without a ping RTT (hosts that drop ping, `--tcp-only`, ping adaptation off); a host that answers ping keeps its ping-based timeout and is probed exactly as before. `--no-adaptive-tcp` or the new desktop setting turns it off; `--adaptive-tcp` is still accepted. Before, a host that drops ping waited the full port timeout and a retry on every silent port. Home LAN (Windows, top 100 ports, `--fast`, 10 interleaved rounds): the answering devices took 6.7–6.9 s instead of 17.7–19.3 s whenever a slow power-saving device was absent, with the same open ports in all runs. The documented Windows drawback (closed ports shown as unanswered) dated from before probe sockets stopped retransmitting the SYN. Settings saved before this change (desktop preferences, scheduled scans, services, saved scans) keep their stored value, which is off; new command-line scans, MCP scans and fresh desktop installs get it.
+
 ### Added
 
 - **Safe Mode badge** in the status bar of the desktop: a green "Safe Mode" or amber "Fast" label next to the status text, updated as soon as the setting changes. The tooltip lists the limits (Safe Mode) or the enabled opt-in features (Fast); a click opens Settings. `NETWORK_SCOPE_SCREENSHOT_STATE` accepts a `-fast` suffix (for example `main-small-fast`) to render with Safe Mode off.
