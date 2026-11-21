@@ -912,8 +912,11 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
         let syn_index = pick(&ctx.blocking, &ctx.syn, ip).await;
         let syn_engine: Option<Arc<SynEngine>> = syn_index.map(|i| ctx.syn[i].engine.clone());
-        let host_rtt =
-            (s.tcp_adaptive && syn_engine.is_none()).then(|| Arc::new(HostRtt::default()));
+        // Only where the ping RTT does not already set the timeout: a host that answers ping
+        // keeps exactly that timeout and order (the pilot cost a power-saving Wi-Fi device
+        // closed ports in 5 of 20 runs, for no gain).
+        let host_rtt = (s.tcp_adaptive && syn_engine.is_none() && (rtts.is_empty() || !s.adaptive))
+            .then(|| Arc::new(HostRtt::default()));
         // The likeliest ports first, and the order follows what the host turns out to be.
         let vendor = if h.mac.is_empty() || crate::oui::locally_administered(&h.mac) {
             ""
