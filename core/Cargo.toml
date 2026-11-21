@@ -17,10 +17,6 @@ publish = false
 path = "src/lib.rs"
 doctest = true
 
-[features]
-# Test helpers (pcap writers) for the tests of crates built on this one; never needed otherwise.
-test-util = []
-
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,10 +38,5 @@ ring = "0.17"
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
-# Benchmarks of the hot paths (benches/hot_paths.rs, roadmap B18). No plotting and no rayon: the
-# numbers and the baseline comparison need neither, and it keeps the dependency tree small.
-criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
-
-[[bench]]
-name = "hot_paths"
-harness = false
+# The benchmarks live in their own package (`bench/`): nothing here may turn on a feature of a
+# shared dependency, or `cargo build` after `cargo test` compiles this crate a second time.
