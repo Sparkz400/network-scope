@@ -78,7 +78,9 @@ pub struct Settings {
     pub syn_adaptive: bool,
     /// TCP connect scan: per-host connect timeout from a smoothed RTT of the host's
     /// completed connects (SYN-ACK or RST). Only ever shortens a wait; never in the
-    /// SYN engine and never raises a rate.
+    /// SYN engine and never raises a rate. On by default; a snapshot saved before it was
+    /// (no such key) reads as off, which is what that scan ran with.
+    #[serde(default)]
     pub tcp_adaptive: bool,
     /// Traceroute method: icmp (default), tcp (SYN, needs the capture interface) or udp.
     pub trace_method: crate::trace::TraceMethod,
@@ -172,7 +174,7 @@ impl Default for Settings {
             scripts: String::new(),
             arp_sweep: false,
             syn_adaptive: false,
-            tcp_adaptive: false,
+            tcp_adaptive: true,
             trace_method: crate::trace::TraceMethod::Icmp,
             trace_port: 0,
             jarm: false,
@@ -1005,6 +1007,10 @@ mod tests {
     fn new_engine_options_are_off_in_old_snapshots() {
         let old: Settings = serde_json::from_str(r#"{"ports":"22","safe":false}"#).unwrap();
         assert!(!old.arp_sweep && !old.syn_adaptive && !old.tcp_adaptive && !old.jarm);
+        assert!(
+            Settings::default().tcp_adaptive,
+            "new scans adapt the connect timeout"
+        );
         assert!(
             old.backoff,
             "old snapshots and settings files get the back-off"
