@@ -1956,7 +1956,7 @@ mod tests",
             return;
         };
         let mut ports = vec![9100, 515, 631];
-        ports.extend(40000..40040);
+        ports.extend(29500..29540);
         let full = scan_with(ports.clone(), None, false, 1).await;
         assert!(full.ports_checked && full.open == [515, 9100], "{full:?}");
         let stopped = scan_with(ports.clone(), None, true, 1).await;
@@ -2047,9 +2047,11 @@ mod tests",
     async fn a_repeat_scan_carries_over_what_did_not_change_and_says_so() {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let port = greeting_server(stop.clone());
-        let mut ports: Vec<u16> = (33000..33020).collect();
+        // Closed ports below every OS's ephemeral range (Linux starts at 32768): a listener another
+        // test binds to port 0 can never land on them.
+        let mut ports: Vec<u16> = (29400..29420).collect();
         ports.push(port);
-        let text = format!("33000-33019,{port}");
+        let text = format!("29400-29419,{port}");
         let full = scan_repeat(ports.clone(), None).await;
         assert!(full.ports_checked && full.open == [port], "{full:?}");
         assert!(full.identity.keys().all(|k| !k.starts_with("incr.")));
@@ -2118,9 +2120,9 @@ mod tests",
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
-        let mut ports: Vec<u16> = (33000..33020).collect();
+        let mut ports: Vec<u16> = (29400..29420).collect();
         ports.push(port);
-        let text = format!("33000-33019,{port}");
+        let text = format!("29400-29419,{port}");
         let full = scan_repeat(ports.clone(), None).await;
         assert!(!full.open.contains(&port));
         let Ok(server) = std::net::TcpListener::bind(("127.0.0.1", port)) else {
