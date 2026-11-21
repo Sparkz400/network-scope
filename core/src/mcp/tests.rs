@@ -218,7 +218,7 @@ fn modern_clients_need_no_handshake() {
     assert_eq!(list["resultType"], "complete");
     assert_eq!(list["cacheScope"], "public");
     assert!(list["ttlMs"].as_u64().unwrap() > 0);
-    assert_eq!(list["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(list["tools"].as_array().unwrap().len(), 9);
 
     let call = modern(
         &mut server,
@@ -665,7 +665,8 @@ fn tools_list_declares_proper_input_schemas() {
             "diff_scans",
             "search_inventory",
             "findings_gained",
-            "scan"
+            "scan",
+            "scan_status"
         ]
     );
     for tool in tools {
@@ -1324,11 +1325,11 @@ fn the_scan_tool_refuses_public_oversized_and_unusual_requests() {
         ),
         (
             json!({"targets": "10.0.0.0/24", "ports": "1-100"}),
-            "limit is 4000",
+            "limit is 5000",
         ),
         (
             json!({"targets": "10.0.0.1-50", "ports": "1-1024"}),
-            "limit is 4000",
+            "limit is 5000",
         ),
         (json!({"targets": "10.0.0.1", "ports": "0"}), "Invalid port"),
         (
@@ -1447,6 +1448,48 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
         "{kinds:?}"
     );
     assert!(listener.accept().is_err(), "the dry run connected");
+    // One silent host holds its slot for the ping (2 s) or, on Windows, the ARP check alongside
+    // it (4.2 s), then two tries of 2 s at its one port.
+    let arp = if crate::platform::NEIGHBOR_SILENCE {
+        4.2
+    } else {
+        0.0
+    };
+    assert_eq!(
+        plan["estimated_seconds"],
+        (f64::max(2.0, arp) + 4.0).ceil() as u64
+    );
+    let first = f64::max(2.0, arp);
+    // A /24 (254 addresses) with the default 5 ports: the larger of 32 rounds of 8 addresses,
+    // each up to max(2 s, ARP) + 2 waves x 4 s, and 254 x (1 + 5 x 2) probes at 0.12 s (plus the
+    // ARP checks on Windows). Measured on a real /24: 331 s without the ARP check,
+    // 182 s with it.
+    let lan = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "10.0.0.0/24", "dry_run": true}),
+        "dry-run",
+    );
+    let probes = |ports: f64| 254.0 * (if arp > 0.0 { 2.0 } else { 1.0 } + 2.0 * ports) * 0.12;
+    let bound = |slots: f64, ports: f64| slots.max(probes(ports)).ceil() as u64;
+    assert_eq!(lan["estimated_seconds"], bound(32.0 * (first + 8.0), 5.0));
+    // With one port the host slots, not the probes, bound it.
+    let one = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "10.0.0.0/24", "ports": "80", "dry_run": true}),
+        "dry-run",
+    );
+    assert_eq!(one["estimated_seconds"], bound(32.0 * (first + 4.0), 1.0));
+    // Linux and macOS: 336 s (probes) and 192 s (slots); Windows: 391 s and 263 s (slots).
+    let expected = if arp > 0.0 { (391, 263) } else { (336, 192) };
+    assert_eq!(
+        (
+            lan["estimated_seconds"].as_u64(),
+            one["estimated_seconds"].as_u64()
+        ),
+        (Some(expected.0), Some(expected.1))
+    );
     assert!(!db.exists(), "a dry run saves nothing");
     remove_db(&db);
 }
@@ -1519,7 +1562,8 @@ fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
     let s = &saved.settings;
     assert!(s.safe && s.delay >= 100, "{s:?}");
     assert!(!s.syn && !s.arp_sweep && !s.arp && !s.ot && !s.udp && !s.trace && !s.os_detect);
-    assert!(!s.syn_adaptive && !s.tcp_adaptive && s.scripts.is_empty() && s.probe_file.is_empty());
+    assert!(!s.syn_adaptive && s.scripts.is_empty() && s.probe_file.is_empty());
+    assert!(s.tcp_adaptive, "the default: it only shortens waits");
     assert!(s.interface.is_empty() && s.source_ip.is_empty() && s.max_rate == 0);
     assert!(
         !saved.sent.is_empty(),
@@ -1538,6 +1582,100 @@ fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
     );
     assert_eq!(devices["total"], 1);
     drop(listener);
+    remove_db(&db);
+}
+
+/// Polls `scan_status` until the background scan has ended.
+fn wait_for_background(server: &mut Server) -> Value {
+    let started = Instant::now();
+    loop {
+        let status = ok(server, "scan_status", json!({}), "mcp-scan-status");
+        if status["state"] != "running" {
+            return status;
+        }
+        assert!(started.elapsed() < Duration::from_secs(120), "{status}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn a_background_scan_answers_at_once_and_reports_its_summary_when_done() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let db = temp_db("background");
+    let mut server = session(&db);
+    let idle = ok(&mut server, "scan_status", json!({}), "mcp-scan-status");
+    assert_eq!(idle["state"], "idle");
+    // 30 closed ports plus the open one at the 100 ms spacing: a few seconds, long enough to
+    // still be running for the next two calls.
+    let ports = format!("20000-20029,{port}");
+    let started = Instant::now();
+    let status = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": ports, "background": true}),
+        "mcp-scan-status",
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it answered at once"
+    );
+    assert_eq!(status["state"], "running", "{status}");
+    assert_eq!(status["targets"], "127.0.0.1");
+    // No timeout given: the estimate plus 10 %, never below the 10 s minimum.
+    assert!(
+        status["timeout_seconds"].as_u64().unwrap() >= 10,
+        "{status}"
+    );
+    let busy = failed(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": "22"}),
+    );
+    assert!(busy.contains("already running"), "{busy}");
+    // The session still answers queries while the scan runs.
+    ok(&mut server, "list_scans", json!({}), "scans");
+    let done = wait_for_background(&mut server);
+    assert_eq!(done["state"], "done", "{done}");
+    let summary = &done["summary"];
+    assert_eq!(summary["complete"], true, "{summary}");
+    assert_eq!(summary["open_ports"], 1, "{summary}");
+    let id = summary["scan_id"].as_i64().unwrap();
+    assert_eq!(store::load(&db, id).unwrap().hosts[0].open, [port]);
+    // Asking again gives the same result; a new scan may start now.
+    assert_eq!(wait_for_background(&mut server)["summary"]["scan_id"], id);
+    ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": port.to_string(), "timeout_seconds": 30}),
+        "mcp-scan",
+    );
+    drop(listener);
+    remove_db(&db);
+}
+
+#[test]
+fn a_background_scan_is_saved_as_partial_when_the_session_ends() {
+    let db = temp_db("background-end");
+    let mut server = session(&db);
+    let status = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": "20000-20999", "background": true}),
+        "mcp-scan-status",
+    );
+    assert_eq!(status["state"], "running");
+    std::thread::sleep(Duration::from_millis(500));
+    let ended = Instant::now();
+    drop(server);
+    assert!(
+        ended.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        ended.elapsed()
+    );
+    let scans = store::list(&db).unwrap();
+    assert_eq!(scans.len(), 1, "the stopped scan is on record");
+    assert!(!scans[0].complete, "and marked partial");
     remove_db(&db);
 }
 

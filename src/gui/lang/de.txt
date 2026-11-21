@@ -69,6 +69,7 @@ DNS lookups || DNS-Abfragen
 Responding || Antwortet
 Probe error || Probenfehler
 No reply || Keine Antwort
+Unused (no ARP answer) || Unbenutzt (keine ARP-Antwort)
 
 # Menus and the scan controls
 Scan || Scan
@@ -240,6 +241,7 @@ OT/printer port: ICMP will be used instead || OT-/Druckerport: Stattdessen wird 
 TCP only (skip ICMP ping) || Nur TCP (ICMP-Ping überspringen)
 Check ports even when ping gets no reply || Ports auch ohne Ping-Antwort prüfen
 Adapt port timeout to measured ping || Port-Zeitlimit an gemessenen Ping anpassen
+Adapt port timeout to the device's connect answers || Port-Zeitlimit an die Verbindungsantworten des Geräts anpassen
 Back off when a device resets connections (lower limits for OT/printers) || Zurückschalten, wenn ein Gerät Verbindungen zurücksetzt (niedrigere Grenzen für OT/Drucker)
 Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255) || Netzwerk-/Broadcast-Adressen überspringen (CIDR: echte Ränder; Bereiche: .0 und .255)
 Resolve hostnames (system DNS) || Hostnamen auflösen (System-DNS)
@@ -527,6 +529,7 @@ Copy as text || Als Text kopieren
 Reading the saved inventory… || Lese das gespeicherte Inventar…
 No events yet: the device was not seen in a saved scan. || Noch keine Ereignisse: Das Gerät wurde in keinem gespeicherten Scan gesehen.
 Not seen in any of {} saved scans (a scan that never reached it, or none saved yet). || In keinem von {} gespeicherten Scans gesehen (kein Scan hat es erreicht, oder es ist noch keiner gespeichert).
+{} of the saved scans could not be read; the history may be incomplete. || {} der gespeicherten Scans konnten nicht gelesen werden; der Verlauf ist möglicherweise unvollständig.
 First seen {} · last seen {} · in {} of {} saved scans || Erstmals gesehen {} · zuletzt gesehen {} · in {} von {} gespeicherten Scans
 Addresses: {} || Adressen: {}
 MAC addresses: {} || MAC-Adressen: {}
