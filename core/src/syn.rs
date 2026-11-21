@@ -1178,7 +1178,10 @@ mod tests {
     fn retransmit_waits_double_up_to_the_cap() {
         let (tx, sent) = engine(Gate::unlimited(), None);
         let doubling = submit(&tx, 1, 40, 1000, 2);
-        let capped = submit(&tx, 2, 100, 100, 2);
+        // Capped at 300 ms; doubling would wait 600 ms. The wide margin keeps the check true on a
+        // machine whose timers are coarse (a background process on Windows 11 saw 1 ms sleeps
+        // stretched by up to 260 ms).
+        let capped = submit(&tx, 2, 300, 300, 2);
         assert_eq!(
             doubling.blocking_recv().unwrap().unwrap().0,
             PortState::Unanswered
@@ -1196,7 +1199,7 @@ mod tests {
         assert_eq!(c.len(), 3);
         let g2 = c[2] - c[1];
         assert!(
-            g2 >= Duration::from_millis(100) && g2 < Duration::from_millis(190),
+            g2 >= Duration::from_millis(300) && g2 < Duration::from_millis(570),
             "wait capped at the port timeout: {g2:?}"
         );
     }
@@ -1330,8 +1333,14 @@ mod tests {
     #[test]
     fn adaptive_window_limits_new_probes_in_flight() {
         let (tx, sent) = adaptive_engine(None, 1);
-        let answers: Vec<_> = (1..=25).map(|p| submit(&tx, p, 300, 300, 0)).collect();
-        std::thread::sleep(Duration::from_millis(120));
+        // No probe can expire (and free a slot) within its 1 s timeout, so waiting for the
+        // initial window to fill is safe even on a loaded machine (a fixed 120 ms sleep under a
+        // 300 ms timeout failed there).
+        let answers: Vec<_> = (1..=25).map(|p| submit(&tx, p, 1000, 1000, 0)).collect();
+        let deadline = Instant::now() + Duration::from_millis(900);
+        while sent.lock().unwrap().len() < Window::INITIAL as usize && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(
             sent.lock().unwrap().len(),
             Window::INITIAL as usize,
