@@ -22,10 +22,10 @@ import tempfile
 import time
 from pathlib import Path
 
-NOTE = "no ARP answer on the local link: the address is unused"
+NOTE = "no ARP answer on the local link"
 UNUSED = "172.17.0.200"
-# Measured before the skip (probe run on ubuntu-24.04, 2026-11-21): 12.3 s for one unused address.
-UNUSED_LIMIT_S = 8.0
+# Before the skip one unused address took 12.3 s, with it 3.6 s (ubuntu runner, 2026-11-21).
+UNUSED_LIMIT_S = 6.0
 
 
 def docker(*args: str) -> str:
