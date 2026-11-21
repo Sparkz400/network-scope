@@ -1330,8 +1330,14 @@ mod tests {
     #[test]
     fn adaptive_window_limits_new_probes_in_flight() {
         let (tx, sent) = adaptive_engine(None, 1);
-        let answers: Vec<_> = (1..=25).map(|p| submit(&tx, p, 300, 300, 0)).collect();
-        std::thread::sleep(Duration::from_millis(120));
+        // No probe can expire (and free a slot) within its 1 s timeout, so waiting for the
+        // initial window to fill is safe even on a loaded machine (a fixed 120 ms sleep under a
+        // 300 ms timeout failed there).
+        let answers: Vec<_> = (1..=25).map(|p| submit(&tx, p, 1000, 1000, 0)).collect();
+        let deadline = Instant::now() + Duration::from_millis(900);
+        while sent.lock().unwrap().len() < Window::INITIAL as usize && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(
             sent.lock().unwrap().len(),
             Window::INITIAL as usize,
