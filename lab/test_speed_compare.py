@@ -66,6 +66,21 @@ class Parsers(unittest.TestCase):
         self.assertEqual(sc.ns_open(snapshot), {("127.0.10.1", 21), ("127.0.10.1", 22)})
 
 
+class Memory(unittest.TestCase):
+    def test_gnu_time_output(self):
+        self.assertEqual(sc.gnu_time_peak("2048\n"), 2048 * 1024)
+        self.assertEqual(sc.gnu_time_peak("Command exited with non-zero status 1\n512\n"), 512 * 1024)
+        self.assertIsNone(sc.gnu_time_peak(""))
+        self.assertIsNone(sc.gnu_time_peak("Command terminated by signal 9\n"))
+
+    @unittest.skipUnless(sc.GNU_TIME, "Linux with /usr/bin/time only")
+    def test_small_tool_is_not_given_the_harness_size(self):
+        # The control: a trivial command must measure far below this Python process.
+        _, peak, _, _, code = sc.run(["sleep", "0"], 10)
+        self.assertEqual(code, 0)
+        self.assertLess(peak, 10 * 1024 * 1024)
+
+
 class Lan(unittest.TestCase):
     def test_only_small_private_ranges(self):
         self.assertEqual(sc.lan_network("192.168.178.0/24"), "192.168.178.0/24")

@@ -26,7 +26,11 @@ other listeners that were missed are reported separately (a system service's wil
 refuse when hundreds of connections reach it at once, which is the OS, not the scanner).
 
 Each tool runs --repeat times, interleaved; wall time (median, min, max) and peak memory (the OS's
-figure: ru_maxrss from wait4, or the peak working set on Windows) are reported. A run longer than
+figure: GNU time's %M on Linux, ru_maxrss from wait4 on macOS, the peak working set on Windows) are
+reported. Linux's wait4 figure is not used: a child's ru_maxrss keeps the high-water mark of the
+process it was forked from (this Python harness), so every small tool would show the harness's
+size; GNU time forks the tool from a process of about 2 MB. Without /usr/bin/time, Linux peaks are
+reported as n/a. A run longer than
 --limit seconds is stopped and reported as timed out.
 
 --check fails (exit 1) only on Network Scope: when it reports a wrong open set in any cell, or its
@@ -73,11 +77,28 @@ def load(name, path):
     return module
 
 
+GNU_TIME = "/usr/bin/time" if sys.platform.startswith("linux") and os.access("/usr/bin/time", os.X_OK) else None
+
+
+def gnu_time_peak(text):
+    """Bytes from GNU time's `-f %M` output (KiB on the last line; a non-zero exit adds a line before it)."""
+    lines = text.strip().splitlines()
+    return int(lines[-1]) * 1024 if lines and lines[-1].strip().isdigit() else None
+
+
 def run(cmd, limit_s):
     """(seconds, peak bytes or None, stdout, stderr, exit code or None when timed out)."""
+    linux = sys.platform.startswith("linux")
+    peak_file = None
+    if linux and GNU_TIME:
+        fd, peak_file = tempfile.mkstemp(prefix="speed-peak-")
+        os.close(fd)
+        cmd = [GNU_TIME, "-f", "%M", "-o", peak_file, *cmd]
     started = time.monotonic()
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Own process group, so a timeout also stops the tool behind GNU time.
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=linux)
     except OSError as e:
         raise SpeedError(f"could not run {cmd[0]}: {e}") from None
     outs = {}
@@ -85,7 +106,12 @@ def run(cmd, limit_s):
                for n, s in (("out", proc.stdout), ("err", proc.stderr))]
     for t in readers:
         t.start()
-    timer = threading.Timer(limit_s, proc.kill)
+    def stop():
+        try:
+            os.killpg(proc.pid, 9) if linux else proc.kill()
+        except OSError:
+            pass
+    timer = threading.Timer(limit_s, stop)
     timer.start()
     peak = None
     if sys.platform == "win32":
@@ -101,7 +127,12 @@ def run(cmd, limit_s):
         seconds = time.monotonic() - started
         code = os.waitstatus_to_exitcode(status)
         proc.returncode = code
-        peak = usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+        if sys.platform == "darwin":
+            peak = usage.ru_maxrss
+        elif peak_file:
+            with open(peak_file, encoding="utf-8", errors="replace") as f:
+                peak = gnu_time_peak(f.read())
+            os.remove(peak_file)
     timed_out = not timer.is_alive()
     timer.cancel()
     for t in readers:
