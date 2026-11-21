@@ -363,6 +363,14 @@ Runner noise is real. On a shared workstation with other builds running, two run
 
 `criterion` is a dev-dependency of the core crate only (version 0.8.2, no default features: no plotting, no rayon); `cargo deny check` reports no new advisory, licence or source problem (a pre-existing `wildcard` error for the path dependency `network-scope-core` shows with cargo-deny 0.21 with or without it).
 
+## CI time budgets
+
+`scripts/ci_budget.py` keeps the `ci` workflow from getting slower unnoticed. After every `ci` run on `main` (and weekly) the `ci-budget` workflow takes the last 20 successful runs that a push to `main` started and compares each job's p95 run time with its budget in `scripts/ci_budgets.json`; one more budget covers the four required checks together, from the start of the run until the last of them finished. No job has a time limit of its own and a single slow run fails nothing, because shared runners are noisy: the percentile leaves the slowest of the 20 out, so it takes two slow runs to exceed a budget. With fewer than five runs since the `since` date in the budget file nothing is checked yet. Budgets only go down: after a change that makes a job faster, lower its number to the measured p95 plus about ten percent and move `since` to the merge. The workflow is not a required check; it reports on `main` and blocks no pull request.
+
+```
+python -I scripts/ci_budget.py --repo Sparkz400/network-scope
+```
+
 ## Fast repeat scans
 
 `scan --incremental` ([Fast repeat scans](scanning-engine.md#fast-repeat-scans)) measured on the lab (9 loopback addresses, 11 ports each, `--fast --deep --ot --tcp-only --timeout 1500`, release build, Windows 11, 2026-11-20): the full scan took 6.5 s; three repeat scans of the same database took 1.32, 1.41 and 1.56 s, about a fifth. Every repeat scan diffed empty against the full scan and against each other (`diff 1 3`, `diff 1 4`, `diff 2 4`). The third scan carried over the identification of every unchanged banner or web service (`incr.carried`: for example `svc:21,22,23,8080;udp` on the weak Unix server) and the UDP answers of every host that answered before. On a busy machine the same full scan took 28.9 s and the repeat scans 2.5 s (see the note on machine load above).
