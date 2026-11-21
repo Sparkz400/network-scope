@@ -98,7 +98,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 
 `TARGETS` is an IP address, an IPv4 dash range, a CIDR block, or several of them separated by commas or spaces. Ranges are expanded lazily. The CLI accepts up to 16,777,216 addresses (a /8); above 65,536 only responding hosts are kept in memory and saved. See [Scanning engine](scanning-engine.md#targets) for how network and broadcast addresses are skipped.
 
-Every CLI scan and monitor run also checks the ports of addresses that did not answer ping.
+Every CLI scan and monitor run also checks the ports of addresses that did not answer ping; an on-link address that does not answer ARP either is skipped as unused (Windows: right away; Linux: after 3.5 s of its first port probes) (see [Scanning engine](scanning-engine.md#unused-addresses-on-the-local-network-windows-linux)).
 
 ## Scan options
 
@@ -138,7 +138,7 @@ These apply to `scan` and `monitor`.
 | `--fast` | off | Leave Safe Mode (read-only OT still applies) |
 | `--syn` | off | IPv4 SYN scan via Npcap/libpcap (routed targets via the gateway MAC); else TCP connect |
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
-| `--adaptive-tcp` | off | Per-host TCP connect timeout from the host's measured connect RTT; only shortens waits (also in Safe Mode) |
+| `--no-adaptive-tcp` | on | Turns off the per-host TCP connect timeout from the host's measured connect RTT. On by default, also in Safe Mode, for hosts without a ping RTT (they drop ping, or `--tcp-only`); hosts that answer ping keep the ping-based timeout. `--adaptive-tcp` is still accepted and changes nothing |
 | `--jarm` | off | JARM TLS fingerprint (the same hash as the reference `jarm.py`, see [Detection](detection.md#jarm-style-tls-fingerprint---jarm)): ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode) |
 | `--snmp-community STRING` / `--snmp-version 2c\|1` | off / 2c | Read every responding host over [SNMP](snmp.md) with this community (system group, interfaces and their names, IPv4 and IPv6 addresses, LLDP neighbours): read-only requests, the community is never guessed and never `public` unless you type it; allowed in Safe Mode (with tighter limits). The string is visible on the command line and is **not saved**: `service install` refuses it; use `--snmp-community-env` |
 | `--snmp-community-env NAME` | off | Like `--snmp-community`, but the community is read from the **environment variable** `NAME` (with `--snmp-version`). Only the name is saved with the scan, so scheduled scans, services and `scan --replay-check` read it again from the environment of the process that runs them |

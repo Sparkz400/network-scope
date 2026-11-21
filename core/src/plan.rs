@@ -27,6 +27,13 @@ use std::{collections::BTreeSet, net::IpAddr};
 pub fn arp_lookup(s: &Settings) -> bool {
     s.arp || s.mac || s.os_detect || s.arp_sweep
 }
+/// An IPv4 host that did not answer ping gets one OS neighbor lookup before its ports, so an
+/// on-link address without an ARP answer (nobody uses it) is not probed port by port. Only
+/// where that silence can be told apart (`platform::NEIGHBOR_SILENCE`), only when silent hosts
+/// would be probed at all, and never with `--tcp-only` (no host discovery of any kind there).
+pub fn arp_check(s: &Settings) -> bool {
+    crate::platform::NEIGHBOR_SILENCE && s.scan_nonresponders && !s.tcp_only && !arp_lookup(s)
+}
 /// The active ARP sweep engine is used (never in Safe Mode).
 pub fn arp_sweep(s: &Settings) -> bool {
     s.arp_sweep && !s.safe
@@ -208,7 +215,11 @@ pub fn host(
             "--early-stop: the ports listed may be probed only in part (a host whose device class becomes certain is not probed further); the ports are probed likeliest first".into(),
         );
     }
-    let ports_when = if s.scan_nonresponders || s.tcp_only {
+    let ports_when = if s.tcp_only {
+        "always"
+    } else if s.scan_nonresponders && crate::platform::NEIGHBOR_SILENCE && ip.is_ipv4() {
+        "always, except an on-link IPv4 address without an ARP answer (unused)"
+    } else if s.scan_nonresponders {
         "always"
     } else {
         "only if the host answered ping or ARP"
@@ -237,6 +248,14 @@ pub fn host(
             "echo request",
             "the host",
             &format!("{echoes} per host"),
+        );
+    }
+    if arp_check(s) && ip.is_ipv4() {
+        plan.push(
+            PacketKind::NeighborLookup,
+            "OS neighbor lookup",
+            "the host",
+            "alongside the ping, used only if the ping gets no answer: the ARP request the OS would send before the first connect anyway; on an Ethernet or Wi-Fi subnet no answer means the address is unused, and its ports are not probed",
         );
     }
     // Port probes.
@@ -1111,9 +1130,47 @@ mod tests {
             "plan::ot_identification(",
             "plan::snmp_read(",
             "plan::probes_ports(",
+            "plan::arp_check(",
         ] {
             assert!(code.contains(call), "the scheduler must use {call}");
         }
+    }
+
+    #[test]
+    fn silent_addresses_get_one_arp_check_where_silence_can_be_told_apart() {
+        let probing = Settings {
+            scan_nonresponders: true,
+            ..Settings::default()
+        };
+        assert_eq!(arp_check(&probing), crate::platform::NEIGHBOR_SILENCE);
+        // Silent hosts are not probed anyway; --tcp-only has no discovery; --mac looks up anyway.
+        assert!(!arp_check(&Settings::default()));
+        assert!(!arp_check(&Settings {
+            tcp_only: true,
+            ..probing.clone()
+        }));
+        assert!(!arp_check(&Settings {
+            mac: true,
+            ..probing.clone()
+        }));
+        let ip: IpAddr = "10.0.0.5".parse().unwrap();
+        let lookups = |s: &Settings| {
+            host(ip, &[80], &[], s, None)
+                .packets
+                .iter()
+                .filter(|p| p.kind == PacketKind::NeighborLookup)
+                .count()
+        };
+        assert_eq!(
+            lookups(&probing),
+            usize::from(crate::platform::NEIGHBOR_SILENCE)
+        );
+        let v6 = host("fd00::5".parse().unwrap(), &[80], &[], &probing, None);
+        assert!(
+            v6.packets
+                .iter()
+                .all(|p| p.kind != PacketKind::NeighborLookup)
+        );
     }
 
     /// Drift guard that needs no driver: every literal detail a sender passes with a packet kind
