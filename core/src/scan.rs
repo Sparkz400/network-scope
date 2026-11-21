@@ -208,6 +208,11 @@ impl Settings {
     }
 }
 
+/// The note of an address that was skipped as unused: on-link, and no ARP answer (see
+/// `plan::arp_check`). It is the host's only note, and the host is not responding.
+pub const UNUSED_ADDRESS_NOTE: &str =
+    "no ARP answer on the local link: the address is unused, its ports were not probed";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Host {
     pub ip: IpAddr,

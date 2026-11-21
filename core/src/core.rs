@@ -870,11 +870,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     let gov = HostGovernor::new(parallel, s.backoff);
     let mut probed_sample: Option<Vec<u16>> = None;
     if unused && !h.responding && !s.tcp_only {
-        note(
-            &mut h,
-            "no ARP answer on the local link: the address is unused, its ports were not probed"
-                .into(),
-        );
+        note(&mut h, crate::scan::UNUSED_ADDRESS_NOTE.into());
     } else if crate::plan::probes_ports(h.responding, &s) {
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
@@ -1202,7 +1198,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if wants_ot(&h, &s) && !gov.paused() {
+    if wants_ot(&h, &s) && !(unused && !h.responding) && !gov.paused() {
         for port in crate::ot::identify(&mut h, &s, &ctx.gate).await {
             gov.known_open_failed(port);
         }
