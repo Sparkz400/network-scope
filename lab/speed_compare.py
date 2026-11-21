@@ -342,7 +342,9 @@ def tool_commands(args, work):
                 return ns_open(json.load(f))
         return cmd, parse
     tools["Network Scope"] = ns
-    if args.lan:  # shortcut: other tools need polite settings agreed with the LAN's owner; add them then
+    # On a real LAN the other tools run only with --fast, which the owner agrees to: they have no
+    # Safe Mode, and nmap -T4 is what the lab compares with.
+    if args.lan and not args.fast:
         return tools
 
     def nmap_with(prefix, scan_type):
@@ -425,7 +427,8 @@ def main():
     ap.add_argument("--tolerance", type=float, default=0.5, help="allowed slowdown over the baseline (default 0.5 = +50%%)")
     ap.add_argument("--lan", help="time Network Scope (Safe Mode, no other tool) on this real private /24 or smaller "
                     "instead of the loopback lab; only with the network owner's permission. No correctness check, no gate")
-    ap.add_argument("--fast", action="store_true", help="with --lan: leave Safe Mode (only when the owner agreed)")
+    ap.add_argument("--fast", action="store_true", help="with --lan: leave Safe Mode and time the other tools too "
+                    "(nmap -sT -T4, RustScan); only when the owner agreed")
     ap.add_argument("--out-dir", help="write speed.json, speed.md and baseline-candidate.json here")
     args = ap.parse_args()
     cells = [c.strip() for c in args.cells.split(",") if c.strip()]
