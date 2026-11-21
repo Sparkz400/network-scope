@@ -1448,11 +1448,21 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
         "{kinds:?}"
     );
     assert!(listener.accept().is_err(), "the dry run connected");
-    // One host, one port tried twice, one ping (and on Windows an ARP check): under 1 s.
-    assert_eq!(plan["estimated_seconds"], 1);
-    // The /24 measured on a real network (2,755 probes in 331 s): 254 x (1 + 5 x 2) probes,
-    // plus 254 ARP checks on Windows.
-    let discovery = 1 + u64::from(crate::platform::NEIGHBOR_SILENCE);
+    // One silent host holds its slot for the ping (2 s), on Windows the ARP check (4.2 s), and
+    // two tries of 2 s at its one port.
+    let arp = if crate::platform::NEIGHBOR_SILENCE {
+        4.2
+    } else {
+        0.0
+    };
+    assert_eq!(
+        plan["estimated_seconds"],
+        (2.0 + arp + 4.0_f64).ceil() as u64
+    );
+    // A /24 (254 addresses) with the default 5 ports: 32 rounds of 8 addresses, each up to
+    // 2 s + ARP + 2 waves x 4 s; the token bound (254 x (1 + 5 x 2) probes at 0.12 s, plus the
+    // ARP checks on Windows) is lower. Measured on a real /24: 331 s without the ARP check,
+    // 182 s with it.
     let lan = ok(
         &mut server,
         "scan",
@@ -1461,7 +1471,18 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
     );
     assert_eq!(
         lan["estimated_seconds"],
-        (254 * (discovery + 10) * 120).div_ceil(1000)
+        (32.0 * (2.0 + arp + 8.0_f64)).ceil() as u64
+    );
+    // With one port the host slots, not the probes, bound it.
+    let one = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "10.0.0.0/24", "ports": "80", "dry_run": true}),
+        "dry-run",
+    );
+    assert_eq!(
+        one["estimated_seconds"],
+        (32.0 * (2.0 + arp + 4.0_f64)).ceil() as u64
     );
     assert!(!db.exists(), "a dry run saves nothing");
     remove_db(&db);
