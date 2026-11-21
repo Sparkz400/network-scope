@@ -10,6 +10,18 @@
 
 A timeout never proves that a device is offline or a port closed.
 
+### Unused addresses on the local network (Windows)
+
+The CLI (and `monitor`, the desktop with "Check ports even when ping gets no reply", and the MCP `scan` tool) also probes the ports of addresses that did not answer ping, because many devices drop ICMP. On a local Ethernet or Wi-Fi subnet that wastes the whole port list on addresses nobody uses: the OS has to resolve an address by ARP before it can send it a single TCP packet, and an unused address never answers, so every probe just waits out its timeout.
+
+So on Windows an IPv4 address also gets one OS neighbor lookup alongside its ping (`SendARP`, the same ARP request the first connect would cause; one `neighbor-lookup` in the sent log and the dry run). Its answer is used only when the ping gets none, so a host that answers ping is reported exactly as before; running both at once means an unused address holds its scan slot for about 4 s instead of 6 s:
+
+- **ARP answer**: nothing changes, the ports are probed as before. The answer can come from the OS's neighbor cache (a device that went offline minutes ago), so it is not taken as proof that the device is up and no MAC is recorded from it; `--arp` and `--mac` record it as before.
+- **No ARP answer, and the address is on a directly attached Ethernet or Wi-Fi subnet** (the OS route has no gateway, and the address is not one of this computer's): the address is unused. Its ports, UDP and the BACnet Who-Is of `--ot` are skipped, and the host says so in a note ("no ARP answer on the local link"). It is not responding, exactly like an address that stays silent today.
+- **Anything else** (a routed address, a VPN, tunnel or loopback adapter, IPv6, any other error): nothing changes, the ports are probed as before.
+
+`--tcp-only` keeps its meaning, no host discovery of any kind: every address gets every port. `--arp`, `--mac` and `--os` already do the lookup and use its answer the same way; the ARP sweep's silence on an on-link address counts as unused too. Measured on a home /24 (Windows, `--fast`, top 100 ports, 2026-11-21): 29.9 s → 19.1 s with the same open ports on every host that answered. On Linux and macOS the lookup is not added yet (its timing has not been tried on a real network), so nothing changes there.
+
 ## Rate control
 
 Safe Mode uses a token bucket: one probe per 100 ms or the configured spacing, never faster. Outside Safe Mode there is no limiter unless you set `--rate PPS` (desktop: "Rate cap").

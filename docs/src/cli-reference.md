@@ -98,7 +98,7 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 
 `TARGETS` is an IP address, an IPv4 dash range, a CIDR block, or several of them separated by commas or spaces. Ranges are expanded lazily. The CLI accepts up to 16,777,216 addresses (a /8); above 65,536 only responding hosts are kept in memory and saved. See [Scanning engine](scanning-engine.md#targets) for how network and broadcast addresses are skipped.
 
-Every CLI scan and monitor run also checks the ports of addresses that did not answer ping.
+Every CLI scan and monitor run also checks the ports of addresses that did not answer ping; on Windows an on-link address that does not answer ARP either is skipped as unused (see [Scanning engine](scanning-engine.md#unused-addresses-on-the-local-network-windows)).
 
 ## Scan options
 

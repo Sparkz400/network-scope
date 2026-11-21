@@ -79,7 +79,7 @@ Ten servers, ten identical fingerprints. Three servers that never give a ServerH
 - Identity keys `smb.<port>.`: `dialect`, `guid` (server GUID), `capabilities`, `encryption` (negotiated cipher, `supported`, `not supported`, `not supported (SMB 2.x)`), `compression` (3.1.1), `signing_algorithms`, `preauth_integrity`, `clock_skew` (coarse: `in sync (< 2 min)`, `+5 min`, …), `boot_time` (old Windows), `auth_mechs` (Kerberos/NTLM/NEGOEX), `os_version` (NTLM `major.minor.build`; Samba reports 6.1.0), `netbios_name`, `netbios_domain`, `dns_name`, `dns_domain`, `dns_forest`.
 - Findings `smb-no-encryption` (Info) and `cve-cve-2020-0796` (High, version hint: only for dialect 3.1.1 with compression and NTLM build 18362/18363; the patch level is not visible remotely, so patched hosts are reported too).
 
-Checked against Windows 11; the check against Samba is in the `real-servers` CI job (see [Lab and testing](lab-and-testing.md#real-servers)) and has not run yet.
+Checked against Windows 11; the check against Samba is in the `real-servers` CI job (see [Lab and testing](lab-and-testing.md#real-servers)) and passes.
 
 ## UDP (`--udp`, `--udp-ports`)
 
@@ -140,7 +140,7 @@ Device-type hints are stored in the observation as `hint.<category>` (strong) an
 
 mDNS service types used as hints: `_ipp`, `_ipps`, `_printer`, `_pdl-datastream` (printer); `_airplay`, `_raop`, `_googlecast`, `_sonos` (media); `_hap`, `_matter`, `_hue`, `_esphomelib` (IoT); `_companion-link`, `_apple-mobdev2` (Apple); `_airport` (network); `_axis-video` (camera); weak: `_scanner`, `_rtsp`, `_workstation`, `_smb`, `_adisk`, `_afpovertcp`, `_spotify-connect`, `_mqtt`.
 
-The fingerprint tables (DHCP request lists and vendor classes, default host names such as `DESKTOP-xxxxxxx` and `NPIxxxxxx`, service-type lists) are **heuristics written for this project** and kept small. They are checked against hand-built frames only (the NetBIOS browser decoder also against one real Local Master Announcement in a public capture, see [Lab and testing](lab-and-testing.md)), and a device can announce services it does not offer. Treat the result as a hint. Observations are bounded: the number of distinct `service.*` fields per device comes from a closed list, XML is parsed with DTDs rejected and a size and node limit, and every parser ignores truncated or malformed input.
+The fingerprint tables (DHCP request lists and vendor classes, default host names such as `DESKTOP-xxxxxxx` and `NPIxxxxxx`, service-type lists) are **heuristics written for this project** and kept small. They are checked against hand-built frames only (the NetBIOS browser decoder also against one real Local Master Announcement in a public capture, see [Lab and testing](lab-and-testing.md); the LLDP-MED decoder also against a real device: a 3-minute `listen` on a home LAN on 2026-11-21 decoded one LLDP-MED frame as `med_device_class: endpoint_class_1` with the capabilities bit, next to the router's plain LLDP; DHCPv6 was not seen there, since clients of that LAN send it only when they join), and a device can announce services it does not offer. Treat the result as a hint. Observations are bounded: the number of distinct `service.*` fields per device comes from a closed list, XML is parsed with DTDs rejected and a size and node limit, and every parser ignores truncated or malformed input.
 
 Not covered: WS-Discovery device metadata (a TCP request to port 5357 would be needed), LLDP-MED location and extended power TLVs, DHCPv6 messages inside a relay, a table of DHCPv6 request lists, and DHCP option 82.
 

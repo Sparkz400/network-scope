@@ -471,6 +471,53 @@ struct PortProbe {
     fp: Option<TcpFp>,
 }
 
+/// The OS neighbor lookup of one host: sets its MAC (and `responding` for a fresh answer) and
+/// returns true when the address is known to be unused (`platform::neighbor_probe`).
+async fn neighbor_lookup(h: &mut Host, ctx: &Ctx) -> bool {
+    let ip = h.ip;
+    ctx.gate
+        .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
+        .await;
+    run_blocking(&ctx.blocking, move || crate::platform::neighbor_probe(ip))
+        .await
+        .is_some_and(|answer| apply_neighbor(h, answer))
+}
+
+/// A task that is aborted when its handle is dropped (a stopped scan, or an answer not needed).
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Records a neighbor lookup's answer on the host; true when the address is known to be unused.
+fn apply_neighbor(
+    h: &mut Host,
+    (found, silent): (Option<crate::platform::Neighbor>, bool),
+) -> bool {
+    if let Some(n) = found {
+        h.mac = n.mac;
+        // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
+        h.responding = n.fresh;
+    }
+    silent
+}
+
+/// Counts a closed or unanswered port without a note at once and keeps every other result for
+/// the port-ordered pass in `scan_host`: with `--fast` every host of a /24 runs at the same
+/// time, and keeping all results held one record per probe (about 120 bytes each).
+fn tally(h: &mut Host, kept: &mut Vec<(u16, PortProbe)>, item: (u16, PortProbe)) {
+    match (&item.1.state, &item.1.note) {
+        (PortState::Closed, None) => {
+            h.closed += 1;
+            h.responding = true;
+        }
+        (PortState::Unanswered, None) => h.unanswered += 1,
+        _ => kept.push(item),
+    }
+}
+
 /// Ports probed before the rest of a host's ports when `tcp_adaptive` is on, so the
 /// host's connect RTT is known when the remaining probes choose their timeout.
 const PILOT_PORTS: usize = 3;
@@ -763,6 +810,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         trace: vec![],
     };
     let mut fingerprint = None;
+    // Known to be unused: on-link, and no ARP answer (the sweep's or the OS's). Nothing can
+    // reach such an address, so its ports are not probed one by one.
+    let mut unused = false;
     // ARP is independent of ping: an ICMP-silent LAN device can still be found.
     if crate::plan::arp_lookup(&s) {
         let swept = sweep_arp(ip, &s, &ctx).await;
@@ -772,20 +822,26 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         if let Some(mac) = swept.mac {
             h.mac = mac;
             h.responding = true;
-        } else if !swept.answered {
-            ctx.gate
-                .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
-                .await;
-            if let Some(Some(n)) =
-                run_blocking(&ctx.blocking, move || crate::platform::neighbor(ip)).await
-            {
-                h.mac = n.mac;
-                // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
-                h.responding = n.fresh;
-            }
+        } else if swept.answered {
+            unused = true;
+        } else {
+            unused = neighbor_lookup(&mut h, &ctx).await;
         }
     }
     let mut rtts = vec![];
+    // The ARP check runs alongside the ping, not after it: an unused address then holds its
+    // slot for the longer of the two (about 4 s), not for both (about 6 s). Its answer is used
+    // only when the ping gets none, so hosts that answer ping come out exactly as before; it is
+    // aborted when the ping answers or the scan stops, so nothing is sent for nothing.
+    let arp_check = (crate::plan::arp_check(&s) && ip.is_ipv4()).then(|| {
+        let ctx = ctx.clone();
+        AbortOnDrop(tokio::spawn(async move {
+            ctx.gate
+                .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
+                .await;
+            run_blocking(&ctx.blocking, move || crate::platform::neighbor_probe(ip)).await
+        }))
+    });
     if crate::plan::icmp_echoes(&s) > 0 {
         let timeout = s.ping_timeout.clamp(1, 10000);
         let mut echoes = JoinSet::new();
@@ -816,6 +872,15 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
+    // Only "unused" is taken from the check. An ARP answer may come from the OS's neighbor
+    // cache (a device that just went offline), so it is not proof of life and records no MAC:
+    // without --arp/--mac the host is reported as it was before the check existed.
+    if let Some(mut task) = arp_check
+        && !h.responding
+        && let Ok(Some((_, silent))) = (&mut task.0).await
+    {
+        unused = silent;
+    }
     // The host answered: show it now, the ports follow as they are found.
     if h.responding {
         send_partial(&ctx, h.clone());
@@ -836,7 +901,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     // plain per-host semaphore; without a back-off it behaves exactly like one.
     let gov = HostGovernor::new(parallel, s.backoff);
     let mut probed_sample: Option<Vec<u16>> = None;
-    if crate::plan::probes_ports(h.responding, &s) {
+    if unused && !h.responding && !s.tcp_only {
+        note(&mut h, crate::scan::UNUSED_ADDRESS_NOTE.into());
+    } else if crate::plan::probes_ports(h.responding, &s) {
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
         let mut unprobed = 0;
@@ -866,7 +933,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             while let Some(done) = probes.try_join_next() {
                 if let Ok(item) = done {
                     order.observe(item.0, item.1.state == PortState::Open);
-                    results.push(item);
+                    tally(&mut h, &mut results, item);
                 }
             }
             if s.early_stop
@@ -920,7 +987,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
         while let Some(result) = probes.join_next().await {
             if let Ok(item) = result {
-                results.push(item);
+                tally(&mut h, &mut results, item);
             }
         }
         results.sort_by_key(|(port, _)| *port);
@@ -1091,7 +1158,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     if s.udp
         && udp_before.is_none_or(|_| !h.responding)
         && !ctx.udp_ports.is_empty()
-        && (h.responding || s.scan_nonresponders)
+        && (h.responding || (s.scan_nonresponders && !unused))
         && !gov.paused()
     {
         let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(300, 2000)));
@@ -1163,7 +1230,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             }
         }
     }
-    if wants_ot(&h, &s) && !gov.paused() {
+    if wants_ot(&h, &s) && !(unused && !h.responding) && !gov.paused() {
         for port in crate::ot::identify(&mut h, &s, &ctx.gate).await {
             gov.known_open_failed(port);
         }
@@ -1921,7 +1988,7 @@ mod tests",
             return;
         };
         let mut ports = vec![9100, 515, 631];
-        ports.extend(40000..40040);
+        ports.extend(29500..29540);
         let full = scan_with(ports.clone(), None, false, 1).await;
         assert!(full.ports_checked && full.open == [515, 9100], "{full:?}");
         let stopped = scan_with(ports.clone(), None, true, 1).await;
@@ -2012,9 +2079,11 @@ mod tests",
     async fn a_repeat_scan_carries_over_what_did_not_change_and_says_so() {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let port = greeting_server(stop.clone());
-        let mut ports: Vec<u16> = (33000..33020).collect();
+        // Closed ports below every OS's ephemeral range (Linux starts at 32768): a listener another
+        // test binds to port 0 can never land on them.
+        let mut ports: Vec<u16> = (29400..29420).collect();
         ports.push(port);
-        let text = format!("33000-33019,{port}");
+        let text = format!("29400-29419,{port}");
         let full = scan_repeat(ports.clone(), None).await;
         assert!(full.ports_checked && full.open == [port], "{full:?}");
         assert!(full.identity.keys().all(|k| !k.starts_with("incr.")));
@@ -2083,9 +2152,9 @@ mod tests",
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
-        let mut ports: Vec<u16> = (33000..33020).collect();
+        let mut ports: Vec<u16> = (29400..29420).collect();
         ports.push(port);
-        let text = format!("33000-33019,{port}");
+        let text = format!("29400-29419,{port}");
         let full = scan_repeat(ports.clone(), None).await;
         assert!(!full.open.contains(&port));
         let Ok(server) = std::net::TcpListener::bind(("127.0.0.1", port)) else {

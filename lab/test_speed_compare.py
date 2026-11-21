@@ -66,6 +66,21 @@ class Parsers(unittest.TestCase):
         self.assertEqual(sc.ns_open(snapshot), {("127.0.10.1", 21), ("127.0.10.1", 22)})
 
 
+class Memory(unittest.TestCase):
+    def test_gnu_time_output(self):
+        self.assertEqual(sc.gnu_time_peak("2048\n"), 2048 * 1024)
+        self.assertEqual(sc.gnu_time_peak("Command exited with non-zero status 1\n512\n"), 512 * 1024)
+        self.assertIsNone(sc.gnu_time_peak(""))
+        self.assertIsNone(sc.gnu_time_peak("Command terminated by signal 9\n"))
+
+    @unittest.skipUnless(sc.GNU_TIME, "Linux with /usr/bin/time only")
+    def test_small_tool_is_not_given_the_harness_size(self):
+        # The control: a trivial command must measure far below this Python process.
+        _, peak, _, _, code = sc.run(["sleep", "0"], 10)
+        self.assertEqual(code, 0)
+        self.assertLess(peak, 10 * 1024 * 1024)
+
+
 class Lan(unittest.TestCase):
     def test_only_small_private_ranges(self):
         self.assertEqual(sc.lan_network("192.168.178.0/24"), "192.168.178.0/24")
@@ -84,6 +99,22 @@ class Gate(unittest.TestCase):
         self.assertIn("24-top1000", failures[0])
         self.assertEqual(len(notices), 1)
         self.assertIn("16-top100", notices[0])
+
+    def test_regressions_relative_to_the_reference_tool(self):
+        base = {"24-top100": {"seconds": 0.17, "reference_seconds": 0.20}}
+        # A runner twice as slow for every tool: no regression.
+        self.assertEqual(sc.regressions({"24-top100": 0.34}, base, 0.5, {"24-top100": 0.40})[0], [])
+        # Slower than the reference by more than the tolerance: a regression.
+        failures, _ = sc.regressions({"24-top100": 0.34}, base, 0.5, {"24-top100": 0.20})
+        self.assertEqual(len(failures), 1)
+        self.assertIn("nmap -sT", failures[0])
+        # Without the reference in this run, the seconds are compared.
+        self.assertEqual(len(sc.regressions({"24-top100": 0.34}, base, 0.5)[0]), 1)
+        self.assertEqual(sc.regressions({"24-top100": 0.20}, base, 0.5)[0], [])
+        # A baseline cell without seconds is a notice, not a crash.
+        failures, notices = sc.regressions({"24-top100": 0.2}, {"24-top100": {"reference_seconds": 0.2}}, 0.5)
+        self.assertEqual(failures, [])
+        self.assertIn("no usable seconds", notices[0])
 
 
 if __name__ == "__main__":

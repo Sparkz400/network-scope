@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Code signing and package manifests** (I55, I56): the release workflow signs the Windows binaries and installer (Azure Artifact Signing, RFC 3161 timestamps) and signs and notarizes macOS builds when the secrets exist, in separate jobs that compile nothing; it renders winget, Scoop, Chocolatey, Homebrew and AUR manifests into `network-scope-<version>-packaging.tar.gz`. `scripts/strip_authenticode.py` compares a rebuild with a signed release. No certificate is configured yet, so releases stay unsigned.
 - **Installer test in CI** (I58): the `windows installer` job installs the installer silently, runs both installed binaries with `--version` and uninstalls it.
 
+- **Release rehearsal**: `release.yml` can be started by hand (`gh workflow run release.yml -f version=<Cargo.toml version>`). It runs the build, signing (when its secrets exist), packaging, installer test and SBOM jobs exactly as a tag push does and uploads their artifacts, but publishes neither the release nor the container image.
+- **MCP background scans**: `scan` with `background: true` answers at once and keeps scanning; the new read-only tool `scan_status` reports the progress and, at the end, the same summary (schema `mcp-scan-status`). The session answers queries meanwhile, one scan runs at a time, and a running scan is saved as partial when the session ends. For scans longer than a client waits (a /24 takes minutes in Safe Mode).
+
 ### Changed
 
 - Internal: `src/otpassive.rs` is split into the module directory `src/otpassive/` (reassembly, packet parsing, one file per protocol decoder, asset inventory, control findings, capture ingest). No behaviour change.
@@ -64,6 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP query tools only read**: they open the inventory read-only (no directory, no WAL switch, no migration); an inventory in an older format is read as it is and never upgraded by a query.
 - **MCP results are smaller**: `list_devices` returns short records by default (schema `mcp-devices`), `detail: true` for the full records, an `ip` filter and lower default limits.
 - **The Safe Mode badge lists what the next scan sends** (F43), computed from the dry-run plan, with the protections and the per-host plan in its tooltip; it is a focusable, named button.
+- **MCP `scan` limit counts retries**: the 4,000-probe limit counted one try per port, but a silent port is tried twice, so an accepted scan could need more than the 600 s maximum (a real home /24 with 5 ports sent 2,755 probes in 331 s, not 1,524). The limit is now 5,000 probes counted for the worst case (one ping per address, every port tried twice); a /24 can ask for at most 9 ports instead of 14 (8 on Windows, where each silent address also gets an ARP lookup). The dry run and the summary carry `estimated_seconds` (the larger of the probe bound and the host-slot bound: with few ports the 8 Safe Mode slots, not the probes, decide; a /24 with one port took 173 s), and a scan stopped by its time limit names the `timeout_seconds` that would let it finish.
+- **The desktop device timeline says when saved scans could not be read**, like `history` and the MCP `device_history` tool.
+- **Unused addresses on the local network are not port-probed (Windows)**: scans that also probe addresses that do not answer ping (the CLI, `monitor`, the MCP `scan` tool, the desktop with that option) first do one OS ARP lookup of such an address, the request the first connect would cause anyway. An address on a directly attached Ethernet or Wi-Fi subnet that does not answer is unused and gets no port, UDP or BACnet probes, with a note; an answer changes nothing (it may come from the OS's neighbor cache, so it is not taken as proof of life). Routed addresses, VPN and loopback adapters, IPv6, `--tcp-only` and Linux/macOS are unchanged. The lookup runs alongside the ping and its answer counts only when the ping gets none. Home /24, `--fast`, top 100 ports: 29.9 s → 19.1 s with the same open ports; MCP Safe Mode /24 with 5 ports: 331 s → 135 s. The ARP sweep's silence on an on-link address counts as unused too.
 
 ### Fixed
 
@@ -80,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SYN scan and TCP traceroute to an address of this computer** sent raw frames that never came back, so every port was unanswered; they now fall back to TCP connect with a note. Found on a real home LAN.
 - `dcp --sent-log` printed nothing; it now prints the table like `scan` and `trace`.
 - **Flaky back-off tests**: the per-host back-off scan tests are deterministic (the fake devices' listeners are closed by a test hook before service identification), so they no longer fail at random on macOS and Linux CI.
+- **A scan held one record per probe in memory**: each host kept the result of every port until it finished, and with `--fast` every host of a /24 runs at once. Closed and unanswered ports without a note are now counted as they finish. Loopback /24 on Windows, same results: 1,000 ports 59.8 → 33.3 MB peak, 4,000 ports 155.7 → 46.0 MB; run time unchanged.
+- **Peak memory of small tools in the speed comparison was the harness's own size**: on Linux, `ru_maxrss` from `wait4` keeps the high-water mark of the Python process the tool was forked from, so nmap and Network Scope both showed 28.2 MB. `lab/speed_compare.py` now measures through GNU time, and reports n/a without it.
 
 ### Removed
 
