@@ -31,6 +31,7 @@ On UDP 1900 the tool sends a single unicast SSDP search request (`M-SEARCH`). If
 
 ## References
 
-- None.
+- [CISA TA14-017A, UDP-based amplification attacks (SSDP)](https://www.cisa.gov/news-events/alerts/2014/01/17/udp-based-amplification-attacks)
+- [CERT/CC VU#357851, UPnP requests accepted over router WAN interfaces](https://www.kb.cert.org/vuls/id/357851)
 
 [All findings](index.md)

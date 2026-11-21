@@ -514,6 +514,7 @@ impl Scanner {
                         last_scan: Some(9),
                         sightings: 6,
                         scans: 7,
+                        unreadable: 0,
                         ips: vec![host.ip],
                         macs: vec![host.mac.clone()],
                         hostnames: vec![host.hostname.clone()],

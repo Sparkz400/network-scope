@@ -26,6 +26,8 @@ Enter an IP, an IPv4 range, a CIDR block, or comma/space-separated addresses, th
 
 A larger private network (a /16 has 65,534 hosts) is listed in a dialog and scanned only after you tick it. The networks left out are listed under **Left out** with the reason. The scan then starts through the normal Start path, so the scope guard applies; the Safe Mode setting is switched on for it, all other settings stay as they are.
 
+On a Windows 11 machine with a wired adapter, two VMware adapters, Tailscale and several unconnected Wi-Fi adapters, the detection chose only the wired /24 and listed the VMware networks (virtual), the Tailscale /32 (point-to-point), 169.254/16 (link-local) and loopback as left out (2026-11-20; the detection and decision were checked, not a click on the button).
+
 ### Presets
 
 The **Preset** picker next to the TCP ports field applies a named bundle of settings; the CLI has the same bundles as `--preset` (see [Presets](cli-reference.md#presets)). Hover a preset to see what it turns on.
@@ -100,7 +102,7 @@ With imported feeds (`feeds import`, see [Findings and CVE hints](findings-and-c
 
 ## Passive / DCP
 
-Select an Ethernet interface and a capture duration (needs Npcap/libpcap). Passive capture sends no discovery packets and decodes mDNS, SSDP/UPnP, LLDP, NetBIOS, DHCP and ARP. The separate **DCP Identify** button sends one read-only Profinet multicast request; it never assigns IPs or changes a device. MAC-keyed observations retain devices that advertise no IP.
+Select an Ethernet interface and a capture duration (needs Npcap/libpcap). Passive capture sends no discovery packets and decodes mDNS, SSDP/UPnP, LLDP (with LLDP-MED), CDP, NetBIOS (name service and browser announcements), WS-Discovery, DHCP, DHCPv6, ARP and IPv6 Neighbor Discovery. The separate **DCP Identify** button sends one read-only Profinet multicast request; it never assigns IPs or changes a device. MAC-keyed observations retain devices that advertise no IP.
 
 Capture visibility depends on the network interface, multicast delivery and switch mirroring; it does not expose all traffic on a switched LAN. Observations are bounded to 10,000; a full capture queue or the cap marks the capture partial and collection continues with what still fits.
 

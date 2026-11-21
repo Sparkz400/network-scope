@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Quality**: nmap comparison on the lab (A3), real-server TLS tests (A6), licence-checked public OT captures as tests (A4), false-alarm budget (A8, A9), CycloneDX SBOM and reproducible builds (I57), fuzz targets for every new parser (I60), coverage gate (J62), lab scenarios slow-wan, lossy and fragile-ot (J63), comparison page (K64), fingerprint contributions with a probe safety linter (K65).
 - **JA3S** (Salesforce, BSD-3-Clause) computed passively from the ServerHello as `tls.<port>.ja3s` and `tls.<port>.ja3s_string`, checked against the reference `ja3s.py` (43 of 43 ServerHellos equal).
 
+- **MCP protocol revisions 2025-11-25 and 2026-07-28** (G47): the server is dual-era. Handshake clients negotiate up to 2025-11-25; requests that name 2026-07-28 in `params._meta` are served statelessly (`server/discover`, `resultType`, server info in `_meta`, error -32022 with the supported versions). Tried with Claude Code 2.1.302 in both eras; see the MCP page for exactly what was verified.
+- **Passive NetBIOS browser announcements, LLDP-MED and DHCPv6** (C19): host name, workgroup, OS version and server role from MS-BRWS announcements on UDP 138; LLDP-MED capabilities, device class, network policies and inventory strings (a class III endpoint is a VoIP phone); DHCPv6 DUID, vendor class, client FQDN and option request list. Fuzz targets `nbt_datagram`, `lldp_tlvs` and `dhcpv6_message`. LLDP-MED and DHCPv6 are checked on spec-built frames only.
+- **"Explain this" for findings** (F41): a `?` button next to each finding in the Findings window and on the overview shows a one-to-three-sentence plain-language explanation (English and German) on hover, keyboard focus and as its screen-reader name.
+- **Reference links for every finding rule** (D27): all 38 rules link to an official source (vendor docs, CISA, NIST, RFCs, Mozilla TLS guidelines), also listed on the rule's page; `cve-*` hints link to NVD. A test and `docs/check_finding_pages.py` fail for a rule without a reference or fix steps.
+- **Speed comparison** (B10): `lab/speed_compare.py` times Network Scope, nmap `-sT -T4` and RustScan on the same lab targets and checks that each found the same ports; the `speed` workflow runs it on Linux with pinned nmap and RustScan and fails only when Network Scope gets slower than `lab/speed_baseline.json`. Results and caveats in the new Speed page.
+- **Weekly 24 h fuzzing** (A5): the `fuzz-long` workflow fuzzes every cargo-fuzz target in five shards of about 4 h 50 min (libFuzzer, AddressSanitizer), keeps the corpora of the last four runs and uploads any crashing input. It has not run yet.
+- **Code signing and package manifests** (I55, I56): the release workflow signs the Windows binaries and installer (Azure Artifact Signing, RFC 3161 timestamps) and signs and notarizes macOS builds when the secrets exist, in separate jobs that compile nothing; it renders winget, Scoop, Chocolatey, Homebrew and AUR manifests into `network-scope-<version>-packaging.tar.gz`. `scripts/strip_authenticode.py` compares a rebuild with a signed release. No certificate is configured yet, so releases stay unsigned.
+- **Installer test in CI** (I58): the `windows installer` job installs the installer silently, runs both installed binaries with `--version` and uninstalls it.
+
 ### Changed
 
 - Internal: `src/otpassive.rs` is split into the module directory `src/otpassive/` (reassembly, packet parsing, one file per protocol decoder, asset inventory, control findings, capture ingest). No behaviour change.
@@ -51,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--ot` default ports gain 1883, 1911 and 9600.
 - After upgrading, the first diff, `changes` or `monitor` run shows `tls.<port>.ja4s` gone and `tls.<port>.ja3s` new on every TLS host.
 
+- **Device history is 4–5x faster** with identical output: each scan is narrowed to the records connected to the address or MAC before the device merge (250 scans of a /24: 3.78 s to 0.73 s by IP, 2.34 s to 0.53 s by MAC). The CLI history, the GUI timeline and the MCP `device_history` tool share it.
+- **MCP query tools only read**: they open the inventory read-only (no directory, no WAL switch, no migration); an inventory in an older format is read as it is and never upgraded by a query.
+- **MCP results are smaller**: `list_devices` returns short records by default (schema `mcp-devices`), `detail: true` for the full records, an `ip` filter and lower default limits.
+- **The Safe Mode badge lists what the next scan sends** (F43), computed from the dry-run plan, with the protections and the per-host plan in its tooltip; it is a focusable, named button.
+
 ### Fixed
 
 - **Closed ports on Windows were reported as unanswered.** Windows re-sends a SYN that gets a RST and reports "refused" only after about 2 s, the default timeout, so every closed port looked unanswered (filtered). TCP connect probes now turn off SYN retransmissions for the probe socket (`SIO_TCP_INITIAL_RTO`), so a RST is seen at once: on a real /24 the closed/unanswered split now matches nmap, and scans finish sooner because closed ports no longer wait out the timeout. Silent ports still wait for the full timeout; a lost SYN is covered by `--retries`.
@@ -61,9 +75,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Links in the desktop app did nothing (eframe was built without link support).
 - Reproducible builds: `const-random` is seeded and Windows short paths are remapped; two Windows builds are identical.
 
+- **Unreadable scans looked like "not seen"**: `device_history` (`unreadable`) and the MCP `search_inventory` (`scans_skipped`, a note) now count scans that could not be read.
+- **MCP input checks**: a whitespace-only `search_inventory` query and an empty `device_history` query are readable tool errors.
+- **SYN scan and TCP traceroute to an address of this computer** sent raw frames that never came back, so every port was unanswered; they now fall back to TCP connect with a note. Found on a real home LAN.
+- `dcp --sent-log` printed nothing; it now prints the table like `scan` and `trace`.
+- **Flaky back-off tests**: the per-host back-off scan tests are deterministic (the fake devices' listeners are closed by a test hook before service identification), so they no longer fail at random on macOS and Linux CI.
+
 ### Removed
 
 - **JA4S and JA4X** (`tls.<port>.ja4s`, `tls.<port>.ja4x`, the `ja4x` research kinds): the FoxIO License 1.1 that covers JA4+ does not permit monetization and conflicts with the MIT licence. JA3S, JARM, HASSH and the public-key hash are used instead.
+
+### Tested on a real network
+
+- 2026-11-20, a home LAN, Windows 11 with Npcap, not elevated: Safe Mode and on-link SYN scans of a /24, the ARP sweep, TCP traceroute, `listen` and live OT capture, DCP Identify, one scan over two interfaces (Ethernet and a VMware adapter), `--ipv6-discover` against real neighbours, the MCP `scan` tool on the /24 (336 s with 5 ports, so expect a partial result at the default 50 s limit) and the GUI's Scan my network detection. Not covered: SYN and traceroute to routed targets, Linux and macOS.
 
 ## [0.5.1] - 2026-11-19
 

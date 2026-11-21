@@ -37,6 +37,7 @@ Handshakes per port are limited, so a version that was not seen is not proof tha
 
 ## References
 
+- [Mozilla, Server Side TLS recommendations](https://wiki.mozilla.org/Security/Server_Side_TLS)
 - [RFC 8996, Deprecating TLS 1.0 and TLS 1.1](https://www.rfc-editor.org/rfc/rfc8996)
 - [RFC 9325, Recommendations for secure use of TLS](https://www.rfc-editor.org/rfc/rfc9325)
 - [Mozilla SSL Configuration Generator](https://ssl-config.mozilla.org/)
