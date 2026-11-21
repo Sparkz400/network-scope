@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run. Every other run (main, weekly, manual) gets
+# its own group, so none is cancelled or replaced while it waits.
+concurrency:
+  group: bench-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # Both runs write to, and the comparison reads from, this folder.
