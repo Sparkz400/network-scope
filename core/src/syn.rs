@@ -1178,7 +1178,10 @@ mod tests {
     fn retransmit_waits_double_up_to_the_cap() {
         let (tx, sent) = engine(Gate::unlimited(), None);
         let doubling = submit(&tx, 1, 40, 1000, 2);
-        let capped = submit(&tx, 2, 100, 100, 2);
+        // Capped at 300 ms; doubling would wait 600 ms. The wide margin keeps the check true on a
+        // machine whose timers are coarse (a background process on Windows 11 saw 1 ms sleeps
+        // stretched by up to 260 ms).
+        let capped = submit(&tx, 2, 300, 300, 2);
         assert_eq!(
             doubling.blocking_recv().unwrap().unwrap().0,
             PortState::Unanswered
@@ -1196,7 +1199,7 @@ mod tests {
         assert_eq!(c.len(), 3);
         let g2 = c[2] - c[1];
         assert!(
-            g2 >= Duration::from_millis(100) && g2 < Duration::from_millis(190),
+            g2 >= Duration::from_millis(300) && g2 < Duration::from_millis(570),
             "wait capped at the port timeout: {g2:?}"
         );
     }

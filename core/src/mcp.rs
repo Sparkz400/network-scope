@@ -96,18 +96,19 @@ const SILENT_ARP_MS: u64 = 4200;
 
 /// The worst-case run time of a Safe Mode scan, in whole seconds: the larger of two bounds.
 /// Tokens: every probe at [`SAFE_PROBE_MS`]. Host slots: Safe Mode works on 8 addresses at a
-/// time, and a silent address holds its slot for the ping timeout, the ARP check (Windows) and
-/// its port waves (4 in parallel, every try waiting the port timeout). With few ports the slots
+/// time, and a silent address holds its slot for the ping timeout or the ARP check that runs
+/// alongside it (Windows), whichever is longer, and then its port waves (4 in parallel, every
+/// try waiting the port timeout). With few ports the slots
 /// bound it: a /24 with one port sends about 1,000 probes but takes about three minutes.
 fn estimated_seconds(addresses: u64, ports: u64, s: &scan::Settings) -> u64 {
     let tokens = worst_case_probes(addresses, ports, s.retries) * SAFE_PROBE_MS;
     let waves = ports.div_ceil(s.port_parallel.clamp(1, 4) as u64);
-    let per_address = u64::from(s.ping_timeout)
-        + if crate::platform::NEIGHBOR_SILENCE {
-            SILENT_ARP_MS
-        } else {
-            0
-        }
+    let arp = if crate::platform::NEIGHBOR_SILENCE {
+        SILENT_ARP_MS
+    } else {
+        0
+    };
+    let per_address = u64::from(s.ping_timeout).max(arp)
         + waves * (1 + u64::from(s.retries)) * u64::from(s.port_timeout);
     let slots = addresses.div_ceil(s.workers.clamp(1, 8) as u64) * per_address;
     tokens.max(slots).div_ceil(1000)
