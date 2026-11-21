@@ -367,14 +367,15 @@ fn zone(text: &str) -> Result<i32, String> {
         _ => return Err(format!("{text:?} is not a zone like UTC+1")),
     };
     let (h, m) = rest[1..].split_once(':').unwrap_or((&rest[1..], "0"));
-    let (h, m): (i32, i32) = (
+    // Unsigned, so "UTC+-99999999" is refused here instead of overflowing below (found by fuzzing).
+    let (h, m): (u32, u32) = (
         h.parse().map_err(|_| format!("{text:?} is not a zone"))?,
         m.parse().map_err(|_| format!("{text:?} is not a zone"))?,
     );
     if h > 14 || m > 59 {
         return Err(format!("{text:?} is not a zone"));
     }
-    Ok(sign * (h * 60 + m))
+    Ok(sign * (h * 60 + m) as i32)
 }
 
 impl Maintenance {
