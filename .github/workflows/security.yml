@@ -14,6 +14,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run. Every other run (main, weekly, manual) gets
+# its own group, so none is cancelled or replaced while it waits.
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cargo-deny:
     name: cargo deny (${{ matrix.checks }})
