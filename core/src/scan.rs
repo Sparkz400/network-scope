@@ -214,6 +214,14 @@ impl Settings {
 /// `plan::arp_check`). It is the host's only note, and the host is not responding.
 pub const UNUSED_ADDRESS_NOTE: &str =
     "no ARP answer on the local link: the address is unused, its ports were not probed";
+/// The same finding on Linux, made from the kernel's ARP for the first port probes (see
+/// `platform::neighbor_unresolved`): its first port probes never got past ARP, the rest were
+/// not probed.
+pub const UNUSED_AFTER_PROBES_NOTE: &str = "no ARP answer on the local link to its first port probes: the address is unused, its other ports were not probed";
+/// Whether a host note says the address was found unused.
+pub fn is_unused_note(note: &str) -> bool {
+    note == UNUSED_ADDRESS_NOTE || note == UNUSED_AFTER_PROBES_NOTE
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Host {

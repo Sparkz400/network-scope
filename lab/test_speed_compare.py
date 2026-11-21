@@ -90,6 +90,16 @@ class Lan(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 sc.lan_network(bad)
 
+    def test_other_tools_only_with_fast(self):
+        class Args:
+            cli, lan, nmap, nmap_version, rustscan_version, syn_version = "ns", "192.168.1.0/24", "nmap", "7.80", None, None
+        polite = Args()
+        polite.fast = False
+        self.assertEqual(list(sc.tool_commands(polite, "/tmp")), ["Network Scope"])
+        agreed = Args()
+        agreed.fast = True
+        self.assertEqual(list(sc.tool_commands(agreed, "/tmp")), ["Network Scope", "nmap -sT -T4"])
+
 
 class Gate(unittest.TestCase):
     def test_regressions(self):

@@ -296,13 +296,30 @@ Verified on a real home network (2026-11-20, Windows 11, Npcap, wired 5 GbE adap
 
 Defects found and fixed in that run: SYN and TCP traceroute to an address of this computer (the source address, or another adapter's address reached through the first adapter's engine) now fall back to TCP connect (scan) or say why (`trace`) instead of reporting every port unanswered; `dcp --sent-log` now prints the sent log like `scan` and `trace`.
 
+## Capture features on Linux (CI)
+
+GitHub's Linux runner has a real Ethernet-type link of its own: the Docker bridge. The `cli-only` job runs [`lab/raw_bridge_check.py`](https://github.com/Sparkz400/network-scope/blob/main/lab/raw_bridge_check.py) there as root with libpcap, after the unused-address checks ([details](scanning-engine.md#unused-addresses-on-the-local-network-windows-linux)). Everything stays on the runner. The routed target is an address on a router container's loopback, in a private range that exists only behind that container. The first runs, 2026-11-21:
+
+| Feature | Case | Result |
+| --- | --- | --- |
+| SYN scan | live container, ports 22, 80, 8080 | 8080 open, 22 and 80 closed, no fallback to TCP connect |
+| SYN scan | an unused address | silent |
+| SYN scan | routed target, through the router container's MAC | 8080 open, no fallback |
+| ARP sweep | the bridge /28 | both containers found with their MAC |
+| TCP traceroute | live container | hop 1 is the target |
+| DCP | `dcp` on the bridge | exactly one Identify All frame on the wire (tcpdump) |
+| Live OT capture | `ot-listen` while a container reads a holding register from the lab simulator | the Modbus/TCP server and client are assets |
+| DHCPv6 | `listen` on an IPv6 bridge while a client asks for an address | ISC `dhclient`'s Solicit decoded: message type, DUID-LLT, its MAC |
+
+The images are pinned by digest. The router and DHCPv6 containers install packages with `apk` at test time.
+
 ## What has not been tested
 
 Be aware of these gaps before relying on a feature:
 
-- Npcap/libpcap features not yet run on a real network: SYN and TCP traceroute to routed targets (via the gateway MAC), DCP and live OT capture with real industrial devices answering; and everything with libpcap on Linux/macOS.
+- Npcap/libpcap features not yet run on a real network: SYN to routed targets with Npcap, TCP traceroute to routed targets, DCP and live OT capture with real industrial devices answering. libpcap on Linux runs in CI on the runner's Docker bridge ([Capture features on Linux](#capture-features-on-linux-ci)); macOS does not/macOS.
 - UDP traceroute with administrator/root rights; ICMPv6 hop-limit expiry from a real router on Windows.
-- Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine (CI is the first compile) and not exercised on a real network.
+- Linux/macOS glue (`next_hop`, neighbor states, raw ICMP/ICMPv6, UDP hop): not compiled on the development machine (CI is the first compile) and not exercised on a real network. The exception is the Linux unused-address check, run in CI on the runner's own Docker bridge (`lab/neighbor_check.py` in the `cli-only` job: unused, live, ICMP host-prohibited and just-stopped containers, a 3-port case and a Safe Mode sweep of the /27); a physical LAN or Wi-Fi is still untried.
 - The GUI binary's console attach when started from a shell, as seen in an interactive console window (use `network-scope-cli` for scripting). Checked on 2026-11-21 (Windows 11, PowerShell 7) without a console window: with its output piped or redirected to a file and the process waited for (`Start-Process -Wait`), the release `network-scope.exe` printed `--version` and `interfaces` and exited 0; `cmd /c ... > file` returned before the output was written, because shells do not wait for a GUI-subsystem program, as documented.
 - `release.yml` has not run: no release has been tagged since its signing, packaging and installer-test jobs were added. A manual run (`gh workflow run release.yml -f version=<Cargo.toml version>`, possible once the workflow is on the default branch) rehearses every job except publishing the release and the container image. Signing stays off until its secrets exist. The CI workflow runs on every push, including the installer's silent install, run and uninstall test (`scripts/installer_smoke.ps1`), the accuracy benchmark against its Linux baseline, the test plant and the nmap comparison (Ubuntu's nmap 7.94; every difference explained).
 - Long fuzzing: ClusterFuzzLite (`cflite.yml`) runs a short session on pull requests, and the first 24-hour `fuzz-long` run was started on 2026-11-21. The fuzz targets themselves were built and run locally on Windows (cargo-fuzz, AddressSanitizer), every target for at least 3 minutes, without a crash (the later `mcp_message` target: 60 seconds, about 28,000 runs, without a crash).
