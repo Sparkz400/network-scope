@@ -865,6 +865,35 @@ pub fn parse_proc_arp(text: &str, ip: IpAddr) -> Option<String> {
             .flatten()
     })
 }
+/// Linux `/proc/net/arp`: true when the table has an entry for `ip` without the "complete"
+/// flag, i.e. the kernel is resolving it or gave up (INCOMPLETE or FAILED, MAC all zero). The
+/// entry appears with the first packet, so this means "unused" only after ARP has had its
+/// ~3 s; a missing entry means nothing. Only the entry on `iface` (the route's interface)
+/// counts: a stale one on another interface says nothing about this route.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn proc_arp_unresolved(text: &str, ip: IpAddr, iface: &str) -> bool {
+    let wanted = ip.to_string();
+    text.lines().skip(1).any(|line| {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        f.first() == Some(&wanted.as_str())
+            && f.get(5) == Some(&iface)
+            && f.get(2)
+                .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+                .is_some_and(|flags| flags & 2 == 0)
+    })
+}
+/// The interface of the route `ip` takes when that route is direct (no gateway): longest
+/// prefix, then lowest metric. `None` for a routed address or no route.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn direct_interface(routes: &[Route], ip: std::net::Ipv4Addr) -> Option<&str> {
+    let v = u32::from(ip);
+    routes
+        .iter()
+        .filter(|r| v & r.mask == r.dest)
+        .max_by_key(|r| (r.mask.count_ones(), std::cmp::Reverse(r.metric)))
+        .filter(|r| !r.via_gateway)
+        .map(|r| r.iface.as_str())
+}
 /// `ip neigh show IP` output, e.g. `192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE`.
 #[cfg_attr(windows, allow(dead_code))]
 pub fn parse_ip_neigh(text: &str) -> Option<String> {
@@ -1340,6 +1369,41 @@ pub fn neighbor_probe(ip: IpAddr) -> (Option<Neighbor>, bool) {
 /// Whether [`neighbor_probe`] can ever report an unused address on this platform.
 pub const NEIGHBOR_SILENCE: bool = cfg!(windows);
 
+/// Linux: whether `ip` is unused, judged from the kernel's own ARP for the scan's probes (no
+/// packet is sent here): an IPv4 address on a direct route through an interface that does ARP
+/// (Ethernet type, no `NOARP` flag), with a neighbor entry that has no MAC. Only meaningful
+/// once the probes have given ARP its ~3 s (see [`NEIGHBOR_WATCH`]). Always false elsewhere.
+pub fn neighbor_unresolved(ip: IpAddr) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let IpAddr::V4(v4) = ip else {
+            return false;
+        };
+        let read = |path: &str| std::fs::read_to_string(path).ok();
+        let (Some(routes), Some(arp)) = (read("/proc/net/route"), read("/proc/net/arp")) else {
+            return false;
+        };
+        let routes = parse_proc_route_table(&routes);
+        let Some(iface) = direct_interface(&routes, v4) else {
+            return false;
+        };
+        let sys = |file: &str| read(&format!("/sys/class/net/{iface}/{file}"));
+        // ARPHRD_ETHER (Ethernet, Wi-Fi, bridges); IFF_NOARP is 0x80.
+        let ether = sys("type").is_some_and(|t| t.trim() == "1");
+        let arps = sys("flags")
+            .and_then(|f| u32::from_str_radix(f.trim().trim_start_matches("0x"), 16).ok())
+            .is_some_and(|f| f & 0x80 == 0);
+        ether && arps && proc_arp_unresolved(&arp, ip, iface)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ip;
+        false
+    }
+}
+/// Whether [`neighbor_unresolved`] can ever report an unused address on this platform.
+pub const NEIGHBOR_WATCH: bool = cfg!(target_os = "linux");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1380,6 +1444,17 @@ mod tests {
         );
         assert_eq!(parse_proc_arp(text, "192.168.1.7".parse().unwrap()), None);
         assert_eq!(parse_proc_arp(text, "192.168.1.9".parse().unwrap()), None);
+        // Unresolved: an entry without the complete flag. Resolved or missing is not.
+        let unresolved = |ip: &str| proc_arp_unresolved(text, ip.parse().unwrap(), "eth0");
+        assert!(unresolved("192.168.1.7"));
+        assert!(!unresolved("192.168.1.1"));
+        assert!(!unresolved("192.168.1.9"), "no entry proves nothing");
+        assert!(!unresolved("192.168.1.70"), "no prefix match");
+        assert!(!proc_arp_unresolved(text, "::1".parse().unwrap(), "eth0"));
+        assert!(
+            !proc_arp_unresolved(text, "192.168.1.7".parse().unwrap(), "wlan0"),
+            "an entry on another interface says nothing about this route"
+        );
     }
 
     #[test]
@@ -1573,6 +1648,12 @@ mod tests {
             Ok(NextHop::Gateway("10.0.1.1".parse().unwrap()))
         );
         assert!(best_route(&[], "8.8.8.8".parse().unwrap(), "").is_err());
+        // The unused-address check only trusts a direct route.
+        let iface = |ip: &str| direct_interface(&routes, ip.parse().unwrap());
+        assert_eq!(iface("192.168.1.50"), Some("eth0"));
+        assert_eq!(iface("8.8.8.8"), None, "default route via a gateway");
+        assert_eq!(iface("10.1.2.3"), None, "routed");
+        assert_eq!(direct_interface(&[], "192.168.1.50".parse().unwrap()), None);
     }
 
     #[test]

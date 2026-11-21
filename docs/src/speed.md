@@ -2,7 +2,7 @@
 
 How long a port scan takes with Network Scope, nmap and RustScan on the same targets and the same ports (roadmap B10). The goal is to be the fastest tool that needs no driver. Every number on this page was measured. A cell with no measurement says so and is not estimated.
 
-The short version: on the Linux CI runner's loopback lab, Network Scope's TCP connect scan is about as fast as nmap's SYN scan and faster than nmap's connect scan and RustScan, with every tool finding exactly the open ports; nmap uses the least memory. On a real home LAN only Network Scope has been timed. The numbers are below, with what they do not show.
+The short version: on the Linux CI runner's loopback lab, Network Scope's TCP connect scan is about as fast as nmap's SYN scan and faster than nmap's connect scan and RustScan, with every tool finding exactly the open ports; nmap uses the least memory. On a real home LAN (Windows) Network Scope finished a /24 in about 21 to 48 s where nmap's connect scan took 301 s with host discovery and did not finish within 30 minutes without it, and Advanced IP Scanner took 85 to 98 s for its own inventory job. The numbers are below, with what they do not show.
 
 ## What is measured
 
@@ -104,7 +104,7 @@ How to read it:
 - **Why they were refused.** A plain Python test with no Network Scope involved sent 254 simultaneous non-blocking connects to port 5900: 13 were refused (WSAECONNREFUSED). The same test with port 135 was not refused, so for port 135 the cause is likely, not shown: the scanner sends about 25,000 connects within a second or two, far more than this test. Every lab port was found in every run, and nothing was reported open that does not listen.
 - **Closed ports.** An earlier measurement on another Windows machine ([Comparison with other tools](comparison.md#measured-on-the-lab)) saw a refused loopback connection take about 2 s. Here the whole /24 scan takes 1.7 s, so that wait did not show up on this machine.
 
-### Small home LAN, Network Scope only (`--fast`); nmap and RustScan not installed
+### Small home LAN, Network Scope (`--fast`)
 
 This is one real network: the owner's home LAN (a private /24), scanned with the owner's permission from the Windows machine above over wired Ethernet, on 2026-11-20. It is a small network of consumer devices behind one router; only a few dozen ports are open on the whole range. The script's `--lan` mode refuses anything but a private range of at most 256 addresses, and it has no ground truth. It reports how stable the result was across runs instead of whether it was correct.
 
@@ -120,10 +120,37 @@ python -I lab/speed_compare.py --cli <path>/network-scope-cli --lan <home-lan>/2
 
 How to read it:
 
-- **Where the time goes.** The scan takes about 28 s here and 1.7 s on loopback for a range of the same size. The difference is the network: most of the 254 addresses have no device. Measured separately on 2026-11-21: one unused address costs 16.2 s with `--tcp-only` (100 ports, at most 32 at a time for an unclassified host, each waiting out its timeout and a retry), a device that answers 0.17 s. Without `--tcp-only`, Windows now skips unused on-link addresses after one ARP lookup ([details](scanning-engine.md#unused-addresses-on-the-local-network-windows)): the same /24 with discovery took 19.1 s instead of 29.9 s. What is left is live devices with silent ports. Two of them drop ping and every port but one, so each waited the full 2 s timeout and a retry on 99 ports, at most 32 at a time (18.0 s on their own). Adaptive connect timing, on by default since then for hosts without a ping RTT, takes the wait from the device's own connect answers: 6.9 s for one of them, and 6.7 to 6.9 s instead of 17.7 to 19.3 s for all the answering devices together, with the same open ports ([details](scanning-engine.md#adaptive-tcp-connect-timing)). The /24 as a whole stays at 21 to 22 s: a power-saving device that answers ping in about 580 ms, and no port, bounds it on its own. (An earlier try of the flag on the /24 saw no gain and one run with a host fewer; that host was this power-saving device, which also goes missing without the flag.)
+- **Where the time goes.** The scan takes about 28 s here and 1.7 s on loopback for a range of the same size. The difference is the network: most of the 254 addresses have no device. Measured separately on 2026-11-21: one unused address costs 16.2 s with `--tcp-only` (100 ports, at most 32 at a time for an unclassified host, each waiting out its timeout and a retry), a device that answers 0.17 s. Without `--tcp-only`, Windows now skips unused on-link addresses after one ARP lookup ([details](scanning-engine.md#unused-addresses-on-the-local-network-windows-linux)): the same /24 with discovery took 19.1 s instead of 29.9 s. What is left is live devices with silent ports. Two of them drop ping and every port but one, so each waited the full 2 s timeout and a retry on 99 ports, at most 32 at a time (18.0 s on their own). Adaptive connect timing, on by default since then for hosts without a ping RTT, takes the wait from the device's own connect answers: 6.9 s for one of them, and 6.7 to 6.9 s instead of 17.7 to 19.3 s for all the answering devices together, with the same open ports ([details](scanning-engine.md#adaptive-tcp-connect-timing)). The /24 as a whole stays at 21 to 22 s: a power-saving device that answers ping in about 580 ms, and no port, bounds it on its own. (An earlier try of the flag on the /24 saw no gain and one run with a host fewer; that host was this power-saving device, which also goes missing without the flag.)
 - **The extra port.** One device answered on one port in one run only. That run-to-run difference comes from a real device, which the loopback lab does not have.
 - **The 1000-port row.** It was not run: the measuring session's automatic permission check refused it, so it is not measured.
 - **Safe Mode.** The default Safe Mode was not timed to the end. It allows at most about 10 probes a second for the whole scan (at least 100 ms between probes), so 254 addresses × 100 ports take more than 40 minutes by design. A first Safe Mode run was stopped after 30 minutes.
+
+### Home LAN against nmap (Windows)
+
+The same home /24, on 2026-11-21, with the owner's permission. nmap 7.80 (the version winget installs; CI uses 7.94), unprivileged, with Npcap present. RustScan was not installed. All runs used nmap's own top 100 ports.
+
+Two pairs of runs:
+- **The script's pair:** `lab/speed_compare.py --lan --fast`, which now runs nmap too with `--fast`. Both tools are told every address is up: Network Scope with `--tcp-only`, nmap with `-Pn`, exactly as in the loopback lab.
+- **Each tool's normal mode:** with its own host discovery.
+
+```sh
+python -I lab/speed_compare.py --cli <path>/network-scope-cli --lan <home-lan>/24 --fast --cells 24-top100 --repeat 3 --nmap <path>/nmap.exe
+nmap -sT -T4 -n --top-ports 100 -oX ... <home-lan>/24
+network-scope-cli scan <home-lan>/24 --fast --ports <nmap's top 100> --scope <home-lan>/24 --quiet --db ... --output ...
+```
+
+| Mode | Tool | Runs | Wall time | Hosts up | Open ports |
+| --- | --- | --- | --- | --- | --- |
+| every address treated as up | Network Scope `--fast --tcp-only` | 3 | 28.35 s (24.71 to 29.98), 42.5 MB | | 28 in every run |
+| every address treated as up | nmap `-sT -T4 -Pn` | 1 | stopped at 1800 s: 128 of 254 addresses done | | 28 so far |
+| with host discovery | Network Scope `--fast` | 5 | 20.6 to 44.8 s | 10 to 11 | 28 |
+| with host discovery | Network Scope `--fast --arp` | 2 | 42.0 s, 47.6 s | 12, 13 | 28, 29 |
+| with host discovery | nmap `-sT -T4` | 1 | 300.8 s | 13 | 28 |
+
+- **Why nmap is slow here:** without host discovery, nmap's connect scan probes every port of every empty address. On Windows each such connect waits for ARP to fail. Network Scope skips an unused address after one ARP check ([details](scanning-engine.md#unused-addresses-on-the-local-network-windows-linux)), and probes the others with up to 32 connects per host at once. With discovery, nmap found the same open ports and one or two more hosts than Network Scope's default discovery (it counts hosts that answer only ARP). `--arp` finds those too.
+- **Run-to-run spread:** Network Scope's time with discovery varies with the devices. Two that answer ARP but no ping and no port cost about 18 s each, because there is no round-trip time to shorten the wait on 100 silent ports. When the power-saving device of the section above is awake, it adds more.
+- **One nmap run each.** A run takes 5 to more than 30 minutes, so nmap was not repeated, and the `-Pn` run was stopped by the script's 30-minute limit.
+- **nmap's SYN scan** (`-sS`, administrator rights) was not run here.
 
 ### Cross-tool table (Linux CI, loopback lab)
 
@@ -146,9 +173,26 @@ How to read it:
 - **RustScan's memory** is its default batch of file descriptors and buffers sized by `--ulimit 65535`; its time is its default batch size and timeout, untuned.
 - **`16-top100`** (a /16) runs only weekly and on manual dispatch; it is not in this run.
 
-### Advanced IP Scanner
+### Advanced IP Scanner (home LAN, Windows)
 
-Not measured. It is a Windows GUI program. Its product page, read on 2026-11-19, documents no command-line interface, and no scriptable way to start a scan with a given range and port list was found. It is not installed on this machine, and it cannot run on the Linux CI runner. Timing it by hand with a stopwatch would not be comparable to the scripted runs.
+Measured on the same home /24 as above, on 2026-11-21, with the owner's permission. The tools:
+- Advanced IP Scanner 2.5.4594.1, installed with winget. Its installer includes `advanced_ip_scanner_console.exe` (`/r:RANGE /f:FILE /v`), which scans a range with the GUI's engine and writes a text file. The GUI was not used.
+- `/v` adds its service scan (HTTP, HTTPS, FTP, RDP, RAdmin, shared folders). It finds hosts by ARP and also looks up names (NetBIOS, DNS).
+- Network Scope was given the matching job: ARP discovery (`--arp`) and the same ports.
+
+```sh
+advanced_ip_scanner_console.exe /r:<home-lan>.1-<home-lan>.254 /f:out.txt /v
+network-scope-cli scan <home-lan>/24 --fast --arp --ports 21,80,443,445,3389,4899 --scope <home-lan>/24 --quiet --db ... --output ...
+```
+
+| Tool | Runs | Wall time | Hosts found alive |
+| --- | --- | --- | --- |
+| Advanced IP Scanner (`/v`) | 3 | 85.0 s, 85.9 s, 97.6 s | 13, 12, 12 |
+| Network Scope (`--fast --arp`, 6 ports) | 3 | 7.5 s, 7.5 s, 10.5 s | 13, 12, 12 |
+
+- **Same devices:** 12 hosts were found by both. Each tool had one more in one run: a power-saving device that answers only sometimes.
+- **What else each did:** Advanced IP Scanner also resolved names and listed manufacturers. Network Scope recorded the MAC of every host, and its open ports on the 6 ports.
+- **What the comparison is:** this is each tool's whole default job on these settings, not one identical workload, so read it as "time to an inventory of this /24", not as a per-probe speed. Without `--arp`, Network Scope's default discovery (ping and ports) found 9 hosts in 8.1 to 8.8 s.
 
 ## Caveats
 
@@ -156,4 +200,4 @@ Not measured. It is a Windows GUI program. Its product page, read on 2026-11-19,
 - **Mostly closed ports.** The lab has open ports only on a few addresses. A range with many open ports or many filtered (silent) ports behaves differently. Filtered ports make every tool wait for its timeout, and those timeouts differ: Network Scope's default is 2000 ms, RustScan keeps its own default (the script does not set it), and nmap adapts its timeout to measured round-trip times.
 - **Each tool at its defaults.** No tool was tuned beyond the options shown. Every tool has options that change its parallelism and timeouts, so the comparison is between default behaviours, not best cases.
 - **Memory includes the result.** Peak memory includes building the result: the JSON report for Network Scope, the XML for nmap.
-- **Platform matters.** Windows and Linux differ, both in how fast a refused connection is reported and in how listeners on the machine react to a burst. The cross-tool table is Linux CI; the Windows and home LAN numbers are Network Scope only.
+- **Platform matters.** Windows and Linux differ, both in how fast a refused connection is reported and in how listeners on the machine react to a burst. The cross-tool table is Linux CI; the home LAN tables above are Windows, with nmap 7.80.
