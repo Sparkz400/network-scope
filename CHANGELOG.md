@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Code signing and package manifests** (I55, I56): the release workflow signs the Windows binaries and installer (Azure Artifact Signing, RFC 3161 timestamps) and signs and notarizes macOS builds when the secrets exist, in separate jobs that compile nothing; it renders winget, Scoop, Chocolatey, Homebrew and AUR manifests into `network-scope-<version>-packaging.tar.gz`. `scripts/strip_authenticode.py` compares a rebuild with a signed release. No certificate is configured yet, so releases stay unsigned.
 - **Installer test in CI** (I58): the `windows installer` job installs the installer silently, runs both installed binaries with `--version` and uninstalls it.
 
+- **MCP background scans**: `scan` with `background: true` answers at once and keeps scanning; the new read-only tool `scan_status` reports the progress and, at the end, the same summary (schema `mcp-scan-status`). The session answers queries meanwhile, one scan runs at a time, and a running scan is saved as partial when the session ends. For scans longer than a client waits (a /24 takes minutes in Safe Mode).
+
 ### Changed
 
 - Internal: `src/otpassive.rs` is split into the module directory `src/otpassive/` (reassembly, packet parsing, one file per protocol decoder, asset inventory, control findings, capture ingest). No behaviour change.
