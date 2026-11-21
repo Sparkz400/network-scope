@@ -32,8 +32,11 @@ classify() {
         docs/schema/* | docs/src/findings/* | docs/src/research.md) widen all ;;
         README.md | THIRD-PARTY-NOTICES.md | data/*) widen all ;;
         docs/* | lab/* | .github/* | .githooks/* | packaging/* | installer/* | .devcontainer/* | .clusterfuzzlite/*) ;;
-        *.md | LICENSE.txt | CITATION.cff) ;;
         src/* | tests/*.rs) widen root ;;
+        # In a case pattern `*` also matches `/`: without this line `*.md` below would take
+        # tests/fixtures/ics/PROVENANCE.md, which a test reads, for documentation.
+        */*) widen all ;;
+        *.md | LICENSE.txt | CITATION.cff) ;;
         *) widen all ;;
     esac
 }
