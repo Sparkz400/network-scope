@@ -1,9 +1,15 @@
 {
-  "note": "Network Scope's median wall time in seconds per cell, per platform, from lab/speed_compare.py (copy a CI run's baseline-candidate.json here). A missing platform or cell passes with a notice.",
+  "note": "Network Scope's median wall time in seconds per cell, per platform, from lab/speed_compare.py (copy a CI run's baseline-candidate.json here). With reference_seconds, nmap -sT's median of the same run, a run is gated on the ratio of the two when nmap ran. A missing platform or cell passes with a notice.",
   "platforms": {
     "linux": {
-      "24-top100": 0.17,
-      "24-top1000": 1.23
+      "24-top100": {
+        "seconds": 0.17,
+        "reference_seconds": 0.2
+      },
+      "24-top1000": {
+        "seconds": 1.23,
+        "reference_seconds": 1.76
+      }
     }
   },
   "source": "speed workflow run 44900787669 (2026-11-21, ubuntu-24.04)"
