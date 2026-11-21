@@ -197,6 +197,13 @@ jobs:
       # Docker bridge: unused, live, ICMP host-prohibited and just-stopped containers.
       - name: Unused addresses on a real link (Docker bridge)
         run: python3 -I lab/neighbor_check.py --cli target/release/network-scope-cli
+      # The capture-driver features with libpcap on a real link (roadmap 1 and 7): SYN on-link and
+      # routed (through a router container), ARP sweep, TCP traceroute, DCP, live OT capture. As
+      # root, on the runner's Docker bridge; see lab/raw_bridge_check.py.
+      - name: Capture-driver features on a real link (Docker bridge, libpcap)
+        run: |
+          sudo apt-get install -y libpcap0.8t64 || sudo apt-get install -y libpcap0.8
+          sudo python3 -I lab/raw_bridge_check.py --cli target/release/network-scope-cli
       # Roadmap K65: the safety linter (OT and printer ports, write-like payloads, payload and
       # regex size, nested quantifiers) must pass on the probe database that ships.
       - name: Probe safety lint (data/probes.json)

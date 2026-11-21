@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Capture features on Linux tested on a real link in CI** (roadmap 1 and 7): `lab/raw_bridge_check.py` runs as root with libpcap on the runner's Docker bridge. It covers SYN on-link and to a routed target through a router container's MAC, the ARP sweep, TCP traceroute, DCP (exactly one frame on the wire), live OT capture of a Modbus/TCP exchange, and DHCPv6 decoding of a real client's Solicit (ISC `dhclient`). All passed on the first full run.
+
 ### Changed
 
 - **Unused addresses on the local network: Linux too.** On Linux the verdict comes from the kernel's own ARP for the first port probes, so no packet is added. When a host has answered nothing 3.5 s after its first probe, and its neighbor entry still has no MAC on a direct route through an ARP interface, the waiting probes are stopped. The other ports, UDP and the BACnet Who-Is are then skipped, with a note. Hosts with a MAC (live or cached), routed, IPv6, the SYN engine and `--tcp-only` are unchanged. A host that rejects with ICMP host-prohibited (firewalld's default; also reported as "no route to host") is still probed in full. On GitHub's Linux runner, against its Docker bridge: one unused address takes 3.6 s instead of 12.3 s. A CI step (`lab/neighbor_check.py`) checks four cases on every run: unused, live, host-prohibited and just-stopped containers. The desktop shows such a host as "Unused", even when it also has the unprivileged-ICMP note. Not tried on a physical LAN or Wi-Fi; macOS is unchanged.
