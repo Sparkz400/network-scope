@@ -111,6 +111,10 @@ class Gate(unittest.TestCase):
         # Without the reference in this run, the seconds are compared.
         self.assertEqual(len(sc.regressions({"24-top100": 0.34}, base, 0.5)[0]), 1)
         self.assertEqual(sc.regressions({"24-top100": 0.20}, base, 0.5)[0], [])
+        # A baseline cell without seconds is a notice, not a crash.
+        failures, notices = sc.regressions({"24-top100": 0.2}, {"24-top100": {"reference_seconds": 0.2}}, 0.5)
+        self.assertEqual(failures, [])
+        self.assertIn("no usable seconds", notices[0])
 
 
 if __name__ == "__main__":

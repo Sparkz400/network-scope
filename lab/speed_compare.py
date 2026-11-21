@@ -274,6 +274,9 @@ def regressions(cells, baseline, tolerance, refs=None):
             notices.append(f"{cell}: no baseline for this platform; measured {median:.2f} s")
             continue
         seconds, ref_base = (base.get("seconds"), base.get("reference_seconds")) if isinstance(base, dict) else (base, None)
+        if not isinstance(seconds, (int, float)) or seconds <= 0:
+            notices.append(f"{cell}: the baseline has no usable seconds; measured {median:.2f} s")
+            continue
         ref = refs.get(cell)
         if ref and ref_base:
             ratio, base_ratio = median / ref, seconds / ref_base
@@ -527,7 +530,7 @@ def main():
                        "expected_open": len(expected), "lab_open": len(lab_in_cell), "lan": bool(args.lan), "tools": {}}
         for label in tools:
             r = summarize(times[label], peaks[label])
-            if label in errors and not times[label]:
+            if label in errors:  # also after successful runs: a crash on a later repeat is not a timing
                 r["error"] = errors[label]
             elif label in timed_out and not times[label]:
                 r["error"] = f"> {args.limit} s"
