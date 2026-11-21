@@ -478,11 +478,16 @@ async fn neighbor_lookup(h: &mut Host, ctx: &Ctx) -> bool {
     ctx.gate
         .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
         .await;
-    let Some((found, silent)) =
-        run_blocking(&ctx.blocking, move || crate::platform::neighbor_probe(ip)).await
-    else {
-        return false;
-    };
+    run_blocking(&ctx.blocking, move || crate::platform::neighbor_probe(ip))
+        .await
+        .is_some_and(|answer| apply_neighbor(h, answer))
+}
+
+/// Records a neighbor lookup's answer on the host; true when the address is known to be unused.
+fn apply_neighbor(
+    h: &mut Host,
+    (found, silent): (Option<crate::platform::Neighbor>, bool),
+) -> bool {
     if let Some(n) = found {
         h.mac = n.mac;
         // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
@@ -816,6 +821,18 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
     }
     let mut rtts = vec![];
+    // The ARP check runs alongside the ping, not after it: an unused address then holds its
+    // slot for the longer of the two (about 4 s), not for both (about 6 s). Its answer is used
+    // only when the ping gets none, so hosts that answer ping come out exactly as before.
+    let arp_check = (crate::plan::arp_check(&s) && ip.is_ipv4()).then(|| {
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            ctx.gate
+                .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
+                .await;
+            run_blocking(&ctx.blocking, move || crate::platform::neighbor_probe(ip)).await
+        })
+    });
     if crate::plan::icmp_echoes(&s) > 0 {
         let timeout = s.ping_timeout.clamp(1, 10000);
         let mut echoes = JoinSet::new();
@@ -846,8 +863,11 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
-    if !h.responding && crate::plan::arp_check(&s) && ip.is_ipv4() {
-        unused = neighbor_lookup(&mut h, &ctx).await;
+    if let Some(task) = arp_check
+        && !h.responding
+        && let Ok(Some(answer)) = task.await
+    {
+        unused = apply_neighbor(&mut h, answer);
     }
     // The host answered: show it now, the ports follow as they are found.
     if h.responding {

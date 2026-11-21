@@ -255,7 +255,7 @@ pub fn host(
             PacketKind::NeighborLookup,
             "OS neighbor lookup",
             "the host",
-            "only if it did not answer ping: the ARP request the OS would send before the first connect anyway; on an Ethernet or Wi-Fi subnet no answer means the address is unused, and its ports are not probed",
+            "alongside the ping, used only if the ping gets no answer: the ARP request the OS would send before the first connect anyway; on an Ethernet or Wi-Fi subnet no answer means the address is unused, and its ports are not probed",
         );
     }
     // Port probes.

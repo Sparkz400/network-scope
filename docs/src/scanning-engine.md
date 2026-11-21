@@ -14,7 +14,7 @@ A timeout never proves that a device is offline or a port closed.
 
 The CLI (and `monitor`, the desktop with "Check ports even when ping gets no reply", and the MCP `scan` tool) also probes the ports of addresses that did not answer ping, because many devices drop ICMP. On a local Ethernet or Wi-Fi subnet that wastes the whole port list on addresses nobody uses: the OS has to resolve an address by ARP before it can send it a single TCP packet, and an unused address never answers, so every probe just waits out its timeout.
 
-So on Windows an IPv4 address that did not answer ping first gets one OS neighbor lookup (`SendARP`, the same ARP request the first connect would cause; one `neighbor-lookup` in the sent log and the dry run):
+So on Windows an IPv4 address also gets one OS neighbor lookup alongside its ping (`SendARP`, the same ARP request the first connect would cause; one `neighbor-lookup` in the sent log and the dry run). Its answer is used only when the ping gets none, so a host that answers ping is reported exactly as before; running both at once means an unused address holds its scan slot for about 4 s instead of 6 s:
 
 - **ARP answer**: the device is there; it counts as responding (as with `--arp`), its MAC is recorded and its ports are probed. This finds devices that drop ping and have none of the scanned ports open.
 - **No ARP answer, and the address is on a directly attached Ethernet or Wi-Fi subnet** (the OS route has no gateway, and the address is not one of this computer's): the address is unused. Its ports, UDP and the BACnet Who-Is of `--ot` are skipped, and the host says so in a note ("no ARP answer on the local link"). It is not responding, exactly like an address that stays silent today.

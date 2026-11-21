@@ -1448,8 +1448,8 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
         "{kinds:?}"
     );
     assert!(listener.accept().is_err(), "the dry run connected");
-    // One silent host holds its slot for the ping (2 s), on Windows the ARP check (4.2 s), and
-    // two tries of 2 s at its one port.
+    // One silent host holds its slot for the ping (2 s) or, on Windows, the ARP check alongside
+    // it (4.2 s), then two tries of 2 s at its one port.
     let arp = if crate::platform::NEIGHBOR_SILENCE {
         4.2
     } else {
@@ -1457,10 +1457,11 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
     };
     assert_eq!(
         plan["estimated_seconds"],
-        (2.0 + arp + 4.0_f64).ceil() as u64
+        (f64::max(2.0, arp) + 4.0).ceil() as u64
     );
+    let first = f64::max(2.0, arp);
     // A /24 (254 addresses) with the default 5 ports: the larger of 32 rounds of 8 addresses,
-    // each up to 2 s + ARP + 2 waves x 4 s, and 254 x (1 + 5 x 2) probes at 0.12 s (plus the
+    // each up to max(2 s, ARP) + 2 waves x 4 s, and 254 x (1 + 5 x 2) probes at 0.12 s (plus the
     // ARP checks on Windows). Measured on a real /24: 331 s without the ARP check,
     // 182 s with it.
     let lan = ok(
@@ -1471,10 +1472,7 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
     );
     let probes = |ports: f64| 254.0 * (if arp > 0.0 { 2.0 } else { 1.0 } + 2.0 * ports) * 0.12;
     let bound = |slots: f64, ports: f64| slots.max(probes(ports)).ceil() as u64;
-    assert_eq!(
-        lan["estimated_seconds"],
-        bound(32.0 * (2.0 + arp + 8.0), 5.0)
-    );
+    assert_eq!(lan["estimated_seconds"], bound(32.0 * (first + 8.0), 5.0));
     // With one port the host slots, not the probes, bound it.
     let one = ok(
         &mut server,
@@ -1482,12 +1480,9 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
         json!({"targets": "10.0.0.0/24", "ports": "80", "dry_run": true}),
         "dry-run",
     );
-    assert_eq!(
-        one["estimated_seconds"],
-        bound(32.0 * (2.0 + arp + 4.0), 1.0)
-    );
-    // Linux and macOS: 336 s (probes) and 192 s (slots); Windows: 455 s and 327 s (slots).
-    let expected = if arp > 0.0 { (455, 327) } else { (336, 192) };
+    assert_eq!(one["estimated_seconds"], bound(32.0 * (first + 4.0), 1.0));
+    // Linux and macOS: 336 s (probes) and 192 s (slots); Windows: 391 s and 263 s (slots).
+    let expected = if arp > 0.0 { (391, 263) } else { (336, 192) };
     assert_eq!(
         (
             lan["estimated_seconds"].as_u64(),
