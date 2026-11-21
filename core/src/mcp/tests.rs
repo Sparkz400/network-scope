@@ -218,7 +218,7 @@ fn modern_clients_need_no_handshake() {
     assert_eq!(list["resultType"], "complete");
     assert_eq!(list["cacheScope"], "public");
     assert!(list["ttlMs"].as_u64().unwrap() > 0);
-    assert_eq!(list["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(list["tools"].as_array().unwrap().len(), 9);
 
     let call = modern(
         &mut server,
@@ -665,7 +665,8 @@ fn tools_list_declares_proper_input_schemas() {
             "diff_scans",
             "search_inventory",
             "findings_gained",
-            "scan"
+            "scan",
+            "scan_status"
         ]
     );
     for tool in tools {
@@ -1553,6 +1554,100 @@ fn the_scan_tool_always_runs_in_safe_mode_and_saves_a_summary() {
     );
     assert_eq!(devices["total"], 1);
     drop(listener);
+    remove_db(&db);
+}
+
+/// Polls `scan_status` until the background scan has ended.
+fn wait_for_background(server: &mut Server) -> Value {
+    let started = Instant::now();
+    loop {
+        let status = ok(server, "scan_status", json!({}), "mcp-scan-status");
+        if status["state"] != "running" {
+            return status;
+        }
+        assert!(started.elapsed() < Duration::from_secs(120), "{status}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn a_background_scan_answers_at_once_and_reports_its_summary_when_done() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let db = temp_db("background");
+    let mut server = session(&db);
+    let idle = ok(&mut server, "scan_status", json!({}), "mcp-scan-status");
+    assert_eq!(idle["state"], "idle");
+    // 30 closed ports plus the open one at the 100 ms spacing: a few seconds, long enough to
+    // still be running for the next two calls.
+    let ports = format!("20000-20029,{port}");
+    let started = Instant::now();
+    let status = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": ports, "background": true}),
+        "mcp-scan-status",
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it answered at once"
+    );
+    assert_eq!(status["state"], "running", "{status}");
+    assert_eq!(status["targets"], "127.0.0.1");
+    // No timeout given: the estimate plus 10 %, never below the 10 s minimum.
+    assert!(
+        status["timeout_seconds"].as_u64().unwrap() >= 10,
+        "{status}"
+    );
+    let busy = failed(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": "22"}),
+    );
+    assert!(busy.contains("already running"), "{busy}");
+    // The session still answers queries while the scan runs.
+    ok(&mut server, "list_scans", json!({}), "scans");
+    let done = wait_for_background(&mut server);
+    assert_eq!(done["state"], "done", "{done}");
+    let summary = &done["summary"];
+    assert_eq!(summary["complete"], true, "{summary}");
+    assert_eq!(summary["open_ports"], 1, "{summary}");
+    let id = summary["scan_id"].as_i64().unwrap();
+    assert_eq!(store::load(&db, id).unwrap().hosts[0].open, [port]);
+    // Asking again gives the same result; a new scan may start now.
+    assert_eq!(wait_for_background(&mut server)["summary"]["scan_id"], id);
+    ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": port.to_string(), "timeout_seconds": 30}),
+        "mcp-scan",
+    );
+    drop(listener);
+    remove_db(&db);
+}
+
+#[test]
+fn a_background_scan_is_saved_as_partial_when_the_session_ends() {
+    let db = temp_db("background-end");
+    let mut server = session(&db);
+    let status = ok(
+        &mut server,
+        "scan",
+        json!({"targets": "127.0.0.1", "ports": "20000-20999", "background": true}),
+        "mcp-scan-status",
+    );
+    assert_eq!(status["state"], "running");
+    std::thread::sleep(Duration::from_millis(500));
+    let ended = Instant::now();
+    drop(server);
+    assert!(
+        ended.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        ended.elapsed()
+    );
+    let scans = store::list(&db).unwrap();
+    assert_eq!(scans.len(), 1, "the stopped scan is on record");
+    assert!(!scans[0].complete, "and marked partial");
     remove_db(&db);
 }
 

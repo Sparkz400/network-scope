@@ -89,7 +89,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 44. **A versioned JSON output format and stable exit codes,** so the tool is reliable in scripts and CI. *Status: done (exit codes and versioned JSON with schema files).*
 45. **Headless server mode with a REST API and web UI.** *Declined (2026-11-19).*
 46. **Remote sensors:** lightweight scanners at each site that report to one central inventory. *Declined (2026-11-19).*
-47. **An MCP server,** so AI assistants can query the inventory ("which hosts gained SMBv1 this month?"). *Status: done (stdio, read-only queries and a Safe Mode scan; protocol revisions up to 2025-11-25 and the stateless 2026-07-28; tried with Claude Code 2.1.302).*
+47. **An MCP server,** so AI assistants can query the inventory ("which hosts gained SMBv1 this month?"). *Status: done (stdio, read-only queries and a Safe Mode scan, in the call or in the background with `scan_status`; protocol revisions up to 2025-11-25 and the stateless 2026-07-28; tried with Claude Code 2.1.302).*
 48. **A Windows service and systemd unit for `monitor`,** and a scheduler in the GUI. *Status: done.*
 49. **A shared library of Rhai scripts,** plus scripts that run when an alert fires. *Status: done.*
 50. **Split the engine into a library crate** (`network-scope-core`) so other tools can build on it. *Status: done.*
