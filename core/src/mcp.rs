@@ -79,10 +79,13 @@ const MAX_SCAN_SECONDS: u64 = 600;
 const CANCEL_GRACE: Duration = Duration::from_secs(15);
 const DEFAULT_SCAN_PORTS: &str = "22,80,443,445,3389";
 
-/// Probes a scan sends when nothing answers: one ping per address, and each port tried
-/// `1 + retries` times (an answered port is tried once, so real scans of busy hosts send fewer).
+/// Probes a scan sends when nothing answers: one ping per address (plus the ARP check of a
+/// silent one where there is one, `plan::arp_check`), and each port tried `1 + retries` times.
+/// An answered port is tried once and an unused on-link address gets no port probes, so real
+/// scans send fewer.
 fn worst_case_probes(addresses: u64, ports: u64, retries: u32) -> u64 {
-    addresses * (1 + ports * (1 + u64::from(retries)))
+    let discovery = 1 + u64::from(crate::platform::NEIGHBOR_SILENCE);
+    addresses * (discovery + ports * (1 + u64::from(retries)))
 }
 /// The worst-case run time of a Safe Mode scan, in whole seconds.
 fn estimated_seconds(probes: u64) -> u64 {

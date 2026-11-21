@@ -1447,16 +1447,21 @@ fn the_scan_tool_can_return_its_plan_and_sends_and_saves_nothing() {
         "{kinds:?}"
     );
     assert!(listener.accept().is_err(), "the dry run connected");
-    // One host, one port tried twice, one ping: 3 probes at 0.12 s.
+    // One host, one port tried twice, one ping (and on Windows an ARP check): under 1 s.
     assert_eq!(plan["estimated_seconds"], 1);
-    // The /24 measured on a real network (2,755 probes in 331 s): 254 x (1 + 5 x 2) probes.
+    // The /24 measured on a real network (2,755 probes in 331 s): 254 x (1 + 5 x 2) probes,
+    // plus 254 ARP checks on Windows.
+    let discovery = 1 + u64::from(crate::platform::NEIGHBOR_SILENCE);
     let lan = ok(
         &mut server,
         "scan",
         json!({"targets": "10.0.0.0/24", "dry_run": true}),
         "dry-run",
     );
-    assert_eq!(lan["estimated_seconds"], 336);
+    assert_eq!(
+        lan["estimated_seconds"],
+        (254 * (discovery + 10) * 120).div_ceil(1000)
+    );
     assert!(!db.exists(), "a dry run saves nothing");
     remove_db(&db);
 }

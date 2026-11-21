@@ -471,6 +471,26 @@ struct PortProbe {
     fp: Option<TcpFp>,
 }
 
+/// The OS neighbor lookup of one host: sets its MAC (and `responding` for a fresh answer) and
+/// returns true when the address is known to be unused (`platform::neighbor_probe`).
+async fn neighbor_lookup(h: &mut Host, ctx: &Ctx) -> bool {
+    let ip = h.ip;
+    ctx.gate
+        .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
+        .await;
+    let Some((found, silent)) =
+        run_blocking(&ctx.blocking, move || crate::platform::neighbor_probe(ip)).await
+    else {
+        return false;
+    };
+    if let Some(n) = found {
+        h.mac = n.mac;
+        // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
+        h.responding = n.fresh;
+    }
+    silent
+}
+
 /// Counts a closed or unanswered port without a note at once and keeps every other result for
 /// the port-ordered pass in `scan_host`: with `--fast` every host of a /24 runs at the same
 /// time, and keeping all results held one record per probe (about 120 bytes each).
@@ -777,6 +797,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         trace: vec![],
     };
     let mut fingerprint = None;
+    // Known to be unused: on-link, and no ARP answer (the sweep's or the OS's). Nothing can
+    // reach such an address, so its ports are not probed one by one.
+    let mut unused = false;
     // ARP is independent of ping: an ICMP-silent LAN device can still be found.
     if crate::plan::arp_lookup(&s) {
         let swept = sweep_arp(ip, &s, &ctx).await;
@@ -786,17 +809,10 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         if let Some(mac) = swept.mac {
             h.mac = mac;
             h.responding = true;
-        } else if !swept.answered {
-            ctx.gate
-                .wait_for(PacketKind::NeighborLookup, "OS neighbor lookup")
-                .await;
-            if let Some(Some(n)) =
-                run_blocking(&ctx.blocking, move || crate::platform::neighbor(ip)).await
-            {
-                h.mac = n.mac;
-                // A cached (possibly stale) neighbor entry is a MAC source, not proof of life.
-                h.responding = n.fresh;
-            }
+        } else if swept.answered {
+            unused = true;
+        } else {
+            unused = neighbor_lookup(&mut h, &ctx).await;
         }
     }
     let mut rtts = vec![];
@@ -830,6 +846,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         h.ping = Some((rtts.iter().map(|v| *v as u64).sum::<u64>() / rtts.len() as u64) as u32);
         h.responding = true;
     }
+    if !h.responding && crate::plan::arp_check(&s) && ip.is_ipv4() {
+        unused = neighbor_lookup(&mut h, &ctx).await;
+    }
     // The host answered: show it now, the ports follow as they are found.
     if h.responding {
         send_partial(&ctx, h.clone());
@@ -850,7 +869,13 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     // plain per-host semaphore; without a back-off it behaves exactly like one.
     let gov = HostGovernor::new(parallel, s.backoff);
     let mut probed_sample: Option<Vec<u16>> = None;
-    if crate::plan::probes_ports(h.responding, &s) {
+    if unused && !h.responding && !s.tcp_only {
+        note(
+            &mut h,
+            "no ARP answer on the local link: the address is unused, its ports were not probed"
+                .into(),
+        );
+    } else if crate::plan::probes_ports(h.responding, &s) {
         h.ports_checked = true;
         let timeout = crate::scan::port_timeout(rtts.iter().copied().max(), &s);
         let mut unprobed = 0;
@@ -1105,7 +1130,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     if s.udp
         && udp_before.is_none_or(|_| !h.responding)
         && !ctx.udp_ports.is_empty()
-        && (h.responding || s.scan_nonresponders)
+        && (h.responding || (s.scan_nonresponders && !unused))
         && !gov.paused()
     {
         let wait = Duration::from_millis(u64::from(s.port_timeout.clamp(300, 2000)));

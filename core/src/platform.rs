@@ -277,6 +277,7 @@ mod win {
         fn SendARP(dest: u32, source: u32, mac: *mut c_void, length: *mut u32) -> u32;
         fn GetBestRoute(dest: u32, source: u32, row: *mut ForwardRow) -> u32;
         fn GetIpAddrTable(table: *mut c_void, size: *mut u32, order: i32) -> u32;
+        fn GetIfEntry(row: *mut c_void) -> u32;
     }
     /// MIB_IPFORWARDROW: fourteen DWORDs, addresses in network byte order.
     #[repr(C)]
@@ -627,27 +628,74 @@ mod win {
     }
     pub fn mac(ip: IpAddr) -> Option<String> {
         let IpAddr::V4(ip) = ip else { return None };
-        unsafe {
-            let mut buffer = [0u8; 8];
-            let mut length = buffer.len() as u32;
-            if SendARP(
+        send_arp(ip).ok()
+    }
+
+    /// SendARP: the MAC, or the Win32 error code (ERROR_BAD_NET_NAME, 67, when no ARP answer
+    /// came; it is also the answer for a routed address, so it means "silent" only on-link).
+    fn send_arp(ip: std::net::Ipv4Addr) -> Result<String, u32> {
+        let mut buffer = [0u8; 8];
+        let mut length = buffer.len() as u32;
+        let code = unsafe {
+            SendARP(
                 u32::from_ne_bytes(ip.octets()),
                 0,
                 buffer.as_mut_ptr().cast(),
                 &mut length,
-            ) == 0
-                && length == 6
-            {
-                return Some(
-                    buffer[..6]
-                        .iter()
-                        .map(|v| format!("{v:02X}"))
-                        .collect::<Vec<_>>()
-                        .join(":"),
-                );
-            }
+            )
+        };
+        match code {
+            0 if length == 6 => Ok(buffer[..6]
+                .iter()
+                .map(|v| format!("{v:02X}"))
+                .collect::<Vec<_>>()
+                .join(":")),
+            0 => Err(u32::MAX),
+            e => Err(e),
         }
-        None
+    }
+
+    /// True when `ip` is reached by a direct route (no gateway) through an Ethernet or Wi-Fi
+    /// adapter, and is not an address of this computer: the OS must resolve it by ARP before
+    /// it can send it anything. Loopback, tunnel and VPN adapters are not such links.
+    fn arp_link(ip: std::net::Ipv4Addr) -> bool {
+        if ip.is_loopback() || ip.is_multicast() || ip.is_broadcast() || ip.is_unspecified() {
+            return false;
+        }
+        if interface_of(ip).is_some() {
+            return false;
+        }
+        let mut row = ForwardRow::default();
+        if unsafe { GetBestRoute(u32::from_ne_bytes(ip.octets()), 0, &mut row) } != 0 {
+            return false;
+        }
+        // MIB_IPROUTE_TYPE_DIRECT
+        if row.kind != 3 {
+            return false;
+        }
+        // MIB_IFROW: wszName[256] (512 bytes), dwIndex at 512, dwType at 516; 860 bytes in all.
+        let mut entry = [0u32; 256];
+        entry[128] = row.if_index;
+        if unsafe { GetIfEntry(entry.as_mut_ptr().cast()) } != 0 {
+            return false;
+        }
+        // IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211
+        matches!(entry[129], 6 | 71)
+    }
+
+    /// `(neighbor, silent)`: on an ARP link, a failed SendARP means nobody uses the address.
+    pub fn neighbor_probe(ip: IpAddr) -> (Option<Neighbor>, bool) {
+        let IpAddr::V4(v4) = ip else {
+            return (None, false);
+        };
+        if !arp_link(v4) {
+            return (mac(ip).map(|mac| Neighbor { mac, fresh: true }), false);
+        }
+        match send_arp(v4) {
+            Ok(mac) => (Some(Neighbor { mac, fresh: true }), false),
+            Err(67) => (None, true),
+            Err(_) => (None, false),
+        }
     }
 }
 #[cfg(not(windows))]
@@ -1274,6 +1322,23 @@ pub fn neighbor(ip: IpAddr) -> Option<Neighbor> {
 pub fn mac(ip: IpAddr) -> Option<String> {
     neighbor(ip).map(|n| n.mac)
 }
+/// [`neighbor`], plus whether the address is known to be unused: `true` only when it is on a
+/// directly attached Ethernet or Wi-Fi subnet and did not answer the OS's ARP request, so no
+/// packet can reach it. Windows only.
+pub fn neighbor_probe(ip: IpAddr) -> (Option<Neighbor>, bool) {
+    #[cfg(windows)]
+    {
+        win::neighbor_probe(ip)
+    }
+    #[cfg(not(windows))]
+    {
+        // shortcut: never "silent" off Windows (the poke and /proc/net/arp timing is untested on
+        // a real LAN); add the incomplete/FAILED entry state when it can be tried there.
+        (neighbor(ip), false)
+    }
+}
+/// Whether [`neighbor_probe`] can ever report an unused address on this platform.
+pub const NEIGHBOR_SILENCE: bool = cfg!(windows);
 
 #[cfg(test)]
 mod tests {
