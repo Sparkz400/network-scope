@@ -91,9 +91,26 @@ fn worst_case_probes(addresses: u64, ports: u64, retries: u32) -> u64 {
     let discovery = 1 + u64::from(crate::platform::NEIGHBOR_SILENCE);
     addresses * (discovery + ports * (1 + u64::from(retries)))
 }
-/// The worst-case run time of a Safe Mode scan, in whole seconds.
-fn estimated_seconds(probes: u64) -> u64 {
-    (probes * SAFE_PROBE_MS).div_ceil(1000)
+/// Measured time of a Windows ARP lookup that gets no answer (`SendARP`, 4.17 s on a home LAN).
+const SILENT_ARP_MS: u64 = 4200;
+
+/// The worst-case run time of a Safe Mode scan, in whole seconds: the larger of two bounds.
+/// Tokens: every probe at [`SAFE_PROBE_MS`]. Host slots: Safe Mode works on 8 addresses at a
+/// time, and a silent address holds its slot for the ping timeout, the ARP check (Windows) and
+/// its port waves (4 in parallel, every try waiting the port timeout). With few ports the slots
+/// bound it: a /24 with one port sends about 1,000 probes but takes about three minutes.
+fn estimated_seconds(addresses: u64, ports: u64, s: &scan::Settings) -> u64 {
+    let tokens = worst_case_probes(addresses, ports, s.retries) * SAFE_PROBE_MS;
+    let waves = ports.div_ceil(s.port_parallel.clamp(1, 4) as u64);
+    let per_address = u64::from(s.ping_timeout)
+        + if crate::platform::NEIGHBOR_SILENCE {
+            SILENT_ARP_MS
+        } else {
+            0
+        }
+        + waves * (1 + u64::from(s.retries)) * u64::from(s.port_timeout);
+    let slots = addresses.div_ceil(s.workers.clamp(1, 8) as u64) * per_address;
+    tokens.max(slots).div_ceil(1000)
 }
 
 const SERVER_INSTRUCTIONS: &str = "Read-only queries over a local Network Scope inventory (scans, devices, findings, history), plus a `scan` tool that always runs in Safe Mode, only on private addresses and within small limits. Findings are hints from read-only probes; verify before acting.";
@@ -645,7 +662,7 @@ impl Server {
                             "description": "Start the scan and answer at once (schema mcp-scan-status); call scan_status for the summary. One scan at a time. Use it when the scan takes longer than the client waits (see estimated_seconds); its time limit then defaults to the estimate plus 10 %"},
                         "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": MAX_SCAN_SECONDS,
                             "default": DEFAULT_SCAN_SECONDS,
-                            "description": "Cancel the scan (saved as partial) after this long. A dry run returns estimated_seconds (every address silent, about 0.12 s per probe; a /24 with the default 5 ports: about 336 s). Above about 55 s many clients stop waiting for the answer (the scan is still saved)"},
+                            "description": "Cancel the scan (saved as partial) after this long. A dry run returns estimated_seconds, a worst case (a /24 with the default 5 ports: about 320 to 460 s; real LANs are usually faster). Above about 55 s many clients stop waiting for the answer (the scan is still saved)"},
                     }),
                     &["targets"],
                 ),
@@ -1193,7 +1210,11 @@ impl Server {
                 1 + retries
             ));
         }
-        let estimate = estimated_seconds(probes);
+        let estimate = estimated_seconds(
+            addresses.len() as u64,
+            ports.len() as u64,
+            &scan::Settings::default(),
+        );
         // A background scan has no client waiting on it: by default it may run to its estimate.
         let seconds = requested_seconds
             .unwrap_or(if background {
