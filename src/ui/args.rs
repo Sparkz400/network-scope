@@ -6,12 +6,13 @@
 use crate::{risk, scan};
 use std::collections::BTreeMap;
 
-pub(super) const FLAGS: [&str; 38] = [
+pub(super) const FLAGS: [&str; 39] = [
     "quiet",
     "fail-on-findings",
     "arp-sweep",
     "adaptive-syn",
     "adaptive-tcp",
+    "no-adaptive-tcp",
     "jarm",
     "favicon",
     "record-wire",
@@ -206,6 +207,9 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     if has("no-backoff") {
         s.backoff = false;
     }
+    if has("no-adaptive-tcp") {
+        s.tcp_adaptive = false;
+    }
     if has("ports") || has("ot") || has("top-ports") {
         s.ports = cli.ports.clone();
     }
@@ -285,7 +289,8 @@ fn settings_from_options(opts: &BTreeMap<String, String>) -> Result<scan::Settin
     // Opt-in transmitting features; the engine ignores them in Safe Mode (without --fast).
     s.arp_sweep = opts.contains_key("arp-sweep");
     s.syn_adaptive = opts.contains_key("adaptive-syn");
-    s.tcp_adaptive = opts.contains_key("adaptive-tcp");
+    // On by default since it only shortens waits; `--adaptive-tcp` is still accepted.
+    s.tcp_adaptive = !opts.contains_key("no-adaptive-tcp");
     s.jarm = opts.contains_key("jarm");
     s.favicon = opts.contains_key("favicon");
     // On by default; it only ever slows a host down (see `backoff`).
@@ -730,8 +735,11 @@ mod tests {
                 && s.safe
         );
         assert!(s.backoff, "the back-off is on unless --no-backoff is given");
-        let (_, opts) = options(&args(&["--no-backoff"])).unwrap();
-        assert!(!scan_settings(&opts).unwrap().backoff);
+        let (_, opts) = options(&args(&["--no-backoff", "--no-adaptive-tcp"])).unwrap();
+        let off = scan_settings(&opts).unwrap();
+        assert!(!off.backoff && !off.tcp_adaptive);
+        let (_, opts) = options(&args(&[])).unwrap();
+        assert!(scan_settings(&opts).unwrap().tcp_adaptive, "on by default");
         assert_eq!(s.trace_method, crate::trace::TraceMethod::Tcp);
         assert_eq!(s.trace_port, 8443);
         assert!(trace_method("ping").is_err());
