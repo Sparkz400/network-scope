@@ -63,9 +63,12 @@ const MAX_RESULT_BYTES: usize = 1 << 20;
 pub const MAX_SCAN_ADDRESSES: u64 = 256;
 /// Most ports one `scan` call may probe.
 pub const MAX_SCAN_PORTS: usize = 1024;
-/// Most probes (addresses x (ports + one ping)). At Safe Mode spacing (100 ms between probes)
-/// this is about seven minutes, so it also bounds the run time.
-pub const MAX_SCAN_PROBES: u64 = 4000;
+/// Most probes in the worst case (`worst_case_probes`): every address silent, so each gets its
+/// ping and every port is tried twice. At [`SAFE_PROBE_MS`] this is the [`MAX_SCAN_SECONDS`].
+pub const MAX_SCAN_PROBES: u64 = 5000;
+/// Measured time per probe in Safe Mode (the 100 ms spacing plus overhead): a home /24 with the
+/// default 5 ports sent 2,755 probes in 331 s.
+const SAFE_PROBE_MS: u64 = 120;
 /// Default and largest wall-clock limit of a `scan` call, in seconds; a scan that is still
 /// running then is cancelled and saved as partial. The default stays under the 60 s request
 /// timeout many MCP clients use, so the summary arrives instead of being dropped; the session
@@ -75,6 +78,16 @@ const MAX_SCAN_SECONDS: u64 = 600;
 /// How long a cancelled scan may take to wind down before the tool stops waiting for it.
 const CANCEL_GRACE: Duration = Duration::from_secs(15);
 const DEFAULT_SCAN_PORTS: &str = "22,80,443,445,3389";
+
+/// Probes a scan sends when nothing answers: one ping per address, and each port tried
+/// `1 + retries` times (an answered port is tried once, so real scans of busy hosts send fewer).
+fn worst_case_probes(addresses: u64, ports: u64, retries: u32) -> u64 {
+    addresses * (1 + ports * (1 + u64::from(retries)))
+}
+/// The worst-case run time of a Safe Mode scan, in whole seconds.
+fn estimated_seconds(probes: u64) -> u64 {
+    (probes * SAFE_PROBE_MS).div_ceil(1000)
+}
 
 const SERVER_INSTRUCTIONS: &str = "Read-only queries over a local Network Scope inventory (scans, devices, findings, history), plus a `scan` tool that always runs in Safe Mode, only on private addresses and within small limits. Findings are hints from read-only probes; verify before acting.";
 
@@ -555,7 +568,7 @@ impl Server {
             tools.push(Tool {
                 name: "scan",
                 title: "Scan a private network (Safe Mode)",
-                description: "Scans private IP addresses (RFC 1918, loopback, IPv6 unique-local) with TCP connect probes and saves the result to the inventory. ALWAYS Safe Mode: at most 8 hosts at a time, at least 100 ms between probes, no SYN or ARP tricks, no OT queries. Limits: 256 addresses, 1024 ports, 4000 probes in total, a time limit. Refuses public addresses and hostnames. This sends network traffic.",
+                description: "Scans private IP addresses (RFC 1918, loopback, IPv6 unique-local) with TCP connect probes and saves the result to the inventory. ALWAYS Safe Mode: at most 8 hosts at a time, at least 100 ms between probes, no SYN or ARP tricks, no OT queries. Limits: 256 addresses, 1024 ports, 5000 probes counted for the worst case (one ping per address, every port tried twice), a time limit. Refuses public addresses and hostnames. This sends network traffic.",
                 input_schema: object_schema(
                     json!({
                         "targets": {"type": "string", "minLength": 1, "maxLength": 200,
@@ -568,7 +581,7 @@ impl Server {
                             "description": "Return the plan (which packet kinds would go to which ports) and send and save nothing. The scope and size limits still apply"},
                         "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": MAX_SCAN_SECONDS,
                             "default": DEFAULT_SCAN_SECONDS,
-                            "description": "Cancel the scan (saved as partial) after this long. Above about 55 s many clients stop waiting for the answer (the scan is still saved)"},
+                            "description": "Cancel the scan (saved as partial) after this long. A dry run returns estimated_seconds (every address silent, about 0.12 s per probe; a /24 with the default 5 ports: about 336 s). Above about 55 s many clients stop waiting for the answer (the scan is still saved)"},
                     }),
                     &["targets"],
                 ),
@@ -1087,14 +1100,17 @@ impl Server {
                 ports.len()
             ));
         }
-        let probes = addresses.len() as u64 * (ports.len() as u64 + 1);
+        let retries = scan::Settings::default().retries;
+        let probes = worst_case_probes(addresses.len() as u64, ports.len() as u64, retries);
         if probes > MAX_SCAN_PROBES {
             return Err(format!(
-                "{} addresses x {} ports would send {probes} probes; the limit is {MAX_SCAN_PROBES} (Safe Mode spaces probes by 100 ms, so a scan this large takes too long).",
+                "{} addresses x {} ports can send {probes} probes (a silent port is tried {} times, plus one ping per address); the limit is {MAX_SCAN_PROBES} (Safe Mode spaces probes by 100 ms, so a scan this large takes too long).",
                 addresses.len(),
-                ports.len()
+                ports.len(),
+                1 + retries
             ));
         }
+        let estimate = estimated_seconds(probes);
         scope_check(&addresses, self.cfg.scope.as_ref())?;
 
         // Built from scratch: nothing the caller sends can switch Safe Mode off or enable SYN,
@@ -1104,6 +1120,7 @@ impl Server {
             safe: true,
             delay: 100,
             probes: 1,
+            retries,
             scan_nonresponders: true,
             services,
             skip_edges: true,
@@ -1136,6 +1153,7 @@ impl Server {
                     "packets_sent": 0,
                     "safe_mode": true,
                     "hosts": addresses.len(),
+                    "estimated_seconds": estimate,
                     "scope": {"checked": true, "would_need_confirmation": false},
                     "groups": groups,
                 }),
@@ -1157,7 +1175,9 @@ impl Server {
             if now >= deadline && !run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 run.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 notes.push(format!(
-                    "Stopped after the {seconds} s time limit; the result is partial."
+                    "Stopped after the {seconds} s time limit; the result is partial. This scan can take up to {estimate} s; call scan again with timeout_seconds of about {} to let it finish.",
+                    // 10 % margin: the estimate and a real /24 differed by 1.5 %.
+                    (estimate + estimate.div_ceil(10)).clamp(10, MAX_SCAN_SECONDS)
                 ));
                 complete = false;
                 // Drain until the scan reports Done (it ends quickly once cancelled).
@@ -1226,6 +1246,7 @@ impl Server {
                 "responding": snapshot.hosts.iter().filter(|h| h.responding).count(),
                 "open_ports": snapshot.hosts.iter().map(|h| h.open.len()).sum::<usize>(),
                 "duration_seconds": (started.elapsed().as_secs_f64() * 10.0).round() / 10.0,
+                "estimated_seconds": estimate,
                 "findings": {"total": findings.len(), "by_severity": by_severity},
                 "top_findings": top_findings,
                 "notes": notes,
