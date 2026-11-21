@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP query tools only read**: they open the inventory read-only (no directory, no WAL switch, no migration); an inventory in an older format is read as it is and never upgraded by a query.
 - **MCP results are smaller**: `list_devices` returns short records by default (schema `mcp-devices`), `detail: true` for the full records, an `ip` filter and lower default limits.
 - **The Safe Mode badge lists what the next scan sends** (F43), computed from the dry-run plan, with the protections and the per-host plan in its tooltip; it is a focusable, named button.
+- **MCP `scan` limit counts retries**: the 4,000-probe limit counted one try per port, but a silent port is tried twice, so an accepted scan could need more than the 600 s maximum (a real home /24 with 5 ports sent 2,755 probes in 331 s, not 1,524). The limit is now 5,000 probes counted for the worst case (one ping per address, every port tried twice); a /24 can ask for at most 9 ports instead of 14. The dry run and the summary carry `estimated_seconds`, and a scan stopped by its time limit names the `timeout_seconds` that would let it finish.
+- **The desktop device timeline says when saved scans could not be read**, like `history` and the MCP `device_history` tool.
 
 ### Fixed
 
@@ -80,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SYN scan and TCP traceroute to an address of this computer** sent raw frames that never came back, so every port was unanswered; they now fall back to TCP connect with a note. Found on a real home LAN.
 - `dcp --sent-log` printed nothing; it now prints the table like `scan` and `trace`.
 - **Flaky back-off tests**: the per-host back-off scan tests are deterministic (the fake devices' listeners are closed by a test hook before service identification), so they no longer fail at random on macOS and Linux CI.
+- **A scan held one record per probe in memory**: each host kept the result of every port until it finished, and with `--fast` every host of a /24 runs at once. Closed and unanswered ports without a note are now counted as they finish. Loopback /24 on Windows, same results: 1,000 ports 59.8 → 33.3 MB peak, 4,000 ports 155.7 → 46.0 MB; run time unchanged.
+- **Peak memory of small tools in the speed comparison was the harness's own size**: on Linux, `ru_maxrss` from `wait4` keeps the high-water mark of the Python process the tool was forked from, so nmap and Network Scope both showed 28.2 MB. `lab/speed_compare.py` now measures through GNU time, and reports n/a without it.
 
 ### Removed
 
