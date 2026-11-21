@@ -79,7 +79,7 @@ Ten servers, ten identical fingerprints. Three servers that never give a ServerH
 - Identity keys `smb.<port>.`: `dialect`, `guid` (server GUID), `capabilities`, `encryption` (negotiated cipher, `supported`, `not supported`, `not supported (SMB 2.x)`), `compression` (3.1.1), `signing_algorithms`, `preauth_integrity`, `clock_skew` (coarse: `in sync (< 2 min)`, `+5 min`, …), `boot_time` (old Windows), `auth_mechs` (Kerberos/NTLM/NEGOEX), `os_version` (NTLM `major.minor.build`; Samba reports 6.1.0), `netbios_name`, `netbios_domain`, `dns_name`, `dns_domain`, `dns_forest`.
 - Findings `smb-no-encryption` (Info) and `cve-cve-2020-0796` (High, version hint: only for dialect 3.1.1 with compression and NTLM build 18362/18363; the patch level is not visible remotely, so patched hosts are reported too).
 
-Checked against Windows 11; the check against Samba is in the `real-servers` CI job (see [Lab and testing](lab-and-testing.md#real-servers)) and has not run yet.
+Checked against Windows 11; the check against Samba is in the `real-servers` CI job (see [Lab and testing](lab-and-testing.md#real-servers)) and passes.
 
 ## UDP (`--udp`, `--udp-ports`)
 
