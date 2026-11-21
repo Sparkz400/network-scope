@@ -327,12 +327,8 @@ jobs:
       - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo build --release --locked
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-      - name: Lab end-to-end check (simulated weak and OT services on loopback)
-        run: python lab/verify.py target/release/network-scope.exe
+      - id: build
+        run: cargo build --release --locked
       - name: Build installer
         id: iscc
         shell: pwsh
@@ -354,6 +350,15 @@ jobs:
           name: installer
           path: dist/*.exe
           if-no-files-found: error
+      # The lab check comes last and also runs when an installer step failed, so that each of the
+      # two reports its own result; it only needs the build.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        with:
+          python-version: "3.12"
+      - name: Lab end-to-end check (simulated weak and OT services on loopback)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python lab/verify.py target/release/network-scope.exe
 
   # Builds (does not push) the release container image when a pull request touches what it is
   # built from, so a broken Dockerfile shows up before a release tag. Not a required check.
