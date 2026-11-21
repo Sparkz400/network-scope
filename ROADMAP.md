@@ -8,16 +8,16 @@ End goals for Network Scope after 0.5.0. Each goal has a "done when" test where 
 
 ## Priority order
 
-1. Real-hardware testing to clear the changelog's "Untested" section (A1, A7) *Status: on-link SYN, the ARP sweep, TCP traceroute, live OT capture and DCP ran on a real home LAN (Windows 11, Npcap, not elevated, 2026-11-20); SYN and traceroute to routed targets and libpcap on Linux/macOS remain.*
+1. Real-hardware testing to clear the changelog's "Untested" section (A1, A7)
 2. Ground-truth accuracy benchmark in CI (A2)
 3. Published speed comparison (B10)
 4. Fuzz the parsers (A5)
-5. Code signing and winget (I55, I56) *Status: every parser has a cargo-fuzz target; the weekly `fuzz-long` workflow fuzzes all of them for about 24 h in five shards. Done once a full run ends without a crash.*
+5. Code signing and winget (I55, I56)
 6. "What changed" home screen plus approved baseline (E31, E32)
 7. Passive mDNS/SSDP/LLDP/DHCP discovery (C19)
 8. CISA KEV/EPSS ranking (D25)
 9. Explain every conclusion (A9)
-10. Library crate and split the largest files (G50, J61) *Status: `lab/speed_compare.py`, the `speed` workflow (nmap 7.94 and RustScan 2.4.1 on Ubuntu) and `docs/src/speed.md`; only Network Scope is measured so far (Windows loopback, and a home /24 with the top 100 ports: 28 s median with `--fast`); the nmap/RustScan table comes from the first `speed` run. Advanced IP Scanner has no CLI and is not measured.*
+10. Library crate and split the largest files (G50, J61)
 
 Items 1–4 are what back a claim of "fastest and most accurate". The rest make it the most useful.
 
@@ -25,11 +25,11 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 ## A. Trust and accuracy (prove it works)
 
-1. **Clear the "Untested" list in the changelog.** Run SYN (on-link and routed), the ARP sweep, TCP traceroute, live OT capture and DCP on real Npcap/libpcap. *Done when that changelog section is empty.*
+1. **Clear the "Untested" list in the changelog.** Run SYN (on-link and routed), the ARP sweep, TCP traceroute, live OT capture and DCP on real Npcap/libpcap. *Done when that changelog section is empty.* *Status: on-link SYN, the ARP sweep, TCP traceroute, live OT capture and DCP ran on a real home LAN (Windows 11, Npcap, not elevated, 2026-11-20); SYN and traceroute to routed targets and libpcap on Linux/macOS remain.*
 2. **Ground-truth lab benchmark.** Use a lab where every host and port is known, and measure how many real hosts are found, how many reported ports are real, how many open ports are found, and how often the service and OS are named correctly. *Done when each release publishes these numbers and CI fails if they get worse.* *Status: done (`lab/benchmark.py` with a CI gate; Windows and Linux baselines).*
 3. **Automatic nmap comparison.** Scan the same targets with both tools, import nmap's result (the XML import already exists) and diff ports and services automatically. *Done when every difference is explained or fixed.* *Status: done (`lab/nmap_compare.py`, every difference explained in `lab/nmap_differences.json`).*
 4. **Real industrial traffic for tests.** Collect public ICS pcaps for Modbus, S7, EtherNet/IP, IEC 104 and OPC UA and use them as test fixtures. Today the OT decoders are only tested on synthetic frames. *Status: done (licence-checked public captures as tests, provenance recorded).*
-5. **Fuzz every parser** (TLS, SMB, pcap/pcapng, OT decoders, nmap XML) with `cargo-fuzz`. *Done when 24 hours of fuzzing produce no crashes.*
+5. **Fuzz every parser** (TLS, SMB, pcap/pcapng, OT decoders, nmap XML) with `cargo-fuzz`. *Done when 24 hours of fuzzing produce no crashes.* *Status: every parser has a cargo-fuzz target; the weekly `fuzz-long` workflow fuzzes all of them for about 24 h in five shards. Done once a full run ends without a crash.*
 6. **Test against real servers:** Samba, OpenSSL/Schannel (TLS 1.3 suites), the JA3S reference implementation and the NVD CPE dictionary. *Status: done (Samba, OpenSSH, OpenSSL, nginx, Windows Schannel, the JA3S reference `ja3s.py` and JARM `jarm.py`; NVD CPE names).*
 7. **Run Linux and macOS on a real network.** Today CI is the only place that code compiles.
 8. **A false-alarm budget for each risk rule.** Every rule in `src/risk.rs` gets a test that must trigger it and one that must not. Track the false-alarm rate. *Status: done.*
@@ -37,7 +37,7 @@ Items 1–4 are what back a claim of "fastest and most accurate". The rest make 
 
 ## B. Speed (the fastest tool that needs no admin rights)
 
-10. **Published speed comparison** against nmap -T4, RustScan and Advanced IP Scanner. Measure a /24, a /16 and the 100/1000 most common ports. *Target: the fastest tool that needs no driver.*
+10. **Published speed comparison** against nmap -T4, RustScan and Advanced IP Scanner. Measure a /24, a /16 and the 100/1000 most common ports. *Target: the fastest tool that needs no driver.* *Status: `lab/speed_compare.py`, the `speed` workflow (nmap 7.94 and RustScan 2.4.1 on Ubuntu) and `docs/src/speed.md`; only Network Scope is measured so far (Windows loopback, and a home /24 with the top 100 ports: 28 s median with `--fast`); the nmap/RustScan table comes from the first `speed` run. Advanced IP Scanner has no CLI and is not measured.*
 11. **First result in under 200 ms**, with results appearing as they arrive rather than at the end. *Status: done (`scan --stream`, live rows in the desktop and the terminal view).*
 12. **Adaptive timing for the normal TCP scan too,** not only SYN (per-host round-trip time, like `--adaptive-syn`). *Status: done (`--adaptive-tcp`).*
 13. **Probe the likeliest ports first** for each device type, and stop early once the device is identified. *Status: done (`--early-stop` opt-in).*
