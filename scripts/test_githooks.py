@@ -17,7 +17,6 @@ SH = shutil.which("sh") or r"C:\Program Files\Git\bin\sh.exe"
 CLIPPY = "clippy --workspace --all-targets --locked -- -D warnings"
 
 
-@unittest.skipUnless(shutil.which("git") and Path(SH).exists(), "needs git and sh")
 class PrePush(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hooktest-"))
@@ -60,16 +59,19 @@ class PrePush(unittest.TestCase):
         """Runs the hook as git does for one pushed branch; returns the cargo calls it made."""
         log = Path(self.env["CARGO_LOG"])
         log.unlink(missing_ok=True)
+        # Bytes, as git writes them: in text mode Python on Windows would send "\r\n".
         out = subprocess.run([SH, str(HOOK), "origin", "url"], cwd=self.repo, env=self.env,
-                             input=f"refs/heads/x {local} refs/heads/x {remote}\n",
-                             capture_output=True, text=True)
-        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                             input=f"refs/heads/x {local} refs/heads/x {remote}\n".encode(),
+                             capture_output=True)
+        self.assertEqual(out.returncode, 0, (out.stdout + out.stderr).decode(errors="replace"))
         return log.read_text().splitlines() if log.exists() else []
 
     def changed(self, *paths):
+        """Pushes one commit that changes these paths, on top of what the remote already has."""
+        before = self.git("rev-parse", "HEAD")
         for path in paths:
-            self.write(path, "two\n")
-        return self.push(self.commit("change"), self.base)
+            self.write(path, f"changed after {before}\n")
+        return self.push(self.commit("change"), before)
 
     def test_files_no_build_or_test_reads_start_nothing(self):
         self.assertEqual(self.changed("docs/src/installation.md", "lab/verify.py", "ROADMAP.md",
@@ -85,7 +87,8 @@ class PrePush(unittest.TestCase):
     def test_files_that_tests_or_the_installer_read_run_both(self):
         for path in ("docs/src/findings/telnet-open.md", "docs/schema/scan.v1.schema.json",
                      "docs/src/research.md", "tests/fixtures/kev.json", "data/probes.json",
-                     "README.md", "assets/icon.png", "Cargo.lock", "a-new-top-level-file"):
+                     "README.md", "assets/icon.png", "Cargo.lock", "a-new-top-level-file",
+                     "tests/fixtures/ics/PROVENANCE.md", "core/NOTES.md"):
             with self.subTest(path=path):
                 self.assertEqual(self.changed(path), [CLIPPY, "test --locked"])
 
