@@ -1,0 +1,41 @@
+name: ci-budget
+
+# Keeps ci.yml fast: after every ci run on main (and weekly, and on request) scripts/ci_budget.py
+# compares the p95 run time of each job over the last 20 successful main runs with its budget in
+# scripts/ci_budgets.json and fails when one is exceeded. No job has a time limit of its own and a
+# single slow run fails nothing (runners are noisy); two slow runs in twenty do. This workflow is
+# not a required check: it reports on main, it does not block a pull request.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "37 5 * * 1" # weekly, Monday 05:37 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-budget
+  cancel-in-progress: true
+
+jobs:
+  budget:
+    name: p95 of the last 20 main runs
+    # Only ci runs that a push to main started: a pull request from a fork can also come from a
+    # branch called main. The job reads run times from the API and runs no code of that run.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compare with the budgets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci_budget.py --repo "$GITHUB_REPOSITORY" --summary "$GITHUB_STEP_SUMMARY"
