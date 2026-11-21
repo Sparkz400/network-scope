@@ -28,7 +28,7 @@
 //! runs in Safe Mode (the settings are built from scratch; no argument can change that), refuses
 //! anything but private addresses ([`scope_check`]), names no hostnames, and is limited in
 //! addresses, ports, total probes and time; with `dry_run: true` it returns the plan and sends
-//! nothing. The server has no consent flags: the engine's scope guard ([`crate::scope::enforce`])
+//! nothing, with `background: true` it runs on its own thread and `scan_status` reports it. The server has no consent flags: the engine's scope guard ([`crate::scope::enforce`])
 //! runs without a prompt, so a declared scope is binding too. It is absent with `--no-scan`. Every tool result
 //! carries a `schema` identifier (see [`crate::schema`]) in its `structuredContent`.
 use crate::{devices, risk, scan, schema, store};
@@ -37,6 +37,10 @@ use std::{
     io::{BufRead, Write},
     net::IpAddr,
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -63,9 +67,12 @@ const MAX_RESULT_BYTES: usize = 1 << 20;
 pub const MAX_SCAN_ADDRESSES: u64 = 256;
 /// Most ports one `scan` call may probe.
 pub const MAX_SCAN_PORTS: usize = 1024;
-/// Most probes (addresses x (ports + one ping)). At Safe Mode spacing (100 ms between probes)
-/// this is about seven minutes, so it also bounds the run time.
-pub const MAX_SCAN_PROBES: u64 = 4000;
+/// Most probes in the worst case (`worst_case_probes`): every address silent, so each gets its
+/// ping and every port is tried twice. At [`SAFE_PROBE_MS`] this is the [`MAX_SCAN_SECONDS`].
+pub const MAX_SCAN_PROBES: u64 = 5000;
+/// Measured time per probe in Safe Mode (the 100 ms spacing plus overhead): a home /24 with the
+/// default 5 ports sent 2,755 probes in 331 s.
+const SAFE_PROBE_MS: u64 = 120;
 /// Default and largest wall-clock limit of a `scan` call, in seconds; a scan that is still
 /// running then is cancelled and saved as partial. The default stays under the 60 s request
 /// timeout many MCP clients use, so the summary arrives instead of being dropped; the session
@@ -75,6 +82,37 @@ const MAX_SCAN_SECONDS: u64 = 600;
 /// How long a cancelled scan may take to wind down before the tool stops waiting for it.
 const CANCEL_GRACE: Duration = Duration::from_secs(15);
 const DEFAULT_SCAN_PORTS: &str = "22,80,443,445,3389";
+
+/// Probes a scan sends when nothing answers: one ping per address (plus the ARP check of a
+/// silent one where there is one, `plan::arp_check`), and each port tried `1 + retries` times.
+/// An answered port is tried once and an unused on-link address gets no port probes, so real
+/// scans send fewer.
+fn worst_case_probes(addresses: u64, ports: u64, retries: u32) -> u64 {
+    let discovery = 1 + u64::from(crate::platform::NEIGHBOR_SILENCE);
+    addresses * (discovery + ports * (1 + u64::from(retries)))
+}
+/// Measured time of a Windows ARP lookup that gets no answer (`SendARP`, 4.17 s on a home LAN).
+const SILENT_ARP_MS: u64 = 4200;
+
+/// The worst-case run time of a Safe Mode scan, in whole seconds: the larger of two bounds.
+/// Tokens: every probe at [`SAFE_PROBE_MS`]. Host slots: Safe Mode works on 8 addresses at a
+/// time, and a silent address holds its slot for the ping timeout or the ARP check that runs
+/// alongside it (Windows), whichever is longer, and then its port waves (4 in parallel, every
+/// try waiting the port timeout). With few ports the slots
+/// bound it: a /24 with one port sends about 1,000 probes but takes about three minutes.
+fn estimated_seconds(addresses: u64, ports: u64, s: &scan::Settings) -> u64 {
+    let tokens = worst_case_probes(addresses, ports, s.retries) * SAFE_PROBE_MS;
+    let waves = ports.div_ceil(s.port_parallel.clamp(1, 4) as u64);
+    let arp = if crate::platform::NEIGHBOR_SILENCE {
+        SILENT_ARP_MS
+    } else {
+        0
+    };
+    let per_address = u64::from(s.ping_timeout).max(arp)
+        + waves * (1 + u64::from(s.retries)) * u64::from(s.port_timeout);
+    let slots = addresses.div_ceil(s.workers.clamp(1, 8) as u64) * per_address;
+    tokens.max(slots).div_ceil(1000)
+}
 
 const SERVER_INSTRUCTIONS: &str = "Read-only queries over a local Network Scope inventory (scans, devices, findings, history), plus a `scan` tool that always runs in Safe Mode, only on private addresses and within small limits. Findings are hints from read-only probes; verify before acting.";
 
@@ -95,6 +133,59 @@ pub struct Config {
 pub struct Server {
     cfg: Config,
     initialized: bool,
+    /// The scan started with `background: true`, kept until the next one starts.
+    job: Option<Job>,
+}
+
+/// A background scan: its thread until it ends, then its outcome.
+struct Job {
+    targets: String,
+    started: Instant,
+    estimate: u64,
+    timeout: u64,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Result<Value, String>>>,
+    outcome: Option<Result<Value, String>>,
+}
+
+impl Job {
+    /// True while the scan runs; collects its outcome once the thread has ended.
+    fn running(&mut self) -> bool {
+        if self.thread.as_ref().is_some_and(|t| t.is_finished())
+            && let Some(thread) = self.thread.take()
+        {
+            self.outcome = Some(
+                thread
+                    .join()
+                    .unwrap_or_else(|_| Err("The scan stopped unexpectedly.".into())),
+            );
+        }
+        self.thread.is_some()
+    }
+}
+
+/// The session ends (input closed): a background scan is cancelled and saved as partial before
+/// the process exits, so nothing that was sent goes unrecorded.
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Some(job) = &mut self.job {
+            job.stop.store(true, Ordering::Relaxed);
+            if let Some(thread) = job.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+/// A checked scan request, ready to run (in the call or on a background thread).
+struct Planned {
+    db: PathBuf,
+    targets_text: String,
+    addresses: Vec<IpAddr>,
+    ports: Vec<u16>,
+    settings: scan::Settings,
+    seconds: u64,
+    estimate: u64,
 }
 
 // ---- JSON-RPC plumbing ----------------------------------------------------------------------
@@ -176,6 +267,7 @@ impl Server {
         Self {
             cfg,
             initialized: false,
+            job: None,
         }
     }
 
@@ -382,7 +474,7 @@ impl Server {
         })
     }
 
-    fn run_tool(&self, name: &str, args: &Value) -> Result<Value, String> {
+    fn run_tool(&mut self, name: &str, args: &Value) -> Result<Value, String> {
         match name {
             "list_scans" => self.list_scans(args),
             "list_devices" => self.list_devices(args),
@@ -392,6 +484,7 @@ impl Server {
             "search_inventory" => self.search_inventory(args),
             "findings_gained" => self.findings_gained(args),
             "scan" => self.scan(args),
+            "scan_status" => self.scan_status(),
             _ => Err(format!("Unknown tool: {name}")),
         }
     }
@@ -555,7 +648,7 @@ impl Server {
             tools.push(Tool {
                 name: "scan",
                 title: "Scan a private network (Safe Mode)",
-                description: "Scans private IP addresses (RFC 1918, loopback, IPv6 unique-local) with TCP connect probes and saves the result to the inventory. ALWAYS Safe Mode: at most 8 hosts at a time, at least 100 ms between probes, no SYN or ARP tricks, no OT queries. Limits: 256 addresses, 1024 ports, 4000 probes in total, a time limit. Refuses public addresses and hostnames. This sends network traffic.",
+                description: "Scans private IP addresses (RFC 1918, loopback, IPv6 unique-local) with TCP connect probes and saves the result to the inventory. ALWAYS Safe Mode: at most 8 hosts at a time, at least 100 ms between probes, no SYN or ARP tricks, no OT queries. Limits: 256 addresses, 1024 ports, 5000 probes counted for the worst case (one ping per address, every port tried twice), a time limit. Refuses public addresses and hostnames. This sends network traffic.",
                 input_schema: object_schema(
                     json!({
                         "targets": {"type": "string", "minLength": 1, "maxLength": 200,
@@ -566,13 +659,22 @@ impl Server {
                             "description": "Also identify services on open ports (banners, TLS, SMB); more requests per open port"},
                         "dry_run": {"type": "boolean", "default": false,
                             "description": "Return the plan (which packet kinds would go to which ports) and send and save nothing. The scope and size limits still apply"},
+                        "background": {"type": "boolean", "default": false,
+                            "description": "Start the scan and answer at once (schema mcp-scan-status); call scan_status for the summary. One scan at a time. Use it when the scan takes longer than the client waits (see estimated_seconds); its time limit then defaults to the estimate plus 10 %"},
                         "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": MAX_SCAN_SECONDS,
                             "default": DEFAULT_SCAN_SECONDS,
-                            "description": "Cancel the scan (saved as partial) after this long. Above about 55 s many clients stop waiting for the answer (the scan is still saved)"},
+                            "description": "Cancel the scan (saved as partial) after this long. A dry run returns estimated_seconds, a worst case (a /24 with the default 5 ports: about 320 to 460 s; real LANs are usually faster). Above about 55 s many clients stop waiting for the answer (the scan is still saved)"},
                     }),
                     &["targets"],
                 ),
                 read_only: false,
+            });
+            tools.push(Tool {
+                name: "scan_status",
+                title: "State of the background scan",
+                description: "Whether the scan started with background: true is still running (elapsed and estimated seconds), and its summary (the same as a scan's) once it has ended. Sends nothing.",
+                input_schema: object_schema(json!({}), &[]),
+                read_only: true,
             });
         }
         tools
@@ -1049,11 +1151,21 @@ pub fn scope_check(
 }
 
 impl Server {
-    fn scan(&self, args: &Value) -> Result<Value, String> {
+    fn scan(&mut self, args: &Value) -> Result<Value, String> {
         if !self.cfg.allow_scan {
             return Err(
                 "The scan tool is disabled (the server was started with --no-scan).".into(),
             );
+        }
+        if let Some(job) = &mut self.job
+            && job.running()
+        {
+            return Err(format!(
+                "A scan of {} is already running ({} s so far, up to about {} s); call scan_status for its result. One scan runs at a time.",
+                job.targets,
+                job.started.elapsed().as_secs(),
+                job.estimate.min(job.timeout)
+            ));
         }
         let targets_text = text_arg(args, "targets")
             .unwrap_or_default()
@@ -1071,10 +1183,12 @@ impl Server {
             .get("dry_run")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let seconds = int_arg(args, "timeout_seconds")
-            .and_then(|s| u64::try_from(s).ok())
-            .unwrap_or(DEFAULT_SCAN_SECONDS)
-            .clamp(10, MAX_SCAN_SECONDS);
+        let background = args
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let requested_seconds =
+            int_arg(args, "timeout_seconds").and_then(|s| u64::try_from(s).ok());
 
         // The limits are applied to what the text parses to, not to the text: `top:N`, ranges
         // and CIDR all count. Hostnames do not parse as targets at all.
@@ -1087,14 +1201,29 @@ impl Server {
                 ports.len()
             ));
         }
-        let probes = addresses.len() as u64 * (ports.len() as u64 + 1);
+        let retries = scan::Settings::default().retries;
+        let probes = worst_case_probes(addresses.len() as u64, ports.len() as u64, retries);
         if probes > MAX_SCAN_PROBES {
             return Err(format!(
-                "{} addresses x {} ports would send {probes} probes; the limit is {MAX_SCAN_PROBES} (Safe Mode spaces probes by 100 ms, so a scan this large takes too long).",
+                "{} addresses x {} ports can send {probes} probes (a silent port is tried {} times, plus one ping per address); the limit is {MAX_SCAN_PROBES} (Safe Mode spaces probes by 100 ms, so a scan this large takes too long).",
                 addresses.len(),
-                ports.len()
+                ports.len(),
+                1 + retries
             ));
         }
+        let estimate = estimated_seconds(
+            addresses.len() as u64,
+            ports.len() as u64,
+            &scan::Settings::default(),
+        );
+        // A background scan has no client waiting on it: by default it may run to its estimate.
+        let seconds = requested_seconds
+            .unwrap_or(if background {
+                with_margin(estimate)
+            } else {
+                DEFAULT_SCAN_SECONDS
+            })
+            .clamp(10, MAX_SCAN_SECONDS);
         scope_check(&addresses, self.cfg.scope.as_ref())?;
 
         // Built from scratch: nothing the caller sends can switch Safe Mode off or enable SYN,
@@ -1104,6 +1233,7 @@ impl Server {
             safe: true,
             delay: 100,
             probes: 1,
+            retries,
             scan_nonresponders: true,
             services,
             skip_edges: true,
@@ -1136,11 +1266,90 @@ impl Server {
                     "packets_sent": 0,
                     "safe_mode": true,
                     "hosts": addresses.len(),
+                    "estimated_seconds": estimate,
                     "scope": {"checked": true, "would_need_confirmation": false},
                     "groups": groups,
                 }),
             );
         }
+        let planned = Planned {
+            db: self.cfg.db.clone(),
+            targets_text,
+            addresses,
+            ports,
+            settings,
+            seconds,
+            estimate,
+        };
+        if !background {
+            return execute(planned, &AtomicBool::new(false));
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let targets = planned.targets_text.clone();
+        let thread = std::thread::Builder::new()
+            .name("mcp-scan".into())
+            .spawn(move || execute(planned, &flag))
+            .map_err(|e| format!("Could not start the scan: {e}"))?;
+        self.job = Some(Job {
+            targets,
+            started: Instant::now(),
+            estimate,
+            timeout: seconds,
+            stop,
+            thread: Some(thread),
+            outcome: None,
+        });
+        self.scan_status()
+    }
+
+    /// The background scan: running, ended (with the scan's summary) or none.
+    fn scan_status(&mut self) -> Result<Value, String> {
+        let Some(job) = &mut self.job else {
+            return enveloped("mcp-scan-status", &json!({"state": "idle"}));
+        };
+        let running = job.running();
+        let mut status = json!({
+            "targets": job.targets,
+            "elapsed_seconds": job.started.elapsed().as_secs_f64().round(),
+            "estimated_seconds": job.estimate,
+            "timeout_seconds": job.timeout,
+        });
+        match (running, &job.outcome) {
+            (true, _) => status["state"] = json!("running"),
+            (false, Some(Ok(summary))) => {
+                status["state"] = json!("done");
+                status["elapsed_seconds"] = summary["duration_seconds"].clone();
+                status["summary"] = summary.clone();
+            }
+            (false, Some(Err(e))) => {
+                status["state"] = json!("failed");
+                status["error"] = json!(e);
+            }
+            (false, None) => status["state"] = json!("failed"),
+        }
+        enveloped("mcp-scan-status", &status)
+    }
+}
+
+/// A scan time with 10 % margin (the estimate and a real /24 differed by 1.5 %).
+fn with_margin(seconds: u64) -> u64 {
+    seconds + seconds.div_ceil(10)
+}
+
+/// Runs a checked scan until it ends, its time limit passes or `stop` is set, saves it (partial
+/// when it did not finish) and returns the summary.
+fn execute(p: Planned, stop: &AtomicBool) -> Result<Value, String> {
+    let Planned {
+        db,
+        targets_text,
+        addresses,
+        ports,
+        settings,
+        seconds,
+        estimate,
+    } = p;
+    {
         let started = Instant::now();
         let total = addresses.len();
         let run = scan::start_stream(
@@ -1151,18 +1360,27 @@ impl Server {
         );
         let deadline = started + Duration::from_secs(seconds);
         let (mut hosts, mut notes, mut complete) = (vec![], vec![], true);
+        let mut cancelled_at: Option<Instant> = None;
         loop {
             // Checked on every turn, not only when the channel is idle: a busy scan still stops.
             let now = Instant::now();
-            if now >= deadline && !run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                run.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            if stop.load(Ordering::Relaxed) && cancelled_at.is_none() {
+                run.cancel.store(true, Ordering::Relaxed);
+                cancelled_at = Some(now);
+                notes.push("Stopped because the MCP session ended; the result is partial.".into());
+                complete = false;
+            }
+            if now >= deadline && cancelled_at.is_none() {
+                run.cancel.store(true, Ordering::Relaxed);
+                cancelled_at = Some(now);
                 notes.push(format!(
-                    "Stopped after the {seconds} s time limit; the result is partial."
+                    "Stopped after the {seconds} s time limit; the result is partial. This scan can take up to {estimate} s; call scan again with timeout_seconds of about {} to let it finish.",
+                    with_margin(estimate).clamp(10, MAX_SCAN_SECONDS)
                 ));
                 complete = false;
                 // Drain until the scan reports Done (it ends quickly once cancelled).
             }
-            if now >= deadline + CANCEL_GRACE {
+            if cancelled_at.is_some_and(|at| now >= at + CANCEL_GRACE) {
                 notes.push(format!(
                     "The scan did not stop within {} s of being cancelled; saved what had arrived.",
                     CANCEL_GRACE.as_secs()
@@ -1197,7 +1415,7 @@ impl Server {
             observations: vec![],
             notes: Default::default(),
         };
-        let scan_id = store::save(&self.cfg.db, &snapshot)?;
+        let scan_id = store::save(&db, &snapshot)?;
         let findings = risk::analyze_snapshot(&snapshot);
         let mut by_severity = Map::new();
         for severity in ["critical", "high", "medium", "low", "info"] {
@@ -1226,6 +1444,7 @@ impl Server {
                 "responding": snapshot.hosts.iter().filter(|h| h.responding).count(),
                 "open_ports": snapshot.hosts.iter().map(|h| h.open.len()).sum::<usize>(),
                 "duration_seconds": (started.elapsed().as_secs_f64() * 10.0).round() / 10.0,
+                "estimated_seconds": estimate,
                 "findings": {"total": findings.len(), "by_severity": by_severity},
                 "top_findings": top_findings,
                 "notes": notes,
