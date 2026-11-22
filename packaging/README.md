@@ -15,8 +15,8 @@ To render them by hand (for example for an older release):
 
 ```sh
 # DIST holds the release files; the source hash is of GitHub's tag archive
-curl -fsSLO https://github.com/Sparkz400/network-scope/archive/refs/tags/v0.5.1.tar.gz
-python -I scripts/render_packaging.py 0.5.1 DIST "$(sha256sum v0.5.1.tar.gz | cut -d' ' -f1)" out
+curl -fsSLO https://github.com/Sparkz400/network-scope/archive/refs/tags/v0.6.0.tar.gz
+python -I scripts/render_packaging.py 0.6.0 DIST "$(sha256sum v0.6.0.tar.gz | cut -d' ' -f1)" out
 ```
 
 ## Submitting (maintainer, manual)

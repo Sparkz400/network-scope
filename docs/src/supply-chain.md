@@ -24,26 +24,26 @@ The SBOM is a release file like the binaries, so it is listed in `SHA256SUMS` an
 
 ```sh
 # The SBOM is the signed bill of materials of this file
-gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz \
+gh attestation verify network-scope-0.6.0-linux-x86_64.tar.gz \
   --repo Sparkz400/network-scope --predicate-type https://cyclonedx.org/bom
 
 # Offline, with the attestation bundle from the release
-gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz \
+gh attestation verify network-scope-0.6.0-linux-x86_64.tar.gz \
   --repo Sparkz400/network-scope --predicate-type https://cyclonedx.org/bom \
-  --bundle network-scope-0.5.1.sbom.sigstore.json
+  --bundle network-scope-0.6.0.sbom.sigstore.json
 ```
 
 Then check that the SBOM you read is the attested one (it is a subject of the provenance too):
 
 ```sh
-gh attestation verify network-scope-0.5.1.cdx.json --repo Sparkz400/network-scope
+gh attestation verify network-scope-0.6.0.cdx.json --repo Sparkz400/network-scope
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
-Feed it to your own tooling (for example an SBOM scanner such as `grype sbom:network-scope-0.5.1.cdx.json`), or list the components:
+Feed it to your own tooling (for example an SBOM scanner such as `grype sbom:network-scope-0.6.0.cdx.json`), or list the components:
 
 ```sh
-jq -r '.components[] | "\(.name) \(.version)"' network-scope-0.5.1.cdx.json | sort
+jq -r '.components[] | "\(.name) \(.version)"' network-scope-0.6.0.cdx.json | sort
 ```
 
 The SBOM describes the Rust dependencies resolved by `Cargo.lock` (including those compiled in from C, such as the bundled SQLite). It does not describe the operating system libraries the binaries load at run time, and the SBOM of the container image is the separate BuildKit attestation stored next to the image.
@@ -97,7 +97,7 @@ For a release built with `CONST_RANDOM_SEED` (see above). On Linux, in the same 
 ```sh
 git clone https://github.com/Sparkz400/network-scope
 cd network-scope
-git checkout v0.5.1
+git checkout v0.6.0
 
 # the environment of the release build: SOURCE_DATE_EPOCH, RUSTFLAGS, CFLAGS, ...
 env_lines="$(sh scripts/repro_env.sh "$PWD")"
@@ -107,8 +107,8 @@ cargo build --release --locked --bin network-scope-cli
 sha256sum target/release/network-scope-cli
 
 # the same file from the release (compare the binary, not the archive: archives contain timestamps)
-tar -xzf network-scope-0.5.1-linux-x86_64.tar.gz
-sha256sum network-scope-0.5.1-linux-x86_64/network-scope-cli
+tar -xzf network-scope-0.6.0-linux-x86_64.tar.gz
+sha256sum network-scope-0.6.0-linux-x86_64/network-scope-cli
 ```
 
 Equal hashes mean the release binary was built from this source with this toolchain. Run this in `bash` (the `<<<` is not POSIX `sh`). `scripts/repro_env.sh` only prints the variables, so you can read it first.

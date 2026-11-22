@@ -13,7 +13,7 @@ Download from the [latest GitHub release](https://github.com/Sparkz400/network-s
 Verify a download in PowerShell:
 
 ```powershell
-Get-FileHash .\network-scope-0.5.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\network-scope-0.6.0-windows-x64.zip -Algorithm SHA256
 ```
 
 and compare the hash with the line in `SHA256SUMS`.
@@ -103,14 +103,14 @@ Every release has signed proofs of origin (details in [SECURITY.md](https://gith
 
 ```sh
 # GitHub artifact attestation (Sigstore-signed SLSA build provenance) for a release file
-gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope
+gh attestation verify network-scope-0.6.0-linux-x86_64.tar.gz --repo Sparkz400/network-scope
 
 # The same check offline, with the provenance bundle attached to the release
-gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope \
-  --bundle network-scope-0.5.1.sigstore.json
+gh attestation verify network-scope-0.6.0-linux-x86_64.tar.gz --repo Sparkz400/network-scope \
+  --bundle network-scope-0.6.0.sigstore.json
 
 # Container image
-gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
+gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.6.0 --owner Sparkz400
 ```
 
 Each release also has a CycloneDX SBOM. Rebuilding a release and comparing the hash is documented in [Supply chain: SBOM and reproducible builds](supply-chain.md#what-is-reproducible-where): the Windows binaries were measured identical on one machine, the Linux check passes in CI, and releases up to v0.5.1 cannot be reproduced.
@@ -123,7 +123,7 @@ Network Scope tells you when a newer release exists; it **never downloads or rep
 network-scope-cli update check
 ```
 
-prints either `Network Scope 0.5.1 is up to date.` or `Version X is available`, followed by the release page and the commands that verify a download (the checksum with `sha256sum`, `gh attestation verify`, the ones above). You download the file for your platform, verify it and install it yourself.
+prints either `Network Scope 0.6.0 is up to date.` or `Version X is available`, followed by the release page and the commands that verify a download (the checksum with `sha256sum`, `gh attestation verify`, the ones above). You download the file for your platform, verify it and install it yourself.
 
 In the desktop app, **Settings > Check for updates on start** (off by default) does the same once when the program starts and shows a notice in the status bar when a newer release exists. Without that setting, and without running the command, the program never contacts GitHub for this.
 
@@ -171,10 +171,10 @@ With [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 
 ```powershell
 cargo build --release --locked
-iscc /DAppVersion=0.5.1 installer\network-scope.iss
+iscc /DAppVersion=0.6.0 installer\network-scope.iss
 ```
 
-writes `dist\NetworkScope-0.5.1-setup.exe`. Pass `/DExePath=…` and `/DCliExePath=…` for other build directories.
+writes `dist\NetworkScope-0.6.0-setup.exe`. Pass `/DExePath=…` and `/DCliExePath=…` for other build directories.
 
 ## Shell completions
 
