@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "network-scope"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "crossterm",
  "eframe",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "network-scope-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "dns-lookup",
  "libloading 0.9.1",

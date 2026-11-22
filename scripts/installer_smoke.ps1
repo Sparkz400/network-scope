@@ -3,7 +3,7 @@
 # both installed binaries print `network-scope <version>`, uninstalls it silently and checks that
 # the folder and the uninstall registry entry are gone.
 #
-#   pwsh scripts/installer_smoke.ps1 dist\NetworkScope-0.5.1-setup.exe 0.5.1
+#   pwsh scripts/installer_smoke.ps1 dist\NetworkScope-0.6.0-setup.exe 0.6.0
 param(
     [Parameter(Mandatory)][string]$Setup,
     [Parameter(Mandatory)][string]$Version
