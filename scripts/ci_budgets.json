@@ -1,5 +1,5 @@
 {
-  "comment": "p95 budgets in seconds for the jobs of ci.yml on main; scripts/ci_budget.py explains the rules. Set on 2026-11-21 from the p95 of the 15 successful runs since 2026-11-20 21:46 UTC plus about ten percent. Budgets only go down.",
+  "comment": "p95 budgets in seconds for the jobs of ci.yml on main; scripts/ci_budget.py explains the rules. Set on 2026-11-21 from the p95 of the 15 successful runs since 2026-11-20 21:46 UTC plus about ten percent. Budgets only go down, except: on 2026-11-22 \"windows installer\" (230 -> 295) and \"cli-only build (no GUI)\" (155 -> 220) were re-baselined to the p95 of the 9 main runs since plus about ten percent, because test steps merged alongside the budgets (the Windows lab end-to-end check; the two Linux real-link checks) were missing from the measurement.",
   "since": "2026-11-20T21:46:00Z",
   "runs": 20,
   "minimum_runs": 5,
@@ -9,8 +9,8 @@
     "windows-latest": 680,
     "macos-latest": 550,
     "ubuntu-latest": 530,
-    "windows installer": 230,
-    "cli-only build (no GUI)": 155,
+    "windows installer": 295,
+    "cli-only build (no GUI)": 220,
     "coverage (parsers and risk rules)": 145,
     "real servers (Samba, OpenSSH, OpenSSL, nginx) and NVD CPE names": 120,
     "finding documentation": 30
