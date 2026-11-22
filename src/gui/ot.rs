@@ -746,8 +746,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ns-gui-ot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for (name, bytes) in [
-            ("a.pcap", crate::pcapfile::write_pcap(&frames)),
-            ("b.pcapng", crate::pcapfile::write_pcapng(&frames, false)),
+            ("a.pcap", crate::pcap_testutil::write_pcap(&frames)),
+            (
+                "b.pcapng",
+                crate::pcap_testutil::write_pcapng(&frames, false),
+            ),
         ] {
             let path = dir.join(name);
             std::fs::write(&path, bytes).unwrap();
@@ -783,7 +786,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ns-gui-ot-exit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("c.pcap");
-        std::fs::write(&path, crate::pcapfile::write_pcap(&frames)).unwrap();
+        std::fs::write(&path, crate::pcap_testutil::write_pcap(&frames)).unwrap();
         let mut state = OtState::default();
         state.begin(Source::Pcap(path), egui::Context::default());
         let (label, observations) = state

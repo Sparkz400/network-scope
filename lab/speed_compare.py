@@ -26,7 +26,11 @@ other listeners that were missed are reported separately (a system service's wil
 refuse when hundreds of connections reach it at once, which is the OS, not the scanner).
 
 Each tool runs --repeat times, interleaved; wall time (median, min, max) and peak memory (the OS's
-figure: ru_maxrss from wait4, or the peak working set on Windows) are reported. A run longer than
+figure: GNU time's %M on Linux, ru_maxrss from wait4 on macOS, the peak working set on Windows) are
+reported. Linux's wait4 figure is not used: a child's ru_maxrss keeps the high-water mark of the
+process it was forked from (this Python harness), so every small tool would show the harness's
+size; GNU time forks the tool from a process of about 2 MB. Without /usr/bin/time, Linux peaks are
+reported as n/a. A run longer than
 --limit seconds is stopped and reported as timed out.
 
 --check fails (exit 1) only on Network Scope: when it reports a wrong open set in any cell, or its
@@ -73,11 +77,28 @@ def load(name, path):
     return module
 
 
+GNU_TIME = "/usr/bin/time" if sys.platform.startswith("linux") and os.access("/usr/bin/time", os.X_OK) else None
+
+
+def gnu_time_peak(text):
+    """Bytes from GNU time's `-f %M` output (KiB on the last line; a non-zero exit adds a line before it)."""
+    lines = text.strip().splitlines()
+    return int(lines[-1]) * 1024 if lines and lines[-1].strip().isdigit() else None
+
+
 def run(cmd, limit_s):
     """(seconds, peak bytes or None, stdout, stderr, exit code or None when timed out)."""
+    linux = sys.platform.startswith("linux")
+    peak_file = None
+    if linux and GNU_TIME:
+        fd, peak_file = tempfile.mkstemp(prefix="speed-peak-")
+        os.close(fd)
+        cmd = [GNU_TIME, "-f", "%M", "-o", peak_file, *cmd]
     started = time.monotonic()
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Own process group, so a timeout also stops the tool behind GNU time.
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=linux)
     except OSError as e:
         raise SpeedError(f"could not run {cmd[0]}: {e}") from None
     outs = {}
@@ -85,7 +106,12 @@ def run(cmd, limit_s):
                for n, s in (("out", proc.stdout), ("err", proc.stderr))]
     for t in readers:
         t.start()
-    timer = threading.Timer(limit_s, proc.kill)
+    def stop():
+        try:
+            os.killpg(proc.pid, 9) if linux else proc.kill()
+        except OSError:
+            pass
+    timer = threading.Timer(limit_s, stop)
     timer.start()
     peak = None
     if sys.platform == "win32":
@@ -101,7 +127,12 @@ def run(cmd, limit_s):
         seconds = time.monotonic() - started
         code = os.waitstatus_to_exitcode(status)
         proc.returncode = code
-        peak = usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+        if sys.platform == "darwin":
+            peak = usage.ru_maxrss
+        elif peak_file:
+            with open(peak_file, encoding="utf-8", errors="replace") as f:
+                peak = gnu_time_peak(f.read())
+            os.remove(peak_file)
     timed_out = not timer.is_alive()
     timer.cancel()
     for t in readers:
@@ -224,16 +255,37 @@ def rustscan_open(text):
     return found
 
 
-def regressions(cells, baseline, tolerance):
-    """(failures, notices) for Network Scope's medians against the baseline of this platform."""
+# Shared runners differ in speed from run to run (seen: every tool 2 to 3 times slower in one run), so
+# Network Scope is gated relative to this tool's time in the same run when both are in the baseline.
+REFERENCE = "nmap -sT -T4"
+
+
+def regressions(cells, baseline, tolerance, refs=None):
+    """(failures, notices) for Network Scope's medians against the baseline of this platform.
+
+    A baseline cell is seconds, or {"seconds", "reference_seconds"}: then, when the reference tool ran
+    in this cell (refs), the ratio of the two times is compared instead of the seconds."""
     failures, notices = [], []
+    refs = refs or {}
+    allowed = f"allowed +{100 * tolerance:.0f}%"
     for cell, median in cells.items():
         base = baseline.get(cell)
         if base is None:
             notices.append(f"{cell}: no baseline for this platform; measured {median:.2f} s")
-        elif median > base * (1 + tolerance):
-            failures.append(f"{cell}: Network Scope took {median:.2f} s, baseline {base:.2f} s "
-                            f"(+{100 * (median / base - 1):.0f}%, allowed +{100 * tolerance:.0f}%)")
+            continue
+        seconds, ref_base = (base.get("seconds"), base.get("reference_seconds")) if isinstance(base, dict) else (base, None)
+        if not isinstance(seconds, (int, float)) or seconds <= 0:
+            notices.append(f"{cell}: the baseline has no usable seconds; measured {median:.2f} s")
+            continue
+        ref = refs.get(cell)
+        if ref and ref_base:
+            ratio, base_ratio = median / ref, seconds / ref_base
+            if ratio > base_ratio * (1 + tolerance):
+                failures.append(f"{cell}: Network Scope took {median:.2f} s, {ratio:.2f} x {REFERENCE} ({ref:.2f} s) "
+                                f"in this run; baseline {base_ratio:.2f} x (+{100 * (ratio / base_ratio - 1):.0f}%, {allowed})")
+        elif median > seconds * (1 + tolerance):
+            failures.append(f"{cell}: Network Scope took {median:.2f} s, baseline {seconds:.2f} s "
+                            f"(+{100 * (median / seconds - 1):.0f}%, {allowed})")
     return failures, notices
 
 
@@ -290,7 +342,9 @@ def tool_commands(args, work):
                 return ns_open(json.load(f))
         return cmd, parse
     tools["Network Scope"] = ns
-    if args.lan:  # shortcut: other tools need polite settings agreed with the LAN's owner; add them then
+    # On a real LAN the other tools run only with --fast, which the owner agrees to: they have no
+    # Safe Mode, and nmap -T4 is what the lab compares with.
+    if args.lan and not args.fast:
         return tools
 
     def nmap_with(prefix, scan_type):
@@ -373,7 +427,8 @@ def main():
     ap.add_argument("--tolerance", type=float, default=0.5, help="allowed slowdown over the baseline (default 0.5 = +50%%)")
     ap.add_argument("--lan", help="time Network Scope (Safe Mode, no other tool) on this real private /24 or smaller "
                     "instead of the loopback lab; only with the network owner's permission. No correctness check, no gate")
-    ap.add_argument("--fast", action="store_true", help="with --lan: leave Safe Mode (only when the owner agreed)")
+    ap.add_argument("--fast", action="store_true", help="with --lan: leave Safe Mode and time the other tools too "
+                    "(nmap -sT -T4, RustScan); only when the owner agreed")
     ap.add_argument("--out-dir", help="write speed.json, speed.md and baseline-candidate.json here")
     args = ap.parse_args()
     cells = [c.strip() for c in args.cells.split(",") if c.strip()]
@@ -427,7 +482,7 @@ def main():
 
     result = {"machine": machine(), "versions": versions, "port_source": port_source, "repeat": args.repeat,
               "limit_s": args.limit, "commands": {}, "cells": {}}
-    ns_medians, failures = {}, []
+    ns_medians, ref_medians, failures = {}, {}, []
     for cell in cells:
         cidr, n = CELLS[cell]
         cidr = args.lan or cidr
@@ -478,7 +533,7 @@ def main():
                        "expected_open": len(expected), "lab_open": len(lab_in_cell), "lan": bool(args.lan), "tools": {}}
         for label in tools:
             r = summarize(times[label], peaks[label])
-            if label in errors and not times[label]:
+            if label in errors:  # also after successful runs: a crash on a later repeat is not a timing
                 r["error"] = errors[label]
             elif label in timed_out and not times[label]:
                 r["error"] = f"> {args.limit} s"
@@ -510,6 +565,9 @@ def main():
                             f"{ns['missed_sample']}, {ns['extra']} reported open but not listening {ns['extra_sample']})")
         else:
             ns_medians[cell] = ns["median_s"]
+            ref = cell_result["tools"].get(REFERENCE, {})
+            if ref.get("correct") and ref.get("median_s"):
+                ref_medians[cell] = ref["median_s"]
         result["cells"][cell] = cell_result
 
     plat = PLATFORMS.get(sys.platform, sys.platform)
@@ -518,7 +576,7 @@ def main():
             baseline = json.load(f).get("platforms", {}).get(plat, {})
     except FileNotFoundError:
         baseline = {}
-    slow, notices = regressions(ns_medians, baseline, args.tolerance)
+    slow, notices = regressions(ns_medians, baseline, args.tolerance, ref_medians)
     failures += slow
     result.update(failures=failures, notices=notices)
     table = markdown(result)
@@ -529,7 +587,9 @@ def main():
         print(f"  {label}: {cmd}")
     for n in notices:
         print(f"notice: {n}")
-    candidate = {"platforms": {plat: ns_medians}}
+    candidate = {"platforms": {plat: {
+        cell: {"seconds": s, "reference_seconds": ref_medians[cell]} if cell in ref_medians else s
+        for cell, s in ns_medians.items()}}}
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
         for name, data in (("speed.json", result), ("baseline-candidate.json", candidate)):

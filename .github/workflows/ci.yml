@@ -39,15 +39,21 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
-      - run: cargo clippy --release --all-targets --locked -- -D warnings
+      # --workspace: the benchmarks are a package of their own (bench/) and not a default member.
+      - run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
+      # Compiling and running are two steps, so a run records how long each took.
+      - name: Compile the tests
+        run: cargo test --release --locked --no-run
       - run: cargo test --release --locked
       # Roadmap A6: a real Windows Schannel server (lab/schannel_server.ps1, PowerShell 7, no
       # administrator rights) against the TLS inspection; the test is ignored by default.
       - name: Schannel server test (Windows)
         if: runner.os == 'Windows'
-        # No `-p`: the same package set as the run above, so the built tests are reused (with
-        # `-p network-scope-core` the features resolve differently and core is rebuilt).
+        # No `-p`: the same package set as the run above, so the built tests are reused.
         run: cargo test --release --locked --lib windows_schannel -- --ignored --nocapture
+      # Builds nothing after the tests: `cargo test` and `cargo build` resolve the same features
+      # for every package (no dev-dependency of the two default members turns one on), so the
+      # library and both binaries the tests built are the ones the lab steps below run.
       - run: cargo build --release --locked
       # Roadmap L72: the real wire capture of `scan --record-wire` with libpcap on the loopback
       # interface (Linux only; capturing needs root, so the already built test binary and the CLI
@@ -85,11 +91,14 @@ jobs:
           # lab/verify.py's segmentation check needs 127.0.0.1 to 127.0.0.5; macOS has only the
           # first on lo0 (without the aliases the check prints "SKIPPED" and passes).
           for n in 2 3 4 5; do sudo ifconfig lo0 alias "127.0.0.$n" up || true; done
+      # On Windows this check runs in the `windows installer` job, next to this one: that job
+      # builds the same binaries and has time to spare, and this is the job a pull request waits
+      # for longest.
       - name: Lab end-to-end check (simulated weak and OT services on loopback)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           exe=target/release/network-scope
-          [ "$RUNNER_OS" = "Windows" ] && exe=target/release/network-scope.exe
           if [ "$RUNNER_OS" = "macOS" ]; then
             sudo "$(command -v python)" lab/verify.py "$exe"
           else
@@ -193,6 +202,17 @@ jobs:
           test "$status" -eq 2
           "$bin" scan 127.0.0.1 --ports 1 --timeout 500 --db "$RUNNER_TEMP/cli-only.sqlite" --quiet
           ! ldd "$bin" | grep -Ei 'libX11|libxcb|libwayland|libxkbcommon|libGL'
+      # Unused on-link addresses on Linux (platform::neighbor_unresolved), on the runner's own
+      # Docker bridge: unused, live, ICMP host-prohibited and just-stopped containers.
+      - name: Unused addresses on a real link (Docker bridge)
+        run: python3 -I lab/neighbor_check.py --cli target/release/network-scope-cli
+      # The capture-driver features with libpcap on a real link (roadmap 1 and 7): SYN on-link and
+      # routed (through a router container), ARP sweep, TCP traceroute, DCP, live OT capture. As
+      # root, on the runner's Docker bridge; see lab/raw_bridge_check.py.
+      - name: Capture-driver features on a real link (Docker bridge, libpcap)
+        run: |
+          sudo apt-get install -y libpcap0.8t64 || sudo apt-get install -y libpcap0.8
+          sudo python3 -I lab/raw_bridge_check.py --cli target/release/network-scope-cli
       # Roadmap K65: the safety linter (OT and printer ports, write-like payloads, payload and
       # regex size, nested quantifiers) must pass on the probe database that ships.
       - name: Probe safety lint (data/probes.json)
@@ -314,7 +334,8 @@ jobs:
 
   # Runs next to the test jobs, not after them: it needs only the binaries, which it builds itself,
   # and waiting added ~7 minutes to every run. Compiles installer/network-scope.iss and tests the
-  # result with scripts/installer_smoke.ps1 (roadmap I58).
+  # result with scripts/installer_smoke.ps1 (roadmap I58). It also runs the lab end-to-end check
+  # on Windows, with the binaries it built (the same build as in the windows-latest job).
   installer:
     name: windows installer
     runs-on: windows-latest
@@ -323,7 +344,8 @@ jobs:
       - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo build --release --locked
+      - id: build
+        run: cargo build --release --locked
       - name: Build installer
         id: iscc
         shell: pwsh
@@ -345,6 +367,15 @@ jobs:
           name: installer
           path: dist/*.exe
           if-no-files-found: error
+      # The lab check comes last and also runs when an installer step failed, so that each of the
+      # two reports its own result; it only needs the build.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        with:
+          python-version: "3.12"
+      - name: Lab end-to-end check (simulated weak and OT services on loopback)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python lab/verify.py target/release/network-scope.exe
 
   # Builds (does not push) the release container image when a pull request touches what it is
   # built from, so a broken Dockerfile shows up before a release tag. Not a required check.
@@ -362,7 +393,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --name-only "$BASE" HEAD | grep -qE '^(Dockerfile|\.dockerignore|Cargo\.toml|core/Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github/workflows/(ci|release)\.yml)$'; then
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(Dockerfile|\.dockerignore|Cargo\.toml|core/Cargo\.toml|bench/Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github/workflows/(ci|release)\.yml)$'; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "No container inputs changed; skipping the image build."

@@ -2442,10 +2442,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "network-scope-bench"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "network-scope-core",
+]
+
+[[package]]
 name = "network-scope-core"
 version = "0.5.1"
 dependencies = [
- "criterion",
  "dns-lookup",
  "libloading 0.9.1",
  "pnet_packet",

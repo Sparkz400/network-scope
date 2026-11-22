@@ -32,6 +32,11 @@
     "safe_mode": {
       "type": "boolean"
     },
+    "estimated_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "MCP scan only: worst-case run time in Safe Mode (every address silent, every port tried twice)"
+    },
     "hosts": {
       "type": "integer",
       "minimum": 0
