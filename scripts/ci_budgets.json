@@ -1,0 +1,18 @@
+{
+  "comment": "p95 budgets in seconds for the jobs of ci.yml on main; scripts/ci_budget.py explains the rules. Set on 2026-11-21 from the p95 of the 15 successful runs since 2026-11-20 21:46 UTC plus about ten percent. Budgets only go down.",
+  "since": "2026-11-20T21:46:00Z",
+  "runs": 20,
+  "minimum_runs": 5,
+  "required_checks": ["windows-latest", "ubuntu-latest", "macos-latest", "windows installer"],
+  "p95_seconds": {
+    "required checks": 730,
+    "windows-latest": 680,
+    "macos-latest": 550,
+    "ubuntu-latest": 530,
+    "windows installer": 230,
+    "cli-only build (no GUI)": 155,
+    "coverage (parsers and risk rules)": 145,
+    "real servers (Samba, OpenSSH, OpenSSL, nginx) and NVD CPE names": 120,
+    "finding documentation": 30
+  }
+}
