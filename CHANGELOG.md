@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-22
+
+Exit codes and a findings CI gate, HTTPS webhooks, offline CISA KEV/EPSS ranking and ICS advisories, a ground-truth accuracy benchmark, much richer passive discovery, and faster scans: adaptive TCP timing on by default, unused local addresses skipped and quicker host discovery with `--fast`. JA4S/JA4X are removed for licensing reasons.
+
 ### Added
 
 - **Home LAN speed comparison with nmap and Advanced IP Scanner** (Windows, 2026-11-21). On a /24 with nmap's top 100 ports:
@@ -16,16 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `lab/speed_compare.py --lan --fast` now times nmap too.
 - **Capture features on Linux tested on a real link in CI** (roadmap 1 and 7): `lab/raw_bridge_check.py` runs as root with libpcap on the runner's Docker bridge. It covers SYN on-link and to a routed target through a router container's MAC, the ARP sweep, TCP traceroute, DCP (exactly one frame on the wire), live OT capture of a Modbus/TCP exchange, and DHCPv6 decoding of a real client's Solicit (ISC `dhclient`). All passed on the first full run.
-
-### Changed
-
-- **Faster host discovery in `--fast`**: the pool for blocking OS calls (ICMP echo, the ARP check, route lookups) now has 512 slots, matching the runtime's blocking threads, instead of 256. On a /24 every address waits on these calls at once. Home /24 on Windows with 2 ports, 3 interleaved runs each: 8.0–10.2 s before, 5.8–6.3 s now, with the same open ports and unused addresses. Safe Mode runs 8 hosts at a time and is unaffected.
-- **Unused addresses on the local network: Linux too.** On Linux the verdict comes from the kernel's own ARP for the first port probes, so no packet is added. When a host has answered nothing 3.5 s after its first probe, and its neighbor entry still has no MAC on a direct route through an ARP interface, the waiting probes are stopped. The other ports, UDP and the BACnet Who-Is are then skipped, with a note. Hosts with a MAC (live or cached), routed, IPv6, the SYN engine and `--tcp-only` are unchanged. A host that rejects with ICMP host-prohibited (firewalld's default; also reported as "no route to host") is still probed in full. On GitHub's Linux runner, against its Docker bridge: one unused address takes 3.6 s instead of 12.3 s. A CI step (`lab/neighbor_check.py`) checks four cases on every run: unused, live, host-prohibited and just-stopped containers. The desktop shows such a host as "Unused", even when it also has the unprivileged-ICMP note. Not tried on a physical LAN or Wi-Fi; macOS is unchanged.
-
-- **Adaptive TCP connect timing is on by default** for hosts without a ping RTT (hosts that drop ping, `--tcp-only`, ping adaptation off); a host that answers ping keeps its ping-based timeout and is probed exactly as before. `--no-adaptive-tcp` or the new desktop setting turns it off; `--adaptive-tcp` is still accepted. Before, a host that drops ping waited the full port timeout and a retry on every silent port. Home LAN (Windows, top 100 ports, `--fast`, 10 interleaved rounds): the answering devices took 6.7–6.9 s instead of 17.7–19.3 s whenever a slow power-saving device was absent, with the same open ports in all runs. The documented Windows drawback (closed ports shown as unanswered) dated from before probe sockets stopped retransmitting the SYN. The desktop switches its saved preferences over once (they held an "off" that nobody chose, since there was no checkbox); turning it off afterwards is kept. Scheduled or service scans and saved scans keep their stored value, which is off; new command-line and MCP scans get it.
-
-### Added
-
 - **Safe Mode badge** in the status bar of the desktop: a green "Safe Mode" or amber "Fast" label next to the status text, updated as soon as the setting changes. The tooltip lists the limits (Safe Mode) or the enabled opt-in features (Fast); a click opens Settings. `NETWORK_SCOPE_SCREENSHOT_STATE` accepts a `-fast` suffix (for example `main-small-fast`) to render with Safe Mode off.
 - **Reference links for findings**: `smb1-enabled`, `smb-signing`, `rdp-no-nla`, `telnet-open` and the weak-TLS rules (`tls-sslv3`, `tls-deprecated-protocol`, `tls-broken-cipher`, `tls-3des`, `tls-no-pfs`, `tls-weak-signature`, `tls-weak-key`) carry an optional `reference` URL (Microsoft Learn, CISA, Mozilla Server Side TLS). It appears in the HTML report, the Markdown summary (new `Reference` column), the JSON/JSONL exports and the Findings window; older exports without the field still load.
 - **Exit codes** (roadmap G44), documented in the CLI reference: 0 success, 1 error, 2 partial result (saved), 3 `findings`/`diff` found something. Code 3 is new and only returned with the new `--fail-on-findings` flag (CI gate): `findings` exits 3 when a finding at or above `--min-severity` is listed; `diff` exits 3 when a *new* finding at or above `--min-severity` appeared (`--min-severity` is now also accepted by `diff`, where it only sets this threshold). Without the flag both commands still exit 0. The GUI binary returns the same codes. An integration test runs the built binaries against a fixture database.
@@ -69,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Faster host discovery in `--fast`**: the pool for blocking OS calls (ICMP echo, the ARP check, route lookups) now has 512 slots, matching the runtime's blocking threads, instead of 256. On a /24 every address waits on these calls at once. Home /24 on Windows with 2 ports, 3 interleaved runs each: 8.0–10.2 s before, 5.8–6.3 s now, with the same open ports and unused addresses. Safe Mode runs 8 hosts at a time and is unaffected.
+- **Unused addresses on the local network: Linux too.** On Linux the verdict comes from the kernel's own ARP for the first port probes, so no packet is added. When a host has answered nothing 3.5 s after its first probe, and its neighbor entry still has no MAC on a direct route through an ARP interface, the waiting probes are stopped. The other ports, UDP and the BACnet Who-Is are then skipped, with a note. Hosts with a MAC (live or cached), routed, IPv6, the SYN engine and `--tcp-only` are unchanged. A host that rejects with ICMP host-prohibited (firewalld's default; also reported as "no route to host") is still probed in full. On GitHub's Linux runner, against its Docker bridge: one unused address takes 3.6 s instead of 12.3 s. A CI step (`lab/neighbor_check.py`) checks four cases on every run: unused, live, host-prohibited and just-stopped containers. The desktop shows such a host as "Unused", even when it also has the unprivileged-ICMP note. Not tried on a physical LAN or Wi-Fi; macOS is unchanged.
+
+- **Adaptive TCP connect timing is on by default** for hosts without a ping RTT (hosts that drop ping, `--tcp-only`, ping adaptation off); a host that answers ping keeps its ping-based timeout and is probed exactly as before. `--no-adaptive-tcp` or the new desktop setting turns it off; `--adaptive-tcp` is still accepted. Before, a host that drops ping waited the full port timeout and a retry on every silent port. Home LAN (Windows, top 100 ports, `--fast`, 10 interleaved rounds): the answering devices took 6.7–6.9 s instead of 17.7–19.3 s whenever a slow power-saving device was absent, with the same open ports in all runs. The documented Windows drawback (closed ports shown as unanswered) dated from before probe sockets stopped retransmitting the SYN. The desktop switches its saved preferences over once (they held an "off" that nobody chose, since there was no checkbox); turning it off afterwards is kept. Scheduled or service scans and saved scans keep their stored value, which is off; new command-line and MCP scans get it.
 - Internal: `src/otpassive.rs` is split into the module directory `src/otpassive/` (reassembly, packet parsing, one file per protocol decoder, asset inventory, control findings, capture ingest). No behaviour change.
 - **Exit status 2 for partial results.** `scan`, `listen` and `dcp` now exit with 2 (was 1) when they saved a partial result after an error, and `scan` exits with 2 (was 0) when it was stopped early in the `--tui` view (Q/Esc) and saved a partial scan. The error line on stderr is unchanged; failures that save nothing still exit 1. Scripts that tested for exactly 1 or exactly 0 after such runs need to accept 2.
 - **Internal**: `src/service.rs` is split into a module directory (`service/mod.rs` with the detection flow, plus `probes`, `http`, `ssh`, `smb`, `rdp`). No behaviour change.
@@ -257,5 +255,7 @@ Internal version, not published and not tagged. Summary of the state that 0.5.0 
 - Read-only OT identification (Modbus/TCP, S7, EtherNet/IP, BACnet/IP, OPC UA), passive discovery, Profinet DCP Identify and passive OT analysis of pcap/pcapng files.
 - Lab simulators and the Inno Setup installer script.
 
-[Unreleased]: https://github.com/Sparkz400/network-scope/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Sparkz400/network-scope/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Sparkz400/network-scope/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/Sparkz400/network-scope/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Sparkz400/network-scope/releases/tag/v0.5.0

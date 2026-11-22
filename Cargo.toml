@@ -10,7 +10,7 @@ exclude = ["fuzz", ".claude"]
 
 [package]
 name = "network-scope"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 # `cargo run` starts the GUI binary; the console twin is `--bin network-scope-cli`.
 default-run = "network-scope"

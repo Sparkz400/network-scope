@@ -1,6 +1,6 @@
-; Inno Setup script. Build: iscc /DAppVersion=0.5.1 /DExePath=..\target\release\network-scope.exe /DCliExePath=..\target\release\network-scope-cli.exe network-scope.iss
+; Inno Setup script. Build: iscc /DAppVersion=0.6.0 /DExePath=..\target\release\network-scope.exe /DCliExePath=..\target\release\network-scope-cli.exe network-scope.iss
 #ifndef AppVersion
-  #define AppVersion "0.5.1"
+  #define AppVersion "0.6.0"
 #endif
 #ifndef ExePath
   #define ExePath "..\target\release\network-scope.exe"

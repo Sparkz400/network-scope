@@ -45,9 +45,9 @@ Release files and the container image are built by GitHub Actions from the tagge
   also attached as `network-scope-<version>.sigstore.json` for offline use:
 
   ```sh
-  gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope
-  gh attestation verify network-scope-0.5.1-linux-x86_64.tar.gz --repo Sparkz400/network-scope \
-    --bundle network-scope-0.5.1.sigstore.json
+  gh attestation verify network-scope-0.6.0-linux-x86_64.tar.gz --repo Sparkz400/network-scope
+  gh attestation verify network-scope-0.6.0-linux-x86_64.tar.gz --repo Sparkz400/network-scope \
+    --bundle network-scope-0.6.0.sigstore.json
   ```
 
 - **`network-scope-<version>.intoto.jsonl`** is the same provenance bundle under the in-toto
@@ -67,7 +67,7 @@ Release files and the container image are built by GitHub Actions from the tagge
   the registry next to the image (plus BuildKit provenance and SBOM attestations):
 
   ```sh
-  gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.5.1 --owner Sparkz400
+  gh attestation verify oci://ghcr.io/sparkz400/network-scope:0.6.0 --owner Sparkz400
   ```
 
 ## Scope

@@ -1,7 +1,7 @@
 [package]
 name = "network-scope-core"
 # Keep in step with the root package (a test in src/lib.rs checks it).
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "Scanning, parsing, risk analysis and inventory engine behind Network Scope (no GUI)"
