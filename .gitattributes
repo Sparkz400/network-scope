@@ -8,3 +8,5 @@ fuzz/corpus/** -text
 # Package-manager templates (packaging/): makepkg and Homebrew expect LF.
 packaging/aur/** text eol=lf
 packaging/homebrew/** text eol=lf
+# Git hooks (.githooks/) are run by sh, also on Windows: LF only.
+.githooks/* text eol=lf
