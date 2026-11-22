@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:network-scope:mcp-scan-status:v1",
+  "title": "Background scan state (MCP scan_status)",
+  "description": "Result of the MCP tool scan_status, and of scan with background true: the state of the scan started in the background and, once it has ended, its summary.",
+  "type": "object",
+  "required": [
+    "schema",
+    "state"
+  ],
+  "properties": {
+    "schema": {
+      "const": "network-scope/mcp-scan-status/v1"
+    },
+    "state": {
+      "enum": [
+        "idle",
+        "running",
+        "done",
+        "failed"
+      ],
+      "description": "idle: no background scan was started in this session; failed: it ended with an error (error) and saved nothing"
+    },
+    "targets": {
+      "type": "string"
+    },
+    "elapsed_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "estimated_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "summary": {
+      "type": "object",
+      "description": "When done: the scan's summary (schema mcp-scan)"
+    },
+    "error": {
+      "type": "string"
+    }
+  }
+}

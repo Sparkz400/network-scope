@@ -660,7 +660,10 @@ def flaky_device(accepts):
 
 def backoff_notes(exe, work, name, port, extra):
     out = os.path.join(work, f"{name}.json")
+    # --rate 5: 200 ms between the port probe and the identification connect, so the device's
+    # thread has closed its listener by then. Without it, macOS runners lost that race every time.
     subprocess.run([exe, "scan", "127.0.0.1", "--fast", "--tcp-only", "--services", "--ports", str(port),
+                    "--rate", "5",
                     "--timeout", "1500", "--retries", "0", "--db", os.path.join(work, f"{name}.sqlite"),
                     "--output", out, "--quiet"] + extra, check=True, timeout=120)
     host = json.load(open(out))["hosts"][0]
