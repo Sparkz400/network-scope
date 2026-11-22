@@ -30,6 +30,8 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
 
+Git hooks run the quick part of this for you. Turn them on once per clone with `git config core.hooksPath .githooks`: `pre-commit` runs `cargo fmt --check` when a commit stages Rust code, and `pre-push` runs clippy and the tests of the crates the pushed commits can reach (only the root crate when just `src/` or `tests/*.rs` changed; nothing when no file a Rust build or test reads changed). CI still runs everything, in release mode on three platforms; `git push --no-verify` skips the hook, not CI.
+
 End-to-end check against the lab simulators (Python 3, standard library only):
 
 ```sh

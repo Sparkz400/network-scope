@@ -1,0 +1,15 @@
+#!/bin/sh
+# Format check before a commit, when it stages Rust code. Turn the hooks on once per clone:
+#   git config core.hooksPath .githooks
+# The check is CI's own (`cargo fmt --check`, the whole workspace, about a second), so it reads
+# the files as they are on disk, not only their staged parts.
+set -eu
+
+if git diff --cached --quiet --diff-filter=ACMR -- '*.rs'; then
+    exit 0
+fi
+if ! cargo fmt --check >/dev/null 2>&1; then
+    echo "pre-commit: cargo fmt --check failed; run 'cargo fmt' and stage the result." >&2
+    cargo fmt --check 2>&1 | sed -n '1,40p' >&2 || true
+    exit 1
+fi

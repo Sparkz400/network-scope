@@ -1,0 +1,73 @@
+#!/bin/sh
+# Before a push: clippy, and the tests of the crates the pushed commits can reach. Turn the hooks
+# on once per clone:
+#   git config core.hooksPath .githooks
+#
+# What runs, from the files the push changes (compared with what the remote branch has, or with
+# origin/main for a new branch):
+#   only src/ and tests/*.rs               clippy, tests of the root crate (network-scope)
+#   only files no Rust test or build reads nothing (lab scripts, workflows, packaging, most docs)
+#   anything else, or an unknown base      clippy, tests of both crates
+# A path nobody listed here counts as "anything else". docs/schema, docs/src/findings and
+# docs/src/research.md are read by tests, README.md and the notices by the installer.
+#
+# The debug profile, as in CONTRIBUTING.md. CI runs the same checks in release mode on three
+# platforms and adds the lab; this hook does not replace it.
+set -eu
+
+zero=0000000000000000000000000000000000000000
+scope=none
+
+widen() {
+    # none < root < all
+    case "$scope:$1" in
+        all:*) ;;
+        *:all) scope=all ;;
+        none:root) scope=root ;;
+    esac
+}
+
+classify() {
+    case "$1" in
+        docs/schema/* | docs/src/findings/* | docs/src/research.md) widen all ;;
+        README.md | THIRD-PARTY-NOTICES.md | data/*) widen all ;;
+        docs/* | lab/* | .github/* | .githooks/* | packaging/* | installer/* | .devcontainer/* | .clusterfuzzlite/*) ;;
+        src/* | tests/*.rs) widen root ;;
+        # In a case pattern `*` also matches `/`: without this line `*.md` below would take
+        # tests/fixtures/ics/PROVENANCE.md, which a test reads, for documentation.
+        */*) widen all ;;
+        *.md | LICENSE.txt | CITATION.cff) ;;
+        *) widen all ;;
+    esac
+}
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue # a branch is being deleted
+    if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        base=$(git merge-base "$local_sha" origin/main 2>/dev/null) || base=
+    else
+        base=$remote_sha
+    fi
+    if [ -z "$base" ]; then
+        scope=all
+        break
+    fi
+    # --no-renames: a file moved out of a crate shows up under its old path too.
+    for file in $(git diff --name-only --no-renames "$base" "$local_sha"); do
+        classify "$file"
+    done
+done
+
+case "$scope" in
+    none)
+        echo "pre-push: no file a Rust build or test reads changed; nothing to run."
+        exit 0
+        ;;
+    root) tests="cargo test --locked -p network-scope" ;;
+    all) tests="cargo test --locked" ;;
+esac
+
+echo "pre-push: cargo clippy --workspace --all-targets --locked -- -D warnings"
+cargo clippy --workspace --all-targets --locked -- -D warnings
+echo "pre-push: $tests"
+$tests
