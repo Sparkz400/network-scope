@@ -1,5 +1,7 @@
 # Build context for the Dockerfile: only src/, core/ (the engine crate), data/ and
-# scripts/library/ (both embedded with include_str!), tests/fixtures (used by tests only), the Cargo files and rust-toolchain.toml are needed.
+# scripts/library/ (both embedded with include_str!), assets/icon/icon-256.png (the window icon,
+# include_bytes! in src/gui), tests/fixtures (used by tests only), build.rs, the Cargo files and
+# rust-toolchain.toml are needed.
 .git
 .github
 .devcontainer
@@ -26,3 +28,6 @@ Dockerfile
 
 # The shared Rhai script library is compiled into the binary (core/src/script.rs).
 !scripts/library/**
+
+# The window icon is compiled into the GUI code (src/gui/mod.rs), which the default features build.
+!assets/icon/icon-256.png
