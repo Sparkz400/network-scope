@@ -288,6 +288,12 @@ jobs:
       - name: Restore the executable bit (artifacts do not keep it)
         run: chmod +x target/release/network-scope target/release/network-scope-cli
 
+      # "Network Scope.app" around the GUI binary: the icon and name in Finder, the Dock and
+      # Launchpad. Signed, notarized and stapled below; released as its own zip.
+      - name: App bundle
+        shell: bash
+        run: sh packaging/macos/make_app.sh target/release/network-scope "${RELEASE_TAG#v}" "$RUNNER_TEMP/app"
+
       # Hardened runtime and a secure timestamp (both required for notarization). notarytool takes
       # zip, pkg or dmg, so the two binaries are submitted as a zip; the tar.gz below packs the
       # same signed files. A bare Mach-O binary cannot be stapled: Gatekeeper fetches the
@@ -321,6 +327,12 @@ jobs:
             codesign --verify --strict --verbose=2 "target/release/$bin"
             cp "target/release/$bin" "$RUNNER_TEMP/notarize/"
           done
+          # Signing the bundle signs its executable (CFBundleExecutable) with it.
+          app="$RUNNER_TEMP/app/Network Scope.app"
+          codesign --force --options runtime --timestamp --keychain "$keychain" \
+            --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          codesign --verify --strict --deep --verbose=2 "$app"
+          ditto "$app" "$RUNNER_TEMP/notarize/Network Scope.app"
           ditto -c -k "$RUNNER_TEMP/notarize" "$RUNNER_TEMP/notarize.zip"
           printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
@@ -333,6 +345,9 @@ jobs:
             echo "::error::Notarization status: $status"
             exit 1
           fi
+          # Unlike the bare binaries, the bundle can carry its ticket, so it opens offline too.
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
 
       - name: Remove the signing keychain and key
         if: always() && env.SIGN_MACOS == 'true'
@@ -348,6 +363,8 @@ jobs:
           mkdir -p "$stage" dist
           cp target/release/network-scope target/release/network-scope-cli README.md LICENSE.txt THIRD-PARTY-NOTICES.md CHANGELOG.md "$stage/"
           tar -czf "dist/$stage.tar.gz" "$stage"
+          # The app bundle (drag to Applications); ditto keeps its signature and stapled ticket.
+          ditto -c -k --keepParent "$RUNNER_TEMP/app/Network Scope.app" "dist/$stage-app.zip"
           ls -l dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
