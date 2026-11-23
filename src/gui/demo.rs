@@ -1,6 +1,7 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
 //! (main, findings, devices, settings, ot, script, timeline, scan-details, workbench, home, home-empty, map, map-large,
-//! quick, palette, palette-actions, appearance, schedule, shortcuts, safe-off, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
+//! quick, palette, palette-actions, appearance, schedule, shortcuts, safe-off, findings-grouped,
+//! columns, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
 //! "-dark" for the dark theme and "-de" for German, e.g. "home-dark" or "main-de"). Screenshot
 //! runs never save to the inventory or preferences.
 use super::*;
@@ -488,6 +489,19 @@ impl Scanner {
                     .collect();
             }
             "findings" => self.view = MainView::Findings,
+            "findings-grouped" => {
+                self.view = MainView::Findings;
+                self.saved.group_findings = true;
+            }
+            "columns" => {
+                self.view = MainView::Hosts;
+                self.saved.host_columns = HostColumns {
+                    vendor: true,
+                    kind: true,
+                    os: false,
+                    risk: true,
+                };
+            }
             "devices" => self.view = MainView::Devices,
             "settings" => {
                 // The CVE rules field with a load error, as after a bad path.

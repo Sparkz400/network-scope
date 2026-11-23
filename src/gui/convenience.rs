@@ -346,6 +346,16 @@ pub(super) struct MenuAction {
     pub star: bool,
     pub wake: bool,
 }
+impl MenuAction {
+    /// Whether anything was chosen.
+    pub(super) fn any(&self) -> bool {
+        self.url.is_some()
+            || self.commands.is_some()
+            || self.copy.is_some()
+            || self.star
+            || self.wake
+    }
+}
 
 /// The context menu of a host (right click on its row, or the "Actions" menu in its details).
 pub(super) fn host_menu(ui: &mut egui::Ui, host: &scan::Host, starred: bool) -> MenuAction {

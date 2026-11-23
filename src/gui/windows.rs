@@ -177,14 +177,22 @@ impl Scanner {
     /// The Findings page.
     pub(super) fn findings_view(&mut self, ui: &mut egui::Ui) {
         self.ensure_findings();
+        self.ensure_hostnames();
         if self.findings_view.stale(self.findings.generation) {
             self.findings_view.rows =
                 tables::finding_rows(&self.findings.value, &self.findings_view);
+            self.finding_groups =
+                tables::finding_groups(&self.findings.value, &self.findings_view.rows);
         }
         let mut focus = None;
         let mut sort = None;
+        let mut open_group: Option<String> = None;
+        let mut show_all = false;
         let findings = &self.findings.value;
         let view = &mut self.findings_view;
+        let group = &mut self.saved.group_findings;
+        let groups = &self.finding_groups;
+        let names = &self.hostnames.value;
         page(
             ui,
             tr!("Findings (weak configuration, risky services, CVE hints)"),
@@ -199,6 +207,24 @@ impl Scanner {
                     return;
                 }
                 view.controls_with(ui, "findings_severity", tr!("All severities"), true);
+                // The hosts of one rule (a grouped row was clicked), or the choice to group.
+                let shown_rule = view
+                    .rule
+                    .as_ref()
+                    .and_then(|r| findings.iter().find(|f| &f.id == r))
+                    .map(|f| f.title.clone());
+                if let Some(title) = shown_rule {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(tr!("The hosts of: {}", title));
+                        if ui.button(tr!("Show all findings")).clicked() {
+                            show_all = true;
+                        }
+                    });
+                } else {
+                    ui.checkbox(group, tr!("Group by finding"))
+                        .on_hover_text(tr!("One row per finding with the hosts it affects. Click a row to list its hosts."));
+                }
+                let grouped = *group && view.rule.is_none();
                 tables::plain_labels(ui);
                 // Wide tables scroll sideways instead of running past the edge.
                 // The bar stays visible, so it is clear that more columns are to the right.
@@ -206,89 +232,153 @@ impl Scanner {
                     .id_salt("findings_scroll")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .show(ui, |ui| {
-                TableBuilder::new(ui)
-                    .id_salt("findings_table")
-                    .striped(true)
-                    .resizable(true)
-                    .sense(egui::Sense::click())
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    // Fits a 1100 px window next to the sidebar; Evidence takes what is left.
-                    .column(Column::initial(65.0))
-                    .column(Column::initial(120.0).clip(true))
-                    .column(Column::initial(190.0).clip(true))
-                    .column(Column::remainder().at_least(80.0).clip(true))
-                    .column(Column::initial(110.0).clip(true))
-                    .column(Column::initial(65.0).clip(true))
-                    .column(Column::initial(55.0))
-                    .column(Column::initial(135.0))
-                    .header(22.0, |mut row| {
-                        for (i, h) in tables::finding_columns().iter().enumerate() {
-                            row.col(|ui| {
-                                if tables::header(ui, view, i, h) {
-                                    sort = Some(i);
-                                }
-                            });
+                        if grouped {
+                            TableBuilder::new(ui)
+                                .id_salt("finding_groups_table")
+                                .striped(true)
+                                .resizable(true)
+                                .sense(egui::Sense::click())
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(Column::initial(65.0))
+                                .column(Column::initial(215.0).clip(true))
+                                .column(Column::initial(180.0).clip(true))
+                                .column(Column::initial(100.0).clip(true))
+                                .column(Column::initial(65.0).clip(true))
+                                .column(Column::initial(55.0))
+                                .column(Column::remainder().at_least(140.0))
+                                .header(22.0, |mut row| {
+                                    for h in [
+                                        tr!("Severity"),
+                                        tr!("Finding"),
+                                        tr!("Hosts"),
+                                        tr!("CVE"),
+                                        tr!("KEV"),
+                                        tr!("EPSS"),
+                                        tr!("Learn more"),
+                                    ] {
+                                        row.col(|ui| {
+                                            ui.strong(h);
+                                        });
+                                    }
+                                })
+                                .body(|body| {
+                                    body.rows(22.0, groups.len(), |mut row| {
+                                        let members = &groups[row.index()];
+                                        let f = &findings[members[0]];
+                                        row.col(|ui| {
+                                            ui.colored_label(
+                                                severity_color(f.severity),
+                                                home::severity_name(f.severity),
+                                            );
+                                        });
+                                        row.col(|ui| {
+                                            super::explain_button(ui, &f.id);
+                                            ui.label(&f.title).on_hover_text(&f.advice);
+                                        });
+                                        row.col(|ui| {
+                                            ui.strong(members.len().to_string());
+                                            ui.label(tables::group_hosts(findings, members, 3))
+                                                .on_hover_text(tables::group_hosts(
+                                                    findings, members, 40,
+                                                ));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(f.cve.join(", "));
+                                        });
+                                        row.col(|ui| {
+                                            kev_label(ui, f);
+                                        });
+                                        row.col(|ui| {
+                                            epss_label(ui, f);
+                                        });
+                                        row.col(|ui| {
+                                            links(ui, f);
+                                        });
+                                        if row.response().clicked() {
+                                            open_group = Some(f.id.clone());
+                                        }
+                                    });
+                                });
+                            return;
                         }
-                        row.col(|ui| {
-                            ui.strong(tr!("Learn more"));
-                        });
-                    })
-                    .body(|body| {
-                        body.rows(22.0, view.rows.len(), |mut row| {
-                            let f = &findings[view.rows[row.index()]];
-                            row.col(|ui| {
-                                ui.colored_label(severity_color(f.severity), home::severity_name(f.severity));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{}{}", f.ip, f.port.map_or(String::new(), |p| format!(":{p}"))));
-                            });
-                            row.col(|ui| {
-                                // The "?" first: the column clips long titles.
-                                super::explain_button(ui, &f.id);
-                                ui.label(&f.title).on_hover_text(&f.advice);
-                            });
-                            row.col(|ui| {
-                                ui.label(f.evidence.chars().take(90).collect::<String>()).on_hover_text(&f.evidence);
-                            });
-                            row.col(|ui| {
-                                ui.label(f.cve.join(", "));
-                            });
-                            row.col(|ui| {
-                                if f.exploit.kev {
-                                    let text = if f.exploit.kev_ransomware { "KEV · ransomware" } else { "KEV" };
-                                    ui.colored_label(
-                                        home::severity_color(risk::Severity::Critical, ui.visuals().dark_mode),
-                                        text,
-                                    )
-                                    .on_hover_text(match (&f.exploit.kev_added, f.exploit.kev_ransomware) {
-                                        (Some(date), true) => tr!("Known exploited (CISA KEV, added {}); used in ransomware campaigns", date),
-                                        (Some(date), false) => tr!("Known exploited (CISA KEV, added {})", date),
-                                        (None, true) => tr!("Known exploited (CISA KEV); used in ransomware campaigns").to_string(),
-                                        (None, false) => tr!("Known exploited (CISA KEV)").to_string(),
+                        TableBuilder::new(ui)
+                            .id_salt("findings_table")
+                            .striped(true)
+                            .resizable(true)
+                            .sense(egui::Sense::click())
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            // Fits a 1100 px window next to the sidebar. The links take what is
+                            // left, so a table a little too wide cuts empty space, not a link.
+                            .column(Column::initial(65.0))
+                            .column(Column::initial(150.0).clip(true))
+                            .column(Column::initial(155.0).clip(true))
+                            .column(Column::initial(120.0).clip(true))
+                            .column(Column::initial(100.0).clip(true))
+                            .column(Column::initial(65.0).clip(true))
+                            .column(Column::initial(55.0))
+                            .column(Column::remainder().at_least(140.0))
+                            .header(22.0, |mut row| {
+                                for (i, h) in tables::finding_columns().iter().enumerate() {
+                                    row.col(|ui| {
+                                        if tables::header(ui, view, i, h) {
+                                            sort = Some(i);
+                                        }
                                     });
                                 }
+                                row.col(|ui| {
+                                    ui.strong(tr!("Learn more"));
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(22.0, view.rows.len(), |mut row| {
+                                    let f = &findings[view.rows[row.index()]];
+                                    row.col(|ui| {
+                                        ui.colored_label(
+                                            severity_color(f.severity),
+                                            home::severity_name(f.severity),
+                                        );
+                                    });
+                                    row.col(|ui| {
+                                        // The address with the port, then the host name when known.
+                                        let address = tables::host_port(f);
+                                        match names.get(&f.ip) {
+                                            Some(name) => {
+                                                ui.label(&address)
+                                                    .on_hover_text(format!("{address} · {name}"));
+                                                ui.weak(name);
+                                            }
+                                            None => {
+                                                ui.label(address);
+                                            }
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        // The "?" first: the column clips long titles.
+                                        super::explain_button(ui, &f.id);
+                                        ui.label(&f.title).on_hover_text(&f.advice);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(f.evidence.chars().take(90).collect::<String>())
+                                            .on_hover_text(&f.evidence);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(f.cve.join(", "));
+                                    });
+                                    row.col(|ui| {
+                                        kev_label(ui, f);
+                                    });
+                                    row.col(|ui| {
+                                        epss_label(ui, f);
+                                    });
+                                    row.col(|ui| {
+                                        links(ui, f);
+                                    });
+                                    if row.response().clicked() {
+                                        focus = Some(vec![f.ip]);
+                                    }
+                                });
                             });
-                            row.col(|ui| {
-                                if let Some(p) = tables::epss_percent(f) {
-                                    ui.label(format!("{p:.1} %")).on_hover_text(tr!(
-                                        "Estimated probability of exploitation within 30 days (EPSS)"
-                                    ));
-                                }
-                            });
-                            row.col(|ui| {
-                                // The last column is not clipped, so the links are always visible;
-                                // a click opens the default browser.
-                                super::convenience::link_to(ui, tr!("Learn more"), &super::docs_url(&f.id));
-                                if let Some(url) = f.reference.as_deref().filter(|u| u.starts_with("https://")) {
-                                    super::convenience::link_to(ui, tr!("Reference"), url);
-                                }
-                            });
-                            if row.response().clicked() {
-                                focus = Some(vec![f.ip]);
-                            }
-                        });
                     });
-                });
             },
         );
         if let Some(column) = sort {
@@ -296,6 +386,14 @@ impl Scanner {
         }
         if let Some(ips) = focus {
             self.focus_host(&ips);
+        }
+        // A rule was clicked in the grouped view: list its hosts (the grouping and the text
+        // filter stay as they are, for "Show all findings").
+        if let Some(id) = open_group {
+            self.findings_view.rule = Some(id);
+        }
+        if show_all {
+            self.findings_view.rule = None;
         }
     }
     /// The merged devices, recomputed when results or observations change.
@@ -435,7 +533,8 @@ impl Scanner {
         }
     }
     pub(super) fn refresh_history(&mut self) {
-        if !self.busy.listing {
+        // Screenshot runs show sample data and never read the inventory.
+        if !self.busy.listing && self.screenshot.is_none() {
             self.submit(Job::List);
         }
     }
@@ -510,7 +609,9 @@ impl Scanner {
                     if let Some(id) = load {
                         // The opened scan is shown on the Hosts page.
                         self.view = super::MainView::Hosts;
-                        self.submit(Job::Load(id));
+                        if self.screenshot.is_none() {
+                            self.submit(Job::Load(id));
+                        }
                     }
                     ui.separator();
                     egui::ScrollArea::vertical()
@@ -782,6 +883,48 @@ impl Scanner {
                 self.ot_section(ui);
             });
         });
+    }
+}
+
+/// "KEV" (with "ransomware" when it was used in such campaigns) for a known exploited finding.
+fn kev_label(ui: &mut egui::Ui, f: &risk::Finding) {
+    if !f.exploit.kev {
+        return;
+    }
+    let text = if f.exploit.kev_ransomware {
+        "KEV · ransomware"
+    } else {
+        "KEV"
+    };
+    ui.colored_label(
+        home::severity_color(risk::Severity::Critical, ui.visuals().dark_mode),
+        text,
+    )
+    .on_hover_text(match (&f.exploit.kev_added, f.exploit.kev_ransomware) {
+        (Some(date), true) => tr!(
+            "Known exploited (CISA KEV, added {}); used in ransomware campaigns",
+            date
+        ),
+        (Some(date), false) => tr!("Known exploited (CISA KEV, added {})", date),
+        (None, true) => tr!("Known exploited (CISA KEV); used in ransomware campaigns").to_string(),
+        (None, false) => tr!("Known exploited (CISA KEV)").to_string(),
+    });
+}
+
+/// The EPSS of a finding in percent, when the feeds gave one.
+fn epss_label(ui: &mut egui::Ui, f: &risk::Finding) {
+    if let Some(p) = tables::epss_percent(f) {
+        ui.label(format!("{p:.1} %")).on_hover_text(tr!(
+            "Estimated probability of exploitation within 30 days (EPSS)"
+        ));
+    }
+}
+
+/// The documentation page of a finding and its reference; a click opens the default browser.
+pub(super) fn links(ui: &mut egui::Ui, f: &risk::Finding) {
+    super::convenience::link_to(ui, tr!("Learn more"), &super::docs_url(&f.id));
+    if let Some(url) = f.reference.as_deref().filter(|u| u.starts_with("https://")) {
+        super::convenience::link_to(ui, tr!("Reference"), url);
     }
 }
 

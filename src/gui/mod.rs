@@ -69,6 +69,21 @@ struct Saved {
     adaptive_tcp_migrated: bool,
     /// Size, position and maximized state of the window when it was last open.
     window: desktop::WindowState,
+    /// The optional columns of the hosts table.
+    host_columns: HostColumns,
+    /// The Findings page shows one row per rule instead of one per host.
+    group_findings: bool,
+}
+
+/// The optional columns of the hosts table (all off by default). They show what the Devices
+/// page shows, for the scanned hosts.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+struct HostColumns {
+    vendor: bool,
+    kind: bool,
+    os: bool,
+    risk: bool,
 }
 impl Saved {
     /// One-time changes to preferences saved by an older version. The saved `false` for
@@ -119,6 +134,15 @@ fn write_prefs(bytes: &[u8]) -> Result<(), String> {
     }
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
+/// An identity field of a host, or "" when it has none.
+fn identity_field<'a>(host: &'a scan::Host, key: &str) -> &'a str {
+    host.identity.get(key).map_or("", String::as_str)
+}
+
+/// The identity keys of the optional hosts-table columns Manufacturer, Type and OS guess (sort
+/// columns 5, 6 and 7).
+const HOST_COLUMN_KEYS: [&str; 3] = ["mac.vendor", "device.type", "os.guess"];
+
 /// "Restore defaults": scan defaults, but the fields that describe
 /// this machine (capture interface, source addresses, script and probe files) are kept.
 fn standard_settings(current: &scan::Settings) -> scan::Settings {
@@ -587,6 +611,12 @@ struct Scanner {
     shortcuts_open: bool,
     /// A one-click change that would turn Safe Mode off, waiting for confirmation.
     unsafe_confirm: Option<menu::Unsafe>,
+    /// The findings on view grouped by rule (indexes into the findings), with the rows.
+    finding_groups: Vec<Vec<usize>>,
+    /// Host name per address, for the Findings page.
+    hostnames: Cached<HashMap<IpAddr, String>>,
+    /// The worst finding per address, for the Risk column and the host details.
+    risk_map: Cached<HashMap<IpAddr, risk::Severity>>,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -698,6 +728,9 @@ impl Scanner {
             focus_search: false,
             shortcuts_open: false,
             unsafe_confirm: None,
+            finding_groups: vec![],
+            hostnames: Default::default(),
+            risk_map: Default::default(),
         };
         i18n::set(i18n::detect(&app.saved.language));
         apply_theme(&cc.egui_ctx, app.saved.dark);
@@ -1240,6 +1273,12 @@ impl Scanner {
                 2 => a.ping.unwrap_or(u32::MAX).cmp(&b.ping.unwrap_or(u32::MAX)),
                 3 => a.hostname.cmp(&b.hostname),
                 4 => a.open.cmp(&b.open),
+                5..=7 => {
+                    let key = HOST_COLUMN_KEYS[self.sort_column - 5];
+                    let (x, y) = (identity_field(a, key), identity_field(b, key));
+                    // Hosts without the value go last.
+                    (x.is_empty(), x).cmp(&(y.is_empty(), y))
+                }
                 _ => a.ip.cmp(&b.ip),
             }
             .then_with(|| a.ip.cmp(&b.ip));
@@ -1320,7 +1359,9 @@ impl Scanner {
         }
         self.selected = Some(ip);
         self.refresh_rows();
-        if !self.rows.iter().any(|&i| self.results[i].ip == ip) {
+        // On another page the details dock beside it and the hosts table is not in view, so
+        // its filter and search stay as they are.
+        if self.view == MainView::Hosts && !self.rows.iter().any(|&i| self.results[i].ip == ip) {
             // Hidden by the filter or the search: show everything so the row can be reached.
             self.filter = Filter::All;
             self.search.clear();
@@ -1524,6 +1565,22 @@ impl eframe::App for Scanner {
                 return;
             }
             self.hosts_filters(ui);
+            let columns = self.saved.host_columns;
+            if columns.risk {
+                self.ensure_risk_map();
+            }
+            let risk_fresh = self.risk_map.generation == Some(self.generation);
+            // The optional columns in display order: sort index (None: not sortable), title.
+            let extra: Vec<(Option<usize>, &'static str)> = [
+                (columns.vendor, Some(5), tr!("Manufacturer")),
+                (columns.kind, Some(6), tr!("Type")),
+                (columns.os, Some(7), tr!("OS guess")),
+                (columns.risk, None, tr!("Risk")),
+            ]
+            .into_iter()
+            .filter(|(on, _, _)| *on)
+            .map(|(_, sort, name)| (sort, name))
+            .collect();
             let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
             let scroll_row = self.scroll_to.take().and_then(|ip| {
@@ -1532,104 +1589,143 @@ impl eframe::App for Scanner {
                     .position(|&i| self.results.get(i).is_some_and(|h| h.ip == ip))
             });
             tables::plain_labels(ui);
-            let mut table = TableBuilder::new(ui);
-            if let Some(row) = scroll_row {
-                table = table.scroll_to_row(row, Some(egui::Align::Center));
-            }
-            table
-                .striped(true)
-                .resizable(true)
-                // The whole row is the click target: select (opens the details), right click
-                // for the host menu.
-                .sense(egui::Sense::click())
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(135.0).at_least(80.0))
-                .column(Column::initial(110.0))
-                .column(Column::initial(65.0))
-                .column(Column::remainder().at_least(80.0))
-                .column(Column::initial(140.0))
-                .header(26.0, |mut row| {
-                    for (i, name) in [
-                        tr!("IP address"),
-                        tr!("Status"),
-                        tr!("Ping"),
-                        tr!("Hostname"),
-                        tr!("Open TCP ports"),
-                    ]
-                    .iter()
-                    .enumerate()
-                    {
-                        row.col(|ui| {
-                            if ui.selectable_label(self.sort_column == i, *name).clicked() {
-                                sort = Some(i);
-                            }
-                        });
+            // Optional columns can make the table wider than the page: it scrolls sideways.
+            egui::ScrollArea::horizontal()
+                .id_salt("hosts_scroll")
+                .show(ui, |ui| {
+                    let mut table = TableBuilder::new(ui);
+                    if let Some(row) = scroll_row {
+                        table = table.scroll_to_row(row, Some(egui::Align::Center));
                     }
-                })
-                .body(|body| {
-                    body.rows(26.0, visible.len(), |mut row| {
-                        let index = visible[row.index()];
-                        let host = &self.results[index];
-                        let starred = self
-                            .saved
-                            .starred
-                            .contains(&convenience::favorite_key(host));
-                        row.set_selected(self.selected == Some(host.ip));
-                        let mut chosen = false;
-                        row.col(|ui| {
-                            // A named, focusable control: the keyboard and screen-reader way to
-                            // the row (Tab, then Enter or the menu key).
-                            let shown = if starred {
-                                format!("★ {}", host.ip)
-                            } else {
-                                host.ip.to_string()
-                            };
-                            let response =
-                                ui.selectable_label(self.selected == Some(host.ip), shown);
-                            chosen = response.clicked();
-                            response.context_menu(|ui| {
-                                menu = Some((index, convenience::host_menu(ui, host, starred)));
-                            });
-                        });
-                        row.col(|ui| {
-                            ui.colored_label(
-                                if host.responding {
-                                    Color32::from_rgb(40, 150, 95)
-                                } else {
-                                    Color32::from_gray(115)
-                                },
-                                host_status(host),
-                            );
-                        });
-                        row.col(|ui| {
-                            ui.label(ping_text(host.ping));
-                        });
-                        row.col(|ui| {
-                            ui.label(if host.hostname.is_empty() {
-                                "—"
-                            } else {
-                                &host.hostname
-                            });
-                        });
-                        row.col(|ui| {
-                            ui.label(if host.ports_checked {
-                                ports_text(&host.open)
-                            } else {
-                                tr!("Not checked").into()
-                            });
-                        });
-                        let response = row.response();
-                        if chosen || response.clicked() {
-                            if self.selected != Some(host.ip) {
-                                self.script_test = None;
+                    table = table
+                        .striped(true)
+                        .resizable(true)
+                        // The whole row is the click target: select (opens the details), right click
+                        // for the host menu.
+                        .sense(egui::Sense::click())
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(135.0).at_least(80.0))
+                        .column(Column::initial(110.0))
+                        .column(Column::initial(65.0))
+                        .column(Column::remainder().at_least(80.0));
+                    for _ in &extra {
+                        table = table.column(Column::initial(120.0).at_least(50.0).clip(true));
+                    }
+                    table
+                        .column(Column::initial(140.0))
+                        .header(26.0, |mut row| {
+                            let base = [
+                                (Some(0), tr!("IP address")),
+                                (Some(1), tr!("Status")),
+                                (Some(2), tr!("Ping")),
+                                (Some(3), tr!("Hostname")),
+                            ];
+                            let last = [(Some(4), tr!("Open TCP ports"))];
+                            for (i, name) in base.iter().chain(&extra).chain(&last) {
+                                row.col(|ui| match i {
+                                    Some(i) => {
+                                        if ui
+                                            .selectable_label(self.sort_column == *i, *name)
+                                            .clicked()
+                                        {
+                                            sort = Some(*i);
+                                        }
+                                    }
+                                    None => {
+                                        ui.strong(*name);
+                                    }
+                                });
                             }
-                            self.selected = Some(host.ip);
-                        }
-                        // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
-                        response.context_menu(|ui| {
-                            menu = Some((index, convenience::host_menu(ui, host, starred)));
+                        })
+                        .body(|body| {
+                            body.rows(26.0, visible.len(), |mut row| {
+                                let index = visible[row.index()];
+                                let host = &self.results[index];
+                                let starred = self
+                                    .saved
+                                    .starred
+                                    .contains(&convenience::favorite_key(host));
+                                row.set_selected(self.selected == Some(host.ip));
+                                let mut chosen = false;
+                                row.col(|ui| {
+                                    // A named, focusable control: the keyboard and screen-reader way to
+                                    // the row (Tab, then Enter or the menu key).
+                                    let shown = if starred {
+                                        format!("★ {}", host.ip)
+                                    } else {
+                                        host.ip.to_string()
+                                    };
+                                    let response =
+                                        ui.selectable_label(self.selected == Some(host.ip), shown);
+                                    chosen = response.clicked();
+                                    response.context_menu(|ui| {
+                                        menu = Some((
+                                            index,
+                                            convenience::host_menu(ui, host, starred),
+                                        ));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.colored_label(
+                                        if host.responding {
+                                            Color32::from_rgb(40, 150, 95)
+                                        } else {
+                                            Color32::from_gray(115)
+                                        },
+                                        host_status(host),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.label(ping_text(host.ping));
+                                });
+                                row.col(|ui| {
+                                    ui.label(if host.hostname.is_empty() {
+                                        "—"
+                                    } else {
+                                        &host.hostname
+                                    });
+                                });
+                                for (sort, _) in &extra {
+                                    row.col(|ui| match sort {
+                                        Some(i) => {
+                                            let key = HOST_COLUMN_KEYS[i - 5];
+                                            ui.label(
+                                                host.identity.get(key).map_or("", String::as_str),
+                                            );
+                                        }
+                                        None => {
+                                            let worst = risk_fresh
+                                                .then(|| self.risk_map.value.get(&host.ip).copied())
+                                                .flatten();
+                                            if let Some(s) = worst {
+                                                ui.colored_label(
+                                                    home::severity_color(s, ui.visuals().dark_mode),
+                                                    home::severity_name(s),
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                                row.col(|ui| {
+                                    ui.label(if host.ports_checked {
+                                        ports_text(&host.open)
+                                    } else {
+                                        tr!("Not checked").into()
+                                    });
+                                });
+                                let response = row.response();
+                                if chosen || response.clicked() {
+                                    if self.selected != Some(host.ip) {
+                                        self.script_test = None;
+                                    }
+                                    self.selected = Some(host.ip);
+                                }
+                                // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
+                                response.context_menu(|ui| {
+                                    menu = Some((index, convenience::host_menu(ui, host, starred)));
+                                });
+                            });
                         });
-                    });
                 });
             let empty = visible.is_empty();
             self.rows = visible;
@@ -2632,3 +2728,7 @@ mod tests {
         }
     }
 }
+
+// Declared last: a test reads the code of this file up to the first test attribute.
+#[cfg(test)]
+mod uitest;
