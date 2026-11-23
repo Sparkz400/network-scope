@@ -1,4 +1,4 @@
-use super::{Job, Scanner, home, i18n::tr, tables, win_size};
+use super::{Job, Scanner, home, i18n::tr, tables};
 use crate::{capture, devices, passive, risk, scan, store};
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -174,27 +174,21 @@ impl Scanner {
         }
     }
 
-    pub(super) fn findings_window(&mut self, ctx: &egui::Context) {
-        if !self.findings_open {
-            return;
-        }
+    /// The Findings page.
+    pub(super) fn findings_view(&mut self, ui: &mut egui::Ui) {
         self.ensure_findings();
         if self.findings_view.stale(self.findings.generation) {
             self.findings_view.rows =
                 tables::finding_rows(&self.findings.value, &self.findings_view);
         }
-        let mut open = self.findings_open;
         let mut focus = None;
         let mut sort = None;
         let findings = &self.findings.value;
         let view = &mut self.findings_view;
-        egui::Window::new(tr!("Findings (weak configuration, risky services, CVE hints)"))
-            .open(&mut open)
-            .default_size(win_size([900.0, 420.0]))
-            .default_pos(self.window_origin)
-            // Wide tables must not push the window past the screen edge.
-            .max_width((ctx.content_rect().width() - 24.0).max(320.0))
-            .show(ctx, |ui| {
+        page(
+            ui,
+            tr!("Findings (weak configuration, risky services, CVE hints)"),
+            |ui| {
                 ui.label(tr!(
                     "{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host.",
                     view.rows.len(),
@@ -206,20 +200,27 @@ impl Scanner {
                 }
                 view.controls_with(ui, "findings_severity", tr!("All severities"), true);
                 tables::plain_labels(ui);
+                // Wide tables scroll sideways instead of running past the edge.
+                // The bar stays visible, so it is clear that more columns are to the right.
+                egui::ScrollArea::horizontal()
+                    .id_salt("findings_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
                 TableBuilder::new(ui)
                     .id_salt("findings_table")
                     .striped(true)
                     .resizable(true)
                     .sense(egui::Sense::click())
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::initial(80.0))
-                    .column(Column::initial(140.0))
-                    .column(Column::initial(240.0).clip(true))
-                    .column(Column::initial(220.0).clip(true))
-                    .column(Column::initial(130.0).clip(true))
-                    .column(Column::initial(80.0))
-                    .column(Column::initial(70.0))
-                    .column(Column::remainder())
+                    // Fits a 1100 px window next to the sidebar; Evidence takes what is left.
+                    .column(Column::initial(65.0))
+                    .column(Column::initial(120.0).clip(true))
+                    .column(Column::initial(190.0).clip(true))
+                    .column(Column::remainder().at_least(80.0).clip(true))
+                    .column(Column::initial(110.0).clip(true))
+                    .column(Column::initial(65.0).clip(true))
+                    .column(Column::initial(55.0))
+                    .column(Column::initial(135.0))
                     .header(22.0, |mut row| {
                         for (i, h) in tables::finding_columns().iter().enumerate() {
                             row.col(|ui| {
@@ -287,23 +288,26 @@ impl Scanner {
                             }
                         });
                     });
-            });
+                });
+            },
+        );
         if let Some(column) = sort {
             self.findings_view.click(column);
         }
         if let Some(ips) = focus {
             self.focus_host(&ips);
         }
-        self.findings_open = open;
     }
-    pub(super) fn devices_window(&mut self, ctx: &egui::Context) {
-        if !self.devices_open {
-            return;
-        }
+    /// The merged devices, recomputed when results or observations change.
+    pub(super) fn ensure_devices(&mut self) {
         if self.devices.stale(self.generation, self.live()) {
             let merged = devices::merge(&self.results, &self.observations);
             self.devices.set(self.generation, merged);
         }
+    }
+    /// The Devices page.
+    pub(super) fn devices_view(&mut self, ui: &mut egui::Ui) {
+        self.ensure_devices();
         self.ensure_findings();
         let risk = tables::risk_by_ip(&self.findings.value);
         // Both caches follow the same data generation; recompute when either moved.
@@ -316,25 +320,18 @@ impl Scanner {
             self.devices_view.rows =
                 tables::device_rows(&self.devices.value, &risk, &self.devices_view);
         }
-        let mut open = self.devices_open;
         let mut focus = None;
         let mut sort = None;
         let mut workbench = false;
         let devices = &self.devices.value;
         let view = &mut self.devices_view;
-        egui::Window::new(tr!("Devices (active + passive merged)"))
-            .open(&mut open)
-            .default_size(win_size([980.0, 420.0]))
-            .default_pos(self.window_origin)
-            // Wide tables must not push the window past the screen edge.
-            .max_width((ctx.content_rect().width() - 24.0).max(320.0))
-            .show(ctx, |ui| {
-                ui.label(tr!(
+        page(ui, tr!("Devices (active + passive merged)"), |ui| {
+            ui.label(tr!(
                     "{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host.",
                     view.rows.len(),
                     devices.len()
                 ));
-                ui.horizontal(|ui| {
+            ui.horizontal(|ui| {
                     view.controls(ui, "devices_severity", tr!("Any risk"));
                     if ui
                         .button(tr!("Unknown devices…"))
@@ -346,81 +343,87 @@ impl Scanner {
                         workbench = true;
                     }
                 });
-                tables::plain_labels(ui);
-                TableBuilder::new(ui)
-                    .id_salt("devices_table")
-                    .striped(true)
-                    .resizable(true)
-                    .sense(egui::Sense::click())
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::initial(150.0).clip(true))
-                    .column(Column::initial(150.0).clip(true))
-                    .column(Column::initial(150.0).clip(true))
-                    .column(Column::initial(110.0).clip(true))
-                    .column(Column::initial(120.0).clip(true))
-                    .column(Column::initial(150.0).clip(true))
-                    .column(Column::remainder())
-                    .header(22.0, |mut row| {
-                        for (i, h) in tables::device_columns().iter().enumerate() {
-                            row.col(|ui| {
-                                if tables::header(ui, view, i, h) {
-                                    sort = Some(i);
-                                }
-                            });
-                        }
-                    })
-                    .body(|body| {
-                        body.rows(22.0, view.rows.len(), |mut row| {
-                            let d = &devices[view.rows[row.index()]];
-                            row.col(|ui| {
-                                ui.label(
-                                    d.ips
-                                        .iter()
-                                        .map(ToString::to_string)
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                );
-                            });
-                            row.col(|ui| {
-                                ui.label(if d.randomized_mac {
-                                    tr!("{} (randomized)", d.mac)
-                                } else {
-                                    d.mac.clone()
+            tables::plain_labels(ui);
+            egui::ScrollArea::horizontal()
+                .id_salt("devices_scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .id_salt("devices_table")
+                        .striped(true)
+                        .resizable(true)
+                        .sense(egui::Sense::click())
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        // Fits a 1100 px window next to the sidebar; Manufacturer takes the rest.
+                        .column(Column::initial(130.0).clip(true))
+                        .column(Column::initial(150.0).clip(true))
+                        .column(Column::remainder().at_least(110.0).clip(true))
+                        .column(Column::initial(120.0).clip(true))
+                        .column(Column::initial(100.0).clip(true))
+                        .column(Column::initial(140.0).clip(true))
+                        .column(Column::initial(70.0))
+                        .header(22.0, |mut row| {
+                            for (i, h) in tables::device_columns().iter().enumerate() {
+                                row.col(|ui| {
+                                    if tables::header(ui, view, i, h) {
+                                        sort = Some(i);
+                                    }
                                 });
-                            });
-                            row.col(|ui| {
-                                ui.label(&d.vendor);
-                            });
-                            row.col(|ui| {
-                                ui.label(&d.device_type).on_hover_text(&d.type_evidence);
-                            });
-                            row.col(|ui| {
-                                ui.label(if d.os.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("{} {}", d.os, d.os_confidence)
-                                });
-                            });
-                            row.col(|ui| {
-                                let ports: Vec<String> = d
-                                    .open_tcp
-                                    .iter()
-                                    .map(|p| p.to_string())
-                                    .chain(d.open_udp.iter().map(|p| format!("{p}/udp")))
-                                    .collect();
-                                ui.label(ports.join(", "));
-                            });
-                            row.col(|ui| {
-                                if let Some(s) = tables::device_risk(d, &risk) {
-                                    ui.colored_label(severity_color(s), home::severity_name(s));
-                                }
-                            });
-                            if row.response().clicked() {
-                                focus = Some(d.ips.clone());
                             }
+                        })
+                        .body(|body| {
+                            body.rows(22.0, view.rows.len(), |mut row| {
+                                let d = &devices[view.rows[row.index()]];
+                                row.col(|ui| {
+                                    ui.label(
+                                        d.ips
+                                            .iter()
+                                            .map(ToString::to_string)
+                                            .collect::<Vec<_>>()
+                                            .join(", "),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.label(if d.randomized_mac {
+                                        tr!("{} (randomized)", d.mac)
+                                    } else {
+                                        d.mac.clone()
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.label(&d.vendor);
+                                });
+                                row.col(|ui| {
+                                    ui.label(&d.device_type).on_hover_text(&d.type_evidence);
+                                });
+                                row.col(|ui| {
+                                    ui.label(if d.os.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("{} {}", d.os, d.os_confidence)
+                                    });
+                                });
+                                row.col(|ui| {
+                                    let ports: Vec<String> = d
+                                        .open_tcp
+                                        .iter()
+                                        .map(|p| p.to_string())
+                                        .chain(d.open_udp.iter().map(|p| format!("{p}/udp")))
+                                        .collect();
+                                    ui.label(ports.join(", "));
+                                });
+                                row.col(|ui| {
+                                    if let Some(s) = tables::device_risk(d, &risk) {
+                                        ui.colored_label(severity_color(s), home::severity_name(s));
+                                    }
+                                });
+                                if row.response().clicked() {
+                                    focus = Some(d.ips.clone());
+                                }
+                            });
                         });
-                    });
-            });
+                });
+        });
         if let Some(column) = sort {
             self.devices_view.click(column);
         }
@@ -430,102 +433,104 @@ impl Scanner {
         if workbench {
             self.open_workbench();
         }
-        self.devices_open = open;
     }
     pub(super) fn refresh_history(&mut self) {
         if !self.busy.listing {
             self.submit(Job::List);
         }
     }
-    pub(super) fn inventory_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.history_open;
-        egui::Window::new(tr!("Saved inventory & scan differences"))
-            .open(&mut open)
-            .default_size(win_size([650.0, 420.0]))
-            .default_pos(self.window_origin)
-            .show(ctx, |ui| {
-                ui.label(tr!(
+    /// The Saved inventory page.
+    pub(super) fn inventory_view(&mut self, ui: &mut egui::Ui) {
+        page(ui, tr!("Saved inventory & scan differences"), |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("inventory_page")
+                .show(ui, |ui| {
+                    ui.label(tr!(
                     "Scans are saved automatically, including interrupted scans marked as partial."
                 ));
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!self.busy.listing, egui::Button::new(tr!("Refresh")))
-                        .clicked()
-                    {
-                        self.refresh_history();
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.busy.comparing,
-                            egui::Button::new(tr!("Compare A to B")),
-                        )
-                        .clicked()
-                    {
-                        match (self.compare_a, self.compare_b) {
-                            (Some(a), Some(b)) => self.submit(Job::Diff(a, b)),
-                            (None, _) => self.error = tr!("Select baseline A").into(),
-                            (_, None) => self.error = tr!("Select scan B").into(),
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!self.busy.listing, egui::Button::new(tr!("Refresh")))
+                            .clicked()
+                        {
+                            self.refresh_history();
                         }
-                    }
-                    if self.busy.listing || self.busy.comparing || self.busy.loading {
-                        ui.spinner();
-                    }
-                });
-                let mut load = None;
-                let can_open = !self.live() && !self.busy.loading;
-                egui::ScrollArea::vertical()
-                    .id_salt("history")
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        for h in &self.history {
-                            ui.horizontal(|ui| {
-                                ui.radio_value(&mut self.compare_a, Some(h.id), "A");
-                                ui.radio_value(&mut self.compare_b, Some(h.id), "B");
+                        if ui
+                            .add_enabled(
+                                !self.busy.comparing,
+                                egui::Button::new(tr!("Compare A to B")),
+                            )
+                            .clicked()
+                        {
+                            match (self.compare_a, self.compare_b) {
+                                (Some(a), Some(b)) => self.submit(Job::Diff(a, b)),
+                                (None, _) => self.error = tr!("Select baseline A").into(),
+                                (_, None) => self.error = tr!("Select scan B").into(),
+                            }
+                        }
+                        if self.busy.listing || self.busy.comparing || self.busy.loading {
+                            ui.spinner();
+                        }
+                    });
+                    let mut load = None;
+                    let can_open = !self.live() && !self.busy.loading;
+                    egui::ScrollArea::vertical()
+                        .id_salt("history")
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            for h in &self.history {
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(&mut self.compare_a, Some(h.id), "A");
+                                    ui.radio_value(&mut self.compare_b, Some(h.id), "B");
+                                    ui.label(tr!(
+                                        "#{} · {} hosts · {} · {}",
+                                        h.id,
+                                        h.hosts,
+                                        if h.complete {
+                                            tr!("complete")
+                                        } else {
+                                            tr!("partial")
+                                        },
+                                        h.targets
+                                    ));
+                                    if ui
+                                        .add_enabled(can_open, egui::Button::new(tr!("Open")))
+                                        .clicked()
+                                    {
+                                        load = Some(h.id);
+                                    }
+                                });
+                            }
+                            if self.history.is_empty() && !self.busy.listing {
                                 ui.label(tr!(
-                                    "#{} · {} hosts · {} · {}",
-                                    h.id,
-                                    h.hosts,
-                                    if h.complete {
-                                        tr!("complete")
-                                    } else {
-                                        tr!("partial")
-                                    },
-                                    h.targets
+                                    "No saved scans yet. Run a scan to start an inventory."
                                 ));
-                                if ui
-                                    .add_enabled(can_open, egui::Button::new(tr!("Open")))
-                                    .clicked()
-                                {
-                                    load = Some(h.id);
-                                }
-                            });
-                        }
-                        if self.history.is_empty() && !self.busy.listing {
-                            ui.label(tr!("No saved scans yet. Run a scan to start an inventory."));
-                        }
-                    });
-                if let Some(id) = load {
-                    self.submit(Job::Load(id));
-                }
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("differences")
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        for change in &self.changes {
-                            ui.label(change);
-                        }
-                    });
-                self.scan_details(ui);
-                ui.horizontal(|ui| {
-                    for format in ["json", "csv", "html"] {
-                        if ui.button(tr!("Export {}", format)).clicked() {
-                            self.export(format);
-                        }
+                            }
+                        });
+                    if let Some(id) = load {
+                        // The opened scan is shown on the Hosts page.
+                        self.view = super::MainView::Hosts;
+                        self.submit(Job::Load(id));
                     }
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("differences")
+                        .max_height(200.0)
+                        .show(ui, |ui| {
+                            for change in &self.changes {
+                                ui.label(change);
+                            }
+                        });
+                    self.scan_details(ui);
+                    ui.horizontal(|ui| {
+                        for format in ["json", "csv", "html"] {
+                            if ui.button(tr!("Export {}", format)).clicked() {
+                                self.export(format);
+                            }
+                        }
+                    });
                 });
-            });
-        self.history_open = open;
+        });
     }
     /// Where the scan on screen came from: its source, whether it finished and the provenance
     /// stamp (tool version and rule hashes) with a button that copies the line to cite it by.
@@ -648,14 +653,10 @@ impl Scanner {
         }
         .into();
     }
-    pub(super) fn capture_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.capture_open;
-        egui::Window::new(tr!("Passive discovery / Profinet DCP / OT"))
-            .vscroll(true)
-            .open(&mut open)
-            .default_size(win_size([760.0, 620.0]))
-            .default_pos([24.0, 40.0])
-            .show(ctx, |ui| {
+    /// The Passive discovery / OT page.
+    pub(super) fn capture_view(&mut self, ui: &mut egui::Ui) {
+        page(ui, tr!("Passive discovery / Profinet DCP / OT"), |ui| {
+            egui::ScrollArea::both().id_salt("capture_page").show(ui, |ui| {
                 ui.label(tr!("Passive: mDNS · SSDP · LLDP · CDP · NetBIOS · WS-Discovery · DHCP · DHCPv6 · ARP"));
                 ui.label(tr!(
                     "Requires Npcap and permission to capture on the selected Ethernet interface."
@@ -777,16 +778,21 @@ impl Scanner {
                             }
                         });
                 }
-                if !self.error.is_empty() {
-                    ui.colored_label(egui::Color32::from_rgb(205, 70, 70), &self.error);
-                }
+                // Errors show under the scan controls, above every page.
                 self.ot_section(ui);
             });
-        self.capture_open = open;
+        });
     }
 }
 
-fn severity_color(s: risk::Severity) -> egui::Color32 {
+/// A full-size page of the main window: its title, then the content.
+pub(super) fn page(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.heading(title);
+    ui.add_space(2.0);
+    add(ui);
+}
+
+pub(super) fn severity_color(s: risk::Severity) -> egui::Color32 {
     // Same colours as the overview, for the theme that is active.
     home::severity_color(s, dark_mode())
 }

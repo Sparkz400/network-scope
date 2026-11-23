@@ -130,11 +130,11 @@ impl Scanner {
         match cmd {
             Cmd::Overview => self.view == MainView::Home,
             Cmd::Hosts => self.view == MainView::Hosts,
-            Cmd::Inventory => self.history_open,
-            Cmd::Map => self.topology_open,
-            Cmd::Findings => self.findings_open,
-            Cmd::Devices => self.devices_open,
-            Cmd::Passive => self.capture_open,
+            Cmd::Inventory => self.view == MainView::Inventory,
+            Cmd::Map => self.view == MainView::Map,
+            Cmd::Findings => self.view == MainView::Findings,
+            Cmd::Devices => self.view == MainView::Devices,
+            Cmd::Passive => self.view == MainView::Passive,
             Cmd::Workbench => self.workbench.open,
             Cmd::Preset(p) => {
                 preset_ui::current(&self.saved.preset, &self.saved.settings) == Some(p)
@@ -428,6 +428,9 @@ impl Scanner {
                         ui.label(RichText::new(tr!("Up / Down")).strong());
                         ui.label(tr!("Choose a host in the table"));
                         ui.end_row();
+                        ui.label(RichText::new("Esc").strong());
+                        ui.label(tr!("Close the host details"));
+                        ui.end_row();
                         ui.label(RichText::new(tr!("Ctrl and + or -")).strong());
                         ui.label(tr!("Interface scale"));
                         ui.end_row();
@@ -440,18 +443,25 @@ impl Scanner {
         }
     }
 
-    /// Moves the selection in the hosts table with the arrow keys while no text field has the
-    /// keyboard focus and no menu, drop-down or dialog is open (they use the arrow keys).
+    /// Moves the selection in the hosts table with the arrow keys, and closes the host details
+    /// with Escape, while no text field has the keyboard focus and no menu, drop-down or dialog
+    /// is open (they use those keys).
     pub(super) fn table_keys(&mut self, ctx: &egui::Context) {
-        if self.view != MainView::Hosts || self.rows.is_empty() {
-            return;
-        }
         let dialog = self.palette.open
             || self.unsafe_confirm.is_some()
             || self.scope_confirm.is_some()
             || self.quick.dialog
             || self.wake.is_some();
         if dialog || ctx.text_edit_focused() || egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        if self.selected.is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.selected = None;
+            self.script_test = None;
+            return;
+        }
+        if self.view != MainView::Hosts || self.rows.is_empty() {
             return;
         }
         let down = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown));
@@ -606,7 +616,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = app(&ctx);
         press(&ctx, &mut app, Key::Num4, Modifiers::COMMAND);
-        assert!(app.findings_open);
+        assert!(app.view == MainView::Findings);
         press(&ctx, &mut app, Key::Num2, Modifiers::COMMAND);
         assert!(app.view == MainView::Hosts);
         press(&ctx, &mut app, Key::Num1, Modifiers::COMMAND);
@@ -648,6 +658,15 @@ mod tests {
         assert_eq!(app.scroll_to, ip("10.0.0.3"));
         press(&ctx, &mut app, Key::ArrowUp, Modifiers::NONE);
         assert_eq!(app.selected, ip("10.0.0.2"));
+        // Escape closes the host details (with the dialog gate below, too).
+        app.unsafe_confirm = Some(Unsafe::Faster);
+        press(&ctx, &mut app, Key::Escape, Modifiers::NONE);
+        assert_eq!(app.unsafe_confirm, None, "the dialog took the Escape");
+        assert_eq!(app.selected, ip("10.0.0.2"), "and the details stay open");
+        app.selected = ip("10.0.0.2");
+        press(&ctx, &mut app, Key::Escape, Modifiers::NONE);
+        assert_eq!(app.selected, None);
+        app.selected = ip("10.0.0.2");
         // Not while a dialog is open, nor on the Overview.
         app.unsafe_confirm = Some(Unsafe::Faster);
         press(&ctx, &mut app, Key::ArrowUp, Modifiers::NONE);

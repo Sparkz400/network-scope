@@ -315,7 +315,7 @@ impl Scanner {
                     self.recount();
                 }
                 self.data_changed();
-                self.topology_open = true;
+                self.view = MainView::Map;
             }
             "quick" => {
                 let net = |name: &str, ip: &str, prefix| crate::localnets::LocalNet {
@@ -472,7 +472,7 @@ impl Scanner {
             "scan-details" => {
                 // The inventory window with the scan on screen and its provenance stamp (the
                 // hashes are those of the rules this build carries, not of the user's files).
-                self.history_open = true;
+                self.view = MainView::Inventory;
                 self.loaded_scan = Some(9);
                 self.scan_scope = self.targets.clone();
                 self.scan_settings = windows::settings_for_scan(&self.saved.settings);
@@ -487,8 +487,8 @@ impl Scanner {
                     })
                     .collect();
             }
-            "findings" => self.findings_open = true,
-            "devices" => self.devices_open = true,
+            "findings" => self.view = MainView::Findings,
+            "devices" => self.view = MainView::Devices,
             "settings" => {
                 // The CVE rules field with a load error, as after a bad path.
                 self.settings_open = true;
@@ -497,7 +497,7 @@ impl Scanner {
                     r#"C:\rules\plant-cves.json: bad version "abc" in rule lab-1"#.into();
             }
             "ot" => {
-                self.capture_open = true;
+                self.view = MainView::Passive;
                 self.ot.demo();
             }
             "timeline" => {

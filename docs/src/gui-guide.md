@@ -2,13 +2,23 @@
 
 The desktop app (`network-scope.exe`, or either binary started without arguments) runs the same engine as the CLI.
 
+## Layout
+
+Below the menu bar and the scan controls (addresses, TCP ports, preset, Start), the window has three parts:
+
+- **The sidebar** on the left lists the pages: **Overview**, **Hosts**, **Devices**, **Findings**, **Network map**, **Passive discovery / OT** and **Saved inventory**. A small number next to a page counts what is on it: hosts that answered, devices, findings (in the colour of the worst one), passive observations and saved scans. Devices and findings are counted when no scan or capture is running and there are at most 4,096 hosts and observations; with more, the count appears once the page has been opened (working out the findings of 65,536 hosts takes about 0.4 s, which the window should not spend on a page nobody looks at). A count never stands for older data.
+- **The page** in the middle uses all the room that is left. The pages were separate windows before; now one is shown at a time, and wide tables scroll sideways.
+- **The host details** dock on the right while a host is selected, from any page: click a row of the hosts table, a finding, a device or a host on the network map. The panel can be made wider or narrower by dragging its edge; **Close** or `Escape` closes it.
+
+The workbench for unknown devices, a device's timeline, Settings, the keyboard shortcuts and the dialogs still open as windows on top.
+
 ## Menus and keyboard shortcuts
 
 The menu bar has five menus:
 
 - **File**: Import address list…, Export (HTML report, Markdown summary, visible rows as CSV or JSON), Clear results and captures, Quit.
 - **Scan**: Scan my network, Start scan, Pause / resume, Stop scan, Preset (the presets and the Faster and More thorough adjustments), Favorite addresses, Settings….
-- **View**: Overview and Hosts (the main views), then the Devices, Findings, Network map, Passive discovery / OT and Saved inventory windows, Search hosts and the theme. The current view and the open windows are highlighted.
+- **View**: the seven pages of the sidebar, Search hosts and the theme. The current page is highlighted.
 - **Tools**: the unknown-device workbench, Scheduled scans… and the command palette.
 - **Help**: Keyboard shortcuts, Documentation, About.
 
@@ -27,12 +37,13 @@ Every entry is also a command of the [command palette](#command-palette-and-sear
 | `F1` | The list of shortcuts |
 | `Ctrl+Q` | Quit |
 | Up / Down | Choose a host in the table (while no text field, menu or dialog has the keyboard) |
+| `Escape` | Close the host details (likewise) |
 
 On macOS `Ctrl` is `Cmd`. **Help → Keyboard shortcuts** (`F1`) shows the same list.
 
 ## Overview: what changed
 
-The first view is the **Overview** (switch with **Overview** and **Hosts** under the scan controls, `Ctrl+1` and `Ctrl+2`). It reads the saved inventory in the background and shows:
+The first page is the **Overview** (switch pages in the sidebar, or with `Ctrl+1` for the Overview and `Ctrl+2` for Hosts). It reads the saved inventory in the background and shows:
 
 - **What changed** between the newest completed scan and the scan before it (**Since the last scan**), or between the newest scan and the state 24 hours or 7 days ago (**Last 24 hours**, **Last 7 days**): new, gone and changed devices, new and resolved risks. A device that moved to another address counts as changed, not as gone plus new, and a risk counts as resolved only when the newer scan looked at it again; see [What changed](inventory-diff-reports.md#what-changed).
 - The **network risk score** (0 to 100) and the five things to **fix first** (the same list as `findings`; a fix that helps several hosts is one entry, ranked by how much it lowers the host scores). A **KEV** badge marks a fix with a CVE that is known to be exploited.
@@ -64,7 +75,7 @@ The **Preset** picker next to the TCP ports field (also **Scan → Preset**) app
 | --- | --- | --- |
 | Quick | active, Safe Mode | Ping and TCP connect to 80, 443 and 8080; nothing else (the defaults) |
 | Office | active, Safe Mode | Common office and server ports, service identification, OS / manufacturer / device-type guess, MAC lookup; no UDP, OT or traceroute |
-| Plant (passive) | **no packets** | Nothing is scanned: it opens the passive capture window (Listen (OT), pcap files). **Start** explains this until you choose another preset |
+| Plant (passive) | **no packets** | Nothing is scanned: it opens the Passive discovery / OT page (Listen (OT), pcap files). **Start** explains this until you choose another preset |
 | Full audit | active, Safe Mode **off** | Everything the engine can do: up to 256 hosts at a time, ports 1-1024 plus the 100 most common, services, UDP, OS, read-only OT identification, JARM, ICMP traceroute, DNS names and MACs, the SYN engine and ARP sweep when an interface is set. The scope guard and the automatic back-off still apply |
 
 The picker shows **Custom** as soon as a setting differs from every preset. Interface, source addresses, script and probe file are never changed by a preset.
@@ -99,7 +110,7 @@ Click anywhere in a host's row (or choose it with Up and Down) for its identity 
 
 ## Host actions, favorites and Wake-on-LAN
 
-Right-click a host in the table, or use **Actions** in its details window (the keyboard way to the same menu):
+Right-click a host in the table, or use **Actions** in its host details (the keyboard way to the same menu):
 
 - **Add to favorites / Remove from favorites**: a star in front of the address; the **Starred** filter and **Show starred devices** (in the ★ menu next to the Addresses field, also **Scan → Favorite addresses**) list them. The same menu saves the current addresses as a favorite and fills them in again. Stars are kept in the preferences file, not in the inventory, and follow the device by its MAC address (by its IP address when it has none).
 - **Open in browser** (`http://` or `https://` for the web ports found open), **Open SSH** (`ssh://`, needs port 22), **Open remote desktop** (`mstsc` on Windows, the `rdp://` handler elsewhere; needs port 3389) and **Ping in a terminal**. The entries for ports that were not found open are greyed out.
@@ -114,15 +125,15 @@ Programs are started without a shell: the command line is a program name plus a 
 
 ## Inventory
 
-**Inventory** reopens SQLite snapshots, selects baseline A and scan B for a comparison, and exports JSON, CSV, HTML or a Markdown summary. Completed and stopped scans are stored separately. Comparisons require completed scans with matching scope and settings; a timeout never proves that a device is offline.
+**Saved inventory** (`Ctrl+7`) reopens SQLite snapshots, selects baseline A and scan B for a comparison, and exports JSON, CSV, HTML or a Markdown summary. Completed and stopped scans are stored separately. Comparisons require completed scans with matching scope and settings; a timeout never proves that a device is offline.
 
-The **Scan details** section at the bottom of the window says where the scan on screen came from (a saved scan with its number, or one not saved yet), whether it finished, and its provenance stamp: the tool version and the hashes of the rules and feeds the scan ran with, with a **Copy** button for the line to cite (tool and combined hash). Scans started in the window are stamped when they start, like scans from the CLI; a scan opened from the inventory shows the stamp it was saved with, or says it has none. See [Reproducible scans](reproducible-scans.md).
+The **Scan details** section at the bottom of the page says where the scan on screen came from (a saved scan with its number, or one not saved yet), whether it finished, and its provenance stamp: the tool version and the hashes of the rules and feeds the scan ran with, with a **Copy** button for the line to cite (tool and combined hash). Scans started in the window are stamped when they start, like scans from the CLI; a scan opened from the inventory shows the stamp it was saved with, or says it has none. See [Reproducible scans](reproducible-scans.md).
 
 Exports are written in the background; the status line shows "Saved FILE" or the error. Exports of a reopened snapshot carry its stored scan time; exports of live results carry the current time.
 
 ## Findings and Devices
 
-**Findings** and **Devices** sort by column header (click again to reverse) and filter by severity (Devices: highest finding, *Risk* column) and text. Clicking a row selects and opens that host in the main table. See [Findings and CVE hints](findings-and-cves.md).
+**Findings** and **Devices** sort by column header (click again to reverse) and filter by severity (Devices: highest finding, *Risk* column) and text. Clicking a row selects that host and shows its details on the right; the page stays open. See [Findings and CVE hints](findings-and-cves.md).
 
 With imported feeds (`feeds import`, see [Findings and CVE hints](findings-and-cves.md)) the Findings table has a **KEV** column (the CVE is in the CISA catalog of vulnerabilities exploited in the wild; *ransomware* when the catalog lists ransomware use) and an **EPSS** column (the estimated probability of exploitation in the next 30 days). Both sort (KEV first, then ransomware use; EPSS highest first) and filter (**Known exploited (KEV) only**, **EPSS 1 % / 10 % / 50 % or more**); typing `kev` or `ransomware` in the filter box works too. The app reads the default feeds cache (`feeds.json` in the `NetworkScope` folder under `%LOCALAPPDATA%`, the file `feeds import` writes) when it first needs it; without a cache the two columns stay empty. The last column has **Learn more** (the documentation page of the finding, [published here](findings/index.md)) and, where the rule has one, **Reference** (the vendor or standard document). Every link in the app opens in your default browser, through the operating system's opener (`rundll32 url.dll,FileProtocolHandler` on Windows, `open` on macOS, `xdg-open` elsewhere); only web, `ssh://` and `rdp://` links with a plain host are passed on. The opener was run for a real documentation link on Windows (2026-11-20): `rundll32.exe url.dll,FileProtocolHandler https://sparkz400.github.io/network-scope/findings/telnet-open.html` was started and the default browser (Firefox, already running) showed the page in a new tab; `file:`, `javascript:`, links with spaces and plain program names were refused without starting anything (`cargo test --lib live_link_opener -- --ignored` repeats this by hand). The app is built without eframe's own link support, which needs an extra crate, so links did nothing before this opener was added.
 
@@ -134,7 +145,7 @@ With imported feeds (`feeds import`, see [Findings and CVE hints](findings-and-c
 
 **Network map** (**View** menu, `Ctrl+5`) draws the path map from traceroute data (enable traceroute in Settings) as a graph: the scanner in the middle, the routers it found on the way and the hosts behind them. Drag to move the map, scroll or pinch to zoom, **Fit to window** shows all of it, and a click on a host opens its details. Dots are coloured by device type (controller / HMI, network device, server / storage, workstation, printer, camera, other; the legend is above the map) and a small dot in the corner of a node is the colour of the worst finding of that host. Nodes and text keep their pixel size when you zoom, at most 60 labels are drawn (the most important first: selected node, scanner, hosts with a high finding, routers) and none that would overlap another; hover a node for its details. With no hosts the map says so; with hundreds of hosts it stays usable (300 hosts were checked). **Show the devices as a list** below the map offers the same hosts as a list, which is also the way to reach them with the keyboard. The positions come from a layered ring layout relaxed by a force pass (`netmap::layout`, plain Rust, no extra crates). Links that other discovery features add to the topology (for example LLDP or SNMP neighbours) are drawn without changes, because the map only reads the node and link lists of `topology::Graph`.
 
-## Passive / DCP
+## Passive discovery / OT
 
 Select an Ethernet interface and a capture duration (needs Npcap/libpcap). Passive capture sends no discovery packets and decodes mDNS, SSDP/UPnP, LLDP (with LLDP-MED), CDP, NetBIOS (name service and browser announcements), WS-Discovery, DHCP, DHCPv6, ARP and IPv6 Neighbor Discovery. The separate **DCP Identify** button sends one read-only Profinet multicast request; it never assigns IPs or changes a device. MAC-keyed observations retain devices that advertise no IP.
 
@@ -142,14 +153,14 @@ Capture visibility depends on the network interface, multicast delivery and swit
 
 ## OT passive asset discovery
 
-The same window has an OT passive section:
+The same page has an OT passive section:
 
 - **Open pcap…** reads a capture file on a worker thread with a progress bar (percent, frames/s) and **Cancel**.
 - **Listen (OT)** listens receive-only on the selected interface for the chosen number of seconds (disabled while another capture or a scan runs); **Stop** ends it early.
 - Cancelled or stopped runs are marked partial.
 - The asset table lists address, vendor, product, firmware, serial, protocols, roles, first/last seen and control traffic; rows with observed control traffic are red.
 - **Export assets CSV/JSON** writes the `ot-assets` formats.
-- Each finished OT capture is saved to the inventory like `ot-listen`; closing the window saves a running one as partial, and reopening a saved `ot-passive:` capture refills the asset table.
+- Each finished OT capture is saved to the inventory like `ot-listen`; closing the program saves a running one as partial, and reopening a saved `ot-passive:` capture refills the asset table.
 
 See [OT / industrial](ot-industrial.md).
 
@@ -159,7 +170,7 @@ See [OT / industrial](ot-industrial.md).
 
 ## Scripts
 
-**Host details → Test script…** dry-runs the configured or a chosen `.rhai` file on a copy of the host; **Apply** adds the result to the host in the window only. See [Scripting](scripting.md).
+**Host details → Test script…** dry-runs the configured or a chosen `.rhai` file on a copy of the host; **Apply** adds the result to the host on screen only. See [Scripting](scripting.md).
 
 ## Languages
 
@@ -167,7 +178,7 @@ The app is available in English and German. **Settings → Appearance and langua
 
 Text in the code is English and goes through a lookup keyed by that English text; a text without a translation shows in English, so a missing entry never breaks anything. The German catalog is the plain file `src/gui/lang/de.txt` (`English text || Deutscher Text`, one per line); a test fails when a text in the interface has no entry, when an entry appears twice, or when the placeholders of the two sides differ. Adding a language is a new catalog file and one entry in `i18n.rs`.
 
-Coverage: the main window, the menus and the scan controls, the Settings window, the Overview, Scan my network, the network map, the host menu and Wake-on-LAN, the command palette, the host details, the Findings, Devices and Inventory windows, the confirmation dialogs, the update notice and the scheduled-scan section are translated: 608 catalog entries, which include the menu bar and the shortcut list, the OT passive section, the device timeline window, the Scan details section and the unknown-device workbench (the test checks every text of those files). The text the engine itself produces (finding titles, advice, evidence, protocol fields, the CLI) is not translated.
+Coverage: the main window, the menus and the scan controls, the Settings window, the Overview, Scan my network, the network map, the host menu and Wake-on-LAN, the command palette, the host details, the sidebar, the Findings, Devices and Inventory pages, the confirmation dialogs, the update notice and the scheduled-scan section are translated: 608 catalog entries, which include the menu bar and the shortcut list, the OT passive section, the device timeline window, the Scan details section and the unknown-device workbench (the test checks every text of those files). The text the engine itself produces (finding titles, advice, evidence, protocol fields, the CLI) is not translated.
 
 ## Accessibility
 
@@ -179,4 +190,4 @@ Coverage: the main window, the menus and the scan controls, the Settings window,
 
 ## Screenshot mode
 
-`network-scope --screenshot FILE.png` renders the window to a PNG without scanning or touching preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|ot|script|timeline|scan-details|workbench|workbench-compare|workbench-draft|settings|home|home-empty|map|map-large|quick|palette|wake` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, `-fast` for Safe Mode off, `-dark` for the dark theme and `-de` for German, in any order, e.g. `main-small-fast` or `home-dark-de`). Screenshots are in English unless the state ends in `-de`. This is used for the documentation images.
+`network-scope --screenshot FILE.png` renders the window to a PNG without scanning or touching preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|ot|script|timeline|scan-details|workbench|workbench-compare|workbench-draft|settings|schedule|shortcuts|safe-off|home|home-empty|map|map-large|quick|palette|palette-actions|appearance|wake` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, `-fast` for Safe Mode off, `-dark` for the dark theme and `-de` for German, in any order, e.g. `main-small-fast` or `home-dark-de`). Screenshots are in English unless the state ends in `-de`. This is used for the documentation images.
