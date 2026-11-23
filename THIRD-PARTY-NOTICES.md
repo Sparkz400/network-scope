@@ -32,6 +32,7 @@ Licenses as declared by each crate's metadata for the versions in `Cargo.lock` (
 | roxmltree | nmap XML import | MIT OR Apache-2.0 |
 | rhai | Scripting | MIT OR Apache-2.0 |
 | rcgen (tests only) | Test certificates | MIT OR Apache-2.0 |
+| winresource (build only, Windows) | Embeds the icon, version block and manifest into the .exe files | MIT |
 
 ## Notable transitive components
 
