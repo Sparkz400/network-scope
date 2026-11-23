@@ -7,6 +7,7 @@ mod details;
 mod home;
 mod i18n;
 mod map;
+mod menu;
 mod ot;
 mod palette;
 mod preset_ui;
@@ -117,7 +118,7 @@ fn write_prefs(bytes: &[u8]) -> Result<(), String> {
     }
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
-/// The "Standard" preset and "Restore defaults": scan defaults, but the fields that describe
+/// "Restore defaults": scan defaults, but the fields that describe
 /// this machine (capture interface, source addresses, script and probe files) are kept.
 fn standard_settings(current: &scan::Settings) -> scan::Settings {
     scan::Settings {
@@ -577,6 +578,13 @@ struct Scanner {
     zoom_applied: f32,
     /// Screenshot mode: scroll the settings to the appearance section.
     scroll_to_appearance: bool,
+    /// Open and scroll the settings to the scheduled scans (Tools → Scheduled scans).
+    scroll_to_schedule: bool,
+    /// Give the hosts search box the keyboard focus on the next frame (Ctrl+F).
+    focus_search: bool,
+    shortcuts_open: bool,
+    /// A one-click change that would turn Safe Mode off, waiting for confirmation.
+    unsafe_confirm: Option<menu::Unsafe>,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -689,6 +697,10 @@ impl Scanner {
             pending_focus: None,
             zoom_applied: 1.0,
             scroll_to_appearance: false,
+            scroll_to_schedule: false,
+            focus_search: false,
+            shortcuts_open: false,
+            unsafe_confirm: None,
         };
         i18n::set(i18n::detect(&app.saved.language));
         apply_theme(&cc.egui_ctx, app.saved.dark);
@@ -972,7 +984,7 @@ impl Scanner {
         if self.saved.preset == preset_ui::PLANT {
             // The passive preset sends nothing: point to the listener instead of scanning.
             self.error = tr!(
-                "The Plant preset is passive and sends no packets. Use Listen (OT) in Passive / DCP, or choose another preset to scan."
+                "The Plant preset is passive and sends no packets. Use Listen (OT) in Passive discovery / OT, or choose another preset to scan."
             )
             .into();
             if !unattended {
@@ -1436,6 +1448,7 @@ impl eframe::App for Scanner {
         }
         self.poll_update();
         self.apply_zoom(ctx);
+        self.shortcuts(ctx);
         self.controls(ui);
         egui::Panel::bottom("status").show(ui, |ui| {
             if let Some(run) = &self.run {
@@ -1463,31 +1476,47 @@ impl eframe::App for Scanner {
                 &self.targets,
                 self.saved.preset == preset_ui::PLANT,
             );
-            if safe_mode_indicator(ui, &badge) {
-                self.settings_open = true;
-            }
+            // One line: the Safe Mode badge, the status, what the scan sends (cut short on narrow
+            // windows; the tooltip has it all) and the counts on the right.
             ui.horizontal(|ui| {
-                if let Some(busy) = self.busy.label() {
-                    ui.spinner();
-                    ui.label(busy);
-                }
-                // Hovering the status line also lists what the Safe Mode badge limits.
-                let status = ui.label(&self.status);
-                if !self.scan_sent.is_empty() {
-                    // The scan summary: every kind of packet the scan sent, with counts.
-                    status.on_hover_text(crate::sendlog::format_table(&self.scan_sent));
-                }
-                self.update_notice_ui(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(tr!(
                         "{} responding · {} with open ports",
                         self.responding,
                         self.with_open
                     ));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if safe_mode_indicator(ui, &badge) {
+                            self.settings_open = true;
+                        }
+                        if let Some(busy) = self.busy.label() {
+                            ui.spinner();
+                            ui.label(busy);
+                        }
+                        // Hovering the status line also lists what the Safe Mode badge limits.
+                        let status = ui.add(egui::Label::new(&self.status).truncate());
+                        if !self.scan_sent.is_empty() {
+                            // The scan summary: every kind of packet the scan sent, with counts.
+                            status.on_hover_text(crate::sendlog::format_table(&self.scan_sent));
+                        } else if !self.status.is_empty() {
+                            status.on_hover_text(&self.status);
+                        }
+                        self.update_notice_ui(ui);
+                        ui.separator();
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(tr!("Sends: {}", badge.sends))
+                                    .color(ui.visuals().weak_text_color()),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&badge.tooltip);
+                    });
                 });
             });
         });
         self.refresh_rows();
+        self.table_keys(ctx);
         self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
         let mut menu: Option<(usize, convenience::MenuAction)> = None;
         egui::CentralPanel::default().show(ui, |ui| {
@@ -1502,6 +1531,7 @@ impl eframe::App for Scanner {
                     .iter()
                     .position(|&i| self.results.get(i).is_some_and(|h| h.ip == ip))
             });
+            tables::plain_labels(ui);
             let mut table = TableBuilder::new(ui);
             if let Some(row) = scroll_row {
                 table = table.scroll_to_row(row, Some(egui::Align::Center));
@@ -1509,6 +1539,9 @@ impl eframe::App for Scanner {
             table
                 .striped(true)
                 .resizable(true)
+                // The whole row is the click target: select (opens the details), right click
+                // for the host menu.
+                .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::initial(135.0).at_least(80.0))
                 .column(Column::initial(110.0))
@@ -1537,11 +1570,15 @@ impl eframe::App for Scanner {
                     body.rows(26.0, visible.len(), |mut row| {
                         let index = visible[row.index()];
                         let host = &self.results[index];
+                        let starred = self
+                            .saved
+                            .starred
+                            .contains(&convenience::favorite_key(host));
+                        row.set_selected(self.selected == Some(host.ip));
+                        let mut chosen = false;
                         row.col(|ui| {
-                            let starred = self
-                                .saved
-                                .starred
-                                .contains(&convenience::favorite_key(host));
+                            // A named, focusable control: the keyboard and screen-reader way to
+                            // the row (Tab, then Enter or the menu key).
                             let shown = if starred {
                                 format!("★ {}", host.ip)
                             } else {
@@ -1549,13 +1586,7 @@ impl eframe::App for Scanner {
                             };
                             let response =
                                 ui.selectable_label(self.selected == Some(host.ip), shown);
-                            if response.clicked() {
-                                if self.selected != Some(host.ip) {
-                                    self.script_test = None;
-                                }
-                                self.selected = Some(host.ip);
-                            }
-                            // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
+                            chosen = response.clicked();
                             response.context_menu(|ui| {
                                 menu = Some((index, convenience::host_menu(ui, host, starred)));
                             });
@@ -1586,6 +1617,17 @@ impl eframe::App for Scanner {
                             } else {
                                 tr!("Not checked").into()
                             });
+                        });
+                        let response = row.response();
+                        if chosen || response.clicked() {
+                            if self.selected != Some(host.ip) {
+                                self.script_test = None;
+                            }
+                            self.selected = Some(host.ip);
+                        }
+                        // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
+                        response.context_menu(|ui| {
+                            menu = Some((index, convenience::host_menu(ui, host, starred)));
                         });
                     });
                 });
@@ -1644,6 +1686,8 @@ impl eframe::App for Scanner {
         self.findings_window(ctx);
         self.capture_window(ctx);
         self.scope_dialog(ctx);
+        self.unsafe_dialog(ctx);
+        self.shortcuts_window(ctx);
         self.quick_dialog(ctx);
         self.wake_dialog(ctx);
         self.palette_window(ctx);
@@ -1904,28 +1948,24 @@ fn cached_badge(s: &scan::Settings, targets: &str, plant: bool) -> SafeBadge {
         }
     })
 }
-/// The always visible Safe Mode indicator: a button with the profile (opens Settings) and, next to
-/// it, what the scan is about to send. Wraps on narrow windows; the tooltip has the whole plan.
-/// Returns whether the button was clicked.
+/// The always visible Safe Mode indicator: a button with the profile that opens Settings. Its
+/// accessible name and tooltip also say what the scan is about to send (the status bar shows that
+/// next to it). Returns whether the button was clicked.
 fn safe_mode_indicator(ui: &mut egui::Ui, badge: &SafeBadge) -> bool {
     let color = badge_color(badge.safe, ui.visuals().dark_mode);
     let sends = tr!("Sends: {}", badge.sends);
-    ui.horizontal_wrapped(|ui| {
-        let button = ui.add(egui::Button::new(
-            RichText::new(badge.label).strong().color(color),
-        ));
-        let button = a11y::named(button, &format!("{}. {sends}", badge.label));
-        let clicked = button.clicked();
-        // Keyboard users get the plan while the button has focus, mouse users on hover.
-        if button.has_focus() {
-            button.show_tooltip_text(&badge.tooltip);
-        } else {
-            button.on_hover_text(&badge.tooltip);
-        }
-        ui.label(sends).on_hover_text(&badge.tooltip);
-        clicked
-    })
-    .inner
+    let button = ui.add(egui::Button::new(
+        RichText::new(badge.label).strong().color(color),
+    ));
+    let button = a11y::named(button, &format!("{}. {sends}", badge.label));
+    let clicked = button.clicked();
+    // Keyboard users get the plan while the button has focus, mouse users on hover.
+    if button.has_focus() {
+        button.show_tooltip_text(&badge.tooltip);
+    } else {
+        button.on_hover_text(&badge.tooltip);
+    }
+    clicked
 }
 /// Green for Safe Mode, amber when it is off; darker shades on the light theme, lighter on the dark one.
 fn badge_color(safe: bool, dark: bool) -> Color32 {
@@ -2507,9 +2547,11 @@ mod tests {
         let draw = |results: &[scan::Host], rows: &[usize]| {
             ctx.run_ui(input(), |ui| {
                 egui::CentralPanel::default().show(ui, |ui| {
+                    tables::plain_labels(ui);
                     TableBuilder::new(ui)
                         .striped(true)
                         .resizable(true)
+                        .sense(egui::Sense::click())
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         .column(Column::initial(135.0).at_least(80.0))
                         .column(Column::initial(110.0))
@@ -2528,6 +2570,7 @@ mod tests {
                         .body(|body| {
                             body.rows(26.0, rows.len(), |mut row| {
                                 let host = &results[rows[row.index()]];
+                                row.set_selected(false);
                                 row.col(|ui| {
                                     let _ = ui.selectable_label(false, host.ip.to_string());
                                 });

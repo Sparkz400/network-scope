@@ -19,7 +19,7 @@ The list has no addresses. || Die Liste enthält keine Adressen.
 Address list ignored: a scan is running. || Adressliste ignoriert: Ein Scan läuft.
 Ready to scan || Bereit zum Scannen
 Wait until the inventory scan has been opened. || Warten Sie, bis der Scan aus dem Inventar geöffnet ist.
-The Plant preset is passive and sends no packets. Use Listen (OT) in Passive / DCP, or choose another preset to scan. || Das Anlagen-Preset ist passiv und sendet keine Pakete. Nutzen Sie „Listen (OT)“ unter Passiv / DCP oder wählen Sie ein anderes Preset zum Scannen.
+The Plant preset is passive and sends no packets. Use Listen (OT) in Passive discovery / OT, or choose another preset to scan. || Das Anlagen-Preset ist passiv und sendet keine Pakete. Nutzen Sie „Listen (OT)“ unter Passiv / DCP oder wählen Sie ein anderes Preset zum Scannen.
 Scanning {} addresses || Scanne {} Adressen
 Stopping… || Wird gestoppt…
 Paused || Pausiert
@@ -77,39 +77,25 @@ Scan my network || Mein Netzwerk scannen
 Finds your local networks and scans them in Safe Mode. || Findet Ihre lokalen Netzwerke und scannt sie im Sicheren Modus.
 Start scan || Scan starten
 Import address list… || Adressliste importieren…
-Export visible rows as CSV… || Sichtbare Zeilen als CSV exportieren…
-Export visible rows as JSON… || Sichtbare Zeilen als JSON exportieren…
-Export HTML report… || HTML-Bericht exportieren…
-Export Markdown summary… || Markdown-Zusammenfassung exportieren…
 Clear results and captures || Ergebnisse und Mitschnitte löschen
 Removes active scan results and passive observations from the window. Saved inventory is kept. || Entfernt aktive Scan-Ergebnisse und passive Beobachtungen aus dem Fenster. Das gespeicherte Inventar bleibt erhalten.
-Favorites || Favoriten
 Save current addresses || Aktuelle Adressen speichern
 Remove || Entfernen
 Show starred devices || Markierte Geräte anzeigen
 Right click a host and choose Add to favorites to star it. || Rechtsklick auf einen Host und „Zu Favoriten hinzufügen“ markiert ihn.
 Settings || Einstellungen
-Inventory || Inventar
 Network map || Netzwerkkarte
 Findings || Befunde
 Devices || Geräte
-Passive / DCP || Passiv / DCP
-Commands (Ctrl+K) || Befehle (Strg+K)
 Search actions and all saved scans: an address, MAC, name, vendor or finding id. || Aktionen und alle gespeicherten Scans durchsuchen: Adresse, MAC, Name, Hersteller oder Befund-ID.
 About || Info
-IP & PORT SCANNER || IP- UND PORT-SCANNER
 Addresses || Adressen
 Resume || Fortsetzen
 Pause || Pause
 Stop || Stopp
 ▶ Start || ▶ Start
 TCP ports || TCP-Ports
-Preset || Preset
-Standard || Standard
-Original scan defaults (keeps interface, source addresses and script) || Ursprüngliche Scan-Voreinstellungen (behält Schnittstelle, Quelladressen und Skript)
-Fast || Schnell
 TCP discovery, up to 1024 concurrent hosts, 800 ms timeouts || TCP-Erkennung, bis zu 1024 Hosts gleichzeitig, 800 ms Zeitlimit
-Thorough || Gründlich
 Three probes and port checks even when ping gets no reply || Drei Proben und Port-Prüfung auch ohne Ping-Antwort
 Overview || Übersicht
 What changed since the last scan, the risk score and what to fix first || Was sich seit dem letzten Scan geändert hat, die Risikobewertung und was zuerst zu beheben ist
@@ -200,7 +186,6 @@ Stop capture || Mitschnitt stoppen
 No IP advertised || Keine IP angegeben
 
 # Scan settings
-Scan settings || Scan-Einstellungen
 Concurrent hosts || Gleichzeitige Hosts
 Ping probes || Ping-Proben
 Ping timeout || Ping-Zeitlimit
@@ -223,7 +208,7 @@ Adaptive SYN timing (RTT-based timeouts, slows down on packet loss) || Adaptives
 JARM TLS fingerprint (10 extra connections per TLS port; needs service detection) || JARM-TLS-Fingerabdruck (10 zusätzliche Verbindungen pro TLS-Port; benötigt Diensterkennung)
 Favicon hash (one GET /favicon.ico per web port; not on industrial hosts) || Favicon-Hash (ein GET /favicon.ico pro Web-Port; nicht bei Industriegeräten)
 Needs service detection, and not in Safe Mode || Benötigt Diensterkennung und nicht im Sicheren Modus
-Configure interface, source IPv4 and MAC in Passive / DCP. || Schnittstelle, Quell-IPv4 und MAC unter Passiv / DCP einstellen.
+Configure interface, source IPv4 and MAC in Passive discovery / OT. || Schnittstelle, Quell-IPv4 und MAC unter Passive Erkennung / OT einstellen.
 Identify services on open TCP ports (banners, HTTP, TLS certificate/ciphers, SMB, RDP, databases) || Dienste auf offenen TCP-Ports erkennen (Banner, HTTP, TLS-Zertifikat/Cipher, SMB, RDP, Datenbanken)
 Probe UDP services (DNS, DHCP, NTP, NetBIOS, SNMP public, SSDP, mDNS) || UDP-Dienste prüfen (DNS, DHCP, NTP, NetBIOS, SNMP public, SSDP, mDNS)
 UDP ports || UDP-Ports
@@ -624,3 +609,58 @@ Only the names of the variables are saved, never the passphrases. A scheduled sc
 # IPv6 discovery in the settings
 Find IPv6 hosts on the local link after the scan (one multicast ping per interface) || IPv6-Geräte im lokalen Netz nach dem Scan suchen (ein Multicast-Ping je Netzwerkschnittstelle)
 Sends one ICMPv6 echo request to ff02::1 per network interface with hop limit 1, also in Safe Mode, then reads the system's IPv6 neighbor list and joins it to the scanned hosts by MAC address. || Sendet je Netzwerkschnittstelle eine ICMPv6-Echo-Anfrage an ff02::1 mit Hop-Limit 1, auch im abgesicherten Modus, und liest danach die IPv6-Nachbarliste des Systems aus und ordnet sie den gescannten Geräten über die MAC-Adresse zu.
+
+# The menu bar, the profile picker and the keyboard shortcuts (menu.rs)
+File || Datei
+Export || Exportieren
+View || Ansicht
+Tools || Werkzeuge
+Help || Hilfe
+Stop scan || Scan stoppen
+Pause / resume || Pause / Fortsetzen
+Settings… || Einstellungen…
+Saved inventory || Gespeichertes Inventar
+Unknown-device workbench || Werkbank für unbekannte Geräte
+Passive discovery / OT || Passive Erkennung / OT
+Visible rows as CSV… || Sichtbare Zeilen als CSV…
+Visible rows as JSON… || Sichtbare Zeilen als JSON…
+HTML report… || HTML-Bericht…
+Markdown summary… || Markdown-Zusammenfassung…
+Faster (turns Safe Mode off) || Schneller (schaltet den Sicheren Modus aus)
+More thorough || Gründlicher
+Search hosts || Hosts durchsuchen
+Scheduled scans… || Geplante Scans…
+Keyboard shortcuts || Tastenkürzel
+Quit || Beenden
+Preset || Preset
+Favorite addresses || Favorisierte Adressen
+Adjust the current settings || Aktuelle Einstellungen anpassen
+Faster settings applied; Safe Mode is off || Schnellere Einstellungen angewendet; der Sichere Modus ist aus
+More thorough settings applied || Gründlichere Einstellungen angewendet
+Faster || Schneller
+Turn Safe Mode off? || Sicheren Modus ausschalten?
+{} turns Safe Mode off. || {} schaltet den Sicheren Modus aus.
+Without Safe Mode the scan contacts many more hosts at once and sends probes without spacing; SYN scans and the ARP sweep are allowed. Fragile devices such as PLCs and printers can react badly. || Ohne Sicheren Modus spricht der Scan viel mehr Hosts gleichzeitig an und sendet Proben ohne Abstand; SYN-Scans und der ARP-Sweep sind erlaubt. Empfindliche Geräte wie SPS und Drucker können darauf schlecht reagieren.
+Turn Safe Mode off || Sicheren Modus ausschalten
+Keep Safe Mode on || Sicheren Modus beibehalten
+Choose a host in the table || Host in der Tabelle wählen
+Up / Down || Pfeil hoch / runter
+Ctrl and + or - || Strg und + oder -
+Pause or resume the running scan || Laufenden Scan pausieren oder fortsetzen
+Make the scan faster (turns Safe Mode off) || Scan schneller machen (schaltet den Sicheren Modus aus)
+Make the scan more thorough || Scan gründlicher machen
+Search the hosts table || Host-Tabelle durchsuchen
+Open the scheduled scans || Geplante Scans öffnen
+Show the keyboard shortcuts || Tastenkürzel anzeigen
+Open the documentation || Dokumentation öffnen
+Quit Network Scope || Network Scope beenden
+
+# Sections of the settings window
+Safe Mode and discovery || Sicherer Modus und Erkennung
+Services and identification || Dienste und Identifizierung
+Industrial (OT) || Industrie (OT)
+SNMP (read-only) || SNMP (nur lesend)
+Traceroute || Traceroute
+Timing and performance || Zeitverhalten und Leistung
+Scripts, rules and recording || Skripte, Regeln und Aufzeichnung
+Updates || Aktualisierungen

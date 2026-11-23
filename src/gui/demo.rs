@@ -1,6 +1,6 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
 //! (main, findings, devices, settings, ot, script, timeline, scan-details, workbench, home, home-empty, map, map-large,
-//! quick, palette, palette-actions, appearance, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
+//! quick, palette, palette-actions, appearance, schedule, shortcuts, safe-off, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
 //! "-dark" for the dark theme and "-de" for German, e.g. "home-dark" or "main-de"). Screenshot
 //! runs never save to the inventory or preferences.
 use super::*;
@@ -367,6 +367,14 @@ impl Scanner {
             "appearance" => {
                 self.settings_open = true;
                 self.scroll_to_appearance = true;
+            }
+            "schedule" => {
+                self.settings_open = true;
+                self.scroll_to_schedule = true;
+            }
+            "shortcuts" => self.shortcuts_open = true,
+            "safe-off" => {
+                self.unsafe_confirm = Some(menu::Unsafe::Preset(crate::presets::Preset::Full));
             }
             "palette-actions" => {
                 self.palette.open = true;
