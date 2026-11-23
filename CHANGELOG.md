@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Application icon and Windows file metadata.** A square icon drawn from the round mark of the logo (`assets/icon/`: `icon.svg`, a simplified `icon-small.svg` for 16 to 32 px, rendered to `network-scope.ico`, `icon-256.png` and `icon-48.png` by `build_icon.py`). A new `build.rs` (crate `winresource`, build-only, Windows targets) embeds it into `network-scope.exe` and `network-scope-cli.exe`. It also adds a version block (product and file version from `Cargo.toml`, shown in the file properties and Task Manager as "Network Scope") and an application manifest (`assets/windows.manifest`): run as invoker, Windows 10/11 compatibility, per-monitor DPI awareness, long paths, common controls 6. The desktop window uses the icon in its title bar and taskbar button instead of the egui logo (on Windows the 48 px render of the small-size design, which Windows scales down better than the 256 px one). The installer has the icon as its setup icon and as the icon of its entry in Installed apps, publisher, support and update links, and a version block of its own.
+
 ## [0.6.0] - 2026-11-22
 
 Exit codes and a findings CI gate, HTTPS webhooks, offline CISA KEV/EPSS ranking and ICS advisories, a ground-truth accuracy benchmark, much richer passive discovery, and faster scans: adaptive TCP timing on by default, unused local addresses skipped and quicker host discovery with `--fast`. JA4S/JA4X are removed for licensing reasons.

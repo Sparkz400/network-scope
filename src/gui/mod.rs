@@ -1937,6 +1937,26 @@ fn host_status(host: &scan::Host) -> &'static str {
         tr!("No reply")
     }
 }
+/// The application icon (assets/icon/, also embedded in the .exe by build.rs) as window icon.
+/// Windows scales this one image down to the 16 px title bar and 24 px taskbar button, so it gets
+/// the 48 px render of the simplified small-size design; the macOS dock and Linux want 256 px.
+#[cfg(windows)]
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../assets/icon/icon-48.png");
+#[cfg(not(windows))]
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../assets/icon/icon-256.png");
+
+fn window_icon() -> egui::IconData {
+    let image = image::load_from_memory_with_format(WINDOW_ICON_PNG, image::ImageFormat::Png)
+        .expect("the bundled icon is a valid PNG")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
+}
+
 pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1951,7 +1971,9 @@ pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
                     [800.0, 450.0]
                 },
             )
-            .with_min_inner_size([700.0, 400.0]),
+            .with_min_inner_size([700.0, 400.0])
+            // Shown in the title bar and taskbar; without it eframe uses the egui logo.
+            .with_icon(window_icon()),
         ..Default::default()
     };
     eframe::run_native(
@@ -1964,6 +1986,15 @@ pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn window_icon_decodes_to_a_square_rgba_image() {
+        let icon = window_icon();
+        let size = if cfg!(windows) { 48 } else { 256 };
+        assert_eq!((icon.width, icon.height), (size, size));
+        assert_eq!(icon.rgba.len(), (size * size * 4) as usize);
+        // Transparent corner: the round mark, not a square tile.
+        assert_eq!(icon.rgba[3], 0);
+    }
     fn host(ip: &str, responding: bool, open: Vec<u16>, hostname: &str) -> scan::Host {
         scan::Host {
             ip: ip.parse().unwrap(),
