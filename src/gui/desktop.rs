@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 /// The AppUserModelID of the window and of the installer's Start menu and desktop shortcuts
 /// (installer/network-scope.iss): taskbar pins and the running window group under it. The same
-/// name as the winget package identifier.
+/// name as the winget package identifier. Outside Windows only the installer test reads it.
+#[cfg(any(windows, test))]
 pub const APP_USER_MODEL_ID: &str = "Sparkz400.NetworkScope";
 
 /// The smallest window (also the viewport's minimum size).
