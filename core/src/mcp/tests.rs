@@ -1607,8 +1607,19 @@ fn a_background_scan_answers_at_once_and_reports_its_summary_when_done() {
     let idle = ok(&mut server, "scan_status", json!({}), "mcp-scan-status");
     assert_eq!(idle["state"], "idle");
     // 30 closed ports plus the open one at the 100 ms spacing: a few seconds, long enough to
-    // still be running for the next two calls.
-    let ports = format!("20000-20029,{port}");
+    // still be running for the next two calls. The closed ports are ones the OS just handed out
+    // and released, not a fixed range: a fixed range can hold a local service (on an engineering
+    // PC, WinCC listens on 20008-20010).
+    let closed: Vec<std::net::TcpListener> = (0..30)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let mut ports: Vec<String> = closed
+        .iter()
+        .map(|l| l.local_addr().unwrap().port().to_string())
+        .collect();
+    drop(closed);
+    ports.push(port.to_string());
+    let ports = ports.join(",");
     let started = Instant::now();
     let status = ok(
         &mut server,
