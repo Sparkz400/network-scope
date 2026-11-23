@@ -26,14 +26,50 @@ const WIDTH: f32 = 172.0;
 const EAGER_LIMIT: usize = 4096;
 
 impl Scanner {
+    /// Whether findings and devices may be worked out without the user asking for them: no
+    /// scan or capture runs and the data is small ([`EAGER_LIMIT`]).
+    pub(super) fn eager(&self) -> bool {
+        !self.live()
+            && !self.ot.running()
+            && self.results.len() + self.observations.len() <= EAGER_LIMIT
+    }
+
+    /// The findings of the data on screen, worked out now when that is cheap. False when they
+    /// are not up to date (a large scan whose Findings page was not opened, or a running scan).
+    pub(super) fn fresh_findings(&mut self) -> bool {
+        if self.eager() {
+            self.ensure_findings();
+        }
+        self.findings.generation == Some(self.generation)
+    }
+
+    /// The worst finding per address, when the findings are up to date (see [`Self::fresh_findings`]).
+    pub(super) fn ensure_risk_map(&mut self) {
+        if self.fresh_findings() && self.risk_map.generation != Some(self.generation) {
+            let map = tables::risk_by_ip(&self.findings.value);
+            self.risk_map.set(self.generation, map);
+        }
+    }
+
+    /// The host name of every address that has one, for the Findings page.
+    pub(super) fn ensure_hostnames(&mut self) {
+        if self.hostnames.stale(self.generation, self.live()) {
+            let names = self
+                .results
+                .iter()
+                .filter(|h| !h.hostname.is_empty())
+                .map(|h| (h.ip, h.hostname.clone()))
+                .collect();
+            self.hostnames.set(self.generation, names);
+        }
+    }
+
     /// The count shown next to a page name, and its colour. Devices and findings are worked
-    /// out here only while no scan or capture runs and the data is small ([`EAGER_LIMIT`]); a
-    /// count that does not match the data on screen is not shown.
+    /// out here only when [`Self::eager`] allows it; a count that does not match the data on
+    /// screen is not shown.
     fn badge(&mut self, view: MainView) -> Option<(String, Option<Color32>)> {
         let dark = self.saved.dark;
-        let eager = !self.live()
-            && !self.ot.running()
-            && self.results.len() + self.observations.len() <= EAGER_LIMIT;
+        let eager = self.eager();
         match view {
             MainView::Hosts => {
                 (!self.results.is_empty()).then(|| (self.responding.to_string(), None))

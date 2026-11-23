@@ -669,3 +669,17 @@ Updates || Aktualisierungen
 Close || Schließen
 Close the host details (Esc) || Host-Details schließen (Esc)
 Close the host details || Host-Details schließen
+
+# Hosts table columns, grouped findings and the sections of the host details (Phase 3)
+Columns || Spalten
+The worst finding of the host. Large scans: open the Findings page once to fill it. || Der schwerste Befund des Hosts. Bei großen Scans füllt sich die Spalte, sobald die Seite Befunde einmal geöffnet wurde.
+Group by finding || Nach Befund gruppieren
+One row per finding with the hosts it affects. Click a row to list its hosts. || Eine Zeile je Befund mit den betroffenen Hosts. Ein Klick auf die Zeile listet ihre Hosts auf.
+Manufacturer: {} || Hersteller: {}
+Findings ({}) || Befunde ({})
+Open the Findings page to work out the findings of this scan. || Öffnen Sie die Seite Befunde, um die Befunde dieses Scans zu ermitteln.
+No findings for this host. || Keine Befunde für diesen Host.
+Services ({}) || Dienste ({})
+All identity fields ({}) || Alle Identitätsfelder ({})
+The hosts of: {} || Die Hosts von: {}
+Show all findings || Alle Befunde anzeigen

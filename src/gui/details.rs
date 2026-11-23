@@ -6,9 +6,30 @@ impl Scanner {
         let Some(ip) = self.selected else {
             return;
         };
+        // Worked out now only when that is cheap (see `fresh_findings`).
+        let fresh = self.fresh_findings();
         let Some(host) = self.results.iter().find(|h| h.ip == ip) else {
             return;
         };
+        let host_findings: Vec<&risk::Finding> = if fresh {
+            self.findings.value.iter().filter(|f| f.ip == ip).collect()
+        } else {
+            vec![]
+        };
+        // The open ports with the service found on each (`svc.<port>` identity fields).
+        let services: Vec<(&str, &String)> = host
+            .identity
+            .iter()
+            .filter_map(|(k, v)| {
+                k.strip_prefix("svc.")
+                    .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                    .map(|p| (p, v))
+            })
+            .collect();
+        let starred = self
+            .saved
+            .starred
+            .contains(&convenience::favorite_key(host));
         let (mut test, mut apply, mut discard, mut timeline) = (None, false, false, false);
         let mut open = true;
         let mut menu_action = None;
@@ -56,6 +77,9 @@ impl Scanner {
                         &host.mac
                     }
                 ));
+                if let Some(vendor) = host.identity.get("mac.vendor") {
+                    ui.label(tr!("Manufacturer: {}", vendor));
+                }
                 // The conclusions with their confidence; hover for the reasons.
                 for (label, key, prefix) in [
                     (tr!("OS"), "os.guess", "os"),
@@ -94,15 +118,6 @@ impl Scanner {
                             .join(" > ")
                     ));
                 }
-                if !host.identity.is_empty() {
-                    egui::ScrollArea::vertical()
-                        .max_height(180.0)
-                        .show(ui, |ui| {
-                            for (key, value) in &host.identity {
-                                ui.label(format!("{key}: {value}"));
-                            }
-                        });
-                }
                 if host.ports_checked {
                     ui.label(tr!(
                         "Closed: {}   No reply: {}",
@@ -129,6 +144,48 @@ impl Scanner {
                 for error in &host.errors {
                     ui.colored_label(Color32::from_rgb(205, 70, 70), error);
                 }
+                let dark = ui.visuals().dark_mode;
+                section(ui, "details_findings", &tr!("Findings ({})", host_findings.len()), true, |ui| {
+                    if !fresh {
+                        ui.weak(tr!("Open the Findings page to work out the findings of this scan."));
+                    } else if host_findings.is_empty() {
+                        ui.weak(tr!("No findings for this host."));
+                    }
+                    for f in &host_findings {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(home::severity_color(f.severity, dark), home::severity_name(f.severity));
+                            ui.label(&f.title).on_hover_text(&f.advice);
+                            if let Some(port) = f.port {
+                                ui.weak(format!(":{port}"));
+                            }
+                        });
+                        ui.horizontal(|ui| super::windows::links(ui, f));
+                    }
+                });
+                if !services.is_empty() {
+                    section(ui, "details_services", &tr!("Services ({})", services.len()), true, |ui| {
+                        for (port, name) in &services {
+                            ui.label(format!("{port} · {name}"));
+                        }
+                    });
+                }
+                // The same actions as the right-click menu of the table row, as buttons. A plain
+                // heading, not a section: the menu closes its container after a click, and a
+                // collapsing section is one.
+                ui.add_space(4.0);
+                ui.strong(tr!("Actions"));
+                ui.horizontal_wrapped(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    let act = convenience::host_menu(ui, host, starred);
+                    menu_action = act.any().then_some(act);
+                });
+                if !host.identity.is_empty() {
+                    section(ui, "details_identity", &tr!("All identity fields ({})", host.identity.len()), false, |ui| {
+                        for (key, value) in &host.identity {
+                            ui.label(format!("{key}: {value}"));
+                        }
+                    });
+                }
                 ui.separator();
                 ui.label(tr!("Your note"));
                 // Edit a copy: viewing a host must not create an empty note.
@@ -144,17 +201,6 @@ impl Scanner {
                     set_note(&mut self.saved.notes, ip, note);
                     self.notes_generation += 1;
                 }
-                // Two rows of two, so the panel stays narrow and no button text wraps.
-                ui.horizontal(|ui| {
-                    if ui.button(tr!("Copy IP address")).clicked() {
-                        ctx.copy_text(ip.to_string());
-                    }
-                    // The same actions as the right-click menu of the table row.
-                    let starred = self.saved.starred.contains(&convenience::favorite_key(host));
-                    ui.menu_button(tr!("Actions"), |ui| {
-                        menu_action = Some(convenience::host_menu(ui, host, starred));
-                    });
-                });
                 ui.horizontal(|ui| {
                     if ui
                         .button(tr!("Timeline…"))
@@ -337,6 +383,14 @@ fn script_lines(o: &crate::script::Outcome) -> Vec<String> {
         lines.push(format!("Note / error: {n}"));
     }
     lines
+}
+
+/// A section of the host details: a bold header that opens and closes it.
+fn section(ui: &mut egui::Ui, id: &str, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
+    egui::CollapsingHeader::new(RichText::new(title).strong())
+        .id_salt(id)
+        .default_open(open)
+        .show(ui, add);
 }
 
 #[cfg(test)]

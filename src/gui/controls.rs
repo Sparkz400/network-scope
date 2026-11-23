@@ -73,14 +73,29 @@ impl Scanner {
     }
     /// The filters and the search box of the hosts table, above the table.
     pub(super) fn hosts_filters(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        // Next to the docked details in a small window the row would not fit: then it wraps,
+        // with the search box at its end instead of on the right.
+        let narrow = ui.available_width() < 640.0;
+        let mut row = |ui: &mut egui::Ui| {
             ui.selectable_value(&mut self.filter, Filter::Responding, tr!("Responding"));
             ui.selectable_value(&mut self.filter, Filter::All, tr!("All hosts"));
             ui.selectable_value(&mut self.filter, Filter::Open, tr!("Open ports"));
             ui.selectable_value(&mut self.filter, Filter::Starred, tr!("Starred ★"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.separator();
+            // Ticking a column keeps the menu open, like the menu bar.
+            egui::containers::menu::MenuButton::new(tr!("Columns"))
+                .config(menu_config())
+                .ui(ui, |ui| {
+                    let c = &mut self.saved.host_columns;
+                    ui.checkbox(&mut c.vendor, tr!("Manufacturer"));
+                    ui.checkbox(&mut c.kind, tr!("Type"));
+                    ui.checkbox(&mut c.os, tr!("OS guess"));
+                    ui.checkbox(&mut c.risk, tr!("Risk"))
+                        .on_hover_text(tr!("The worst finding of the host. Large scans: open the Findings page once to fill it."));
+                });
+            let mut search = |ui: &mut egui::Ui| {
                 // The hint text is only the "placeholder" for a screen reader: name the box.
-                let search = a11y::named(
+                let response = a11y::named(
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
                             .hint_text(tr!("Search results…"))
@@ -89,10 +104,20 @@ impl Scanner {
                     tr!("Search results…"),
                 );
                 if std::mem::take(&mut self.focus_search) {
-                    search.request_focus();
+                    response.request_focus();
                 }
-            });
-        });
+            };
+            if narrow {
+                search(ui);
+            } else {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), search);
+            }
+        };
+        if narrow {
+            ui.horizontal_wrapped(|ui| row(ui));
+        } else {
+            ui.horizontal(|ui| row(ui));
+        }
         ui.add_space(2.0);
     }
 }
