@@ -74,7 +74,7 @@ impl Scanner {
                 // Plant: nothing to scan with.
                 self.saved.preset = PLANT.into();
                 self.saved.settings.safe = true;
-                self.capture_open = true;
+                self.view = MainView::Passive;
                 self.status =
                     tr!("Plant preset: passive only. Listen with Listen (OT); no scan is started.")
                         .into();

@@ -42,9 +42,12 @@ impl Scanner {
                         egui::Button::new(RichText::new(tr!("▶ Start")).color(Color32::WHITE))
                             .fill(Color32::from_rgb(33, 105, 180)),
                     )
+                    .on_hover_text("F5")
                     .clicked()
                 {
-                    self.start();
+                    // The same command as F5 and Scan → Start scan (it shows the Hosts page).
+                    let ctx = ui.ctx().clone();
+                    self.run_command(&ctx, palette::Cmd::StartScan);
                 }
             });
             ui.horizontal(|ui| {
@@ -59,37 +62,6 @@ impl Scanner {
                     self.preset_picker(ui);
                 });
             });
-            ui.add_space(3.0);
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.view, MainView::Home, tr!("Overview"))
-                    .on_hover_text(tr!(
-                        "What changed since the last scan, the risk score and what to fix first"
-                    ));
-                ui.selectable_value(&mut self.view, MainView::Hosts, tr!("Hosts"));
-                // The filters and the search belong to the hosts table: shown only with it.
-                if self.view != MainView::Hosts {
-                    return;
-                }
-                ui.separator();
-                ui.selectable_value(&mut self.filter, Filter::Responding, tr!("Responding"));
-                ui.selectable_value(&mut self.filter, Filter::All, tr!("All hosts"));
-                ui.selectable_value(&mut self.filter, Filter::Open, tr!("Open ports"));
-                ui.selectable_value(&mut self.filter, Filter::Starred, tr!("Starred ★"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // The hint text is only the "placeholder" for a screen reader: name the box.
-                    let search = a11y::named(
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.search)
-                                .hint_text(tr!("Search results…"))
-                                .desired_width(190.0),
-                        ),
-                        tr!("Search results…"),
-                    );
-                    if std::mem::take(&mut self.focus_search) {
-                        search.request_focus();
-                    }
-                });
-            });
             if !self.error.is_empty() {
                 ui.colored_label(
                     home::severity_color(risk::Severity::Critical, ui.visuals().dark_mode),
@@ -98,6 +70,30 @@ impl Scanner {
             }
             ui.add_space(3.0);
         });
+    }
+    /// The filters and the search box of the hosts table, above the table.
+    pub(super) fn hosts_filters(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.filter, Filter::Responding, tr!("Responding"));
+            ui.selectable_value(&mut self.filter, Filter::All, tr!("All hosts"));
+            ui.selectable_value(&mut self.filter, Filter::Open, tr!("Open ports"));
+            ui.selectable_value(&mut self.filter, Filter::Starred, tr!("Starred ★"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The hint text is only the "placeholder" for a screen reader: name the box.
+                let search = a11y::named(
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text(tr!("Search results…"))
+                            .desired_width(190.0),
+                    ),
+                    tr!("Search results…"),
+                );
+                if std::mem::take(&mut self.focus_search) {
+                    search.request_focus();
+                }
+            });
+        });
+        ui.add_space(2.0);
     }
 }
 /// Menu behaviour shared by the menu bar and the favorite-addresses menu.

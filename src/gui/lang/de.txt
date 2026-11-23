@@ -664,3 +664,8 @@ Traceroute || Traceroute
 Timing and performance || Zeitverhalten und Leistung
 Scripts, rules and recording || Skripte, Regeln und Aufzeichnung
 Updates || Aktualisierungen
+
+# The sidebar and the docked host details (nav.rs, details.rs)
+Close || Schließen
+Close the host details (Esc) || Host-Details schließen (Esc)
+Close the host details || Host-Details schließen

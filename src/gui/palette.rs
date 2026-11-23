@@ -516,14 +516,14 @@ impl Scanner {
             Cmd::Hosts => self.view = MainView::Hosts,
             Cmd::Settings => self.settings_open = true,
             Cmd::Inventory => {
-                self.history_open = true;
+                self.view = MainView::Inventory;
                 self.refresh_history();
             }
-            Cmd::Map => self.topology_open = true,
-            Cmd::Findings => self.findings_open = true,
-            Cmd::Devices => self.devices_open = true,
+            Cmd::Map => self.view = MainView::Map,
+            Cmd::Findings => self.view = MainView::Findings,
+            Cmd::Devices => self.view = MainView::Devices,
             Cmd::Workbench => self.open_workbench(),
-            Cmd::Passive => self.capture_open = true,
+            Cmd::Passive => self.view = MainView::Passive,
             Cmd::About => self.about_open = true,
             Cmd::ExportCsv => self.export("csv"),
             Cmd::ExportJson => self.export("json"),

@@ -1,6 +1,8 @@
 use super::*;
 impl Scanner {
-    pub(super) fn details(&mut self, ctx: &egui::Context) {
+    /// The host details, docked on the right of the main window while a host is selected.
+    pub(super) fn details(&mut self, root: &mut egui::Ui) {
+        let ctx = &root.ctx().clone();
         let Some(ip) = self.selected else {
             return;
         };
@@ -10,14 +12,29 @@ impl Scanner {
         let (mut test, mut apply, mut discard, mut timeline) = (None, false, false, false);
         let mut open = true;
         let mut menu_action = None;
-        egui::Window::new(tr!("Host details · {}", ip))
-            .open(&mut open)
-            // 30 px above egui's default height: 0.37 widgets are taller, and the script result
-            // must stay in view.
-            .default_size(win_size([400.0, 450.0]))
-            .default_pos([24.0, 40.0])
-            .vscroll(true)
-            .show(ctx, |ui| {
+        // At most 45 % of the room next to the sidebar, so the page stays usable in a small
+        // window (800 px wide: about 280 px for the details, 340 px for the page).
+        let max = ((ctx.content_rect().width() - 172.0) * 0.45).max(220.0);
+        egui::Panel::right("host_details")
+            .resizable(true)
+            .default_size(330.0_f32.min(max))
+            .size_range(220.0..=max)
+            .show(root, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.strong(tr!("Host details · {}", ip));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(tr!("Close"))
+                            .on_hover_text(tr!("Close the host details (Esc)"))
+                            .clicked()
+                        {
+                            open = false;
+                        }
+                    });
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().id_salt("host_details").show(ui, |ui| {
                 ui.label(tr!("Status: {}", host_status(host)));
                 ui.label(tr!("Ping: {}", ping_text(host.ping)));
                 if let Some(ttl) = host.ttl {
@@ -127,7 +144,8 @@ impl Scanner {
                     set_note(&mut self.saved.notes, ip, note);
                     self.notes_generation += 1;
                 }
-                ui.horizontal_wrapped(|ui| {
+                // Two rows of two, so the panel stays narrow and no button text wraps.
+                ui.horizontal(|ui| {
                     if ui.button(tr!("Copy IP address")).clicked() {
                         ctx.copy_text(ip.to_string());
                     }
@@ -136,6 +154,8 @@ impl Scanner {
                     ui.menu_button(tr!("Actions"), |ui| {
                         menu_action = Some(convenience::host_menu(ui, host, starred));
                     });
+                });
+                ui.horizontal(|ui| {
                     if ui
                         .button(tr!("Timeline…"))
                         .on_hover_text(
@@ -220,6 +240,7 @@ impl Scanner {
                         }
                     }
                 }
+                });
             });
         if let Some(act) = menu_action
             && let Some(host) = self.results.iter().find(|h| h.ip == ip).cloned()

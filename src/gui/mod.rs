@@ -8,6 +8,7 @@ mod home;
 mod i18n;
 mod map;
 mod menu;
+mod nav;
 mod ot;
 mod palette;
 mod preset_ui;
@@ -393,12 +394,18 @@ enum Filter {
     Open,
     Starred,
 }
-/// The two main views: the "what changed" overview and the table of hosts.
+/// The pages of the main window, chosen in the sidebar: the "what changed" overview, the hosts
+/// table and the pages that were separate windows before.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 enum MainView {
     #[default]
     Home,
     Hosts,
+    Devices,
+    Findings,
+    Map,
+    Passive,
+    Inventory,
 }
 /// The documentation page name of a finding rule id (`telnet-open`). The run-time id families
 /// have one shared page each (`cve-...`, `script-...`); `cve-cve-2020-0796` has its own.
@@ -489,11 +496,6 @@ struct Scanner {
     screenshot_image: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<egui::ColorImage>>>>,
     sort_column: usize,
     sort_reverse: bool,
-    history_open: bool,
-    topology_open: bool,
-    devices_open: bool,
-    findings_open: bool,
-    capture_open: bool,
     history: Vec<store::Entry>,
     compare_a: Option<i64>,
     compare_b: Option<i64>,
@@ -633,11 +635,6 @@ impl Scanner {
             window_origin: egui::pos2(16.0, 16.0),
             sort_column: 0,
             sort_reverse: false,
-            history_open: false,
-            topology_open: false,
-            devices_open: false,
-            findings_open: false,
-            capture_open: false,
             history: vec![],
             compare_a: None,
             compare_b: None,
@@ -988,7 +985,7 @@ impl Scanner {
             )
             .into();
             if !unattended {
-                self.capture_open = true;
+                self.view = MainView::Passive;
             }
             return;
         }
@@ -1517,13 +1514,16 @@ impl eframe::App for Scanner {
         });
         self.refresh_rows();
         self.table_keys(ctx);
-        self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
         let mut menu: Option<(usize, convenience::MenuAction)> = None;
+        self.sidebar(ui);
+        // Floating windows (Settings, the workbench, ...) open next to the sidebar.
+        self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
+        self.details(ui);
         egui::CentralPanel::default().show(ui, |ui| {
-            if self.view == MainView::Home {
-                self.home_view(ui);
+            if self.page_ui(ui) {
                 return;
             }
+            self.hosts_filters(ui);
             let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
             let scroll_row = self.scroll_to.take().and_then(|ip| {
@@ -1677,14 +1677,8 @@ impl eframe::App for Scanner {
         }
         self.settings(ctx);
         self.update_window(ctx);
-        self.details(ctx);
         self.timeline_window(ctx);
         self.workbench_window(ctx);
-        self.inventory_window(ctx);
-        self.map_window(ctx);
-        self.devices_window(ctx);
-        self.findings_window(ctx);
-        self.capture_window(ctx);
         self.scope_dialog(ctx);
         self.unsafe_dialog(ctx);
         self.shortcuts_window(ctx);
