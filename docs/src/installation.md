@@ -65,7 +65,7 @@ libpcap is loaded at run time from `libpcap.A.dylib`/`libpcap.dylib` (macOS) or 
 
 ## Linux and macOS binaries
 
-Release archives `network-scope-<version>-linux-x86_64.tar.gz` and `network-scope-<version>-macos-arm64.tar.gz` contain `network-scope` and `network-scope-cli`. The Linux and macOS platform glue (routes, neighbor states, raw sockets) is not compiled on the development machine; CI is its first compile, and it has not been exercised on a real network.
+Release archives `network-scope-<version>-linux-x86_64.tar.gz` and `network-scope-<version>-macos-arm64.tar.gz` contain `network-scope` and `network-scope-cli`. On macOS, `network-scope-<version>-macos-arm64-app.zip` holds the desktop app as `Network Scope.app` (with its icon in Finder, the Dock and Launchpad): unzip it and drag it to Applications. macOS asks once for Local Network access before the first scan. The Linux and macOS platform glue (routes, neighbor states, raw sockets) is not compiled on the development machine; CI is its first compile, and it has not been exercised on a real network.
 
 ## Container image
 

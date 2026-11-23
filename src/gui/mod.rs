@@ -2,6 +2,7 @@ mod a11y;
 mod controls;
 mod convenience;
 mod demo;
+mod desktop;
 mod details;
 mod home;
 mod i18n;
@@ -64,6 +65,8 @@ struct Saved {
     /// Adaptive TCP connect timing became the default after these preferences could already
     /// hold its old value; set once the saved settings were switched over (see [`Saved::migrate`]).
     adaptive_tcp_migrated: bool,
+    /// Size, position and maximized state of the window when it was last open.
+    window: desktop::WindowState,
 }
 impl Saved {
     /// One-time changes to preferences saved by an older version. The saved `false` for
@@ -99,6 +102,13 @@ fn saved_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("NetworkScope")
         .join("preferences.json")
+}
+/// The saved preferences; the defaults when there is no file or it does not parse.
+fn load_saved() -> Saved {
+    std::fs::read(saved_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 fn write_prefs(bytes: &[u8]) -> Result<(), String> {
     let path = saved_path();
@@ -576,19 +586,16 @@ struct ScriptTest {
     result: Option<Result<crate::script::Outcome, String>>,
 }
 impl Scanner {
-    fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
+    /// `saved`: the preferences from [`load_saved`] (the defaults for a screenshot).
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        screenshot: Option<PathBuf>,
+        mut saved: Saved,
+    ) -> Self {
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
         cc.egui_ctx.set_global_style(style);
-        let mut saved: Saved = if screenshot.is_none() {
-            std::fs::read(saved_path())
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or_default()
-        } else {
-            Saved::default()
-        };
         prune_notes(&mut saved.notes);
         // Taken before the migration, so a migrated file differs and is written right away.
         let prefs_written = saved.to_disk();
@@ -1418,6 +1425,11 @@ impl eframe::App for Scanner {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         windows::set_dark_mode(ui.visuals().dark_mode);
+        if self.screenshot.is_none() {
+            let zoom = ctx.zoom_factor();
+            let window = &mut self.saved.window;
+            ctx.input(|i| window.observe(i.viewport(), i.content_rect().size(), zoom));
+        }
         // A link from the last frame that could not be opened.
         if let Some(e) = convenience::take_link_error() {
             self.error = e;
@@ -1958,28 +1970,47 @@ fn window_icon() -> egui::IconData {
 }
 
 pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
+    // Before any window exists: the taskbar groups the window under this ID.
+    #[cfg(windows)]
+    desktop::set_app_user_model_id();
+    // One window per user session; a screenshot run is a self-test and always starts.
+    #[cfg(windows)]
+    let _instance = match screenshot {
+        Some(_) => None,
+        None => match desktop::claim_single_instance() {
+            desktop::Instance::Another => return Ok(()),
+            desktop::Instance::First(guard) => Some(guard),
+        },
+    };
+    let saved = if screenshot.is_none() {
+        load_saved()
+    } else {
+        Saved::default()
+    };
+    // Screenshot states show the larger windows; the plain screenshot keeps the default.
+    let size = if screenshot.is_some()
+        && std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE").is_ok_and(|s| !s.contains("-small"))
+    {
+        [1100.0, 720.0]
+    } else {
+        desktop::DEFAULT_SIZE
+    };
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size(size)
+        .with_min_inner_size(desktop::MIN_SIZE)
+        // Shown in the title bar and taskbar; without it eframe uses the egui logo.
+        .with_icon(window_icon())
+        // The desktop file name and Wayland/X11 application ID on Linux.
+        .with_app_id("network-scope");
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            // Screenshot states show the larger windows; the plain screenshot keeps the default.
-            .with_inner_size(
-                if screenshot.is_some()
-                    && std::env::var("NETWORK_SCOPE_SCREENSHOT_STATE")
-                        .is_ok_and(|s| !s.contains("-small"))
-                {
-                    [1100.0, 720.0]
-                } else {
-                    [800.0, 450.0]
-                },
-            )
-            .with_min_inner_size([700.0, 400.0])
-            // Shown in the title bar and taskbar; without it eframe uses the egui logo.
-            .with_icon(window_icon()),
+        // The last size and place of the window (nothing saved yet: the defaults above).
+        viewport: saved.window.apply(viewport),
         ..Default::default()
     };
     eframe::run_native(
         "Network Scope",
         options,
-        Box::new(move |cc| Ok(Box::new(Scanner::new(cc, screenshot)))),
+        Box::new(move |cc| Ok(Box::new(Scanner::new(cc, screenshot, saved)))),
     )
 }
 

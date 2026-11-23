@@ -1,4 +1,5 @@
-"""Renders the application icon: icon.svg / icon-small.svg -> network-scope.ico, icon-256.png, icon-48.png.
+"""Renders the application icon: icon.svg / icon-small.svg -> network-scope.ico (Windows),
+network-scope.icns (the macOS app bundle, packaging/macos/), icon-256.png and icon-48.png.
 
 The outputs are committed, so a normal build needs neither this script nor its tools. Run it
 after changing either SVG (Windows, with Microsoft Edge or Google Chrome and Pillow installed):
@@ -9,6 +10,7 @@ The browser renders each SVG at 1024 px with a transparent background; Pillow sc
 Sizes up to 32 px come from icon-small.svg (thicker lines, fewer details), the rest from icon.svg.
 icon-48.png (icon-small.svg) is the window icon on Windows, which scales one image down to the
 16 px title bar and 24 px taskbar; icon-256.png is the window icon elsewhere (macOS dock, Linux).
+The .icns keeps the margin of Apple's icon grid (the mark is 824 of 1024 px), like other Dock icons.
 """
 
 import os
@@ -93,7 +95,24 @@ def main() -> None:
     )
     biggest.save(HERE / "icon-256.png", optimize=True)
     small.resize((48, 48), Image.LANCZOS).save(HERE / "icon-48.png", optimize=True)
-    print("wrote network-scope.ico, icon-256.png and icon-48.png to", HERE)
+    write_icns(large, small)
+    print("wrote network-scope.ico, network-scope.icns, icon-256.png and icon-48.png to", HERE)
+
+
+def write_icns(large: Image.Image, small: Image.Image) -> None:
+    """The macOS icon: 16 to 1024 px, the mark at 824/1024 of the canvas (Apple's icon grid)."""
+
+    def padded(source: Image.Image, size: int) -> Image.Image:
+        inner = round(size * 824 / 1024)
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        offset = (size - inner) // 2
+        canvas.alpha_composite(source.resize((inner, inner), Image.LANCZOS), (offset, offset))
+        return canvas
+
+    # Pillow takes, for each size of the format, the appended image of that size if there is one.
+    frames = [padded(small, s) for s in (16, 32)]
+    frames += [padded(large, s) for s in (64, 128, 256, 512)]
+    padded(large, 1024).save(HERE / "network-scope.icns", format="ICNS", append_images=frames)
 
 
 if __name__ == "__main__":

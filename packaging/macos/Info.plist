@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Info.plist of "Network Scope.app"; make_app.sh replaces @VERSION@. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Network Scope</string>
+	<key>CFBundleName</key>
+	<string>Network Scope</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.sparkz400.NetworkScope</string>
+	<key>CFBundleExecutable</key>
+	<string>network-scope</string>
+	<key>CFBundleIconFile</key>
+	<string>network-scope</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<!-- The release binary is arm64 only (macOS 11 is the oldest release on Apple silicon). -->
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- Shown in the Local Network permission prompt (macOS 15 and later) before the first scan. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Network Scope scans and listens on the networks you choose to find devices and services.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT License</string>
+</dict>
+</plist>

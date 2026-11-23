@@ -55,6 +55,20 @@ jobs:
       # for every package (no dev-dependency of the two default members turns one on), so the
       # library and both binaries the tests built are the ones the lab steps below run.
       - run: cargo build --release --locked
+      # The bundle the release signs (packaging/macos/make_app.sh), ad-hoc signed here: valid
+      # plist, icon in place, a bundle signature that verifies, and the bundled binary runs.
+      - name: App bundle (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh packaging/macos/make_app.sh target/release/network-scope 0.0.0-ci "$RUNNER_TEMP/app"
+          app="$RUNNER_TEMP/app/Network Scope.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")" = network-scope
+          test -s "$app/Contents/Resources/network-scope.icns"
+          codesign --force --sign - "$app"
+          codesign --verify --strict --deep --verbose=2 "$app"
+          "$app/Contents/MacOS/network-scope" --version
       # Roadmap L72: the real wire capture of `scan --record-wire` with libpcap on the loopback
       # interface (Linux only; capturing needs root, so the already built test binary and the CLI
       # run under sudo). The test is ignored by default because it needs a capture driver.
