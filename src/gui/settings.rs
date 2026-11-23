@@ -25,7 +25,9 @@ impl Scanner {
         let mut apply_cves = false;
         let mut language = None;
         let mut dark = None;
-        egui::Window::new(tr!("Scan settings")).vscroll(true)
+        let schedule = std::mem::take(&mut self.scroll_to_schedule);
+        let appearance = std::mem::take(&mut self.scroll_to_appearance);
+        egui::Window::new(tr!("Settings")).vscroll(true)
             .open(&mut self.settings_open)
             .default_size(default_win_size())
             .default_pos(self.window_origin)
@@ -33,247 +35,256 @@ impl Scanner {
             .show(ctx, |ui| {
                 ui.add_enabled_ui(self.run.is_none(), |ui| {
                     let s = &mut self.saved.settings;
-                    egui::Grid::new("settings_grid")
-                        .num_columns(2)
-                        .spacing([24.0, 10.0])
-                        .show(ui, |ui| {
-                            // The label is the accessible name of the field next to it.
-                            labelled_row(ui, tr!("Concurrent hosts"), egui::DragValue::new(&mut s.workers).range(1..=4096));
-                            labelled_row(ui, tr!("Ping probes"), egui::DragValue::new(&mut s.probes).range(1..=10));
-                            labelled_row(
-                                ui,
-                                tr!("Ping timeout"),
-                                egui::DragValue::new(&mut s.ping_timeout).range(100..=10000).suffix(" ms"),
-                            );
-                            labelled_row(
-                                ui,
-                                tr!("Port timeout"),
-                                egui::DragValue::new(&mut s.port_timeout).range(100..=10000).suffix(" ms"),
-                            );
-                            labelled_row(
-                                ui,
-                                tr!("Minimum port timeout"),
-                                egui::DragValue::new(&mut s.minimum_timeout).range(1..=s.port_timeout).suffix(" ms"),
-                            );
-                            labelled_row(
-                                ui,
-                                tr!("Probe spacing (Safe Mode)"),
-                                egui::DragValue::new(&mut s.delay).range(0..=1000).suffix(" ms"),
-                            );
-                            labelled_row(ui, tr!("Port probes per host"), egui::DragValue::new(&mut s.port_parallel).range(1..=1024));
-                            labelled_row(ui, tr!("Retries for silent ports"), egui::DragValue::new(&mut s.retries).range(0..=5));
-                            labelled_row(
-                                ui,
-                                tr!("Rate cap (0 = none)"),
-                                egui::DragValue::new(&mut s.max_rate).range(0..=1_000_000).suffix(" pps"),
-                            );
-                        });
-                    ui.separator();
-                    ui.checkbox(
-                        &mut s.safe,
-                        tr!("Safe Mode: max. 8 hosts, 100 ms probe spacing, no SYN, no ARP sweep, ICMP traceroute"),
-                    );
-                    ui.checkbox(
-                        &mut s.arp,
-                        tr!("ARP discovery even without a ping response (Windows LAN)"),
-                    );
-                    ui.add_enabled(
-                        !s.safe,
-                        egui::Checkbox::new(
-                            &mut s.arp_sweep,
-                            tr!("Fast ARP sweep through the capture interface (needs Npcap)"),
-                        ),
-                    )
-                    .on_disabled_hover_text(tr!("Not in Safe Mode"));
-                    ui.checkbox(
-                        &mut s.ot,
-                        tr!("Read industrial device identities (standard ports + BACnet UDP)"),
-                    );
-                    if s.ot {
-                        if ui.button(tr!("Use industrial ports")).clicked() {
-                            s.ports = "80,443,102,502,1883,1911,4840,9600,44818".into();
-                            s.scan_nonresponders = true;
+                    section(ui, "settings_discovery", tr!("Safe Mode and discovery"), true, false, |ui| {
+                        ui.checkbox(
+                            &mut s.safe,
+                            tr!("Safe Mode: max. 8 hosts, 100 ms probe spacing, no SYN, no ARP sweep, ICMP traceroute"),
+                        );
+                        ui.checkbox(&mut s.tcp_only, tr!("TCP only (skip ICMP ping)"));
+                        ui.checkbox(
+                            &mut s.scan_nonresponders,
+                            tr!("Check ports even when ping gets no reply"),
+                        );
+                        ui.checkbox(
+                            &mut s.arp,
+                            tr!("ARP discovery even without a ping response (Windows LAN)"),
+                        );
+                        ui.add_enabled(
+                            !s.safe,
+                            egui::Checkbox::new(
+                                &mut s.arp_sweep,
+                                tr!("Fast ARP sweep through the capture interface (needs Npcap)"),
+                            ),
+                        )
+                        .on_disabled_hover_text(tr!("Not in Safe Mode"));
+                        ui.add_enabled(
+                            !s.safe,
+                            egui::Checkbox::new(&mut s.syn, tr!("SYN via Npcap; fallback to TCP connect")),
+                        );
+                        ui.add_enabled(
+                            !s.safe && s.syn,
+                            egui::Checkbox::new(
+                                &mut s.syn_adaptive,
+                                tr!("Adaptive SYN timing (RTT-based timeouts, slows down on packet loss)"),
+                            ),
+                        );
+                        if s.syn || s.arp_sweep {
+                            ui.label(tr!("Configure interface, source IPv4 and MAC in Passive discovery / OT."));
                         }
-                        ui.horizontal(|ui| {
-                            let unit = ui.label(tr!("Modbus unit"));
-                            ui.add(egui::DragValue::new(&mut s.modbus_unit)).labelled_by(unit.id);
-                            let rack = ui.label(tr!("S7 rack / slot"));
-                            ui.add(egui::DragValue::new(&mut s.s7_rack).range(0..=7)).labelled_by(rack.id);
-                            a11y::named(
-                                ui.add(egui::DragValue::new(&mut s.s7_slot).range(0..=31)),
-                                tr!("S7 slot"),
-                            );
-                        });
-                    }
-                    ui.add_enabled(
-                        !s.safe,
-                        egui::Checkbox::new(&mut s.syn, tr!("SYN via Npcap; fallback to TCP connect")),
-                    );
-                    ui.add_enabled(
-                        !s.safe && s.syn,
-                        egui::Checkbox::new(
-                            &mut s.syn_adaptive,
-                            tr!("Adaptive SYN timing (RTT-based timeouts, slows down on packet loss)"),
-                        ),
-                    );
-                    ui.add_enabled(
-                        !s.safe && s.services,
-                        egui::Checkbox::new(
-                            &mut s.jarm,
-                            tr!("JARM TLS fingerprint (10 extra connections per TLS port; needs service detection)"),
-                        ),
-                    )
-                    .on_disabled_hover_text(tr!("Needs service detection, and not in Safe Mode"));
-                    ui.add_enabled(
-                        !s.safe && s.services,
-                        egui::Checkbox::new(
-                            &mut s.favicon,
-                            tr!("Favicon hash (one GET /favicon.ico per web port; not on industrial hosts)"),
-                        ),
-                    )
-                    .on_disabled_hover_text(tr!("Needs service detection, and not in Safe Mode"));
-                    if s.syn || s.arp_sweep {
-                        ui.label(tr!("Configure interface, source IPv4 and MAC in Passive / DCP."));
-                    }
-                    ui.separator();
-                    ui.checkbox(
-                        &mut s.services,
-                        tr!("Identify services on open TCP ports (banners, HTTP, TLS certificate/ciphers, SMB, RDP, databases)"),
-                    );
-                    ui.checkbox(&mut s.udp, tr!("Probe UDP services (DNS, DHCP, NTP, NetBIOS, SNMP public, SSDP, mDNS)"));
-                    if s.udp {
-                        ui.horizontal(|ui| {
-                            let name = ui.label(tr!("UDP ports"));
-                            ui.add(egui::TextEdit::singleline(&mut s.udp_ports).desired_width(190.0))
-                                .labelled_by(name.id);
-                        });
-                    }
-                    ui.checkbox(
-                        &mut s.ipv6_discover,
-                        tr!("Find IPv6 hosts on the local link after the scan (one multicast ping per interface)"),
-                    )
-                    .on_hover_text(tr!(
-                        "Sends one ICMPv6 echo request to ff02::1 per network interface with hop limit 1, also in Safe Mode, then reads the system's IPv6 neighbor list and joins it to the scanned hosts by MAC address."
-                    ));
-                    snmp_section(ui, s);
-                    ui.horizontal(|ui| {
-                        let label = ui.label(tr!("Script (.rhai file or folder)"));
-                        ui.add(egui::TextEdit::singleline(&mut s.scripts).desired_width(220.0))
-                            .labelled_by(label.id);
+                        ui.checkbox(
+                            &mut s.ipv6_discover,
+                            tr!("Find IPv6 hosts on the local link after the scan (one multicast ping per interface)"),
+                        )
+                        .on_hover_text(tr!(
+                            "Sends one ICMPv6 echo request to ff02::1 per network interface with hop limit 1, also in Safe Mode, then reads the system's IPv6 neighbor list and joins it to the scanned hosts by MAC address."
+                        ));
+                        ui.checkbox(
+                            &mut s.skip_edges,
+                            tr!("Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255)"),
+                        );
+                        ui.checkbox(&mut s.dns, tr!("Resolve hostnames (system DNS)"));
+                        ui.checkbox(&mut s.mac, tr!("Look up MAC addresses (local IPv4 network)"));
+                        ui.checkbox(
+                            &mut self.saved.randomize,
+                            tr!("Probe the addresses in random order"),
+                        )
+                        .on_hover_text(tr!(
+                            "Only the order changes, not which addresses or probes. Spreads the load over the network instead of walking it address by address."
+                        ));
                     });
-                    let cves_label = ui.label(tr!("CVE rules file (added to the built-in rules)"));
-                    ui.horizontal(|ui| {
-                        let edit = ui
-                            .add(
-                                egui::TextEdit::singleline(&mut self.saved.cves_file)
-                                    .hint_text("cves.json")
-                                    .desired_width(190.0),
-                            )
-                            .labelled_by(cves_label.id);
-                        // Enter or leaving the field loads the file, so a path is not
-                        // parsed on every keystroke.
-                        if edit.lost_focus() {
-                            apply_cves = true;
-                        }
-                        if ui.button(tr!("Browse…")).clicked()
-                            && let Some(path) = rfd::FileDialog::new()
-                                .add_filter("CVE rules", &["json"])
-                                .pick_file()
-                        {
-                            self.saved.cves_file = path.display().to_string();
-                            apply_cves = true;
-                        }
-                        if !self.saved.cves_file.is_empty() && ui.button(tr!("Clear")).clicked() {
-                            self.saved.cves_file.clear();
-                            apply_cves = true;
-                        }
-                    });
-                    if !self.cves_error.is_empty() {
-                        ui.scope(|ui| {
-                            ui.set_max_width(360.0);
-                            ui.colored_label(
-                                egui::Color32::from_rgb(205, 70, 70),
-                                tr!("{} (previous rules stay active)", self.cves_error),
-                            );
-                        });
-                    }
-                    ui.checkbox(&mut s.os_detect, tr!("Guess OS, manufacturer and device type"));
-                    ui.checkbox(&mut s.trace, tr!("Record router path to each responding host (traceroute)"));
-                    if s.trace {
-                        ui.horizontal(|ui| {
-                            let hops = ui.label(tr!("Max hops"));
-                            ui.add(egui::DragValue::new(&mut s.trace_hops).range(1..=64))
-                                .labelled_by(hops.id);
-                            ui.label(tr!("Method"));
-                            trace_method_combo(ui, s.safe, &mut s.trace_method);
-                        });
-                        if s.trace_method == TraceMethod::Tcp {
+                    section(ui, "settings_services", tr!("Services and identification"), false, false, |ui| {
+                        ui.checkbox(
+                            &mut s.services,
+                            tr!("Identify services on open TCP ports (banners, HTTP, TLS certificate/ciphers, SMB, RDP, databases)"),
+                        );
+                        ui.checkbox(&mut s.udp, tr!("Probe UDP services (DNS, DHCP, NTP, NetBIOS, SNMP public, SSDP, mDNS)"));
+                        if s.udp {
                             ui.horizontal(|ui| {
-                                let port = ui.label(tr!("TCP port"));
-                                ui.add_enabled(
-                                    !s.safe,
-                                    egui::DragValue::new(&mut s.trace_port).range(0..=65535),
-                                )
-                                .labelled_by(port.id);
-                                ui.label(tr!("0 = first open port; OT and printer ports are never used"));
+                                let name = ui.label(tr!("UDP ports"));
+                                ui.add(egui::TextEdit::singleline(&mut s.udp_ports).desired_width(190.0))
+                                    .labelled_by(name.id);
                             });
-                            if s.trace_port != 0
-                                && !crate::trace::trace_port_allowed(s.trace_port)
-                            {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(205, 70, 70),
-                                    tr!("OT/printer port: ICMP will be used instead"),
+                        }
+                        ui.checkbox(&mut s.os_detect, tr!("Guess OS, manufacturer and device type"));
+                        ui.add_enabled(
+                            !s.safe && s.services,
+                            egui::Checkbox::new(
+                                &mut s.jarm,
+                                tr!("JARM TLS fingerprint (10 extra connections per TLS port; needs service detection)"),
+                            ),
+                        )
+                        .on_disabled_hover_text(tr!("Needs service detection, and not in Safe Mode"));
+                        ui.add_enabled(
+                            !s.safe && s.services,
+                            egui::Checkbox::new(
+                                &mut s.favicon,
+                                tr!("Favicon hash (one GET /favicon.ico per web port; not on industrial hosts)"),
+                            ),
+                        )
+                        .on_disabled_hover_text(tr!("Needs service detection, and not in Safe Mode"));
+                    });
+                    let ot_open = s.ot;
+                    section(ui, "settings_ot", tr!("Industrial (OT)"), ot_open, false, |ui| {
+                        ui.checkbox(
+                            &mut s.ot,
+                            tr!("Read industrial device identities (standard ports + BACnet UDP)"),
+                        );
+                        if s.ot {
+                            if ui.button(tr!("Use industrial ports")).clicked() {
+                                s.ports = "80,443,102,502,1883,1911,4840,9600,44818".into();
+                                s.scan_nonresponders = true;
+                            }
+                            ui.horizontal(|ui| {
+                                let unit = ui.label(tr!("Modbus unit"));
+                                ui.add(egui::DragValue::new(&mut s.modbus_unit)).labelled_by(unit.id);
+                                let rack = ui.label(tr!("S7 rack / slot"));
+                                ui.add(egui::DragValue::new(&mut s.s7_rack).range(0..=7)).labelled_by(rack.id);
+                                a11y::named(
+                                    ui.add(egui::DragValue::new(&mut s.s7_slot).range(0..=31)),
+                                    tr!("S7 slot"),
                                 );
+                            });
+                        }
+                    });
+                    section(ui, "settings_snmp", tr!("SNMP (read-only)"), false, false, |ui| {
+                        snmp_section(ui, s);
+                    });
+                    let trace_open = s.trace;
+                    section(ui, "settings_trace", tr!("Traceroute"), trace_open, false, |ui| {
+                        ui.checkbox(&mut s.trace, tr!("Record router path to each responding host (traceroute)"));
+                        if s.trace {
+                            ui.horizontal(|ui| {
+                                let hops = ui.label(tr!("Max hops"));
+                                ui.add(egui::DragValue::new(&mut s.trace_hops).range(1..=64))
+                                    .labelled_by(hops.id);
+                                ui.label(tr!("Method"));
+                                trace_method_combo(ui, s.safe, &mut s.trace_method);
+                            });
+                            if s.trace_method == TraceMethod::Tcp {
+                                ui.horizontal(|ui| {
+                                    let port = ui.label(tr!("TCP port"));
+                                    ui.add_enabled(
+                                        !s.safe,
+                                        egui::DragValue::new(&mut s.trace_port).range(0..=65535),
+                                    )
+                                    .labelled_by(port.id);
+                                    ui.label(tr!("0 = first open port; OT and printer ports are never used"));
+                                });
+                                if s.trace_port != 0
+                                    && !crate::trace::trace_port_allowed(s.trace_port)
+                                {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(205, 70, 70),
+                                        tr!("OT/printer port: ICMP will be used instead"),
+                                    );
+                                }
                             }
                         }
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut s.tcp_only, tr!("TCP only (skip ICMP ping)"));
-                    ui.checkbox(
-                        &mut s.scan_nonresponders,
-                        tr!("Check ports even when ping gets no reply"),
-                    );
-                    ui.checkbox(&mut s.adaptive, tr!("Adapt port timeout to measured ping"));
-                    ui.checkbox(
-                        &mut s.tcp_adaptive,
-                        tr!("Adapt port timeout to the device's connect answers"),
-                    );
-                    ui.checkbox(
-                        &mut s.backoff,
-                        tr!("Back off when a device resets connections (lower limits for OT/printers)"),
-                    );
-                    ui.checkbox(
-                        &mut s.skip_edges,
-                        tr!("Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255)"),
-                    );
-                    ui.checkbox(&mut s.dns, tr!("Resolve hostnames (system DNS)"));
-                    ui.checkbox(&mut s.mac, tr!("Look up MAC addresses (local IPv4 network)"));
-                    ui.checkbox(
-                        &mut self.saved.randomize,
-                        tr!("Probe the addresses in random order"),
-                    )
-                    .on_hover_text(tr!(
-                        "Only the order changes, not which addresses or probes. Spreads the load over the network instead of walking it address by address."
-                    ));
-                    ui.checkbox(
-                        &mut self.saved.record_traffic,
-                        tr!("Record the scan's traffic (pcapng in NetworkScope/recordings)"),
-                    )
-                    .on_hover_text(tr!(
-                        "A wire capture of the targets while the scan runs when the capture driver allows it (Npcap/libpcap, at most 256 targets); otherwise the scan's own requests and replies, labelled as an application-level record. Sends nothing extra."
-                    ));
-                    ui.separator();
-                    ui.checkbox(
-                        &mut self.saved.check_updates,
-                        tr!("Check for updates on start (one request to GitHub; only tells you, never downloads)"),
-                    )
-                    .on_hover_text(
-                        tr!("Sends one HTTPS request to api.github.com with the user agent network-scope/<version> and no other data. Off by default."),
-                    );
-                    ui.separator();
-                    ui.label(tr!("A ping timeout does not prove a device is offline."));
-                    ui.label(tr!("Read-only queries can still affect fragile devices. Passive listening sends none."));
-                    ui.label(tr!("Pause lets active hosts finish. Stop cancels async work."));
+                    });
+                    section(ui, "settings_timing", tr!("Timing and performance"), false, false, |ui| {
+                        egui::Grid::new("settings_grid")
+                            .num_columns(2)
+                            .spacing([24.0, 10.0])
+                            .show(ui, |ui| {
+                                // The label is the accessible name of the field next to it.
+                                labelled_row(ui, tr!("Concurrent hosts"), egui::DragValue::new(&mut s.workers).range(1..=4096));
+                                labelled_row(ui, tr!("Ping probes"), egui::DragValue::new(&mut s.probes).range(1..=10));
+                                labelled_row(
+                                    ui,
+                                    tr!("Ping timeout"),
+                                    egui::DragValue::new(&mut s.ping_timeout).range(100..=10000).suffix(" ms"),
+                                );
+                                labelled_row(
+                                    ui,
+                                    tr!("Port timeout"),
+                                    egui::DragValue::new(&mut s.port_timeout).range(100..=10000).suffix(" ms"),
+                                );
+                                labelled_row(
+                                    ui,
+                                    tr!("Minimum port timeout"),
+                                    egui::DragValue::new(&mut s.minimum_timeout).range(1..=s.port_timeout).suffix(" ms"),
+                                );
+                                labelled_row(
+                                    ui,
+                                    tr!("Probe spacing (Safe Mode)"),
+                                    egui::DragValue::new(&mut s.delay).range(0..=1000).suffix(" ms"),
+                                );
+                                labelled_row(ui, tr!("Port probes per host"), egui::DragValue::new(&mut s.port_parallel).range(1..=1024));
+                                labelled_row(ui, tr!("Retries for silent ports"), egui::DragValue::new(&mut s.retries).range(0..=5));
+                                labelled_row(
+                                    ui,
+                                    tr!("Rate cap (0 = none)"),
+                                    egui::DragValue::new(&mut s.max_rate).range(0..=1_000_000).suffix(" pps"),
+                                );
+                            });
+                        ui.checkbox(&mut s.adaptive, tr!("Adapt port timeout to measured ping"));
+                        ui.checkbox(
+                            &mut s.tcp_adaptive,
+                            tr!("Adapt port timeout to the device's connect answers"),
+                        );
+                        ui.checkbox(
+                            &mut s.backoff,
+                            tr!("Back off when a device resets connections (lower limits for OT/printers)"),
+                        );
+                    });
+                    // Open when something in it is set (or a rules file failed to load).
+                    let files_open = !s.scripts.is_empty()
+                        || !self.saved.cves_file.is_empty()
+                        || self.saved.record_traffic;
+                    section(ui, "settings_files", tr!("Scripts, rules and recording"), files_open, false, |ui| {
+                        ui.horizontal(|ui| {
+                            let label = ui.label(tr!("Script (.rhai file or folder)"));
+                            ui.add(egui::TextEdit::singleline(&mut s.scripts).desired_width(220.0))
+                                .labelled_by(label.id);
+                        });
+                        let cves_label = ui.label(tr!("CVE rules file (added to the built-in rules)"));
+                        ui.horizontal(|ui| {
+                            let edit = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.saved.cves_file)
+                                        .hint_text("cves.json")
+                                        .desired_width(190.0),
+                                )
+                                .labelled_by(cves_label.id);
+                            // Enter or leaving the field loads the file, so a path is not
+                            // parsed on every keystroke.
+                            if edit.lost_focus() {
+                                apply_cves = true;
+                            }
+                            if ui.button(tr!("Browse…")).clicked()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("CVE rules", &["json"])
+                                    .pick_file()
+                            {
+                                self.saved.cves_file = path.display().to_string();
+                                apply_cves = true;
+                            }
+                            if !self.saved.cves_file.is_empty() && ui.button(tr!("Clear")).clicked() {
+                                self.saved.cves_file.clear();
+                                apply_cves = true;
+                            }
+                        });
+                        if !self.cves_error.is_empty() {
+                            ui.scope(|ui| {
+                                ui.set_max_width(360.0);
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(205, 70, 70),
+                                    tr!("{} (previous rules stay active)", self.cves_error),
+                                );
+                            });
+                        }
+                        ui.checkbox(
+                            &mut self.saved.record_traffic,
+                            tr!("Record the scan's traffic (pcapng in NetworkScope/recordings)"),
+                        )
+                        .on_hover_text(tr!(
+                            "A wire capture of the targets while the scan runs when the capture driver allows it (Npcap/libpcap, at most 256 targets); otherwise the scan's own requests and replies, labelled as an application-level record. Sends nothing extra."
+                        ));
+                    });
+                    ui.add_space(4.0);
+                    ui.weak(tr!("A ping timeout does not prove a device is offline."));
+                    ui.weak(tr!("Read-only queries can still affect fragile devices. Passive listening sends none."));
+                    ui.weak(tr!("Pause lets active hosts finish. Stop cancels async work."));
                     if ui
                         .button(tr!("Restore defaults"))
                         .on_hover_text(tr!("Keeps interface, source addresses, script and probe file"))
@@ -286,73 +297,85 @@ impl Scanner {
                 if self.run.is_some() {
                     ui.label(tr!("Settings can be changed after this scan finishes."));
                 }
-                // Appearance and language apply at once, also while a scan runs.
                 ui.separator();
-                let heading = ui.heading(tr!("Appearance and language"));
-                if std::mem::take(&mut self.scroll_to_appearance) {
-                    heading.scroll_to_me(Some(egui::Align::TOP));
-                }
-                egui::Grid::new("appearance_grid")
-                    .num_columns(2)
-                    .spacing([24.0, 10.0])
-                    .show(ui, |ui| {
-                        let language_label = ui.label(tr!("Language"));
-                        let shown = match self.saved.language.as_str() {
-                            "" | "auto" => tr!("Automatic (system language)").to_string(),
-                            code => i18n::Lang::from_locale(code).map_or(code.to_string(), |l| l.name().to_string()),
-                        };
-                        let language_box = egui::ComboBox::from_id_salt("language")
-                            .selected_text(shown)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        matches!(self.saved.language.as_str(), "" | "auto"),
-                                        tr!("Automatic (system language)"),
-                                    )
-                                    .clicked()
-                                {
-                                    language = Some("auto");
-                                }
-                                for l in i18n::LANGUAGES {
+                // Appearance, language, the schedule and the update check apply at once, also
+                // while a scan runs.
+                section(ui, "settings_appearance", tr!("Appearance and language"), true, appearance, |ui| {
+                    egui::Grid::new("appearance_grid")
+                        .num_columns(2)
+                        .spacing([24.0, 10.0])
+                        .show(ui, |ui| {
+                            let language_label = ui.label(tr!("Language"));
+                            let shown = match self.saved.language.as_str() {
+                                "" | "auto" => tr!("Automatic (system language)").to_string(),
+                                code => i18n::Lang::from_locale(code).map_or(code.to_string(), |l| l.name().to_string()),
+                            };
+                            let language_box = egui::ComboBox::from_id_salt("language")
+                                .selected_text(shown)
+                                .show_ui(ui, |ui| {
                                     if ui
-                                        .selectable_label(self.saved.language == l.code(), l.name())
+                                        .selectable_label(
+                                            matches!(self.saved.language.as_str(), "" | "auto"),
+                                            tr!("Automatic (system language)"),
+                                        )
                                         .clicked()
                                     {
-                                        language = Some(l.code());
+                                        language = Some("auto");
                                     }
+                                    for l in i18n::LANGUAGES {
+                                        if ui
+                                            .selectable_label(self.saved.language == l.code(), l.name())
+                                            .clicked()
+                                        {
+                                            language = Some(l.code());
+                                        }
+                                    }
+                                });
+                            language_box.response.labelled_by(language_label.id);
+                            ui.end_row();
+                            ui.label(tr!("Theme"));
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(!self.saved.dark, tr!("Light")).clicked() {
+                                    dark = Some(false);
+                                }
+                                if ui.selectable_label(self.saved.dark, tr!("Dark")).clicked() {
+                                    dark = Some(true);
                                 }
                             });
-                        language_box.response.labelled_by(language_label.id);
-                        ui.end_row();
-                        ui.label(tr!("Theme"));
-                        ui.horizontal(|ui| {
-                            if ui.selectable_label(!self.saved.dark, tr!("Light")).clicked() {
-                                dark = Some(false);
+                            ui.end_row();
+                            let scale_label = ui.label(tr!("Interface scale"));
+                            let mut zoom = if self.saved.zoom > 0.0 { self.saved.zoom } else { 1.0 };
+                            if ui
+                                .add(egui::Slider::new(&mut zoom, ZOOM_RANGE).fixed_decimals(2).step_by(0.05))
+                                .labelled_by(scale_label.id)
+                                .on_hover_text(tr!("On top of the system's display scaling (also Ctrl and + or -)."))
+                                .changed()
+                            {
+                                self.saved.zoom = zoom;
                             }
-                            if ui.selectable_label(self.saved.dark, tr!("Dark")).clicked() {
-                                dark = Some(true);
-                            }
+                            ui.end_row();
                         });
-                        ui.end_row();
-                        let scale_label = ui.label(tr!("Interface scale"));
-                        let mut zoom = if self.saved.zoom > 0.0 { self.saved.zoom } else { 1.0 };
-                        if ui
-                            .add(egui::Slider::new(&mut zoom, ZOOM_RANGE).fixed_decimals(2).step_by(0.05))
-                            .labelled_by(scale_label.id)
-                            .on_hover_text(tr!("On top of the system's display scaling (also Ctrl and + or -)."))
-                            .changed()
-                        {
-                            self.saved.zoom = zoom;
-                        }
-                        ui.end_row();
-                    });
-                super::scheduler::schedule_section(
-                    ui,
-                    &mut self.saved,
-                    &self.targets,
-                    &self.schedule_note,
-                    &mut self.schedule_error,
-                );
+                });
+                let schedule_open = self.saved.schedule.enabled;
+                section(ui, "settings_schedule", tr!("Scheduled scans"), schedule_open, schedule, |ui| {
+                    super::scheduler::schedule_section(
+                        ui,
+                        &mut self.saved,
+                        &self.targets,
+                        &self.schedule_note,
+                        &mut self.schedule_error,
+                    );
+                });
+                let updates_open = self.saved.check_updates;
+                section(ui, "settings_updates", tr!("Updates"), updates_open, false, |ui| {
+                    ui.checkbox(
+                        &mut self.saved.check_updates,
+                        tr!("Check for updates on start (one request to GitHub; only tells you, never downloads)"),
+                    )
+                    .on_hover_text(
+                        tr!("Sends one HTTPS request to api.github.com with the user agent network-scope/<version> and no other data. Off by default."),
+                    );
+                });
             });
         if let Some(code) = language {
             self.set_language(code);
@@ -405,6 +428,29 @@ impl Scanner {
     }
 }
 use crate::trace::TraceMethod;
+
+/// A collapsible section of the settings window. `open_by_default` is the state on first show
+/// (egui remembers it afterwards); `reveal` opens it and scrolls it into view (a menu entry that
+/// leads to this section).
+fn section(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    open_by_default: bool,
+    reveal: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let response = egui::CollapsingHeader::new(RichText::new(title).strong())
+        .id_salt(id)
+        .default_open(open_by_default)
+        .open(reveal.then_some(true))
+        .show(ui, add);
+    if reveal {
+        response
+            .header_response
+            .scroll_to_me(Some(egui::Align::TOP));
+    }
+}
 /// Which SNMP setting the form edits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SnmpMode {

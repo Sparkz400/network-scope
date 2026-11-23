@@ -21,6 +21,7 @@ pub(super) enum Cmd {
     ScanMyNetwork,
     StartScan,
     StopScan,
+    PauseScan,
     ImportList,
     Overview,
     Hosts,
@@ -38,9 +39,17 @@ pub(super) enum Cmd {
     ExportMarkdown,
     ClearResults,
     Preset(Preset),
+    Faster,
+    Thorough,
     Language(i18n::Lang),
     DarkTheme,
     LightTheme,
+    Search,
+    Schedule,
+    Palette,
+    Shortcuts,
+    Documentation,
+    Quit,
 }
 
 /// An action with its (translated) name and extra words it is found by.
@@ -64,6 +73,11 @@ pub(super) fn entries() -> Vec<Entry> {
             "run begin",
         ),
         (Cmd::StopScan, tr!("Stop the running scan"), "cancel abort"),
+        (
+            Cmd::PauseScan,
+            tr!("Pause or resume the running scan"),
+            "hold continue",
+        ),
         (
             Cmd::ImportList,
             tr!("Import an address list…"),
@@ -138,6 +152,33 @@ pub(super) fn entries() -> Vec<Entry> {
             tr!("Use the light theme"),
             "appearance colors day",
         ),
+        (
+            Cmd::Faster,
+            tr!("Make the scan faster (turns Safe Mode off)"),
+            "fast speed quick profile",
+        ),
+        (
+            Cmd::Thorough,
+            tr!("Make the scan more thorough"),
+            "slow careful probes profile",
+        ),
+        (Cmd::Search, tr!("Search the hosts table"), "find filter"),
+        (
+            Cmd::Schedule,
+            tr!("Open the scheduled scans"),
+            "timer repeat interval monitor",
+        ),
+        (
+            Cmd::Shortcuts,
+            tr!("Show the keyboard shortcuts"),
+            "keys help hotkeys",
+        ),
+        (
+            Cmd::Documentation,
+            tr!("Open the documentation"),
+            "help manual guide",
+        ),
+        (Cmd::Quit, tr!("Quit Network Scope"), "exit close"),
     ]
     .into_iter()
     .map(|(cmd, label, keywords)| Entry {
@@ -305,14 +346,7 @@ impl Scanner {
     }
 
     pub(super) fn palette_window(&mut self, ctx: &egui::Context) {
-        // The shortcut works everywhere, also while the box is open (it closes it).
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) {
-            if self.palette.open {
-                self.palette.open = false;
-            } else {
-                self.open_palette();
-            }
-        }
+        // Ctrl+K (open and close) is handled with the other shortcuts (`menu.rs`).
         if !self.palette.open {
             return;
         }
@@ -455,6 +489,9 @@ impl Scanner {
     }
 
     pub(super) fn run_command(&mut self, ctx: &egui::Context, cmd: Cmd) {
+        if !self.cmd_enabled(cmd) {
+            return;
+        }
         match cmd {
             Cmd::ScanMyNetwork => self.scan_my_network(),
             Cmd::StartScan => {
@@ -466,6 +503,12 @@ impl Scanner {
             Cmd::StopScan => {
                 if let Some(run) = &self.run {
                     run.cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            Cmd::PauseScan => {
+                if let Some(run) = &self.run {
+                    let paused = run.pause.load(Ordering::Relaxed);
+                    run.pause.store(!paused, Ordering::Relaxed);
                 }
             }
             Cmd::ImportList => self.import_address_list(),
@@ -491,10 +534,34 @@ impl Scanner {
                     self.clear();
                 }
             }
-            Cmd::Preset(p) => self.apply_preset(p),
+            Cmd::Preset(p) => self.choose_preset(p),
+            Cmd::Faster => self.choose_faster(),
+            Cmd::Thorough => self.apply_thorough(),
             Cmd::Language(l) => self.set_language(l.code()),
             Cmd::DarkTheme => self.set_dark(ctx, true),
             Cmd::LightTheme => self.set_dark(ctx, false),
+            Cmd::Search => {
+                self.view = MainView::Hosts;
+                self.focus_search = true;
+            }
+            Cmd::Schedule => {
+                self.settings_open = true;
+                self.scroll_to_schedule = true;
+            }
+            Cmd::Palette => {
+                if self.palette.open {
+                    self.palette.open = false;
+                } else {
+                    self.open_palette();
+                }
+            }
+            Cmd::Shortcuts => self.shortcuts_open = true,
+            Cmd::Documentation => {
+                if let Err(e) = convenience::open_url(menu::DOCS_URL) {
+                    self.error = e;
+                }
+            }
+            Cmd::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
 }

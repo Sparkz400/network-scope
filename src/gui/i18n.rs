@@ -378,6 +378,7 @@ mod tests {
             include_str!("ot.rs"),
             include_str!("timeline.rs"),
             include_str!("workbench.rs"),
+            include_str!("menu.rs"),
         ];
         let catalog = parse_catalog(GERMAN);
         let mut missing = vec![];

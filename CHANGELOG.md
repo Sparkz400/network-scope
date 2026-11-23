@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The window remembers its size, position and maximized state** (preferences, `window`). A position whose title bar would be on no monitor any more (a disconnected screen) is ignored; outside Windows only the size and maximized state are restored. Checked on Windows: move and resize, restart, maximize, restart, and a saved off-screen position.
 - **macOS app bundle**: releases add `network-scope-<version>-macos-arm64-app.zip` with `Network Scope.app` (`packaging/macos/make_app.sh`: `Info.plist`, the icon as `network-scope.icns` from `build_icon.py`, and a Local Network usage text). The release signs it with the hardened runtime, notarizes it with the binaries and staples the ticket; the macOS CI job assembles it, ad-hoc signs and verifies it and runs the bundled binary. Not yet tried on a Mac by hand.
 
+### Changed
+
+- **Desktop menus and controls reorganised.** The menu bar has five menus (File, Scan, View, Tools, Help) instead of two menus and eight buttons that looked the same. Menus, keyboard shortcuts and the command palette are built from one list of commands, so each entry is enabled under the same conditions everywhere. New shortcuts: `F5` start, `Shift+F5` stop, `Ctrl+O` import, `Ctrl+E` HTML report, `Ctrl+,` settings, `Ctrl+1` to `Ctrl+7` for the views and windows, `Ctrl+F` search, `F1` the shortcut list, `Ctrl+Q` quit; Up and Down choose a host in the table.
+- **One preset control.** The Standard, Fast and Thorough buttons are gone: the Preset picker lists the presets and two adjustments, **Faster (turns Safe Mode off)** and **More thorough**. Full audit and Faster now ask **Turn Safe Mode off?** before they change anything (before, Fast turned Safe Mode off with one click).
+- **More room for the hosts table.** The title row is gone, the status bar is one line, and the filters and search box are shown only with the Hosts view. Favorite addresses moved to a ★ menu next to the Addresses field. The default 800×450 window shows about two more table rows.
+- **Whole-row clicks in the hosts table.** A click or right click anywhere in a row selects the host or opens its menu, not only on the address.
+- **Settings in sections.** The window is called Settings and is grouped into collapsible sections (Safe Mode and discovery, Services and identification, Industrial (OT), SNMP, Traceroute, Timing and performance, Scripts, rules and recording, Appearance and language, Scheduled scans, Updates). **Tools → Scheduled scans…** opens it at the schedule.
+
 ## [0.6.0] - 2026-11-22
 
 Exit codes and a findings CI gate, HTTPS webhooks, offline CISA KEV/EPSS ranking and ICS advisories, a ground-truth accuracy benchmark, much richer passive discovery, and faster scans: adaptive TCP timing on by default, unused local addresses skipped and quicker host discovery with `--fast`. JA4S/JA4X are removed for licensing reasons.

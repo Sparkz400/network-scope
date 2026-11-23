@@ -37,7 +37,7 @@ pub(super) fn label(saved_preset: &str, s: &scan::Settings) -> &'static str {
     }
 }
 
-fn name(p: Preset) -> &'static str {
+pub(super) fn name(p: Preset) -> &'static str {
     match p {
         Preset::Quick => tr!("Quick"),
         Preset::Office => tr!("Office"),
@@ -57,7 +57,7 @@ pub(super) fn tooltip(p: Preset) -> String {
 }
 
 impl Scanner {
-    /// Applies a preset to the settings of the next scan.
+    /// Applies a preset to the settings of the next scan (without asking; see `choose_preset`).
     pub(super) fn apply_preset(&mut self, p: Preset) {
         if self.run.is_some() {
             self.error = tr!("Settings can be changed after this scan finishes.").into();
@@ -82,30 +82,17 @@ impl Scanner {
         }
     }
 
-    /// The preset picker for the scan controls.
+    /// The preset picker of the scan controls: the presets, and the Faster and More thorough
+    /// adjustments (the same entries as Scan → Preset). A choice that turns Safe Mode off asks
+    /// first.
     pub(super) fn preset_picker(&mut self, ui: &mut egui::Ui) {
         let shown = label(&self.saved.preset, &self.saved.settings);
-        let mut chosen = None;
         let response = egui::ComboBox::from_id_salt("preset_picker")
             .selected_text(shown)
-            .show_ui(ui, |ui| {
-                for p in Preset::ALL {
-                    let current = current(&self.saved.preset, &self.saved.settings) == Some(p);
-                    if ui
-                        .selectable_label(current, name(p))
-                        .on_hover_text(tooltip(p))
-                        .clicked()
-                    {
-                        chosen = Some(p);
-                    }
-                }
-            });
+            .show_ui(ui, |ui| self.profile_entries(ui));
         super::a11y::named(response.response, tr!("Preset")).on_hover_text(tr!(
             "A bundle of scan settings. Hover a preset to see what it turns on."
         ));
-        if let Some(p) = chosen {
-            self.apply_preset(p);
-        }
     }
 }
 
