@@ -62,9 +62,11 @@ Source: "..\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesu
 Source: "..\lab\*"; DestDir: "{app}\lab"; Flags: ignoreversion recursesubdirs
 
 [Icons]
-Name: "{group}\Network Scope"; Filename: "{app}\network-scope.exe"
+; AppUserModelID: the one the window sets (APP_USER_MODEL_ID in src/gui/desktop.rs), so a pinned
+; shortcut and the running window share one taskbar button.
+Name: "{group}\Network Scope"; Filename: "{app}\network-scope.exe"; AppUserModelID: "Sparkz400.NetworkScope"
 Name: "{group}\Uninstall Network Scope"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Network Scope"; Filename: "{app}\network-scope.exe"; Tasks: desktopicon
+Name: "{autodesktop}\Network Scope"; Filename: "{app}\network-scope.exe"; AppUserModelID: "Sparkz400.NetworkScope"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsPath(ExpandConstant('{app}'))
