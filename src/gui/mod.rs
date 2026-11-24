@@ -7,6 +7,8 @@ mod details;
 mod home;
 mod i18n;
 mod map;
+mod menu;
+mod nav;
 mod ot;
 mod palette;
 mod preset_ui;
@@ -67,6 +69,21 @@ struct Saved {
     adaptive_tcp_migrated: bool,
     /// Size, position and maximized state of the window when it was last open.
     window: desktop::WindowState,
+    /// The optional columns of the hosts table.
+    host_columns: HostColumns,
+    /// The Findings page shows one row per rule instead of one per host.
+    group_findings: bool,
+}
+
+/// The optional columns of the hosts table (all off by default). They show what the Devices
+/// page shows, for the scanned hosts.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+struct HostColumns {
+    vendor: bool,
+    kind: bool,
+    os: bool,
+    risk: bool,
 }
 impl Saved {
     /// One-time changes to preferences saved by an older version. The saved `false` for
@@ -117,7 +134,16 @@ fn write_prefs(bytes: &[u8]) -> Result<(), String> {
     }
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
-/// The "Standard" preset and "Restore defaults": scan defaults, but the fields that describe
+/// An identity field of a host, or "" when it has none.
+fn identity_field<'a>(host: &'a scan::Host, key: &str) -> &'a str {
+    host.identity.get(key).map_or("", String::as_str)
+}
+
+/// The identity keys of the optional hosts-table columns Manufacturer, Type and OS guess (sort
+/// columns 5, 6 and 7).
+const HOST_COLUMN_KEYS: [&str; 3] = ["mac.vendor", "device.type", "os.guess"];
+
+/// "Restore defaults": scan defaults, but the fields that describe
 /// this machine (capture interface, source addresses, script and probe files) are kept.
 fn standard_settings(current: &scan::Settings) -> scan::Settings {
     scan::Settings {
@@ -392,12 +418,18 @@ enum Filter {
     Open,
     Starred,
 }
-/// The two main views: the "what changed" overview and the table of hosts.
+/// The pages of the main window, chosen in the sidebar: the "what changed" overview, the hosts
+/// table and the pages that were separate windows before.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 enum MainView {
     #[default]
     Home,
     Hosts,
+    Devices,
+    Findings,
+    Map,
+    Passive,
+    Inventory,
 }
 /// The documentation page name of a finding rule id (`telnet-open`). The run-time id families
 /// have one shared page each (`cve-...`, `script-...`); `cve-cve-2020-0796` has its own.
@@ -488,11 +520,6 @@ struct Scanner {
     screenshot_image: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<egui::ColorImage>>>>,
     sort_column: usize,
     sort_reverse: bool,
-    history_open: bool,
-    topology_open: bool,
-    devices_open: bool,
-    findings_open: bool,
-    capture_open: bool,
     history: Vec<store::Entry>,
     compare_a: Option<i64>,
     compare_b: Option<i64>,
@@ -577,6 +604,19 @@ struct Scanner {
     zoom_applied: f32,
     /// Screenshot mode: scroll the settings to the appearance section.
     scroll_to_appearance: bool,
+    /// Open and scroll the settings to the scheduled scans (Tools → Scheduled scans).
+    scroll_to_schedule: bool,
+    /// Give the hosts search box the keyboard focus on the next frame (Ctrl+F).
+    focus_search: bool,
+    shortcuts_open: bool,
+    /// A one-click change that would turn Safe Mode off, waiting for confirmation.
+    unsafe_confirm: Option<menu::Unsafe>,
+    /// The findings on view grouped by rule (indexes into the findings), with the rows.
+    finding_groups: Vec<Vec<usize>>,
+    /// Host name per address, for the Findings page.
+    hostnames: Cached<HashMap<IpAddr, String>>,
+    /// The worst finding per address, for the Risk column and the host details.
+    risk_map: Cached<HashMap<IpAddr, risk::Severity>>,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -625,11 +665,6 @@ impl Scanner {
             window_origin: egui::pos2(16.0, 16.0),
             sort_column: 0,
             sort_reverse: false,
-            history_open: false,
-            topology_open: false,
-            devices_open: false,
-            findings_open: false,
-            capture_open: false,
             history: vec![],
             compare_a: None,
             compare_b: None,
@@ -689,6 +724,13 @@ impl Scanner {
             pending_focus: None,
             zoom_applied: 1.0,
             scroll_to_appearance: false,
+            scroll_to_schedule: false,
+            focus_search: false,
+            shortcuts_open: false,
+            unsafe_confirm: None,
+            finding_groups: vec![],
+            hostnames: Default::default(),
+            risk_map: Default::default(),
         };
         i18n::set(i18n::detect(&app.saved.language));
         apply_theme(&cc.egui_ctx, app.saved.dark);
@@ -972,11 +1014,11 @@ impl Scanner {
         if self.saved.preset == preset_ui::PLANT {
             // The passive preset sends nothing: point to the listener instead of scanning.
             self.error = tr!(
-                "The Plant preset is passive and sends no packets. Use Listen (OT) in Passive / DCP, or choose another preset to scan."
+                "The Plant preset is passive and sends no packets. Use Listen (OT) in Passive discovery / OT, or choose another preset to scan."
             )
             .into();
             if !unattended {
-                self.capture_open = true;
+                self.view = MainView::Passive;
             }
             return;
         }
@@ -1231,6 +1273,12 @@ impl Scanner {
                 2 => a.ping.unwrap_or(u32::MAX).cmp(&b.ping.unwrap_or(u32::MAX)),
                 3 => a.hostname.cmp(&b.hostname),
                 4 => a.open.cmp(&b.open),
+                5..=7 => {
+                    let key = HOST_COLUMN_KEYS[self.sort_column - 5];
+                    let (x, y) = (identity_field(a, key), identity_field(b, key));
+                    // Hosts without the value go last.
+                    (x.is_empty(), x).cmp(&(y.is_empty(), y))
+                }
                 _ => a.ip.cmp(&b.ip),
             }
             .then_with(|| a.ip.cmp(&b.ip));
@@ -1311,7 +1359,9 @@ impl Scanner {
         }
         self.selected = Some(ip);
         self.refresh_rows();
-        if !self.rows.iter().any(|&i| self.results[i].ip == ip) {
+        // On another page the details dock beside it and the hosts table is not in view, so
+        // its filter and search stay as they are.
+        if self.view == MainView::Hosts && !self.rows.iter().any(|&i| self.results[i].ip == ip) {
             // Hidden by the filter or the search: show everything so the row can be reached.
             self.filter = Filter::All;
             self.search.clear();
@@ -1436,6 +1486,7 @@ impl eframe::App for Scanner {
         }
         self.poll_update();
         self.apply_zoom(ctx);
+        self.shortcuts(ctx);
         self.controls(ui);
         egui::Panel::bottom("status").show(ui, |ui| {
             if let Some(run) = &self.run {
@@ -1463,38 +1514,73 @@ impl eframe::App for Scanner {
                 &self.targets,
                 self.saved.preset == preset_ui::PLANT,
             );
-            if safe_mode_indicator(ui, &badge) {
-                self.settings_open = true;
-            }
+            // One line: the Safe Mode badge, the status, what the scan sends (cut short on narrow
+            // windows; the tooltip has it all) and the counts on the right.
             ui.horizontal(|ui| {
-                if let Some(busy) = self.busy.label() {
-                    ui.spinner();
-                    ui.label(busy);
-                }
-                // Hovering the status line also lists what the Safe Mode badge limits.
-                let status = ui.label(&self.status);
-                if !self.scan_sent.is_empty() {
-                    // The scan summary: every kind of packet the scan sent, with counts.
-                    status.on_hover_text(crate::sendlog::format_table(&self.scan_sent));
-                }
-                self.update_notice_ui(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(tr!(
                         "{} responding · {} with open ports",
                         self.responding,
                         self.with_open
                     ));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if safe_mode_indicator(ui, &badge) {
+                            self.settings_open = true;
+                        }
+                        if let Some(busy) = self.busy.label() {
+                            ui.spinner();
+                            ui.label(busy);
+                        }
+                        // Hovering the status line also lists what the Safe Mode badge limits.
+                        let status = ui.add(egui::Label::new(&self.status).truncate());
+                        if !self.scan_sent.is_empty() {
+                            // The scan summary: every kind of packet the scan sent, with counts.
+                            status.on_hover_text(crate::sendlog::format_table(&self.scan_sent));
+                        } else if !self.status.is_empty() {
+                            status.on_hover_text(&self.status);
+                        }
+                        self.update_notice_ui(ui);
+                        ui.separator();
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(tr!("Sends: {}", badge.sends))
+                                    .color(ui.visuals().weak_text_color()),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&badge.tooltip);
+                    });
                 });
             });
         });
         self.refresh_rows();
-        self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
+        self.table_keys(ctx);
         let mut menu: Option<(usize, convenience::MenuAction)> = None;
+        self.sidebar(ui);
+        // Floating windows (Settings, the workbench, ...) open next to the sidebar.
+        self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
+        self.details(ui);
         egui::CentralPanel::default().show(ui, |ui| {
-            if self.view == MainView::Home {
-                self.home_view(ui);
+            if self.page_ui(ui) {
                 return;
             }
+            self.hosts_filters(ui);
+            let columns = self.saved.host_columns;
+            if columns.risk {
+                self.ensure_risk_map();
+            }
+            let risk_fresh = self.risk_map.generation == Some(self.generation);
+            // The optional columns in display order: sort index (None: not sortable), title.
+            let extra: Vec<(Option<usize>, &'static str)> = [
+                (columns.vendor, Some(5), tr!("Manufacturer")),
+                (columns.kind, Some(6), tr!("Type")),
+                (columns.os, Some(7), tr!("OS guess")),
+                (columns.risk, None, tr!("Risk")),
+            ]
+            .into_iter()
+            .filter(|(on, _, _)| *on)
+            .map(|(_, sort, name)| (sort, name))
+            .collect();
             let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
             let scroll_row = self.scroll_to.take().and_then(|ip| {
@@ -1502,92 +1588,144 @@ impl eframe::App for Scanner {
                     .iter()
                     .position(|&i| self.results.get(i).is_some_and(|h| h.ip == ip))
             });
-            let mut table = TableBuilder::new(ui);
-            if let Some(row) = scroll_row {
-                table = table.scroll_to_row(row, Some(egui::Align::Center));
-            }
-            table
-                .striped(true)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(135.0).at_least(80.0))
-                .column(Column::initial(110.0))
-                .column(Column::initial(65.0))
-                .column(Column::remainder().at_least(80.0))
-                .column(Column::initial(140.0))
-                .header(26.0, |mut row| {
-                    for (i, name) in [
-                        tr!("IP address"),
-                        tr!("Status"),
-                        tr!("Ping"),
-                        tr!("Hostname"),
-                        tr!("Open TCP ports"),
-                    ]
-                    .iter()
-                    .enumerate()
-                    {
-                        row.col(|ui| {
-                            if ui.selectable_label(self.sort_column == i, *name).clicked() {
-                                sort = Some(i);
-                            }
-                        });
+            tables::plain_labels(ui);
+            // Optional columns can make the table wider than the page: it scrolls sideways.
+            egui::ScrollArea::horizontal()
+                .id_salt("hosts_scroll")
+                .show(ui, |ui| {
+                    let mut table = TableBuilder::new(ui);
+                    if let Some(row) = scroll_row {
+                        table = table.scroll_to_row(row, Some(egui::Align::Center));
                     }
-                })
-                .body(|body| {
-                    body.rows(26.0, visible.len(), |mut row| {
-                        let index = visible[row.index()];
-                        let host = &self.results[index];
-                        row.col(|ui| {
-                            let starred = self
-                                .saved
-                                .starred
-                                .contains(&convenience::favorite_key(host));
-                            let shown = if starred {
-                                format!("★ {}", host.ip)
-                            } else {
-                                host.ip.to_string()
-                            };
-                            let response =
-                                ui.selectable_label(self.selected == Some(host.ip), shown);
-                            if response.clicked() {
-                                if self.selected != Some(host.ip) {
-                                    self.script_test = None;
-                                }
-                                self.selected = Some(host.ip);
+                    table = table
+                        .striped(true)
+                        .resizable(true)
+                        // The whole row is the click target: select (opens the details), right click
+                        // for the host menu.
+                        .sense(egui::Sense::click())
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(135.0).at_least(80.0))
+                        .column(Column::initial(110.0))
+                        .column(Column::initial(65.0))
+                        .column(Column::remainder().at_least(80.0));
+                    for _ in &extra {
+                        table = table.column(Column::initial(120.0).at_least(50.0).clip(true));
+                    }
+                    table
+                        .column(Column::initial(140.0))
+                        .header(26.0, |mut row| {
+                            let base = [
+                                (Some(0), tr!("IP address")),
+                                (Some(1), tr!("Status")),
+                                (Some(2), tr!("Ping")),
+                                (Some(3), tr!("Hostname")),
+                            ];
+                            let last = [(Some(4), tr!("Open TCP ports"))];
+                            for (i, name) in base.iter().chain(&extra).chain(&last) {
+                                row.col(|ui| match i {
+                                    Some(i) => {
+                                        if ui
+                                            .selectable_label(self.sort_column == *i, *name)
+                                            .clicked()
+                                        {
+                                            sort = Some(*i);
+                                        }
+                                    }
+                                    None => {
+                                        ui.strong(*name);
+                                    }
+                                });
                             }
-                            // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
-                            response.context_menu(|ui| {
-                                menu = Some((index, convenience::host_menu(ui, host, starred)));
+                        })
+                        .body(|body| {
+                            body.rows(26.0, visible.len(), |mut row| {
+                                let index = visible[row.index()];
+                                let host = &self.results[index];
+                                let starred = self
+                                    .saved
+                                    .starred
+                                    .contains(&convenience::favorite_key(host));
+                                row.set_selected(self.selected == Some(host.ip));
+                                let mut chosen = false;
+                                row.col(|ui| {
+                                    // A named, focusable control: the keyboard and screen-reader way to
+                                    // the row (Tab, then Enter or the menu key).
+                                    let shown = if starred {
+                                        format!("★ {}", host.ip)
+                                    } else {
+                                        host.ip.to_string()
+                                    };
+                                    let response =
+                                        ui.selectable_label(self.selected == Some(host.ip), shown);
+                                    chosen = response.clicked();
+                                    response.context_menu(|ui| {
+                                        menu = Some((
+                                            index,
+                                            convenience::host_menu(ui, host, starred),
+                                        ));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.colored_label(
+                                        if host.responding {
+                                            Color32::from_rgb(40, 150, 95)
+                                        } else {
+                                            Color32::from_gray(115)
+                                        },
+                                        host_status(host),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.label(ping_text(host.ping));
+                                });
+                                row.col(|ui| {
+                                    ui.label(if host.hostname.is_empty() {
+                                        "—"
+                                    } else {
+                                        &host.hostname
+                                    });
+                                });
+                                for (sort, _) in &extra {
+                                    row.col(|ui| match sort {
+                                        Some(i) => {
+                                            let key = HOST_COLUMN_KEYS[i - 5];
+                                            ui.label(
+                                                host.identity.get(key).map_or("", String::as_str),
+                                            );
+                                        }
+                                        None => {
+                                            let worst = risk_fresh
+                                                .then(|| self.risk_map.value.get(&host.ip).copied())
+                                                .flatten();
+                                            if let Some(s) = worst {
+                                                ui.colored_label(
+                                                    home::severity_color(s, ui.visuals().dark_mode),
+                                                    home::severity_name(s),
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                                row.col(|ui| {
+                                    ui.label(if host.ports_checked {
+                                        ports_text(&host.open)
+                                    } else {
+                                        tr!("Not checked").into()
+                                    });
+                                });
+                                let response = row.response();
+                                if chosen || response.clicked() {
+                                    if self.selected != Some(host.ip) {
+                                        self.script_test = None;
+                                    }
+                                    self.selected = Some(host.ip);
+                                }
+                                // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
+                                response.context_menu(|ui| {
+                                    menu = Some((index, convenience::host_menu(ui, host, starred)));
+                                });
                             });
                         });
-                        row.col(|ui| {
-                            ui.colored_label(
-                                if host.responding {
-                                    Color32::from_rgb(40, 150, 95)
-                                } else {
-                                    Color32::from_gray(115)
-                                },
-                                host_status(host),
-                            );
-                        });
-                        row.col(|ui| {
-                            ui.label(ping_text(host.ping));
-                        });
-                        row.col(|ui| {
-                            ui.label(if host.hostname.is_empty() {
-                                "—"
-                            } else {
-                                &host.hostname
-                            });
-                        });
-                        row.col(|ui| {
-                            ui.label(if host.ports_checked {
-                                ports_text(&host.open)
-                            } else {
-                                tr!("Not checked").into()
-                            });
-                        });
-                    });
                 });
             let empty = visible.is_empty();
             self.rows = visible;
@@ -1635,15 +1773,11 @@ impl eframe::App for Scanner {
         }
         self.settings(ctx);
         self.update_window(ctx);
-        self.details(ctx);
         self.timeline_window(ctx);
         self.workbench_window(ctx);
-        self.inventory_window(ctx);
-        self.map_window(ctx);
-        self.devices_window(ctx);
-        self.findings_window(ctx);
-        self.capture_window(ctx);
         self.scope_dialog(ctx);
+        self.unsafe_dialog(ctx);
+        self.shortcuts_window(ctx);
         self.quick_dialog(ctx);
         self.wake_dialog(ctx);
         self.palette_window(ctx);
@@ -1904,28 +2038,24 @@ fn cached_badge(s: &scan::Settings, targets: &str, plant: bool) -> SafeBadge {
         }
     })
 }
-/// The always visible Safe Mode indicator: a button with the profile (opens Settings) and, next to
-/// it, what the scan is about to send. Wraps on narrow windows; the tooltip has the whole plan.
-/// Returns whether the button was clicked.
+/// The always visible Safe Mode indicator: a button with the profile that opens Settings. Its
+/// accessible name and tooltip also say what the scan is about to send (the status bar shows that
+/// next to it). Returns whether the button was clicked.
 fn safe_mode_indicator(ui: &mut egui::Ui, badge: &SafeBadge) -> bool {
     let color = badge_color(badge.safe, ui.visuals().dark_mode);
     let sends = tr!("Sends: {}", badge.sends);
-    ui.horizontal_wrapped(|ui| {
-        let button = ui.add(egui::Button::new(
-            RichText::new(badge.label).strong().color(color),
-        ));
-        let button = a11y::named(button, &format!("{}. {sends}", badge.label));
-        let clicked = button.clicked();
-        // Keyboard users get the plan while the button has focus, mouse users on hover.
-        if button.has_focus() {
-            button.show_tooltip_text(&badge.tooltip);
-        } else {
-            button.on_hover_text(&badge.tooltip);
-        }
-        ui.label(sends).on_hover_text(&badge.tooltip);
-        clicked
-    })
-    .inner
+    let button = ui.add(egui::Button::new(
+        RichText::new(badge.label).strong().color(color),
+    ));
+    let button = a11y::named(button, &format!("{}. {sends}", badge.label));
+    let clicked = button.clicked();
+    // Keyboard users get the plan while the button has focus, mouse users on hover.
+    if button.has_focus() {
+        button.show_tooltip_text(&badge.tooltip);
+    } else {
+        button.on_hover_text(&badge.tooltip);
+    }
+    clicked
 }
 /// Green for Safe Mode, amber when it is off; darker shades on the light theme, lighter on the dark one.
 fn badge_color(safe: bool, dark: bool) -> Color32 {
@@ -2507,9 +2637,11 @@ mod tests {
         let draw = |results: &[scan::Host], rows: &[usize]| {
             ctx.run_ui(input(), |ui| {
                 egui::CentralPanel::default().show(ui, |ui| {
+                    tables::plain_labels(ui);
                     TableBuilder::new(ui)
                         .striped(true)
                         .resizable(true)
+                        .sense(egui::Sense::click())
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         .column(Column::initial(135.0).at_least(80.0))
                         .column(Column::initial(110.0))
@@ -2528,6 +2660,7 @@ mod tests {
                         .body(|body| {
                             body.rows(26.0, rows.len(), |mut row| {
                                 let host = &results[rows[row.index()]];
+                                row.set_selected(false);
                                 row.col(|ui| {
                                     let _ = ui.selectable_label(false, host.ip.to_string());
                                 });
@@ -2595,3 +2728,7 @@ mod tests {
         }
     }
 }
+
+// Declared last: a test reads the code of this file up to the first test attribute.
+#[cfg(test)]
+mod uitest;

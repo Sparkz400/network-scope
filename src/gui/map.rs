@@ -303,12 +303,9 @@ impl Scanner {
         self.map.key = Some(key);
     }
 
-    pub(super) fn map_window(&mut self, ctx: &egui::Context) {
-        if !self.topology_open {
-            return;
-        }
+    /// The Network map page.
+    pub(super) fn map_view(&mut self, ui: &mut egui::Ui) {
         self.map_data();
-        let mut open = self.topology_open;
         let mut focus: Option<IpAddr> = None;
         let mut selected = self.map.selected;
         let mut view = self.map.view;
@@ -316,14 +313,14 @@ impl Scanner {
         let mut ask_fit = false;
         let graph = &self.topology.value.0;
         let (positions, info) = (&self.map.positions, &self.map.info);
-        egui::Window::new(tr!("Network map"))
-            .open(&mut open)
-            .default_size(win_size([820.0, 560.0]))
-            .default_pos(self.window_origin)
-            .show(ctx, |ui| {
-                let dark = ui.visuals().dark_mode;
-                let hosts = graph.nodes.iter().filter(|n| n.kind == topology::Kind::Host).count();
-                ui.horizontal_wrapped(|ui| {
+        super::windows::page(ui, tr!("Network map"), |ui| {
+            let dark = ui.visuals().dark_mode;
+            let hosts = graph
+                .nodes
+                .iter()
+                .filter(|n| n.kind == topology::Kind::Host)
+                .count();
+            ui.horizontal_wrapped(|ui| {
                     ui.label(tr!(
                         "{} nodes ({} hosts), {} links. Drag to move, scroll to zoom, click a host for its details.",
                         graph.nodes.len(),
@@ -334,60 +331,80 @@ impl Scanner {
                         ask_fit = true;
                     }
                 });
-                ui.horizontal_wrapped(|ui| {
-                    for class in Class::LEGEND {
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(), 5.0, class.color(dark));
-                        ui.label(class.name());
-                    }
-                    ui.label(tr!("A dot in the corner is the worst finding of the host."));
-                });
-                if graph.nodes.len() <= 1 {
-                    ui.weak(tr!("No devices to draw yet. Scan, and enable \"Record router path\" in Settings to see the path to each device."));
+            ui.horizontal_wrapped(|ui| {
+                for class in Class::LEGEND {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(rect.center(), 5.0, class.color(dark));
+                    ui.label(class.name());
                 }
-                let height = (ui.available_height() - 150.0).max(220.0);
-                egui::Frame::canvas(ui.style()).show(ui, |ui| {
-                    let size = egui::vec2(ui.available_width(), height);
-                    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-                    if fit || ask_fit {
-                        view = View::fit(netmap::bounds(positions, 40.0), [rect.width(), rect.height()]);
-                        fit = false;
-                    }
-                    draw_graph(ui, rect, &response, graph, positions, info, &mut view, &mut selected, &mut focus, dark);
-                });
-                ui.collapsing(tr!("Show the devices as a list"), |ui| {
-                    let row = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
-                    egui::ScrollArea::vertical()
-                        .id_salt("map_list")
-                        .max_height(150.0)
-                        .show_rows(ui, row, graph.nodes.len(), |ui, range| {
-                            for i in range {
-                                let node = &graph.nodes[i];
-                                let worst = info[i]
-                                    .risk
-                                    .map_or(String::new(), |r| format!(" · {}", home::severity_name(r)));
-                                let text = format!("{} · {}{worst}", node.label, info[i].class.name());
-                                if ui.selectable_label(selected == Some(i), text).clicked() {
-                                    selected = Some(i);
-                                    focus = info[i].ip;
-                                }
-                            }
-                        });
-                });
-                if let Some(i) = selected.filter(|&i| i < graph.nodes.len()) {
-                    let node = &graph.nodes[i];
-                    ui.label(format!(
-                        "{} · {}{}",
-                        node.label,
-                        info[i].class.name(),
-                        if node.detail.is_empty() { String::new() } else { format!(" · {}", node.detail) }
-                    ));
-                }
+                ui.label(tr!("A dot in the corner is the worst finding of the host."));
             });
+            if graph.nodes.len() <= 1 {
+                ui.weak(tr!("No devices to draw yet. Scan, and enable \"Record router path\" in Settings to see the path to each device."));
+            }
+            // The page is the map: leave room only for the list header and the selected node.
+            let height = (ui.available_height() - 70.0).max(220.0);
+            egui::Frame::canvas(ui.style()).show(ui, |ui| {
+                let size = egui::vec2(ui.available_width(), height);
+                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                if fit || ask_fit {
+                    view = View::fit(
+                        netmap::bounds(positions, 40.0),
+                        [rect.width(), rect.height()],
+                    );
+                    fit = false;
+                }
+                draw_graph(
+                    ui,
+                    rect,
+                    &response,
+                    graph,
+                    positions,
+                    info,
+                    &mut view,
+                    &mut selected,
+                    &mut focus,
+                    dark,
+                );
+            });
+            ui.collapsing(tr!("Show the devices as a list"), |ui| {
+                let row = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+                egui::ScrollArea::vertical()
+                    .id_salt("map_list")
+                    .max_height(150.0)
+                    .show_rows(ui, row, graph.nodes.len(), |ui, range| {
+                        for i in range {
+                            let node = &graph.nodes[i];
+                            let worst = info[i].risk.map_or(String::new(), |r| {
+                                format!(" · {}", home::severity_name(r))
+                            });
+                            let text = format!("{} · {}{worst}", node.label, info[i].class.name());
+                            if ui.selectable_label(selected == Some(i), text).clicked() {
+                                selected = Some(i);
+                                focus = info[i].ip;
+                            }
+                        }
+                    });
+            });
+            if let Some(i) = selected.filter(|&i| i < graph.nodes.len()) {
+                let node = &graph.nodes[i];
+                ui.label(format!(
+                    "{} · {}{}",
+                    node.label,
+                    info[i].class.name(),
+                    if node.detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {}", node.detail)
+                    }
+                ));
+            }
+        });
         self.map.selected = selected;
         self.map.view = view;
         self.map.fit = fit;
-        self.topology_open = open;
         if let Some(ip) = focus {
             self.focus_host(&[ip]);
         }
