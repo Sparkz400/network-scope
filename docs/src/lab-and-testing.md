@@ -377,7 +377,7 @@ The GUI test cannot drive the real window (that needs a display): it draws the s
 | File | 86 MB (compact JSON above 1,000 devices; 180 MB indented before) |
 | Peak memory | about 1.75 GB (about 2 GB before `found-on` was capped at 100 addresses per vulnerability) |
 
-The peak comes from building the whole document as a JSON value before writing it; a streaming writer would bring it down, but nobody exports a /16 of identical hosts often enough to need it yet. The file passes the CycloneDX 1.6 schema.
+The peak comes from building the whole document as a JSON value before writing it; a streaming writer would bring it down, but nobody exports a /16 of identical hosts often enough to need it yet. Not checked: this file against the CycloneDX schema (the Python validator did not finish on 86 MB within ten minutes); the compact form has the same structure as the indented sample CI checks.
 
 ## Real public files
 
