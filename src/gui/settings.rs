@@ -27,11 +27,13 @@ impl Scanner {
         let mut dark = None;
         let schedule = std::mem::take(&mut self.scroll_to_schedule);
         let appearance = std::mem::take(&mut self.scroll_to_appearance);
+        // Room for the long option texts on one line each; the window can be made larger.
         egui::Window::new(tr!("Settings")).vscroll(true)
             .open(&mut self.settings_open)
-            .default_size(default_win_size())
+            .default_size(win_size([470.0, 560.0]))
+            .min_width(340.0)
             .default_pos(self.window_origin)
-            .resizable(false)
+            .resizable(true)
             .show(ctx, |ui| {
                 ui.add_enabled_ui(self.run.is_none(), |ui| {
                     let s = &mut self.saved.settings;
@@ -40,15 +42,24 @@ impl Scanner {
                             &mut s.safe,
                             tr!("Safe Mode: max. 8 hosts, 100 ms probe spacing, no SYN, no ARP sweep, ICMP traceroute"),
                         );
-                        ui.checkbox(&mut s.tcp_only, tr!("TCP only (skip ICMP ping)"));
+                        ui.checkbox(&mut s.tcp_only, tr!("TCP only (skip ICMP ping)"))
+                            .on_hover_text(tr!(
+                                "No echo request is sent: the ports are probed directly. For networks that drop ping."
+                            ));
                         ui.checkbox(
                             &mut s.scan_nonresponders,
                             tr!("Check ports even when ping gets no reply"),
-                        );
+                        )
+                        .on_hover_text(tr!(
+                            "Finds hosts that ignore ping, at the cost of probing the ports of every address, also the unused ones."
+                        ));
                         ui.checkbox(
                             &mut s.arp,
                             tr!("ARP discovery even without a ping response (Windows LAN)"),
-                        );
+                        )
+                        .on_hover_text(tr!(
+                            "Asks the system for the MAC address of each address of the local network: a device that answers ARP is there, whatever its firewall does with ping."
+                        ));
                         ui.add_enabled(
                             !s.safe,
                             egui::Checkbox::new(
@@ -60,14 +71,19 @@ impl Scanner {
                         ui.add_enabled(
                             !s.safe,
                             egui::Checkbox::new(&mut s.syn, tr!("SYN via Npcap; fallback to TCP connect")),
-                        );
+                        )
+                        .on_hover_text(tr!(
+                            "Sends single SYN packets through the capture interface instead of opening connections: faster on large port ranges. Needs the interface, its IPv4 and MAC address from Passive discovery / OT."
+                        ))
+                        .on_disabled_hover_text(tr!("Not in Safe Mode"));
                         ui.add_enabled(
                             !s.safe && s.syn,
                             egui::Checkbox::new(
                                 &mut s.syn_adaptive,
                                 tr!("Adaptive SYN timing (RTT-based timeouts, slows down on packet loss)"),
                             ),
-                        );
+                        )
+                        .on_disabled_hover_text(tr!("Needs SYN scanning, and not in Safe Mode"));
                         if s.syn || s.arp_sweep {
                             ui.label(tr!("Configure interface, source IPv4 and MAC in Passive discovery / OT."));
                         }
@@ -82,8 +98,14 @@ impl Scanner {
                             &mut s.skip_edges,
                             tr!("Skip network/broadcast addresses (CIDR: true edges; ranges: .0 and .255)"),
                         );
-                        ui.checkbox(&mut s.dns, tr!("Resolve hostnames (system DNS)"));
-                        ui.checkbox(&mut s.mac, tr!("Look up MAC addresses (local IPv4 network)"));
+                        ui.checkbox(&mut s.dns, tr!("Resolve hostnames (system DNS)"))
+                            .on_hover_text(tr!(
+                                "One reverse lookup per responding host through the DNS server this computer uses."
+                            ));
+                        ui.checkbox(&mut s.mac, tr!("Look up MAC addresses (local IPv4 network)"))
+                            .on_hover_text(tr!(
+                                "Asks the system for the MAC address of each responding host of the local network; the manufacturer and the device identity across scans come from it."
+                            ));
                         ui.checkbox(
                             &mut self.saved.randomize,
                             tr!("Probe the addresses in random order"),
@@ -187,41 +209,52 @@ impl Scanner {
                             .spacing([24.0, 10.0])
                             .show(ui, |ui| {
                                 // The label is the accessible name of the field next to it.
-                                labelled_row(ui, tr!("Concurrent hosts"), egui::DragValue::new(&mut s.workers).range(1..=4096));
-                                labelled_row(ui, tr!("Ping probes"), egui::DragValue::new(&mut s.probes).range(1..=10));
+                                labelled_row(ui, tr!("Concurrent hosts"), tr!("How many hosts are scanned at the same time. Safe Mode uses at most 8."), egui::DragValue::new(&mut s.workers).range(1..=4096));
+                                labelled_row(ui, tr!("Ping probes"), tr!("Echo requests sent to a host before it counts as not responding."), egui::DragValue::new(&mut s.probes).range(1..=10));
                                 labelled_row(
                                     ui,
                                     tr!("Ping timeout"),
+                                    tr!("How long one echo request waits for its reply."),
                                     egui::DragValue::new(&mut s.ping_timeout).range(100..=10000).suffix(" ms"),
                                 );
                                 labelled_row(
                                     ui,
                                     tr!("Port timeout"),
+                                    tr!("The longest a port probe waits for an answer; a port without one is reported as no reply, not as closed."),
                                     egui::DragValue::new(&mut s.port_timeout).range(100..=10000).suffix(" ms"),
                                 );
                                 labelled_row(
                                     ui,
                                     tr!("Minimum port timeout"),
+                                    tr!("The adaptive timing never waits less than this, however fast the device answers."),
                                     egui::DragValue::new(&mut s.minimum_timeout).range(1..=s.port_timeout).suffix(" ms"),
                                 );
                                 labelled_row(
                                     ui,
                                     tr!("Probe spacing (Safe Mode)"),
+                                    tr!("The least time between two probes in Safe Mode (never under 100 ms), so fragile devices are not flooded."),
                                     egui::DragValue::new(&mut s.delay).range(0..=1000).suffix(" ms"),
                                 );
-                                labelled_row(ui, tr!("Port probes per host"), egui::DragValue::new(&mut s.port_parallel).range(1..=1024));
-                                labelled_row(ui, tr!("Retries for silent ports"), egui::DragValue::new(&mut s.retries).range(0..=5));
+                                labelled_row(ui, tr!("Port probes per host"), tr!("How many ports of one host are probed at the same time. Safe Mode uses at most 4."), egui::DragValue::new(&mut s.port_parallel).range(1..=1024));
+                                labelled_row(ui, tr!("Retries for silent ports"), tr!("A port that gave no answer is tried again this many times, with twice the timeout each time."), egui::DragValue::new(&mut s.retries).range(0..=5));
                                 labelled_row(
                                     ui,
                                     tr!("Rate cap (0 = none)"),
+                                    tr!("An upper limit for the packets of the scan, in packets per second. Outside Safe Mode, which is paced by the probe spacing."),
                                     egui::DragValue::new(&mut s.max_rate).range(0..=1_000_000).suffix(" pps"),
                                 );
                             });
-                        ui.checkbox(&mut s.adaptive, tr!("Adapt port timeout to measured ping"));
+                        ui.checkbox(&mut s.adaptive, tr!("Adapt port timeout to measured ping"))
+                            .on_hover_text(tr!(
+                                "A host that answers ping in a few milliseconds gets a shorter port timeout: closed and filtered ports are found sooner."
+                            ));
                         ui.checkbox(
                             &mut s.tcp_adaptive,
                             tr!("Adapt port timeout to the device's connect answers"),
-                        );
+                        )
+                        .on_hover_text(tr!(
+                            "Measures how fast the device answers its first connects and waits only a little longer for the rest. Speeds up hosts with many filtered ports."
+                        ));
                         ui.checkbox(
                             &mut s.backoff,
                             tr!("Back off when a device resets connections (lower limits for OT/printers)"),
@@ -253,7 +286,7 @@ impl Scanner {
                             }
                             if ui.button(tr!("Browse…")).clicked()
                                 && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("CVE rules", &["json"])
+                                    .add_filter(tr!("CVE rules"), &["json"])
                                     .pick_file()
                             {
                                 self.saved.cves_file = path.display().to_string();
@@ -596,7 +629,7 @@ fn snmp_section(ui: &mut egui::Ui, s: &mut scan::Settings) {
                     ("", tr!("none")),
                     ("sha", "SHA-1"),
                     ("sha256", "SHA-256"),
-                    ("md5", "MD5 (weak)"),
+                    ("md5", tr!("MD5 (weak)")),
                 ] {
                     ui.selectable_value(&mut form.auth, value.to_string(), name);
                 }
@@ -610,9 +643,11 @@ fn snmp_section(ui: &mut egui::Ui, s: &mut scan::Settings) {
                 );
                 ui.horizontal(|ui| {
                     ui.label(tr!("Privacy"));
-                    for (value, name) in
-                        [("", tr!("none")), ("aes", "AES-128"), ("des", "DES (weak)")]
-                    {
+                    for (value, name) in [
+                        ("", tr!("none")),
+                        ("aes", "AES-128"),
+                        ("des", tr!("DES (weak)")),
+                    ] {
                         ui.selectable_value(&mut form.privacy, value.to_string(), name);
                     }
                 });
@@ -650,10 +685,11 @@ fn snmp_section(ui: &mut egui::Ui, s: &mut scan::Settings) {
     let written = s.snmp_ref.clone();
     ui.data_mut(|d| d.insert_temp(id, (form, written)));
 }
-/// A settings grid row: the label and the field, the label naming the field for screen readers.
-fn labelled_row(ui: &mut egui::Ui, label: &str, field: impl egui::Widget) {
-    let name = ui.label(label);
-    ui.add(field).labelled_by(name.id);
+/// A settings grid row: the label and the field, the label naming the field for screen readers;
+/// `hint` explains the setting when either is hovered.
+fn labelled_row(ui: &mut egui::Ui, label: &str, hint: &str, field: impl egui::Widget) {
+    let name = ui.label(label).on_hover_text(hint);
+    ui.add(field).labelled_by(name.id).on_hover_text(hint);
     ui.end_row();
 }
 /// Traceroute method; TCP and UDP transmit beyond ICMP and are not offered in Safe Mode.

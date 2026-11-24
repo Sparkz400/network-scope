@@ -248,7 +248,7 @@ impl Scanner {
                             if ui.button(tr!("Choose .rhai file…")).clicked() {
                                 ui.close();
                                 if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Rhai script", &["rhai"])
+                                    .add_filter(tr!("Rhai script"), &["rhai"])
                                     .pick_file()
                                 {
                                     test = Some(path.display().to_string());
@@ -474,11 +474,11 @@ fn outcome_is_empty(o: &crate::script::Outcome) -> bool {
 /// Readable lines for a dry-run result.
 fn script_lines(o: &crate::script::Outcome) -> Vec<String> {
     if outcome_is_empty(o) {
-        return vec!["The script set nothing for this host.".into()];
+        return vec![tr!("The script set nothing for this host.").into()];
     }
     let mut lines = vec![];
     for (k, v) in &o.sets {
-        lines.push(format!("Set script.{k} = {v}"));
+        lines.push(tr!("Set script.{} = {}", k, v));
     }
     for f in &o.findings {
         lines.push(format!(
@@ -494,7 +494,7 @@ fn script_lines(o: &crate::script::Outcome) -> Vec<String> {
         ));
     }
     for n in &o.notes {
-        lines.push(format!("Note / error: {n}"));
+        lines.push(tr!("Note / error: {}", n));
     }
     lines
 }
