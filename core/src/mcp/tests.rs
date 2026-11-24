@@ -218,7 +218,7 @@ fn modern_clients_need_no_handshake() {
     assert_eq!(list["resultType"], "complete");
     assert_eq!(list["cacheScope"], "public");
     assert!(list["ttlMs"].as_u64().unwrap() > 0);
-    assert_eq!(list["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(list["tools"].as_array().unwrap().len(), 12);
 
     let call = modern(
         &mut server,
@@ -665,6 +665,9 @@ fn tools_list_declares_proper_input_schemas() {
             "diff_scans",
             "search_inventory",
             "findings_gained",
+            "changes",
+            "top_risks",
+            "list_alerts",
             "scan",
             "scan_status"
         ]
@@ -1182,6 +1185,142 @@ fn default_results_stay_small_for_a_full_subnet() {
     remove_db(&db);
 }
 
+/// `changes`, `top_risks` and `list_alerts` against the fixture: scan #3 has Telnet like #2, #1
+/// has not.
+#[test]
+fn changes_risks_and_alerts_answer_from_the_inventory() {
+    let db = fixture("changes-risks-alerts");
+    let mut server = session(&db);
+    // `last`: #3 against #2, nothing changed.
+    let last = ok(&mut server, "changes", json!({}), "changes");
+    assert_eq!(
+        (&last["current"]["id"], &last["previous"]["id"]),
+        (&json!(3), &json!(2))
+    );
+    assert_eq!(last["summary"]["new_risks"], 0, "{last}");
+    assert_eq!(last["truncated"], false);
+    // Since a date between #1 and #2: #3 against #1, Telnet is new.
+    let since = ok(
+        &mut server,
+        "changes",
+        json!({"since": "2023-11-15"}),
+        "changes",
+    );
+    assert_eq!(since["previous"]["id"], 1, "{since}");
+    assert_eq!(since["summary"]["new_risks"], 1, "{since}");
+    assert_eq!(since["new_risks"][0]["finding"]["id"], "telnet-open");
+    assert_eq!(since["summary"]["changed_devices"], 1);
+    assert!(failed(&mut server, "changes", json!({"since": "soon"})).contains("use last"));
+    assert!(
+        failed(&mut server, "changes", json!({"since": "7d", "fast": true}))
+            .contains("Invalid arguments")
+    );
+
+    // The newest completed scan is scored: a newer partial scan is not the default.
+    let mut partial = nmap_scan("10.0.0.1", "");
+    partial.complete = false;
+    assert_eq!(store::save(&db, &partial).unwrap(), 4);
+    let risks = ok(&mut server, "top_risks", json!({}), "risk-score");
+    assert_eq!(risks["scan_id"], 3, "{risks}");
+    assert_eq!(risks["top_fixes"][0]["id"], "telnet-open", "{risks}");
+    assert_eq!(risks["top_fixes"][0]["hosts"], json!(["10.0.0.1"]));
+    assert_eq!(risks["hosts"][0]["ip"], "10.0.0.1");
+    assert!(risks["network"]["score"].as_u64().unwrap() > 0);
+    assert_eq!(risks["truncated"], false);
+    // A named scan, partial or not; and the same numbers as `findings 1 --top`.
+    let first = ok(
+        &mut server,
+        "top_risks",
+        json!({"scan_id": 1}),
+        "risk-score",
+    );
+    let expected = score::assess(
+        &risk::analyze_snapshot(&store::load(&db, 1).unwrap()),
+        usize::MAX,
+    );
+    assert_eq!(
+        first["network"],
+        serde_json::to_value(&expected.network).unwrap()
+    );
+    assert!(
+        first["top_fixes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["id"] != "telnet-open")
+    );
+    assert_eq!(
+        ok(
+            &mut server,
+            "top_risks",
+            json!({"scan_id": 4}),
+            "risk-score"
+        )["scan_id"],
+        4
+    );
+    assert!(
+        failed(&mut server, "top_risks", json!({"scan_id": 99})).contains("No scan with ID 99")
+    );
+    assert!(failed(&mut server, "top_risks", json!({"limit": 0})).contains("Invalid arguments"));
+
+    // Alerts: newest first, capped, filtered by time.
+    let empty = ok(&mut server, "list_alerts", json!({}), "alerts");
+    assert_eq!(
+        (&empty["total"], &empty["truncated"]),
+        (&json!(0), &json!(false))
+    );
+    let now = store::now();
+    let alert = |age: i64, subject: &str| crate::monitor::Alert {
+        timestamp: now - age,
+        severity: risk::Severity::High,
+        kind: "port-opened".into(),
+        subject: subject.into(),
+        message: format!("{subject} opened a port"),
+    };
+    store::save_alerts(
+        &db,
+        3,
+        &[
+            alert(30 * 86_400, "old"),
+            alert(7200, "recent"),
+            alert(60, "newest"),
+        ],
+    )
+    .unwrap();
+    let subjects = |v: &Value| -> Vec<String> {
+        v["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["subject"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let all = ok(&mut server, "list_alerts", json!({}), "alerts");
+    assert_eq!(subjects(&all), ["newest", "recent", "old"]);
+    let two = ok(&mut server, "list_alerts", json!({"limit": 2}), "alerts");
+    assert_eq!(subjects(&two), ["newest", "recent"]);
+    assert_eq!(
+        (&two["total"], &two["truncated"]),
+        (&json!(3), &json!(true))
+    );
+    let day = ok(&mut server, "list_alerts", json!({"since": "1d"}), "alerts");
+    assert_eq!(subjects(&day), ["newest", "recent"]);
+    assert_eq!(
+        (&day["total"], &day["truncated"]),
+        (&json!(2), &json!(false))
+    );
+    let hour = ok(
+        &mut server,
+        "list_alerts",
+        json!({"since": "1h", "limit": 1}),
+        "alerts",
+    );
+    assert_eq!(subjects(&hour), ["newest"]);
+    assert_eq!(hour["truncated"], false);
+    assert!(failed(&mut server, "list_alerts", json!({"since": "last"})).contains("window"));
+    remove_db(&db);
+}
+
 #[test]
 fn a_missing_database_is_an_empty_inventory_and_is_not_created() {
     let db = temp_db("missing");
@@ -1202,11 +1341,23 @@ fn a_missing_database_is_an_empty_inventory_and_is_not_created() {
         "mcp-findings-gained",
     );
     assert!(gained["hosts"].as_array().unwrap().is_empty());
+    for since in ["last", "7d"] {
+        let changes = ok(&mut server, "changes", json!({"since": since}), "changes");
+        assert_eq!(changes["notice"], "The inventory has no scans yet.");
+        assert_eq!(changes["current"], Value::Null);
+    }
+    let alerts = ok(&mut server, "list_alerts", json!({"since": "7d"}), "alerts");
+    assert_eq!(
+        (&alerts["alerts"], &alerts["total"]),
+        (&json!([]), &json!(0))
+    );
+    assert!(failed(&mut server, "top_risks", json!({"scan_id": 1})).contains("No scan with ID 1"));
     for (tool, args) in [
         ("list_devices", json!({})),
         ("list_findings", json!({})),
         ("device_history", json!({"query": "10.0.0.1"})),
         ("diff_scans", json!({"old_id": 1, "new_id": 2})),
+        ("top_risks", json!({})),
     ] {
         assert!(
             failed(&mut server, tool, args).contains("no scans yet"),
@@ -1230,6 +1381,10 @@ fn the_read_tools_never_change_the_inventory() {
             "findings_gained",
             json!({"finding_id": "telnet-open", "since": "2023-11-15"}),
         ),
+        ("changes", json!({})),
+        ("changes", json!({"since": "2023-11-15"})),
+        ("top_risks", json!({})),
+        ("list_alerts", json!({})),
     ] {
         assert_eq!(call(&mut server, tool, args)["isError"], false, "{tool}");
     }
@@ -1811,10 +1966,22 @@ fn the_query_tools_change_neither_an_older_inventory_nor_a_read_only_file() {
                 "findings_gained",
                 json!({"finding_id": "telnet-open", "since": "2023-11-15"}),
             ),
+            // These read tables the version-5 file does not have (alerts, the device registry,
+            // the baseline): they stand in empty and nothing is created.
+            ("changes", json!({})),
+            ("top_risks", json!({})),
+            ("list_alerts", json!({"since": "2023-11-01"})),
         ] {
             let result = call(&mut server, tool, args);
             assert_eq!(result["isError"], false, "{tool}: {result}");
         }
+        // The comparison was really made on both files: the newest scan against the one before.
+        let changes = call(&mut server, "changes", json!({}));
+        assert_eq!(
+            changes["structuredContent"]["previous"]["id"],
+            scans - 1,
+            "{changes}"
+        );
         let history = call(&mut server, "device_history", json!({"query": "10.0.0.1"}));
         assert_eq!(
             history["structuredContent"]["sightings"], scans,
