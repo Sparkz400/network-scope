@@ -15,6 +15,7 @@ Reading inventory… || Lese Inventar…
 Reading address list… || Lese Adressliste…
 saved #{} || gespeichert als #{}
 Inventory could not be saved: {} || Das Inventar konnte nicht gespeichert werden: {}
+The preferences could not be read ({}); the defaults are in use. The old file was kept as {}. || Die Einstellungen konnten nicht gelesen werden ({}); es gelten die Standardwerte. Die alte Datei wurde als {} aufbewahrt.
 The list has no addresses. || Die Liste enthält keine Adressen.
 Address list ignored: a scan is running. || Adressliste ignoriert: Ein Scan läuft.
 Ready to scan || Bereit zum Scannen

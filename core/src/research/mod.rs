@@ -632,7 +632,7 @@ fn open_read_only(path: &Path) -> Result<Connection, String> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| e.to_string())?;
-    c.busy_timeout(std::time::Duration::from_secs(3))
+    c.busy_timeout(crate::store::BUSY_TIMEOUT)
         .map_err(|e| e.to_string())?;
     c.execute_batch("PRAGMA query_only=ON")
         .map_err(|e| e.to_string())?;

@@ -32,6 +32,7 @@ mod commands;
 mod dryrun;
 mod guard;
 mod help;
+mod interrupt;
 mod tui;
 
 #[cfg(test)]
@@ -157,13 +158,14 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     if let Some(version) = opts.get("json-schema") {
         crate::schema::check_version(version)?;
     }
-    // `service install --dry-run` prints the service command line (it sends nothing either).
+    // `service install --dry-run` prints the service command line (it sends nothing either);
+    // `history prune --dry-run` counts what it would delete.
     if opts.contains_key("dry-run")
-        && command != "service"
+        && !matches!(command.as_str(), "service" | "history")
         && !dryrun::COMMANDS.contains(&command.as_str())
     {
         return Err(format!(
-            "--dry-run applies to {} and service install only",
+            "--dry-run applies to {}, service install and history prune only",
             dryrun::COMMANDS.join(", ")
         ));
     }

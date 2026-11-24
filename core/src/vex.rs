@@ -43,7 +43,7 @@ const MAX_PER_FILE: usize = 100_000;
 const MAX_COMPONENTS: usize = 100_000;
 const MAX_DEPTH: usize = 16;
 const MAX_TEXT: usize = 300;
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 /// What a statement says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -89,6 +89,11 @@ pub struct Statement {
     pub cve: String,
     pub vendor: String,
     pub products: Vec<String>,
+    /// CSAF: the names that narrow the product down, broadest first (see
+    /// [`crate::csaf::StatusEntry::specific`]). A statement that clears a finding must cover the
+    /// device with every one of them; empty for statements that name one product (CycloneDX).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub specific: Vec<String>,
     /// Versions in canonical form (see [`crate::csaf::parse_range`]); `*` for all.
     pub range: String,
     pub state: State,
@@ -229,6 +234,7 @@ fn parse_csaf_vex(bytes: &[u8]) -> Result<Vec<Statement>, String> {
             cve: e.cve,
             vendor: clean(&e.vendor),
             products: e.products.iter().map(|p| clean(p)).collect(),
+            specific: e.specific.iter().map(|p| clean(p)).collect(),
             range: e.range,
             state: match e.status {
                 "known_not_affected" => State::NotAffected,
@@ -377,6 +383,7 @@ fn parse_cyclonedx_vex(doc: &Value, file: &str) -> Result<Vec<Statement>, String
                         cve: cve.clone(),
                         vendor: t.vendor.clone(),
                         products: vec![t.name.clone()],
+                        specific: vec![],
                         range,
                         state,
                         justification: justification.clone(),
@@ -475,7 +482,11 @@ impl Library {
                 let exact = !all
                     && !s.vendor.is_empty()
                     && !vendor.is_empty()
-                    && names_cover(names, &s.products);
+                    && if s.specific.is_empty() {
+                        names_cover(names, &s.products)
+                    } else {
+                        covers_all(names, &s.specific)
+                    };
                 if exact && clearing.is_none() {
                     clearing = Some(s);
                 }
@@ -582,12 +593,7 @@ impl Library {
 /// family). Unlike [`names_match`], a statement name that only contains the device's name (a more
 /// specific model) does not count.
 fn names_cover(device: &[String], products: &[String]) -> bool {
-    let mut names: Vec<String> = device.iter().map(|n| core_name(n)).collect();
-    for n in device {
-        if let Some(f) = siemens_family(n) {
-            names.push(core_name(f));
-        }
-    }
+    let names = device_names(device);
     products
         .iter()
         .map(|p| core_name(p))
@@ -597,6 +603,35 @@ fn names_cover(device: &[String], products: &[String]) -> bool {
                 .iter()
                 .any(|n| *n == w || (n.len() > w.len() && n.contains(w.as_str())))
         })
+}
+
+/// The device's names as [`names_cover`] compares them. A Siemens S7 CPU is also known by its
+/// family, and by family and CPU together (`S7-1200 CPU 1217C`, as product lists write it).
+fn device_names(device: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = device.iter().map(|n| core_name(n)).collect();
+    for n in device {
+        if let Some(f) = siemens_family(n) {
+            names.push(core_name(f));
+            names.push(core_name(&format!("{f} {n}")));
+        }
+    }
+    names
+}
+
+/// [`names_cover`] for the names of a CSAF product path, broadest first (family, then model):
+/// every one of them must cover the device, or a statement for one model would clear its
+/// siblings through the family name they share. A name too short to compare (under 5
+/// characters) only counts when it is equal, and may be skipped unless it is the last, most
+/// specific one.
+fn covers_all(device: &[String], specific: &[String]) -> bool {
+    let names = device_names(device);
+    specific.iter().enumerate().all(|(i, p)| {
+        let w = core_name(p);
+        (w.len() < 5 && i + 1 < specific.len())
+            || names
+                .iter()
+                .any(|n| *n == w || (w.len() >= 5 && n.len() > w.len() && n.contains(w.as_str())))
+    })
 }
 
 /// A product name without the words that do not tell products apart (`SIMATIC`, `CPU`,

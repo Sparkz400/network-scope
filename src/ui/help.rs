@@ -9,6 +9,8 @@ network-scope listen --interface ID [--seconds 60]  Passive capture only
 network-scope dcp --interface ID --source-mac MAC  Read-only DCP Identify
 network-scope interfaces              List capture interfaces
 network-scope history [--db FILE]      List saved scans as JSON
+network-scope history prune [--keep N] [--older-than 30d|DATE] [--dry-run]   Delete old saved scans (keep the newest N per
+                                      target set and/or drop older ones; the newest completed scan always stays)
 network-scope search QUERY [--top N] [--format text|json]   Where an address, MAC, name, vendor or finding id appeared in the saved scans
 network-scope wol MAC [--broadcast IPV4] [--dry-run]   Wake-on-LAN: one magic packet to the broadcast address (only on request)
 network-scope diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--db FILE]
@@ -38,7 +40,7 @@ network-scope feeds import sbom FILE|DIR... [--sbom-vendor V] [--sbom-product P]
                                                Firmware SBOMs (CycloneDX or SPDX JSON) for the CycloneDX export
 network-scope feeds import vex FILE|DIR...       Vendor VEX statements (CSAF 2.0 or CycloneDX) that mark findings as not affected, fixed, ...
 network-scope feeds status                     What the feeds cache holds
-network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
+network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn] [--keep N]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
         [--interface ID --listen-seconds 30] [--alerts FILE]   Repeat scans and alert on changes
         [--webhook http(s)://URL,...] [--syslog [udp://|tcp://]HOST[:PORT],...]
@@ -145,6 +147,9 @@ Scan options:
   --incremental   scan, monitor: a repeat scan of the same targets: known open ports plus a sample are probed again,
                   unchanged services keep their identification (marked as carried over); needs an earlier scan
   --full-every N  monitor with --incremental: every Nth cycle is a full scan (default 10, 0 never)
+  --keep N        monitor: keep only the newest N scans of these targets in the inventory (default: all; a monitor
+                  saves one scan per cycle); history prune: the newest N scans of every target set
+  --older-than T  history prune: delete scans older than a window (30d, 12w) or from before a UTC date
   --early-stop    Stop probing a host's remaining ports once its device class is certain (e.g. two print
                   ports open); such a host is marked as not fully checked. Off by default
   --no-report     scan: save the scan and print no report (for very large scans; read it with export ID)

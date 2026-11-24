@@ -47,7 +47,7 @@ pub(super) const FLAGS: [&str; 39] = [
     "incremental",
     "ipv6-discover",
 ];
-pub(super) const VALUES: [&str; 87] = [
+pub(super) const VALUES: [&str; 89] = [
     "feeds",
     "top",
     "nvd",
@@ -128,6 +128,8 @@ pub(super) const VALUES: [&str; 87] = [
     "broadcast",
     "targets-file",
     "full-every",
+    "keep",
+    "older-than",
     "melsec-port",
     "dnp3-address",
     "dnp3-master",

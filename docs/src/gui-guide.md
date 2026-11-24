@@ -195,6 +195,10 @@ Coverage: the main window, the menus and the scan controls, the Settings window,
 - **High DPI and scaling.** The window follows the scale factor of the operating system, per monitor. **Settings → Interface scale** (0.75 to 2.0, also `Ctrl` and `+` / `-`) enlarges the interface on top of that.
 - **Colours.** **Settings → Theme** switches between the light and the dark theme; the colours of severities, risks and the map are chosen for both. Information is never only a colour: severities and the score band are also words, and favorites are a star.
 
+## Preferences file
+
+Settings, favorites, notes and stars are saved in `preferences.json` next to the inventory (`%LOCALAPPDATA%\NetworkScope` on Windows), written through a temporary file so a crash cannot leave half a file. A file that cannot be read is not silently replaced by the defaults: the app starts with the defaults, says so under the controls and keeps the old file as `preferences.bad.json`.
+
 ## Screenshot mode
 
 `network-scope --screenshot FILE.png` renders the window to a PNG without scanning or touching preferences or the inventory. `NETWORK_SCOPE_SCREENSHOT_STATE=main|findings|devices|ot|script|timeline|scan-details|workbench|workbench-compare|workbench-draft|settings|schedule|shortcuts|safe-off|findings-grouped|columns|home|home-empty|hosts-empty|map|map-large|quick|palette|palette-actions|appearance|wake` renders a larger window with sample data in that view (append `-small` for the default 800x450 size, `-fast` for Safe Mode off, `-dark` for the dark theme and `-de` for German, in any order, e.g. `main-small-fast` or `home-dark-de`). Screenshots are in English unless the state ends in `-de`. This is used for the documentation images.

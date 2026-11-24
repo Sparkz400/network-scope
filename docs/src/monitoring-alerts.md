@@ -18,11 +18,18 @@ network-scope-cli monitor TARGETS [scan options] --interval 300 [--cycles N]
 | Address change for a known MAC (`address-changed`) | Medium |
 | Device not seen (`device-missing`, only with `--report-missing`) | Low |
 | Passive capture lost data (`capture-incomplete`) | Low |
+| A cycle failed (`monitor-cycle-failed`: the inventory was locked, an adapter was down, ...) | Medium |
 | Rogue DHCP server | Critical with `--dhcp-allow`, else High when more than one server answers |
 
 - Only ports probed by both scans are compared, and partial scans never raise change alerts.
 - The first run (or `--learn`) records devices without alerting.
 - `--min-severity` filters; with `--report-missing` a hint names the alert kinds it hides.
+
+## A cycle that fails
+
+A cycle that fails (the inventory is locked by another program for longer than 30 seconds, the adapter is down after standby, a file is briefly unreadable) does not end the monitor: the error is printed (also with `--quiet`), raised as a `monitor-cycle-failed` alert and the next cycle runs after the interval. Nothing is lost by it: a scan is only saved once everything the comparison needs was read, so the next cycle compares with the same previous scan. After five failed cycles in a row the monitor gives up with an error; the systemd unit and the Windows service restart it then. A run with `--cycles N` in which a cycle failed exits with status 1.
+
+`--keep N` deletes all but the newest N scans of the monitored targets after every cycle, see [Deleting old scans](inventory-diff-reports.md#deleting-old-scans). Without it the inventory grows by one scan per cycle.
 
 ## De-duplication
 
@@ -46,7 +53,7 @@ Opt-in; nothing is sent unless a sink is configured.
   - **HTTPS** verifies the server certificate against the operating system's certificate store (Windows, macOS, or the system CA bundle on Linux), so public CAs and a corporate CA your administrator installed both work. The host name in the URL must match the certificate (it is also sent as SNI). An IP-literal host works only if the certificate lists that IP address as a subject alternative name. There is no option to skip verification: an untrusted, expired or mismatching certificate fails the delivery with a warning that says why, and no alert is sent. For a receiver with a private CA, install that CA in the system store (on Linux, in the system CA bundle, or point `SSL_CERT_FILE` at it) or use `http://` on a trusted network.
   - Plain `http://` sends the alerts unencrypted; use it only for localhost or a trusted network.
 - **Syslog**: `--syslog udp://host[:514]`, `tcp://host[:601]` (RFC 6587 octet counting) or `host[:port]` sends RFC 5424 messages, facility local0, severity critical→crit … info→informational. Control characters become spaces; messages are cut at 2048 bytes.
-- Each operation times out after `--alert-timeout` seconds (default 5, 1-60). After the first failure a destination's remaining alerts of that cycle are skipped, at most 30 s per destination per cycle. Failures are printed and never stop the monitor.
+- Each operation times out after `--alert-timeout` seconds (default 5, 1-60). After the first failure a destination's remaining alerts of that cycle are not tried, at most 30 s per destination per cycle. Failures are printed and never stop the monitor. What a destination did not take is kept (up to 1,000 alerts per destination, the oldest are dropped beyond that) and sent first with the next cycle, in order, so a receiver that was down for a while gets every alert once it is back; a syslog destination that failed in the middle of a batch gets that batch again. The queue is kept in memory: a monitor that is restarted does not send what was still waiting (the alerts are in the inventory, `alerts`).
 
 The unit tests deliver to loopback test listeners. The CI job `alert-receivers` (`lab/alert_receivers.sh`) also delivers to **real receivers** on loopback: `monitor` runs two cycles, a port opens in between, and the resulting alert must reach **rsyslog** over UDP and over TCP with octet counting (rsyslog's own parser must find facility local0, the mapped severity, app-name `network-scope` and the alert kind as MSGID) and **nginx** over HTTP and over HTTPS with a certificate from a private CA given through `SSL_CERT_FILE` (the body nginx received must be the alert line exactly). A second HTTPS nginx server with an ordinary certificate that no trusted CA issued must receive nothing, and `monitor` must report the failed delivery as an unknown issuer. The job passes on `ubuntu-latest` (rsyslog 8.2512.0, nginx 1.28.3). Still not tried: a publicly trusted certificate through the system store (a hosted chat or incident service) and receivers on another machine.
 

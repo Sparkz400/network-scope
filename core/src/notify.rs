@@ -607,45 +607,7 @@ fn deliver_with(
         return warnings;
     }
     for sink in sinks {
-        let result = match sink {
-            Sink::Webhook(w) => {
-                let start = Instant::now();
-                let mut sent = 0;
-                let mut error = None;
-                let mut config = None;
-                if w.tls {
-                    match tls() {
-                        Ok(c) => config = Some(c),
-                        Err(e) => error = Some(format!("TLS setup failed: {e}")),
-                    }
-                }
-                for a in alerts {
-                    if error.is_some() {
-                        break;
-                    }
-                    if start.elapsed() > MAX_SINK_TIME {
-                        error = Some("time limit for this cycle reached".to_string());
-                        break;
-                    }
-                    let body = crate::schema::line("alert", a).unwrap_or_default();
-                    match post(w, &body, timeout, config.as_ref()) {
-                        Ok(()) => sent += 1,
-                        Err(e) => {
-                            error = Some(e);
-                            break;
-                        }
-                    }
-                }
-                match error {
-                    None => Ok(()),
-                    Some(e) => Err((sent, e)),
-                }
-            }
-            Sink::Syslog(s) => send_syslog(s, alerts, timeout)
-                .map(|_| ())
-                .map_err(|e| (0, e)),
-        };
-        if let Err((sent, e)) = result {
+        if let Err((sent, e)) = send(sink, alerts, timeout, tls) {
             warnings.push(format!(
                 "{}: {e}; {} of {} alerts not delivered",
                 sink.label(),
@@ -655,6 +617,109 @@ fn deliver_with(
         }
     }
     warnings
+}
+
+/// Sends `alerts` to one sink, in order. On a failure: how many the sink took before it, and
+/// why (after the first failure or `MAX_SINK_TIME` the rest is not tried).
+fn send(
+    sink: &Sink,
+    alerts: &[Alert],
+    timeout: Duration,
+    tls: &dyn Fn() -> Result<Arc<ClientConfig>, String>,
+) -> Result<(), (usize, String)> {
+    match sink {
+        Sink::Webhook(w) => {
+            let start = Instant::now();
+            let mut sent = 0;
+            let mut error = None;
+            let mut config = None;
+            if w.tls {
+                match tls() {
+                    Ok(c) => config = Some(c),
+                    Err(e) => error = Some(format!("TLS setup failed: {e}")),
+                }
+            }
+            for a in alerts {
+                if error.is_some() {
+                    break;
+                }
+                if start.elapsed() > MAX_SINK_TIME {
+                    error = Some("time limit for this cycle reached".to_string());
+                    break;
+                }
+                let body = crate::schema::line("alert", a).unwrap_or_default();
+                match post(w, &body, timeout, config.as_ref()) {
+                    Ok(()) => sent += 1,
+                    Err(e) => {
+                        error = Some(e);
+                        break;
+                    }
+                }
+            }
+            match error {
+                None => Ok(()),
+                Some(e) => Err((sent, e)),
+            }
+        }
+        Sink::Syslog(s) => send_syslog(s, alerts, timeout)
+            .map(|_| ())
+            .map_err(|e| (0, e)),
+    }
+}
+
+/// Most alerts kept per sink for a later try; the oldest are dropped beyond it.
+pub const MAX_PENDING: usize = 1000;
+
+/// [`deliver`] for a monitor that runs on: what a sink did not take (it was down, or the time
+/// limit of the cycle was reached) is kept and sent first on the next call, in order. A sink
+/// that fails gets every alert at least once when it is back; a syslog sink that failed in the
+/// middle of a batch gets the batch again.
+// shortcut: kept in memory, so a monitor that is restarted forgets undelivered alerts (they are
+// in the inventory, `alerts`); persist the queue next to the alerts when that matters.
+#[derive(Default)]
+pub struct Outbox {
+    /// Per sink, by position in the `sinks` of every call.
+    pending: Vec<Vec<Alert>>,
+}
+impl Outbox {
+    /// One warning per sink that failed, with what is kept for the next call.
+    pub fn deliver(&mut self, sinks: &[Sink], alerts: &[Alert], timeout: Duration) -> Vec<String> {
+        self.deliver_with(sinks, alerts, timeout, &platform_tls_config)
+    }
+    fn deliver_with(
+        &mut self,
+        sinks: &[Sink],
+        alerts: &[Alert],
+        timeout: Duration,
+        tls: &dyn Fn() -> Result<Arc<ClientConfig>, String>,
+    ) -> Vec<String> {
+        self.pending.resize_with(sinks.len(), Vec::new);
+        let mut warnings = vec![];
+        for (sink, pending) in sinks.iter().zip(&mut self.pending) {
+            pending.extend_from_slice(alerts);
+            if pending.is_empty() {
+                continue;
+            }
+            let Err((sent, e)) = send(sink, pending, timeout, tls) else {
+                pending.clear();
+                continue;
+            };
+            pending.drain(..sent);
+            let dropped = pending.len().saturating_sub(MAX_PENDING);
+            pending.drain(..dropped);
+            warnings.push(format!(
+                "{}: {e}; {} alerts not delivered, kept for the next cycle{}",
+                sink.label(),
+                pending.len(),
+                if dropped > 0 {
+                    format!(" ({dropped} older ones dropped)")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        warnings
+    }
 }
 
 #[cfg(test)]
@@ -954,6 +1019,46 @@ pub(crate) mod tests {
             w[0].contains("HTTP 500") && w[0].contains("3 of 3"),
             "{w:?}"
         );
+    }
+
+    #[test]
+    fn an_outbox_sends_what_a_sink_did_not_take_with_the_next_call() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The receiver fails the first request and is back for the next two.
+        let server = std::thread::spawn(move || {
+            [
+                "500 Internal Server Error",
+                "204 No Content",
+                "204 No Content",
+            ]
+            .map(|status| {
+                let (mut c, _) = listener.accept().unwrap();
+                c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                serve_http(&mut c, status)
+            })
+        });
+        let sinks = [Sink::webhook(&format!("http://127.0.0.1:{port}/")).unwrap()];
+        let (first, second) = (alert("new-device", "one"), alert("port-opened", "two"));
+        let mut outbox = Outbox::default();
+        let t = Duration::from_secs(2);
+        let w = outbox.deliver(&sinks, std::slice::from_ref(&first), t);
+        assert!(
+            w.len() == 1 && w[0].contains("1 alerts not delivered, kept"),
+            "{w:?}"
+        );
+        assert!(
+            outbox
+                .deliver(&sinks, std::slice::from_ref(&second), t)
+                .is_empty()
+        );
+        // Nothing is left: a third call has nothing to send (and no server to send it to).
+        assert!(outbox.deliver(&sinks, &[], t).is_empty());
+        let messages = server.join().unwrap().map(|request| {
+            let body = request.split("\r\n\r\n").nth(1).unwrap();
+            serde_json::from_str::<Alert>(body).unwrap().message
+        });
+        assert_eq!(messages, ["one", "one", "two"]);
     }
 
     // The macOS verifier (Security.framework) has strict rules for test certificates (validity

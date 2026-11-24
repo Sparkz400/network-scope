@@ -21,8 +21,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// The monitor loop behind `monitor` and `service run`. `stop` ends it cleanly when set from
-/// another thread (the service control handler); `echo` prints each alert on stdout, which a
-/// service has no use for.
+/// another thread (the service control handler); without it, in a console, Ctrl+C does. `echo`
+/// prints each alert on stdout, which a service has no use for.
 pub(in crate::ui) fn run_monitor(
     ctx: &mut Ctx,
     stop: Option<Arc<AtomicBool>>,
@@ -44,6 +44,9 @@ pub(in crate::ui) fn run_monitor(
     if !guard::enforce(ctx, &hosts)? {
         return Ok(());
     }
+    // Ctrl+C ends the monitor like a service stop: the cycle in progress is saved as partial.
+    // Taken only here, after the scope question, where Ctrl+C still ends the process at once.
+    let stop = stop.or_else(|| echo.then(crate::ui::interrupt::flag));
     let policy = monitor_policy(opts)?;
     let cfg = monitor::RunConfig {
         interval: Duration::from_secs(number(opts, "interval", 300u64)?.clamp(1, 86_400)),
@@ -55,6 +58,7 @@ pub(in crate::ui) fn run_monitor(
         quiet: opts.contains_key("quiet"),
         incremental: opts.contains_key("incremental"),
         full_every: number(opts, "full-every", 10u32)?,
+        keep_scans: number(opts, "keep", 0usize)?,
         stop,
     };
     let mut file = match opts.get("alerts") {
@@ -92,6 +96,7 @@ pub(in crate::ui) fn check(ctx: &Ctx) -> Result<(), String> {
     number(opts, "interval", 300u64)?;
     number(opts, "cycles", 0u32)?;
     number(opts, "listen-seconds", 30u64)?;
+    number(opts, "keep", 0usize)?;
     on_alert_script(opts, &ctx.db)?;
     crate::scan::parse_targets(&ctx.pos.join(" "), s.skip_edges, crate::scan::MAX_STREAM)?;
     crate::scan::parse_ports(&s.ports)?;
