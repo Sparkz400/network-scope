@@ -203,7 +203,7 @@ impl Scanner {
                 }
                 ui.horizontal(|ui| {
                     if ui
-                        .button(tr!("Timeline…"))
+                        .button(tr!("Timeline"))
                         .on_hover_text(
                             tr!("When this device was first seen and what changed: address, MAC, name, ports and findings, from the saved scans."),
                         )

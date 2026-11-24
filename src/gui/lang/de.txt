@@ -281,7 +281,7 @@ Unchanged since previous scan. || Seit dem vorigen Scan unverändert.
 Your note || Ihre Notiz
 Copy IP address || IP-Adresse kopieren
 Actions || Aktionen
-Timeline… || Verlauf…
+Timeline || Verlauf
 When this device was first seen and what changed: address, MAC, name, ports and findings, from the saved scans. || Wann dieses Gerät zuerst gesehen wurde und was sich geändert hat: Adresse, MAC, Name, Ports und Befunde, aus den gespeicherten Scans.
 Test script… || Skript testen…
 Configured script (none set in Settings) || Eingestelltes Skript (keines in den Einstellungen)
@@ -687,3 +687,5 @@ By device || Nach Gerät
 One row per scanned address, with its status and ping. || Eine Zeile pro gescannter Adresse, mit Status und Ping.
 One row per device: addresses with the same MAC address merged, and devices that were only seen passively. || Eine Zeile pro Gerät: Adressen mit derselben MAC-Adresse zusammengefasst, dazu Geräte, die nur passiv gesehen wurden.
 Start || Start
+Passive / OT || Passiv / OT
+Inventory || Inventar
