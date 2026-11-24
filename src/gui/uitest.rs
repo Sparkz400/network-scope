@@ -297,7 +297,7 @@ fn the_sidebar_opens_pages_and_a_finding_shows_its_host_beside_the_page() {
     assert_eq!(h.app.selected, ip("10.20.0.5"));
     assert_eq!(h.app.view, MainView::Findings, "the page stays");
     assert!(h.has("Close"));
-    h.click("Saved inventory");
+    h.click("Inventory");
     assert_eq!(h.app.view, MainView::Inventory);
     // The keyboard way: focus an entry and press Enter.
     h.focus_and_press("Network map", egui::Key::Enter);
