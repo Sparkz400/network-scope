@@ -279,6 +279,44 @@ jobs:
             ${{ runner.temp }}/real-servers/smb.conf
           if-no-files-found: ignore
 
+  # Issue 12: alert delivery to real receivers instead of the loopback test listeners of the unit
+  # tests. rsyslog receives the syslog alerts over UDP and TCP (octet counting) and nginx the
+  # webhook POSTs over HTTP and HTTPS (a private CA through SSL_CERT_FILE; a second HTTPS server
+  # with an untrusted certificate must get nothing). Everything binds loopback and runs as the
+  # runner user. See lab/alert_receivers.sh.
+  alert-receivers:
+    name: alert delivery to real receivers (rsyslog, nginx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Unit tests of the checker
+        run: python -I -m unittest discover -s lab -p "test_alert_receivers_check.py"
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked --no-default-features --bin network-scope-cli
+      - name: Deliver alerts to rsyslog and nginx and check what they received
+        env:
+          INSTALL: "1"
+          WORK: ${{ runner.temp }}/alert-receivers
+        run: bash lab/alert_receivers.sh
+      - name: Keep the receiver logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: alert-receivers
+          path: |
+            ${{ runner.temp }}/alert-receivers/*.log
+            ${{ runner.temp }}/alert-receivers/syslog.tsv
+            ${{ runner.temp }}/alert-receivers/alerts.jsonl
+            ${{ runner.temp }}/alert-receivers/monitor.err
+          if-no-files-found: ignore
+
   # Every finding rule id in core/src/risk.rs needs a page under docs/src/findings (linked from the
   # GUI and reports). Plain Python, no build; runs on pull requests, which docs.yml does not.
   finding-docs:
