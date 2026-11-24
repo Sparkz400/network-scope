@@ -59,8 +59,6 @@ pub(super) fn schedule_section(
     note: &str,
     error: &mut String,
 ) {
-    ui.separator();
-    ui.heading(tr!("Scheduled scans"));
     ui.checkbox(
         &mut saved.schedule.enabled,
         tr!("Scan on a schedule while Network Scope is open"),

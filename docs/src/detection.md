@@ -111,7 +111,7 @@ SYN-ACK fingerprinting needs the SYN engine, so TCP-connect scans get TTL and se
 
 ## Devices
 
-`network-scope devices ID` (and the Devices window) merges active results and passive observations into one record per MAC, or per IP when no MAC is known.
+`network-scope devices ID` (and the Devices page of the desktop) merges active results and passive observations into one record per MAC, or per IP when no MAC is known.
 
 - Routed hosts without a MAC that report the same SMB server GUID and NetBIOS name are one device (the GUID alone is not enough: cloned VMs share it). They keep the device id of the lowest address.
 - SMB NetBIOS/DNS names are added to the host names.
@@ -120,7 +120,7 @@ Device timelines (`devices --history`) are described in [Inventory, diffs and re
 
 ## Passive evidence (`listen`)
 
-`network-scope listen` and the desktop Passive window decode traffic that is already on the wire; nothing is transmitted. Each observation is attached to the sender's MAC (and IP when the frame has one) and merged into the device record (`devices ID`, Devices window) next to the active evidence.
+`network-scope listen` and the desktop's Passive discovery / OT page decode traffic that is already on the wire; nothing is transmitted. Each observation is attached to the sender's MAC (and IP when the frame has one) and merged into the device record (`devices ID`, Devices window) next to the active evidence.
 
 | Protocol | What is read | What it tells about the device |
 |---|---|---|

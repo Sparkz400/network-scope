@@ -6,7 +6,7 @@ use eframe::egui;
 use std::{cmp::Ordering, collections::HashMap, net::IpAddr};
 
 /// Data generation, sort column, direction, minimum severity, lowercase query, "known exploited
-/// only" and the minimum EPSS in percent.
+/// only", the minimum EPSS in percent and the one finding rule shown.
 type ViewKey = (
     Option<u64>,
     usize,
@@ -15,6 +15,7 @@ type ViewKey = (
     String,
     bool,
     u8,
+    Option<String>,
 );
 /// Sort column, direction, minimum severity and text filter of one table.
 #[derive(Default)]
@@ -28,6 +29,9 @@ pub(super) struct View {
     pub kev_only: bool,
     /// Findings only: show only findings whose EPSS is at least this many percent (0: no limit).
     pub epss_min: u8,
+    /// Findings only: show only the findings of this rule (a row of the grouped view was
+    /// clicked). An exact id, unlike the text filter.
+    pub rule: Option<String>,
     pub rows: Vec<usize>,
     key: Option<ViewKey>,
 }
@@ -44,6 +48,7 @@ impl View {
             self.query.to_lowercase(),
             self.kev_only,
             self.epss_min,
+            self.rule.clone(),
         );
         if self.key.as_ref() == Some(&key) {
             return false;
@@ -187,6 +192,7 @@ pub(super) fn finding_rows(findings: &[risk::Finding], view: &View) -> Vec<usize
         findings,
         |f| {
             view.min.is_none_or(|m| f.severity >= m)
+                && view.rule.as_ref().is_none_or(|r| *r == f.id)
                 && (!view.kev_only || f.exploit.kev)
                 && (view.epss_min == 0
                     || epss_percent(f).is_some_and(|p| p >= f64::from(view.epss_min)))
@@ -311,6 +317,48 @@ pub(super) fn device_rows(
     )
 }
 
+/// The findings on view grouped by rule: one entry per finding id, in the order the flat view
+/// shows them first, with the indexes of every finding of that rule.
+pub(super) fn finding_groups(findings: &[risk::Finding], rows: &[usize]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = vec![];
+    let mut at: HashMap<&str, usize> = HashMap::new();
+    for &i in rows {
+        let id = findings[i].id.as_str();
+        match at.get(id) {
+            Some(&g) => groups[g].push(i),
+            None => {
+                at.insert(id, groups.len());
+                groups.push(vec![i]);
+            }
+        }
+    }
+    groups
+}
+
+/// The hosts of a group in a few words: the first `shown` addresses (with the port), then
+/// "and N more".
+pub(super) fn group_hosts(findings: &[risk::Finding], members: &[usize], shown: usize) -> String {
+    let mut text = members
+        .iter()
+        .take(shown)
+        .map(|&i| host_port(&findings[i]))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if members.len() > shown {
+        text.push(' ');
+        text.push_str(&tr!("and {} more", members.len() - shown));
+    }
+    text
+}
+
+/// `10.0.0.5:23`, or the address alone when the finding has no port.
+pub(super) fn host_port(f: &risk::Finding) -> String {
+    match f.port {
+        Some(p) => format!("{}:{p}", f.ip),
+        None => f.ip.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +378,33 @@ mod tests {
             reference: None,
             confidence: 0,
         }
+    }
+
+    #[test]
+    fn findings_group_by_rule_in_the_order_of_the_flat_view() {
+        let findings = vec![
+            finding(Severity::Medium, "10.0.0.2", "Modbus"),
+            finding(Severity::High, "10.0.0.1", "Telnet"),
+            finding(Severity::Medium, "10.0.0.3", "Modbus"),
+            finding(Severity::High, "10.0.0.4", "Telnet"),
+            finding(Severity::Medium, "10.0.0.5", "Modbus"),
+        ];
+        // The flat view sorted by severity: Telnet first.
+        let groups = finding_groups(&findings, &[1, 3, 0, 2, 4]);
+        assert_eq!(groups, vec![vec![1, 3], vec![0, 2, 4]]);
+        // Filtered rows give only their groups.
+        assert_eq!(finding_groups(&findings, &[2]), vec![vec![2]]);
+        assert_eq!(
+            group_hosts(&findings, &groups[1], 2),
+            "10.0.0.2:23, 10.0.0.3:23 and 1 more"
+        );
+        assert_eq!(
+            group_hosts(&findings, &groups[0], 5),
+            "10.0.0.1:23, 10.0.0.4:23"
+        );
+        let mut no_port = findings[0].clone();
+        no_port.port = None;
+        assert_eq!(host_port(&no_port), "10.0.0.2");
     }
 
     #[test]
