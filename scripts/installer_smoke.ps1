@@ -24,7 +24,8 @@ if (Test-Path $dir) { throw "$dir exists already; remove it first" }
 $leaf = Split-Path $dir -Leaf
 function Get-UserPath { (Get-Item 'HKCU:\Environment').GetValue('Path', $null, 'DoNotExpandEnvironmentNames') }
 function Get-PathCount {
-    @("$(Get-UserPath)" -split ';' | Where-Object { (Split-Path $_.TrimEnd('\') -Leaf) -ieq $leaf }).Count
+    # Empty entries (";;" or a trailing ";") are skipped; Split-Path rejects an empty string.
+    @("$(Get-UserPath)" -split ';' | Where-Object { $_ -and [IO.Path]::GetFileName($_.TrimEnd('\')) -ieq $leaf }).Count
 }
 $savedPath = Get-UserPath
 
