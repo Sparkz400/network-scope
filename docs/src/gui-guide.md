@@ -12,6 +12,7 @@ Below the menu bar and the scan controls (addresses, TCP ports, preset, Start), 
   - a summary: status, ping, TTL, host name, MAC address and manufacturer, OS and device type with their confidence (hover for the reasons), open ports, the router path, and what changed since the previous scan;
   - **Findings** of this host, each with its severity, port, **Learn more** and **Reference**. They are listed when the findings of the scan are worked out: at once for up to 4,096 hosts, else after the Findings page has been opened;
   - **Services**: the service found on each open port;
+  - **Firmware (SBOM)** (closed at first; only when an imported firmware SBOM matches): the firmware the device reported (industrial identification, industrial traffic or LLDP-MED) and the packages its SBOM lists, with type, supplier, package URL, CPE name and licence on hover (the first 300; single files are counted, not listed). It finds SBOMs as the CycloneDX export does ([Firmware SBOMs](inventory-diff-reports.md#firmware-sboms));
   - **Actions**: the host menu as buttons (favorite, open in the browser, SSH, remote desktop, ping, Wake-on-LAN, copy the address);
   - **All identity fields** (closed at first): every field the scan, the probes and scripts recorded;
   - your note, **Timeline…** and **Test script…**.
@@ -22,7 +23,7 @@ The workbench for unknown devices, Settings, the keyboard shortcuts and the dial
 
 The menu bar has five menus:
 
-- **File**: Import address list…, Export (HTML report, Markdown summary, visible rows as CSV or JSON), Clear results and captures, Quit.
+- **File**: Import address list…, Import firmware SBOMs…, Import VEX statements… (see [Firmware SBOMs](inventory-diff-reports.md#firmware-sboms) and [Vendor statements](findings-and-cves.md#vendor-statements-vex-offline)), Export (HTML report, Markdown summary, CycloneDX inventory of all devices, visible rows as CSV or JSON), Clear results and captures, Quit.
 - **Scan**: Scan my network, Start scan, Pause / resume, Stop scan, Preset (the presets and the Faster and More thorough adjustments), Favorite addresses, Settings….
 - **View**: the pages of the sidebar and the device mode of the Hosts page, Search hosts and the theme. The current page is highlighted.
 - **Tools**: the unknown-device workbench, Scheduled scans… and the command palette.
@@ -184,7 +185,7 @@ The app is available in English and German. **Settings → Appearance and langua
 
 Text in the code is English and goes through a lookup keyed by that English text; a text without a translation shows in English, so a missing entry never breaks anything. The German catalog is the plain file `src/gui/lang/de.txt` (`English text || Deutscher Text`, one per line); a test fails when a text in the interface has no entry, when an entry appears twice, or when the placeholders of the two sides differ. Adding a language is a new catalog file and one entry in `i18n.rs`.
 
-Coverage: the main window, the menus and the scan controls, the Settings window, the Overview, Scan my network, the network map, the host menu and Wake-on-LAN, the command palette, the host details, the sidebar, the Findings, Devices and Inventory pages, the confirmation dialogs, the update notice and the scheduled-scan section are translated: 629 catalog entries, which include the menu bar, the shortcut list, the sidebar and the sections of the host details, the OT passive section, the device timeline panel, the Scan details section and the unknown-device workbench (the test checks every text of those files). The text the engine itself produces (finding titles, advice, evidence, protocol fields, the CLI) is not translated.
+Coverage: the main window, the menus and the scan controls, the Settings window, the Overview, Scan my network, the network map, the host menu and Wake-on-LAN, the command palette, the host details, the sidebar, the Findings, Devices and Inventory pages, the confirmation dialogs, the update notice and the scheduled-scan section are translated: 646 catalog entries, which include the menu bar, the shortcut list, the sidebar and the sections of the host details, the OT passive section, the device timeline panel, the Scan details section and the unknown-device workbench (the test checks every text of those files). The text the engine itself produces (finding titles, advice, evidence, protocol fields, the CLI) is not translated.
 
 ## Accessibility
 

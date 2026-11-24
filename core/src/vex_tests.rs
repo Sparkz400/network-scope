@@ -1,0 +1,407 @@
+use super::*;
+use crate::risk::Severity;
+
+/// A CSAF VEX document: one CVE, the vulnerable code is not in the S7-1200 firmware V4.x, and
+/// the S7-1500 below V3.1 is affected (V3.1 fixes it).
+const CSAF_VEX: &str = r#"{
+  "document": { "category": "csaf_vex", "csaf_version": "2.0", "title": "VEX",
+    "tracking": { "id": "VEX-TEST-0001" } },
+  "product_tree": { "branches": [ { "category": "vendor", "name": "Siemens", "branches": [
+    { "category": "product_name", "name": "SIMATIC S7-1200 CPU", "branches": [
+      { "category": "product_version_range", "name": ">=V4.0|<V5.0",
+        "product": { "product_id": "S12", "name": "SIMATIC S7-1200 CPU V4" } } ] },
+    { "category": "product_name", "name": "SIMATIC S7-1500 CPU", "branches": [
+      { "category": "product_version_range", "name": "<V3.1",
+        "product": { "product_id": "S15old", "name": "SIMATIC S7-1500 CPU < V3.1" } },
+      { "category": "product_version", "name": "V3.1",
+        "product": { "product_id": "S15new", "name": "SIMATIC S7-1500 CPU V3.1" } } ] } ] } ] },
+  "vulnerabilities": [ {
+    "cve": "CVE-2099-1000",
+    "product_status": {
+      "known_not_affected": ["S12"], "known_affected": ["S15old"], "fixed": ["S15new"] },
+    "flags": [ { "label": "vulnerable_code_not_present", "product_ids": ["S12"] } ],
+    "threats": [ { "category": "impact", "details": "The OpenSSL in this firmware is built without SM2.",
+      "product_ids": ["S12"] } ],
+    "remediations": [ { "category": "vendor_fix", "details": "Update to V3.1",
+      "product_ids": ["S15old"] } ]
+  } ]
+}"#;
+
+/// A CycloneDX VEX: the LabSwitch 2.4.1 is not affected by a CVE (code not reachable); per
+/// version, 2.3.0 is affected.
+const CYCLONEDX_VEX: &str = r#"{
+  "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000001",
+  "components": [ { "bom-ref": "sw", "type": "firmware", "name": "LabSwitch 24",
+    "version": "2.4.1", "manufacturer": { "name": "Lab Networks" } } ],
+  "vulnerabilities": [
+    { "id": "CVE-2099-2000",
+      "analysis": { "state": "not_affected", "justification": "code_not_reachable",
+        "detail": "The web server is not compiled in." },
+      "affects": [ { "ref": "sw" } ] },
+    { "id": "CVE-2099-2001",
+      "analysis": { "state": "not_affected" },
+      "affects": [ { "ref": "urn:cdx:00000000-0000-4000-8000-000000000001/1#sw",
+        "versions": [ { "version": "2.4.1", "status": "unaffected" },
+                      { "version": "2.3.0", "status": "affected" } ] } ] },
+    { "id": "not-a-cve", "analysis": { "state": "not_affected" }, "affects": [ { "ref": "sw" } ] }
+  ]
+}"#;
+
+fn library(files: &[(&str, &str)]) -> Library {
+    let mut l = Library::default();
+    for (name, text) in files {
+        l.merge(parse(text.as_bytes(), name).unwrap(), name)
+            .unwrap();
+    }
+    l
+}
+
+fn names(n: &[&str]) -> Vec<String> {
+    n.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn csaf_vex_statuses_become_statements_with_their_reason() {
+    let l = library(&[("vex.json", CSAF_VEX)]);
+    let cpu = names(&["6ES7 214-1AG40-0XB0", "CPU 1214C DC/DC/DC"]);
+    let s = l
+        .lookup("CVE-2099-1000", "Siemens", &cpu, "V4.2.1")
+        .unwrap();
+    assert_eq!(s.state, State::NotAffected);
+    assert_eq!(s.justification, "vulnerable_code_not_present");
+    assert!(s.detail.contains("without SM2"));
+    assert_eq!(s.source, "VEX-TEST-0001");
+    // Outside the range: no statement.
+    assert!(l.lookup("CVE-2099-1000", "Siemens", &cpu, "5.1").is_none());
+    // The S7-1500: affected below V3.1, fixed at V3.1.
+    let s1500 = names(&["CPU 1511-1 PN"]);
+    assert_eq!(
+        l.lookup("CVE-2099-1000", "Siemens", &s1500, "3.0.2")
+            .unwrap()
+            .state,
+        State::Affected
+    );
+    assert_eq!(
+        l.lookup("CVE-2099-1000", "Siemens", &s1500, "V3.1")
+            .unwrap()
+            .state,
+        State::Fixed
+    );
+    // Another vendor or another CVE: nothing.
+    assert!(
+        l.lookup("CVE-2099-1000", "Rockwell", &cpu, "4.2.1")
+            .is_none()
+    );
+    assert!(
+        l.lookup("CVE-2099-9999", "Siemens", &cpu, "4.2.1")
+            .is_none()
+    );
+}
+
+#[test]
+fn cyclonedx_vex_analysis_and_per_version_status_are_read() {
+    let l = library(&[("switch.vex.json", CYCLONEDX_VEX)]);
+    let sw = names(&["LabSwitch 24"]);
+    let s = l
+        .lookup("CVE-2099-2000", "Lab Networks", &sw, "2.4.1")
+        .unwrap();
+    assert_eq!(
+        (s.state, s.justification.as_str()),
+        (State::NotAffected, "code_not_reachable")
+    );
+    assert!(
+        l.lookup("CVE-2099-2000", "", &sw, "2.4.2").is_none(),
+        "only the stated version"
+    );
+    // A BOM-Link reference into the same document, with a status per version.
+    assert_eq!(
+        l.lookup("CVE-2099-2001", "Lab Networks", &sw, "2.4.1")
+            .unwrap()
+            .state,
+        State::NotAffected
+    );
+    assert_eq!(
+        l.lookup("CVE-2099-2001", "Lab Networks", &sw, "2.3.0")
+            .unwrap()
+            .state,
+        State::Affected
+    );
+    // An id that is no CVE is not a statement.
+    assert_eq!(l.statements.len(), 3);
+}
+
+#[test]
+fn a_statement_with_a_version_range_wins_over_one_for_all_versions() {
+    // Two statements that add information (neither clears the finding): the one with a range wins.
+    let mut l = library(&[("vex.json", CSAF_VEX)]);
+    let mut all = l.statements[0].clone();
+    all.range = "*".into();
+    all.state = State::UnderInvestigation;
+    all.source = "OTHER".into();
+    let mut ranged = l.statements[0].clone();
+    ranged.state = State::Affected;
+    l.statements = vec![all, ranged];
+    let cpu = names(&["CPU 1214C"]);
+    assert_eq!(
+        l.lookup("CVE-2099-1000", "Siemens", &cpu, "4.2.1")
+            .unwrap()
+            .state,
+        State::Affected
+    );
+}
+
+fn host() -> Host {
+    Host {
+        ip: "10.0.0.5".parse().unwrap(),
+        responding: true,
+        ping: None,
+        ttl: None,
+        hostname: String::new(),
+        mac: String::new(),
+        open: vec![102],
+        closed: 0,
+        unanswered: 0,
+        errors: vec![],
+        ports_checked: true,
+        identity: [
+            ("S7.order_code", "6ES7 214-1AG40-0XB0"),
+            ("S7.cpu_type", "CPU 1214C DC/DC/DC"),
+            ("S7.firmware", "V4.2.1"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect(),
+        udp_open: vec![],
+        trace: vec![],
+    }
+}
+
+fn finding(cve: &str) -> Finding {
+    Finding {
+        severity: Severity::Critical,
+        id: format!("cve-{}", cve.to_ascii_lowercase()),
+        title: "t".into(),
+        ip: "10.0.0.5".parse().unwrap(),
+        port: Some(102),
+        evidence: "e".into(),
+        cve: vec![cve.into()],
+        advice: "a".into(),
+        exploit: Default::default(),
+        reference: None,
+        confidence: 40,
+        vex: None,
+    }
+}
+
+#[test]
+fn a_covered_finding_is_marked_and_no_longer_counts_in_the_score() {
+    let l = library(&[("vex.json", CSAF_VEX)]);
+    let mut findings = vec![finding("CVE-2099-1000"), finding("CVE-2099-3000")];
+    let before = crate::score::finding_points(&findings[0]);
+    assert!(before > 0.0);
+    apply_with(&l, &mut findings, &[host()]);
+    let v = findings[0].vex.as_ref().expect("statement applied");
+    assert_eq!(v.state, State::NotAffected);
+    assert_eq!(crate::score::finding_points(&findings[0]), 0.0);
+    assert!(findings[1].vex.is_none(), "a CVE without a statement");
+    // In the JSON only when there is a statement.
+    let json = serde_json::to_value(&findings).unwrap();
+    assert_eq!(json[0]["vex"]["state"], "not_affected");
+    assert!(json[1].get("vex").is_none());
+    // An affected statement keeps the score.
+    let mut affected = finding("CVE-2099-1000");
+    let s1500 = Host {
+        identity: [("S7.cpu_type", "CPU 1511-1 PN"), ("S7.firmware", "V3.0.2")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        ..host()
+    };
+    apply_with(&l, std::slice::from_mut(&mut affected), &[s1500]);
+    assert_eq!(affected.vex.as_ref().unwrap().state, State::Affected);
+    assert!(crate::score::finding_points(&affected) > 0.0);
+}
+
+#[test]
+fn broken_input_is_rejected() {
+    assert!(parse(b"\xff\xfe", "x").is_err());
+    assert!(parse(&CSAF_VEX.as_bytes()[..300], "x").is_err());
+    assert!(parse(br#"{"a":1}"#, "x").unwrap_err().contains("neither"));
+    // A CycloneDX document without vulnerabilities, and one whose refs resolve to nothing.
+    assert!(parse(br#"{"bomFormat":"CycloneDX","components":[]}"#, "x").is_err());
+    let dangling = r#"{"bomFormat":"CycloneDX","vulnerabilities":[{"id":"CVE-2099-0001",
+        "analysis":{"state":"not_affected"},"affects":[{"ref":"nowhere"}]}]}"#;
+    assert!(
+        parse(dangling.as_bytes(), "x")
+            .unwrap_err()
+            .contains("no statement")
+    );
+}
+
+#[test]
+fn import_writes_the_cache_and_a_second_import_replaces_the_same_document() {
+    let dir = std::env::temp_dir().join(format!("ns-vex-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.json"), CSAF_VEX).unwrap();
+    std::fs::write(dir.join("b.json"), CYCLONEDX_VEX).unwrap();
+    std::fs::write(dir.join("c.json"), "{}").unwrap();
+    let cache = dir.join("vex.json");
+    let r = import(std::slice::from_ref(&dir), &cache, 5).unwrap();
+    assert_eq!((r.files, r.rejected.len()), (2, 1));
+    let first = Library::load(&cache).unwrap().statements.len();
+    import(&[dir.join("a.json")], &cache, 6).unwrap();
+    assert_eq!(
+        Library::load(&cache).unwrap().statements.len(),
+        first,
+        "replaced, not doubled"
+    );
+    assert_eq!(
+        status(&Library::load(&cache).unwrap(), &cache)["by_state"]["not affected"],
+        3
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_clearing_statement_must_be_exact_and_affected_wins() {
+    let statement = |vendor: &str, product: &str, range: &str, state: State| Statement {
+        cve: "CVE-2099-4000".into(),
+        vendor: vendor.into(),
+        products: vec![product.into()],
+        range: range.into(),
+        state,
+        justification: String::new(),
+        detail: String::new(),
+        source: "T".into(),
+        purl: String::new(),
+    };
+    let lib = |list: Vec<Statement>| Library {
+        version: 1,
+        imported_at: 0,
+        sources: vec![],
+        statements: list,
+    };
+    // A distribution's "openssh not affected" for all versions, without a vendor: it must not
+    // clear the OpenSSH finding of every host (services have no vendor).
+    let distro = lib(vec![statement("", "OpenSSH", "*", State::NotAffected)]);
+    assert!(
+        distro
+            .lookup("CVE-2099-4000", "", &names(&["OpenSSH"]), "7.4")
+            .is_none()
+    );
+    // A statement for a more specific model does not clear a sibling model of the family.
+    let model = lib(vec![statement(
+        "Siemens",
+        "S7-1200 CPU 1217C",
+        ">=4.0|<5.0",
+        State::NotAffected,
+    )]);
+    let cpu = names(&["CPU 1214C DC/DC/DC"]);
+    assert!(
+        model
+            .lookup("CVE-2099-4000", "Siemens", &cpu, "4.2.1")
+            .is_none()
+    );
+    // The family name, or the device's own name, does.
+    let family = lib(vec![statement(
+        "Siemens",
+        "S7-1200",
+        ">=4.0|<5.0",
+        State::NotAffected,
+    )]);
+    assert!(
+        family
+            .lookup("CVE-2099-4000", "Siemens", &cpu, "4.2.1")
+            .is_some()
+    );
+    // An affected statement still attaches with the loose rule, and wins over a clearing one.
+    let both = lib(vec![
+        statement("Siemens", "S7-1200", ">=4.0|<5.0", State::NotAffected),
+        statement("Siemens", "S7-1200 CPU 1214C", "*", State::Affected),
+    ]);
+    assert_eq!(
+        both.lookup("CVE-2099-4000", "Siemens", &cpu, "4.2.1")
+            .unwrap()
+            .state,
+        State::Affected
+    );
+}
+
+#[test]
+fn package_urls_are_read_and_match_sbom_components() {
+    assert_eq!(
+        purl_parts("pkg:npm/%40angular/core@16.2.0?arch=x#src"),
+        Some(("pkg:npm/@angular/core".into(), "16.2.0".into()))
+    );
+    assert_eq!(
+        purl_parts("pkg:Maven/Org.Example/Lib"),
+        Some(("pkg:maven/org.example/lib".into(), String::new()))
+    );
+    assert_eq!(purl_parts("cpe:2.3:a:x:y"), None);
+    assert_eq!(purl_parts("pkg:nameonly"), None);
+    // A VEX whose refs point into another BOM by package URL; one component of this document
+    // carries its own package URL.
+    let doc = r#"{"bomFormat":"CycloneDX","specVersion":"1.6","serialNumber":"urn:uuid:1",
+      "components":[{"bom-ref":"c1","name":"zlib","version":"1.2.11","purl":"pkg:generic/zlib@1.2.11"}],
+      "vulnerabilities":[
+        {"id":"CVE-2099-5000","analysis":{"state":"not_affected","justification":"code_not_reachable"},
+         "affects":[{"ref":"urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1#pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.0?type=jar"}]},
+        {"id":"CVE-2099-5001","analysis":{"state":"not_affected"},
+         "affects":[{"ref":"c1"}]},
+        {"id":"CVE-2099-5002","analysis":{"state":"exploitable"},
+         "affects":[{"ref":"other#pkg:deb/debian/openssl","versions":[{"range":"vers:deb/>=3.0.0|<3.0.11","status":"affected"}]}]}]}"#;
+    let list = parse(doc.as_bytes(), "x.json").unwrap();
+    assert_eq!(list.len(), 3, "{list:?}");
+    assert_eq!(
+        list[0].purl,
+        "pkg:maven/com.fasterxml.jackson.core/jackson-databind"
+    );
+    assert_eq!(list[0].products, vec!["jackson-databind".to_string()]);
+    assert_eq!(list[0].range, "=2.10.0");
+    assert_eq!(list[1].purl, "pkg:generic/zlib");
+    let lib = Library {
+        version: 1,
+        imported_at: 0,
+        sources: vec![],
+        statements: list,
+    };
+    let jackson = "pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.0";
+    assert_eq!(
+        lib.lookup_purl("CVE-2099-5000", jackson, "").unwrap().state,
+        State::NotAffected
+    );
+    // Another version, another package, another CVE: nothing.
+    assert!(
+        lib.lookup_purl(
+            "CVE-2099-5000",
+            "pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.11.0",
+            ""
+        )
+        .is_none()
+    );
+    assert!(
+        lib.lookup_purl(
+            "CVE-2099-5000",
+            "pkg:maven/other/jackson-databind@2.10.0",
+            ""
+        )
+        .is_none()
+    );
+    assert!(lib.lookup_purl("CVE-2099-5001", jackson, "").is_none());
+    // Without a version in the package URL, the component's version counts.
+    assert!(
+        lib.lookup_purl("CVE-2099-5001", "pkg:generic/zlib", "1.2.11")
+            .is_some()
+    );
+    // A vers range.
+    let ssl = lib
+        .lookup_purl("CVE-2099-5002", "pkg:deb/debian/openssl@3.0.2", "")
+        .unwrap();
+    assert_eq!(ssl.state, State::Affected);
+    assert!(
+        lib.lookup_purl("CVE-2099-5002", "pkg:deb/debian/openssl@3.0.11", "")
+            .is_none()
+    );
+}

@@ -34,6 +34,14 @@
         "null"
       ],
       "description": "Present with scores, model_version, score_date when EPSS data is imported"
+    },
+    "sboms": {
+      "type": "object",
+      "description": "Present when the SBOM cache (feeds import sbom) exists"
+    },
+    "vex": {
+      "type": "object",
+      "description": "Present when the VEX cache (feeds import vex) exists"
     }
   }
 }

@@ -621,6 +621,7 @@ mod tests {
             exploit: Exploit::default(),
             reference: None,
             confidence: 0,
+            vex: None,
         }
     }
     fn feeds() -> Feeds {
