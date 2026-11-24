@@ -326,15 +326,16 @@ impl Scanner {
                             .sense(egui::Sense::click())
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             // The finding takes the room that is left (a wide window shows
-                            // the whole title); below 1100 px the table scrolls sideways.
+                            // the whole title). The fixed columns fit a 1100 px window with
+                            // both links in view; below that the table scrolls sideways.
                             .column(Column::initial(65.0))
-                            .column(Column::initial(150.0).clip(true))
-                            .column(Column::remainder().at_least(190.0).clip(true))
-                            .column(Column::initial(120.0).clip(true))
-                            .column(Column::initial(110.0).clip(true))
+                            .column(Column::initial(140.0).clip(true))
+                            .column(Column::remainder().at_least(150.0).clip(true))
+                            .column(Column::initial(105.0).clip(true))
+                            .column(Column::initial(105.0).clip(true))
                             .column(Column::initial(50.0).clip(true))
                             .column(Column::initial(55.0))
-                            .column(Column::initial(150.0))
+                            .column(Column::initial(145.0))
                             .header(22.0, |mut row| {
                                 for (i, h) in tables::finding_columns().iter().enumerate() {
                                     row.col(|ui| {
