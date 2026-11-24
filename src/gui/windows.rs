@@ -331,11 +331,11 @@ impl Scanner {
                             .column(Column::initial(65.0))
                             .column(Column::initial(140.0).clip(true))
                             .column(Column::remainder().at_least(150.0).clip(true))
-                            .column(Column::initial(105.0).clip(true))
+                            .column(Column::initial(95.0).clip(true))
                             .column(Column::initial(105.0).clip(true))
                             .column(Column::initial(50.0).clip(true))
                             .column(Column::initial(55.0))
-                            .column(Column::initial(145.0))
+                            .column(Column::initial(160.0))
                             .header(22.0, |mut row| {
                                 for (i, h) in tables::finding_columns().iter().enumerate() {
                                     row.col(|ui| {
