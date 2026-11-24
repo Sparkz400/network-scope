@@ -17,6 +17,10 @@ IPv6 has no address range to sweep, so a scan cannot find hosts by trying addres
 - A neighbour becomes a **host** when it answered the echo or its cache entry is reachable, delay or probe, and no scanned host has its MAC. It is added with its best address (global, then unique local, then link-local), `ipv6.addresses` (up to 8), `ipv6.source` and `ipv6.interface` in its identity. A **stale** entry, or an answer without a MAC, is only an `IPv6 neighbor` observation: a stale entry shows that the host was there, not that it is.
 - A scanned host with the same MAC gets `ipv6.addresses` and `ipv6.source` instead; [`devices`](device-identity.md) then shows the IPv4 and IPv6 addresses as one device. The observations are saved with the scan, so the join also works later.
 
+## Port scans of IPv6 addresses
+
+Discovery runs after the scan, so the hosts it adds are not port-scanned in that run. IPv6 addresses given to `scan` as targets (for example ones found here) are probed by TCP connect, or with `--syn` by the SYN engine: on-link ones (link-local, or inside an on-link prefix of the capture interface) at their own MAC, routed ones at their gateway's MAC when the route leaves through the capture interface. The engine reads the same neighbour cache, for the capture interface only, for those MACs. See [IPv6 targets](scanning-engine.md#ipv6-targets); that part has not been tested on a real network.
+
 ## Where it runs
 
 | | |

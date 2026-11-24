@@ -288,6 +288,429 @@ pub fn parse_ifconfig_inet6(text: &str) -> (Vec<Interface>, Vec<Ipv6Addr>) {
     (interfaces, local)
 }
 
+// ---- the capture interface, for the SYN engine ------------------------------------------------
+
+/// Most IPv6 addresses of the capture interface the SYN engine uses as sources (each one is a
+/// term of its capture filter).
+pub const MAX_LINK_ADDRESSES: usize = 16;
+
+/// An IPv6 address of the capture interface and the length of its on-link prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalAddress {
+    pub address: Ipv6Addr,
+    pub prefix: u8,
+}
+
+/// The capture interface as the SYN engine needs it for IPv6: the OS interface index (0 when
+/// unknown), the capture interface's name, and its addresses that may be used as a source
+/// (tentative and duplicate addresses are left out). Read once when the engine starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Link {
+    pub index: u32,
+    pub name: String,
+    pub addresses: Vec<LocalAddress>,
+    /// The IPv6 addresses of this computer that are never a target, because a frame to them
+    /// leaves on the wire and is not looped back: every address in any state (deprecated,
+    /// tentative, beyond [`MAX_LINK_ADDRESSES`]), on any interface, except the link-local
+    /// addresses of other interfaces (they are not on this link, where the same address, such
+    /// as `fe80::1`, can be a neighbour).
+    pub own: Vec<Ipv6Addr>,
+}
+
+fn is_link_local(ip: &Ipv6Addr) -> bool {
+    ip.segments()[0] & 0xffc0 == 0xfe80
+}
+
+fn in_prefix(ip: Ipv6Addr, net: Ipv6Addr, prefix: u8) -> bool {
+    let bits = u32::from(prefix.min(128));
+    let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+    u128::from(ip) & mask == u128::from(net) & mask
+}
+
+fn is_unique_local(ip: &Ipv6Addr) -> bool {
+    ip.segments()[0] & 0xfe00 == 0xfc00
+}
+
+impl Link {
+    /// Refuses what is never a SYN target: a non-unicast or IPv4-mapped address, and any
+    /// address of this computer (a frame to it leaves on the wire and is not looped back).
+    pub fn check_target(&self, target: Ipv6Addr) -> Result<(), String> {
+        if !is_host_address(&target) || target.to_ipv4_mapped().is_some() {
+            return Err(format!("{target} is not a unicast IPv6 address"));
+        }
+        if self.own.contains(&target) || self.addresses.iter().any(|a| a.address == target) {
+            return Err(format!(
+                "{target} is this computer's own address; raw frames to it are not looped back"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The source address for an on-link target, decided without the routing table: a
+    /// link-local target is sent from a link-local address of the interface, a target inside
+    /// the on-link prefix of one of its global or unique-local addresses from that address (the
+    /// longest such prefix wins). `None`: the target is in no on-link prefix, so it is routed
+    /// (see [`Link::routed_source`]). Errors: a refused target ([`Link::check_target`]), and a
+    /// link-local target without a link-local source.
+    pub fn on_link_source(&self, target: Ipv6Addr) -> Result<Option<Ipv6Addr>, String> {
+        self.check_target(target)?;
+        if is_link_local(&target) {
+            return self
+                .addresses
+                .iter()
+                .find(|a| is_link_local(&a.address))
+                .map(|a| Some(a.address))
+                .ok_or_else(|| "The capture interface has no link-local IPv6 address".into());
+        }
+        Ok(self
+            .addresses
+            .iter()
+            .filter(|a| {
+                !is_link_local(&a.address)
+                    && (1..128).contains(&a.prefix)
+                    && in_prefix(target, a.address, a.prefix)
+            })
+            .max_by_key(|a| a.prefix)
+            .map(|a| a.address))
+    }
+
+    /// The source address for a target the routing table sends through this interface (via a
+    /// gateway, or on-link outside our prefixes): the OS's own choice (`suggested`) when it is
+    /// a global or unique-local address of this interface, because the capture filter passes
+    /// replies only to those; else one of the target's kind (unique-local for a unique-local
+    /// target, global for any other). Never a link-local address.
+    pub fn routed_source(
+        &self,
+        target: Ipv6Addr,
+        suggested: Option<Ipv6Addr>,
+    ) -> Result<Ipv6Addr, String> {
+        let usable = |a: &Ipv6Addr| !is_link_local(a);
+        if let Some(s) = suggested
+            && usable(&s)
+            && self.addresses.iter().any(|a| a.address == s)
+        {
+            return Ok(s);
+        }
+        let ula = is_unique_local(&target);
+        self.addresses
+            .iter()
+            .map(|a| a.address)
+            .find(|a| usable(a) && is_unique_local(a) == ula)
+            .ok_or_else(|| {
+                format!(
+                    "The capture interface has no {} IPv6 address for {target}",
+                    if ula { "unique-local" } else { "global" }
+                )
+            })
+    }
+
+    /// Whether a SYN to `target` may be possible at all, from the addresses alone: an on-link
+    /// target with its source, or one that has a source for a route. Whether a route exists
+    /// is only known after the lookup.
+    pub fn may_reach(&self, target: Ipv6Addr) -> bool {
+        match self.on_link_source(target) {
+            Ok(Some(_)) => true,
+            Ok(None) => self.routed_source(target, None).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// Every address [`Link::on_link_source`] and [`Link::routed_source`] can return (the
+    /// capture filter lists them).
+    pub fn sources(&self) -> Vec<Ipv6Addr> {
+        self.addresses.iter().map(|a| a.address).collect()
+    }
+
+    /// Whether a neighbour cache entry's interface (a name on Linux, an index on Windows) is
+    /// this one.
+    fn is(&self, interface: &str) -> bool {
+        interface == self.name || (self.index != 0 && interface == self.index.to_string())
+    }
+}
+
+/// Linux `/proc/net/if_inet6` (see [`parse_if_inet6`]) for the interface `name`: its index and
+/// its addresses with their prefix length (the fields are hex). Tentative (flag 0x40) and
+/// duplicate (0x08, duplicate address detection failed) addresses are left out as sources;
+/// [`Link::own`] gets the addresses of every interface (see there).
+pub fn parse_if_inet6_link(text: &str, name: &str) -> Link {
+    let mut link = Link {
+        name: name.to_string(),
+        ..Link::default()
+    };
+    for line in text.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 6 || f[0].len() != 32 {
+            continue;
+        }
+        if f[5] != name {
+            if let Ok(bits) = u128::from_str_radix(f[0], 16)
+                && !is_link_local(&Ipv6Addr::from(bits))
+            {
+                link.own.push(Ipv6Addr::from(bits));
+            }
+            continue;
+        }
+        let hex = |s: &str| u32::from_str_radix(s, 16).ok();
+        let (Ok(bits), Some(index), Some(prefix), Some(flags)) = (
+            u128::from_str_radix(f[0], 16),
+            hex(f[1]),
+            hex(f[2]),
+            hex(f[4]),
+        ) else {
+            continue;
+        };
+        link.index = index;
+        let address = Ipv6Addr::from(bits);
+        link.own.push(address);
+        if flags & (0x40 | 0x08) == 0
+            && is_host_address(&address)
+            && prefix <= 128
+            && link.addresses.len() < MAX_LINK_ADDRESSES
+        {
+            link.addresses.push(LocalAddress {
+                address,
+                prefix: prefix as u8,
+            });
+        }
+    }
+    link
+}
+
+/// The capture interface's IPv6 side, read from the OS (nothing is sent). Windows: the
+/// interface that owns the source IPv4 address `source` (the pcap device name is not an OS
+/// interface name), its preferred addresses and their on-link prefix length from
+/// `GetUnicastIpAddressTable`. Linux: the interface named `interface` in `/proc/net/if_inet6`.
+/// macOS/BSD: the interface named `interface` in `ifconfig -a`. A table that cannot be read
+/// gives no addresses, so every IPv6 target falls back to TCP connect.
+pub fn link_of(interface: &str, source: std::net::Ipv4Addr) -> Link {
+    let mut link = if cfg!(windows) {
+        match (
+            crate::platform::interface_index(source),
+            win::unicast_rows(),
+        ) {
+            (Some(index), Ok(rows)) => Link {
+                index,
+                name: interface.to_string(),
+                addresses: win::link_addresses(&rows, index),
+                own: rows
+                    .iter()
+                    .filter(|r| r.0 == index || !is_link_local(&r.1))
+                    .map(|r| r.1)
+                    .collect(),
+            },
+            _ => Link::default(),
+        }
+    } else if cfg!(target_os = "linux") {
+        std::fs::read_to_string("/proc/net/if_inet6")
+            .map(|text| parse_if_inet6_link(&text, interface))
+            .unwrap_or_default()
+    } else {
+        run("ifconfig", &["-a"])
+            .map(|text| parse_ifconfig_link(&text, interface))
+            .unwrap_or_default()
+    };
+    link.addresses.truncate(MAX_LINK_ADDRESSES);
+    link
+}
+
+/// The MAC of `ip` in a neighbour list, on the interface `link` only: a link-local address such
+/// as `fe80::1` often exists on several links.
+pub fn mac_on_link(neighbors: &[Neighbor], ip: Ipv6Addr, link: &Link) -> Option<String> {
+    neighbors
+        .iter()
+        .find(|n| n.ip == ip && link.is(&n.interface))
+        .map(|n| n.mac.clone())
+}
+
+/// The MAC of `ip` in the OS neighbour cache on the interface `link` (Windows
+/// `GetIpNetTable2`, Linux `ip -6 neigh show`; none elsewhere). Stale entries count: they are a
+/// MAC source, as the IPv4 lookup's are. Reading the cache sends nothing.
+pub fn cached_mac(ip: Ipv6Addr, link: &Link) -> Option<String> {
+    let neighbors = if cfg!(windows) {
+        win::neighbor_rows().ok()?
+    } else if cfg!(target_os = "linux") {
+        parse_ip_neigh6(&run("ip", &["-6", "neigh", "show"]).ok()?)
+    } else {
+        parse_ndp_an(&run("ndp", &["-an"]).ok()?)
+    };
+    mac_on_link(&neighbors, ip, link)
+}
+
+/// macOS/BSD `ifconfig -a` (see [`parse_ifconfig_inet6`]) for the interface `name`: its index
+/// (the `scopeid` of its link-local address) and its addresses with `prefixlen`. Addresses
+/// marked `tentative`, `duplicated`, `detached` or `deprecated` are left out as sources;
+/// [`Link::own`] gets the `inet6` addresses of every interface (see there).
+pub fn parse_ifconfig_link(text: &str, name: &str) -> Link {
+    let mut link = Link {
+        name: name.to_string(),
+        ..Link::default()
+    };
+    let mut current = "";
+    for line in text.lines() {
+        if !line.starts_with([' ', '\t']) {
+            current = line.split(':').next().unwrap_or_default();
+            continue;
+        }
+        let t: Vec<&str> = line.split_whitespace().collect();
+        if t.first() != Some(&"inet6") {
+            continue;
+        }
+        let Some(address) = t.get(1).and_then(|a| parse_addr(a)) else {
+            continue;
+        };
+        if current == name || !is_link_local(&address) {
+            link.own.push(address);
+        }
+        if current != name {
+            continue;
+        }
+        let after = |key: &str| t.iter().position(|w| *w == key).and_then(|i| t.get(i + 1));
+        if let Some(index) =
+            after("scopeid").and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+        {
+            link.index = index;
+        }
+        let unusable = ["tentative", "duplicated", "detached", "deprecated"]
+            .iter()
+            .any(|flag| t.contains(flag));
+        let prefix = after("prefixlen").and_then(|p| p.parse::<u8>().ok());
+        if let Some(prefix) = prefix
+            && !unusable
+            && prefix <= 128
+            && is_host_address(&address)
+            && link.addresses.len() < MAX_LINK_ADDRESSES
+        {
+            link.addresses.push(LocalAddress { address, prefix });
+        }
+    }
+    link
+}
+
+/// Where the routing table sends an IPv6 target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hop6 {
+    /// On the link: the target's own MAC.
+    OnLink,
+    /// Through this router: its MAC.
+    Gateway(Ipv6Addr),
+}
+
+/// The OS route to an IPv6 target through the capture interface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Route6 {
+    pub hop: Hop6,
+    /// The source address the OS would use, when it says (Windows, Linux).
+    pub source: Option<Ipv6Addr>,
+}
+
+/// Shared decision for an OS route answer: it must leave through the capture interface
+/// (`via_link`), and a gateway that is one of our own addresses is refused.
+pub fn route_decision(
+    link: &Link,
+    dest: Ipv6Addr,
+    via_link: bool,
+    gateway: Option<Ipv6Addr>,
+    source: Option<Ipv6Addr>,
+) -> Result<Route6, String> {
+    if !via_link {
+        return Err(format!(
+            "The route to {dest} leaves through another interface than the capture interface"
+        ));
+    }
+    let hop = match gateway {
+        Some(g) if !g.is_unspecified() && g != dest => {
+            if link.own.contains(&g) || link.addresses.iter().any(|a| a.address == g) {
+                return Err(format!(
+                    "The route to {dest} has this computer as its gateway"
+                ));
+            }
+            Hop6::Gateway(g)
+        }
+        _ => Hop6::OnLink,
+    };
+    Ok(Route6 { hop, source })
+}
+
+/// Linux `ip -6 route get DEST`: `2001:db8:2::1 from :: via fe80::1 dev eth0 proto ra src
+/// 2001:db8:1::5 metric 100 pref medium`; an on-link route has no `via`. Unreachable,
+/// prohibited and blackhole routes, and no output (the error goes to stderr), are no route.
+pub fn parse_ip_route_get6(text: &str, link: &Link, dest: Ipv6Addr) -> Result<Route6, String> {
+    let t: Vec<&str> = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect();
+    let Some(first) = t.first() else {
+        return Err(format!("No route to {dest}"));
+    };
+    if ["unreachable", "prohibit", "blackhole", "throw"].contains(first) {
+        return Err(format!("No route to {dest} ({first})"));
+    }
+    let after = |key: &str| t.iter().position(|w| *w == key).and_then(|i| t.get(i + 1));
+    let Some(dev) = after("dev") else {
+        return Err(format!("No route to {dest}"));
+    };
+    route_decision(
+        link,
+        dest,
+        *dev == link.name,
+        after("via").and_then(|g| parse_addr(g)),
+        after("src").and_then(|s| parse_addr(s)),
+    )
+}
+
+/// macOS/BSD `route -n get -inet6 DEST`: `gateway: fe80::1%en0` and `interface: en0` for a
+/// routed target; an on-link one shows `link#N` or a MAC as its gateway, or none.
+pub fn parse_route_get6(text: &str, link: &Link, dest: Ipv6Addr) -> Result<Route6, String> {
+    let field = |name: &str| {
+        text.lines().find_map(|l| {
+            let (k, v) = l.trim().split_once(':')?;
+            (k.trim() == name).then(|| v.trim().to_string())
+        })
+    };
+    if text.contains("not in table") || text.trim().is_empty() {
+        return Err(format!("No route to {dest}"));
+    }
+    let Some(interface) = field("interface") else {
+        return Err(format!("No route to {dest} (no interface)"));
+    };
+    route_decision(
+        link,
+        dest,
+        interface == link.name,
+        field("gateway").and_then(|g| parse_addr(&g)),
+        None,
+    )
+}
+
+/// The route to `dest` from the OS routing table (a table read; nothing is sent): Windows
+/// `GetBestRoute2`, Linux `ip -6 route get`, macOS/BSD `route -n get -inet6`.
+pub fn route_of(dest: Ipv6Addr, link: &Link) -> Result<Route6, String> {
+    if cfg!(windows) {
+        let (index, next_hop, source) = crate::platform::best_route6(dest)?;
+        route_decision(
+            link,
+            dest,
+            link.index != 0 && index == link.index,
+            Some(next_hop),
+            Some(source),
+        )
+    } else if cfg!(target_os = "linux") {
+        parse_ip_route_get6(
+            &run("ip", &["-6", "route", "get", &dest.to_string()])?,
+            link,
+            dest,
+        )
+    } else {
+        parse_route_get6(
+            &run("route", &["-n", "get", "-inet6", &dest.to_string()])?,
+            link,
+            dest,
+        )
+    }
+}
+
 /// The interfaces to send on: all of them (at most [`MAX_INTERFACES`]), or the one named by
 /// `wanted` (the interface index or part of its name, case-insensitive).
 pub fn select(all: &[Interface], wanted: &str) -> Vec<Interface> {
@@ -805,12 +1228,30 @@ mod win {
             .collect()
     }
 
-    /// (interface index, address, DAD state) of the rows of `GetUnicastIpAddressTable`.
-    pub(super) fn parse_unicast_rows(rows: &[u8]) -> Vec<(u32, Ipv6Addr, u32)> {
+    /// (interface index, address, DAD state, on-link prefix length) of the rows of
+    /// `GetUnicastIpAddressTable`.
+    pub(super) fn parse_unicast_rows(rows: &[u8]) -> Vec<(u32, Ipv6Addr, u32, u8)> {
         rows.as_chunks::<UNICAST_ROW>()
             .0
             .iter()
-            .filter_map(|row| Some((u32_at(row, 40), address_at(row)?, u32_at(row, 64))))
+            .filter_map(|row| Some((u32_at(row, 40), address_at(row)?, u32_at(row, 64), row[60])))
+            .collect()
+    }
+
+    /// The preferred (DAD state 4) addresses of the interface `index` with their on-link prefix
+    /// length.
+    pub(super) fn link_addresses(
+        rows: &[(u32, Ipv6Addr, u32, u8)],
+        index: u32,
+    ) -> Vec<super::LocalAddress> {
+        rows.iter()
+            .filter(|(i, address, dad, _)| {
+                *i == index && *dad == 4 && super::is_host_address(address)
+            })
+            .map(|(_, address, _, prefix)| super::LocalAddress {
+                address: *address,
+                prefix: *prefix,
+            })
             .collect()
     }
 
@@ -855,9 +1296,9 @@ mod win {
     #[cfg(windows)]
     pub(super) fn interfaces() -> Result<(Vec<Interface>, Vec<Ipv6Addr>), String> {
         let rows = parse_unicast_rows(&table(ffi::GetUnicastIpAddressTable, UNICAST_ROW)?);
-        let local: Vec<Ipv6Addr> = rows.iter().map(|(_, a, _)| *a).collect();
+        let local: Vec<Ipv6Addr> = rows.iter().map(|(_, a, _, _)| *a).collect();
         let mut interfaces: Vec<Interface> = vec![];
-        for (index, address, dad) in rows {
+        for (index, address, dad, _) in rows {
             // a preferred (DAD state 4) link-local address
             if address.segments()[0] & 0xffc0 == 0xfe80
                 && dad == 4
@@ -876,14 +1317,36 @@ mod win {
         Err("not Windows".into())
     }
 
+    /// Every row of `GetUnicastIpAddressTable` (see [`parse_unicast_rows`]).
+    #[cfg(windows)]
+    pub(super) fn unicast_rows() -> Result<Vec<(u32, Ipv6Addr, u32, u8)>, String> {
+        Ok(parse_unicast_rows(&table(
+            ffi::GetUnicastIpAddressTable,
+            UNICAST_ROW,
+        )?))
+    }
+    #[cfg(not(windows))]
+    pub(super) fn unicast_rows() -> Result<Vec<(u32, Ipv6Addr, u32, u8)>, String> {
+        Err("not Windows".into())
+    }
+
     /// The raw rows of `GetIpNetTable2`, for the manual layout check in the tests.
     #[cfg(all(windows, test))]
     pub(super) fn raw_net_rows() -> Result<Vec<u8>, String> {
         table(ffi::GetIpNetTable2, NET_ROW)
     }
+    /// The neighbour cache with the interface as its index.
+    #[cfg(windows)]
+    pub(super) fn neighbor_rows() -> Result<Vec<Neighbor>, String> {
+        Ok(parse_net_rows(&table(ffi::GetIpNetTable2, NET_ROW)?))
+    }
+    #[cfg(not(windows))]
+    pub(super) fn neighbor_rows() -> Result<Vec<Neighbor>, String> {
+        Err("not Windows".into())
+    }
     #[cfg(windows)]
     pub(super) fn neighbors() -> Result<Vec<Neighbor>, String> {
-        let mut list = parse_net_rows(&table(ffi::GetIpNetTable2, NET_ROW)?);
+        let mut list = neighbor_rows()?;
         // a name is friendlier than an index
         for n in &mut list {
             if let Ok(index) = n.interface.parse::<u32>() {

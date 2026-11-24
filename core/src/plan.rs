@@ -263,7 +263,36 @@ pub fn host(
         "up to {} attempt(s) per unanswered port",
         s.retries.min(5) + 1
     );
-    if syn_engine(s) {
+    if syn_engine(s) && ip.is_ipv6() {
+        plan.push(
+            PacketKind::TcpSyn,
+            "port scan",
+            &tcp,
+            &format!(
+                "{ports_when}; raw SYN through the capture interface: to an on-link target (link-local, or inside an on-link prefix of the interface) at its own MAC, to a routed one at its gateway's MAC when the OS route leaves through the capture interface, {attempts}"
+            ),
+        );
+        plan.push(
+            PacketKind::TcpSyn,
+            "RST closing a half-open connection",
+            &tcp,
+            "for each open port answered with SYN-ACK",
+        );
+        plan.push(
+            PacketKind::NeighborLookup,
+            "OS neighbor lookup",
+            "the next hop",
+            "the MAC of an on-link target, or of the gateway (once per gateway), from the OS neighbour cache of the capture interface; without an entry the OS resolves it (Windows: one Neighbor Solicitation; Linux, macOS, BSD: one 1-byte UDP datagram to port 9)",
+        );
+        plan.push(
+            PacketKind::TcpConnect,
+            "port scan",
+            &tcp,
+            &format!(
+                "instead of SYN when there is no route or it leaves through another interface, the target or its gateway has no MAC, the interface has no IPv6 source address of the target's kind, or the SYN engine cannot start; {attempts}"
+            ),
+        );
+    } else if syn_engine(s) {
         plan.push(
             PacketKind::TcpSyn,
             "port scan",
@@ -994,6 +1023,40 @@ mod tests {
         assert!(
             text.contains("dns/53") && text.contains("snmp/161"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn ipv6_syn_is_planned_for_on_link_targets_only() {
+        let s = Settings {
+            syn: true,
+            safe: false,
+            ..Settings::default()
+        };
+        let v6 = host(ip("fe80::5"), &[80], &[], &s, None);
+        let when = |plan: &HostPlan, kind: PacketKind| {
+            plan.packets
+                .iter()
+                .filter(|p| p.kind == kind && p.detail == "port scan")
+                .map(|p| p.when.clone())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        assert!(when(&v6, PacketKind::TcpSyn).contains("at its gateway's MAC"));
+        assert!(when(&v6, PacketKind::TcpConnect).contains("another interface"));
+        assert!(has(&v6, PacketKind::TcpSyn, "RST"));
+        assert!(
+            v6.packets
+                .iter()
+                .any(|p| p.kind == PacketKind::NeighborLookup
+                    && p.when.contains("Neighbor Solicitation"))
+        );
+        // IPv4 is unchanged.
+        let v4 = host(ip("10.0.0.5"), &[80], &[], &s, None);
+        assert!(!when(&v4, PacketKind::TcpSyn).contains("on-link"));
+        assert_eq!(
+            when(&v4, PacketKind::TcpConnect),
+            "fallback when the SYN engine cannot start"
         );
     }
 

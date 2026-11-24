@@ -278,6 +278,50 @@ mod win {
         fn GetBestRoute(dest: u32, source: u32, row: *mut ForwardRow) -> u32;
         fn GetIpAddrTable(table: *mut c_void, size: *mut u32, order: i32) -> u32;
         fn GetIfEntry(row: *mut c_void) -> u32;
+        fn ResolveIpNetEntry2(row: *mut c_void, source: *const c_void) -> u32;
+        fn GetBestRoute2(
+            luid: *const u64,
+            index: u32,
+            source: *const c_void,
+            dest: *const c_void,
+            options: u32,
+            row: *mut c_void,
+            best_source: *mut c_void,
+        ) -> u32;
+    }
+    /// MIB_IPNET_ROW2 (88 bytes, 8-byte aligned because it holds a NET_LUID), at the offsets
+    /// `ipv6::win::parse_net_rows` reads: Address (SOCKADDR_INET) at 0, InterfaceIndex at 28,
+    /// PhysicalAddress at 40, PhysicalAddressLength at 72.
+    #[repr(C, align(8))]
+    struct NetRow2([u8; 88]);
+
+    /// One Neighbor Solicitation through the OS for the IPv6 neighbour `ip` on the interface
+    /// `index` (ResolveIpNetEntry2 replaces any entry for it and waits for the answer); its MAC.
+    pub fn resolve6(ip: std::net::Ipv6Addr, index: u32) -> Option<String> {
+        let mut row = NetRow2([0; 88]);
+        row.0[..2].copy_from_slice(&23u16.to_le_bytes());
+        row.0[8..24].copy_from_slice(&ip.octets());
+        if ip.segments()[0] & 0xffc0 == 0xfe80 {
+            // scope ID of a link-local address
+            row.0[24..28].copy_from_slice(&index.to_le_bytes());
+        }
+        row.0[28..32].copy_from_slice(&index.to_le_bytes());
+        // SAFETY: the row is a correctly sized and aligned MIB_IPNET_ROW2 with the address and
+        // interface set, as the function requires; no source address is passed.
+        if unsafe { ResolveIpNetEntry2((&mut row as *mut NetRow2).cast(), ptr::null()) } != 0 {
+            return None;
+        }
+        let len = u32::from_le_bytes([row.0[72], row.0[73], row.0[74], row.0[75]]);
+        if len != 6 {
+            return None;
+        }
+        normalize_mac(
+            &row.0[40..46]
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(":"),
+        )
     }
     /// MIB_IPFORWARDROW: fourteen DWORDs, addresses in network byte order.
     #[repr(C)]
@@ -307,29 +351,113 @@ mod win {
         kind: u16,
     }
 
-    /// Interface index that owns `ip` (GetIpAddrTable), if any.
-    fn interface_of(ip: std::net::Ipv4Addr) -> Option<u32> {
-        let wanted = u32::from_ne_bytes(ip.octets());
+    /// The rows of GetIpAddrTable (empty when it cannot be read).
+    fn addr_rows() -> Vec<AddrRow> {
         unsafe {
             let mut size = 0u32;
             GetIpAddrTable(ptr::null_mut(), &mut size, 0);
             if size == 0 {
-                return None;
+                return vec![];
             }
             // u32 storage keeps the rows aligned.
             let mut buffer = vec![0u32; (size as usize).div_ceil(4) + 1];
             size = (buffer.len() * 4) as u32;
             if GetIpAddrTable(buffer.as_mut_ptr().cast(), &mut size, 0) != 0 {
-                return None;
+                return vec![];
             }
             let count = buffer[0] as usize;
             let rows = buffer.as_ptr().add(1).cast::<AddrRow>();
             let available = (buffer.len() - 1) * 4 / std::mem::size_of::<AddrRow>();
-            (0..count.min(available))
-                .map(|i| *rows.add(i))
-                .find(|r| r.addr == wanted)
-                .map(|r| r.index)
+            (0..count.min(available)).map(|i| *rows.add(i)).collect()
         }
+    }
+
+    /// Interface index that owns `ip` (GetIpAddrTable), if any.
+    pub fn interface_of(ip: std::net::Ipv4Addr) -> Option<u32> {
+        let wanted = u32::from_ne_bytes(ip.octets());
+        addr_rows()
+            .into_iter()
+            .find(|r| r.addr == wanted)
+            .map(|r| r.index)
+    }
+
+    /// The first IPv4 address of the interface `index` (tests: the engine's source address).
+    #[cfg(test)]
+    pub fn ipv4_of(index: u32) -> Option<std::net::Ipv4Addr> {
+        addr_rows()
+            .into_iter()
+            .find(|r| r.index == index && r.addr != 0)
+            .map(|r| std::net::Ipv4Addr::from(r.addr.to_ne_bytes()))
+    }
+
+    #[cfg(test)]
+    #[link(name = "iphlpapi")]
+    unsafe extern "system" {
+        fn ConvertInterfaceGuidToLuid(guid: *const [u8; 16], luid: *mut u64) -> u32;
+        fn ConvertInterfaceLuidToIndex(luid: *const u64, index: *mut u32) -> u32;
+    }
+
+    /// The OS interface index of an Npcap device (`\Device\NPF_{GUID}`), from its adapter GUID
+    /// (tests only: the engine finds its interface by the source IPv4).
+    #[cfg(test)]
+    pub fn device_index(name: &str) -> Option<u32> {
+        let guid = super::parse_guid(name)?;
+        let (mut luid, mut index) = (0u64, 0u32);
+        // SAFETY: the GUID and both outputs are local and sized as the functions declare.
+        unsafe {
+            (ConvertInterfaceGuidToLuid(&guid, &mut luid) == 0
+                && ConvertInterfaceLuidToIndex(&luid, &mut index) == 0)
+                .then_some(index)
+        }
+    }
+
+    /// MIB_IPFORWARD_ROW2 (104 bytes, 8-byte aligned): InterfaceLuid at 0, InterfaceIndex at 8,
+    /// DestinationPrefix (SOCKADDR_INET and length, 32 bytes) at 12, NextHop (SOCKADDR_INET) at
+    /// 44. Checked against `Find-NetRoute` by `the_real_ipv6_route_decodes` in the tests.
+    #[repr(C, align(8))]
+    struct ForwardRow2([u8; 104]);
+    /// SOCKADDR_INET (28 bytes): family at 0, IPv6 address at 8, scope ID at 24.
+    #[repr(C, align(4))]
+    struct SockaddrInet([u8; 28]);
+
+    /// The best IPv6 route to `dest` (GetBestRoute2, a table read): the interface index, the
+    /// next hop (`::` when on-link) and the source address the OS would use.
+    pub fn best_route6(
+        dest: std::net::Ipv6Addr,
+    ) -> Result<(u32, std::net::Ipv6Addr, std::net::Ipv6Addr), String> {
+        let mut to = SockaddrInet([0; 28]);
+        to.0[..2].copy_from_slice(&23u16.to_le_bytes());
+        to.0[8..24].copy_from_slice(&dest.octets());
+        let mut row = ForwardRow2([0; 104]);
+        let mut source = SockaddrInet([0; 28]);
+        // SAFETY: every buffer is local, sized and aligned as the function declares; no
+        // interface or source address is given, so the OS picks the best route.
+        let code = unsafe {
+            GetBestRoute2(
+                ptr::null(),
+                0,
+                ptr::null(),
+                (&to as *const SockaddrInet).cast(),
+                0,
+                (&mut row as *mut ForwardRow2).cast(),
+                (&mut source as *mut SockaddrInet).cast(),
+            )
+        };
+        if code != 0 {
+            return Err(format!(
+                "No route to {dest} ({})",
+                std::io::Error::from_raw_os_error(code as i32)
+            ));
+        }
+        let family = |b: &[u8]| u16::from_le_bytes([b[0], b[1]]);
+        let address =
+            |b: &[u8]| std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&b[8..24]).unwrap_or([0; 16]));
+        let (hop, from) = (&row.0[44..72], &source.0[..]);
+        if family(hop) != 23 || family(from) != 23 {
+            return Err(format!("No IPv6 route to {dest}"));
+        }
+        let index = u32::from_le_bytes([row.0[8], row.0[9], row.0[10], row.0[11]]);
+        Ok((index, address(hop), address(from)))
     }
 
     pub fn next_hop(dest: std::net::Ipv4Addr, source: std::net::Ipv4Addr) -> RouteResult {
@@ -1351,6 +1479,109 @@ pub fn neighbor(ip: IpAddr) -> Option<Neighbor> {
 pub fn mac(ip: IpAddr) -> Option<String> {
     neighbor(ip).map(|n| n.mac)
 }
+
+/// The OS interface index that owns the IPv4 address `ip` (Windows `GetIpAddrTable`); `None`
+/// elsewhere, where interfaces are found by name.
+pub fn interface_index(ip: std::net::Ipv4Addr) -> Option<u32> {
+    #[cfg(windows)]
+    {
+        win::interface_of(ip)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = ip;
+        None
+    }
+}
+
+/// The best IPv6 route to `dest` (Windows `GetBestRoute2`): interface index, next hop (`::` when
+/// on-link) and the source address the OS would use. Other platforms ask their route command
+/// (see `ipv6::route_of`).
+pub fn best_route6(
+    dest: std::net::Ipv6Addr,
+) -> Result<(u32, std::net::Ipv6Addr, std::net::Ipv6Addr), String> {
+    #[cfg(windows)]
+    {
+        win::best_route6(dest)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dest;
+        Err("GetBestRoute2 is Windows only".into())
+    }
+}
+
+/// The OS interface index of an Npcap device name (tests only).
+#[cfg(all(windows, test))]
+pub fn device_index(name: &str) -> Option<u32> {
+    win::device_index(name)
+}
+
+/// The first IPv4 address of the interface `index` (tests only).
+#[cfg(all(windows, test))]
+pub fn ipv4_of(index: u32) -> Option<std::net::Ipv4Addr> {
+    win::ipv4_of(index)
+}
+
+/// Windows `ResolveIpNetEntry2` (one Neighbor Solicitation); `None` elsewhere.
+fn resolve6(ip: std::net::Ipv6Addr, index: u32) -> Option<String> {
+    #[cfg(windows)]
+    {
+        win::resolve6(ip, index)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (ip, index);
+        None
+    }
+}
+
+/// The MAC of the IPv6 neighbour `ip` (an on-link target or a gateway) on the capture interface
+/// `link`, for the SYN engine. The OS neighbour cache of that interface first (a stale entry
+/// counts, as for IPv4); without an entry the OS resolves it once: Windows
+/// `ResolveIpNetEntry2` (one Neighbor Solicitation); Linux, macOS and the BSDs one 1-byte UDP
+/// datagram to port 9 (the kernel solicits the neighbour) and a second look after 250 ms.
+/// `None` whenever nothing answered.
+pub fn neighbor6(ip: std::net::Ipv6Addr, link: &crate::ipv6::Link) -> Option<String> {
+    if let Some(mac) = crate::ipv6::cached_mac(ip, link) {
+        return Some(mac);
+    }
+    if cfg!(windows) {
+        return resolve6(ip, link.index);
+    }
+    let scope = if ip.segments()[0] & 0xffc0 == 0xfe80 {
+        link.index
+    } else {
+        0
+    };
+    if let Ok(socket) = std::net::UdpSocket::bind("[::]:0") {
+        let _ = socket.send_to(&[0], std::net::SocketAddrV6::new(ip, 9, 0, scope));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    crate::ipv6::cached_mac(ip, link)
+}
+
+/// The adapter GUID of an Npcap device name (`\Device\NPF_{6B29FC40-CA47-1067-B31D-00DD010662DA}`)
+/// in the in-memory layout of a Windows GUID (the first three fields little-endian).
+#[cfg_attr(not(all(windows, test)), allow(dead_code))]
+pub fn parse_guid(name: &str) -> Option<[u8; 16]> {
+    let inner = name.split_once('{')?.1.split_once('}')?.0;
+    let parts: Vec<&str> = inner.split('-').collect();
+    let lengths: Vec<usize> = parts.iter().map(|p| p.len()).collect();
+    if lengths != [8, 4, 4, 4, 12] || !inner.chars().all(|c| c == '-' || c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let hex: String = parts.concat();
+    let bytes: Vec<u8> = (0..16)
+        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let mut guid: [u8; 16] = bytes.try_into().ok()?;
+    guid[..4].reverse();
+    guid[4..6].reverse();
+    guid[6..8].reverse();
+    Some(guid)
+}
 /// [`neighbor`], plus whether the address is known to be unused: `true` only when it is on a
 /// directly attached Ethernet or Wi-Fi subnet and did not answer the OS's ARP request, so no
 /// packet can reach it. Windows only.
@@ -1742,6 +1973,45 @@ mod tests {
         let me = std::net::Ipv4Addr::new(10, 0, 0, 5);
         let e = next_hop(me, me, "eth0").unwrap_err();
         assert!(e.contains("own address"), "{e}");
+    }
+
+    #[test]
+    fn npcap_device_names_give_the_adapter_guid() {
+        let guid = parse_guid(r"\Device\NPF_{6B29FC40-CA47-1067-B31D-00DD010662DA}").unwrap();
+        assert_eq!(
+            guid,
+            [
+                0x40, 0xFC, 0x29, 0x6B, 0x47, 0xCA, 0x67, 0x10, 0xB3, 0x1D, 0x00, 0xDD, 0x01, 0x06,
+                0x62, 0xDA
+            ]
+        );
+        for bad in [
+            r"\Device\NPF_Loopback",
+            "eth0",
+            r"\Device\NPF_{6B29FC40-CA47-1067-B31D}",
+            r"\Device\NPF_{6B29FC40-CA47-1067-B31D-00DD010662DX}",
+        ] {
+            assert_eq!(parse_guid(bad), None, "{bad}");
+        }
+    }
+
+    /// Manual check of the MIB_IPFORWARD_ROW2 offsets (GetBestRoute2 reads the routing table and
+    /// sends nothing): compare the printed interface, next hop and source with
+    /// `Find-NetRoute -RemoteIPAddress 2001:4860:4860::8888`.
+    /// `cargo test -p network-scope-core --lib the_real_ipv6_route -- --ignored --nocapture`
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn the_real_ipv6_route_decodes() {
+        let dest: std::net::Ipv6Addr = "2001:4860:4860::8888".parse().unwrap();
+        match best_route6(dest) {
+            Ok((index, next_hop, source)) => {
+                println!("interface {index}, next hop {next_hop}, source {source}");
+                assert!(index > 0);
+                assert!(!source.is_unspecified() && !source.is_multicast());
+            }
+            Err(e) => println!("no IPv6 route on this machine: {e}"),
+        }
     }
 
     #[cfg(windows)]

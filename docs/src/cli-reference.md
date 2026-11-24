@@ -141,7 +141,7 @@ These apply to `scan` and `monitor`.
 | `--probes FILE` | | Extra service probes (TCP and UDP), merged over `data/probes.json` by name |
 | `--script PATH` | | Rhai script, or folder of `.rhai` files, run against every host |
 | `--fast` | off | Leave Safe Mode (read-only OT still applies) |
-| `--syn` | off | IPv4 SYN scan via Npcap/libpcap (routed targets via the gateway MAC); else TCP connect |
+| `--syn` | off | SYN scan via Npcap/libpcap, IPv4 and IPv6 targets (routed ones via the gateway MAC when the route leaves through the capture interface; see [IPv6 targets](scanning-engine.md#ipv6-targets)); everything else TCP connect |
 | `--adaptive-syn` | off | RTT-based SYN reply windows and congestion window (with `--syn --fast`) |
 | `--no-adaptive-tcp` | on | Turns off the per-host TCP connect timeout from the host's measured connect RTT. On by default, also in Safe Mode, for hosts without a ping RTT (they drop ping, or `--tcp-only`); hosts that answer ping keep the ping-based timeout. `--adaptive-tcp` is still accepted and changes nothing |
 | `--jarm` | off | JARM TLS fingerprint (the same hash as the reference `jarm.py`, see [Detection](detection.md#jarm-style-tls-fingerprint---jarm)): ten extra ClientHellos per TLS port (needs `--services` and `--fast`; ignored in Safe Mode) |
@@ -154,7 +154,7 @@ These apply to `scan` and `monitor`.
 | `--arp-sweep` | off | Fast ARP sweep through the capture interface (with `--fast`; needs Npcap/libpcap) |
 | `--interface ID` | | Capture interface (see `interfaces`); required for SYN, ARP sweep, TCP trace, capture |
 | `--interface ID,ID` | | `scan`: several interfaces for the raw features (SYN, ARP sweep, TCP trace), with `--source-ip A,B` and `--source-mac M1,M2` paired by position. Each target goes out through the interface the routing table picks for it (an interface on the target's subnet first). Run against two real interfaces on Windows (Npcap) |
-| `--source-ip IPV4` / `--source-mac MAC` | | Source addresses of that interface |
+| `--source-ip IPV4` / `--source-mac MAC` | | Source addresses of that interface (the SYN engine reads the interface's IPv6 source addresses itself) |
 | `--tui` | off | Live terminal view |
 | `--format FMT` / `--output FILE` | json | Also write an export of the finished scan |
 | `--db FILE` | | Inventory database |
