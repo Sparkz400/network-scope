@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:network-scope:alerts:v1",
   "title": "Stored alerts",
-  "description": "Output of `alerts`: alerts raised by monitor runs, newest first (at most 500).",
+  "description": "Output of `alerts` and of the MCP tool list_alerts: alerts raised by monitor runs, newest first (at most 500).",
   "$defs": {
     "severity": {
       "enum": [
@@ -56,6 +56,15 @@
       "items": {
         "$ref": "#/$defs/alert"
       }
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Only from the MCP server: the number of matching alerts before the limit was applied"
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "Only from the MCP server: true when the list was cut at the limit"
     }
   }
 }

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:network-scope:risk-score:v1",
   "title": "Risk score",
-  "description": "Output of findings ID --top N --format json: the network score (0 to 100), the riskiest hosts and the fix-these-first list.",
+  "description": "Output of findings ID --top N --format json and of the MCP tool top_risks: the network score (0 to 100), the riskiest hosts and the fix-these-first list.",
   "$defs": {
     "severity": {
       "enum": [
@@ -158,6 +158,15 @@
           }
         }
       }
+    },
+    "scan_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Only from the MCP server: the scan that was scored"
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "Only from the MCP server: true when hosts or top_fixes were cut at the limit (network keeps the full counts)"
     }
   }
 }

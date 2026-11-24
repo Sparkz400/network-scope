@@ -6,12 +6,13 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    io::IsTerminal,
     net::IpAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::RecvTimeoutError,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
@@ -150,6 +151,13 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     } else {
         None
     };
+    // On a terminal a plain scan says what it is doing (a Safe Mode /24 takes minutes). A
+    // stderr that is a pipe or a file gets nothing new: scripts read it.
+    let live =
+        !opts.contains_key("quiet") && !stream && !tui_view && std::io::stderr().is_terminal();
+    if live {
+        eprintln!("{}", start_text(total, ports.len(), s.safe));
+    }
     let run = scan::start_incremental(
         // --randomize: the same addresses in random order (the order of probing only).
         if opts.contains_key("randomize") {
@@ -166,12 +174,12 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         tui::tui(&run)
     } else if let Some(w) = writer.as_mut() {
         let stop = crate::ui::interrupt::flag();
-        let (complete, errors) = drive(&run, stream, &stop, &mut |h| w.push(&h));
+        let (complete, errors) = drive(&run, stream, live, &stop, &mut |h| w.push(&h));
         (vec![], complete, errors)
     } else if stream {
         collect_streaming(&run)
     } else {
-        collect(&run)
+        collect(&run, live)
     };
     // --ipv6-discover: the local link over IPv6, joined to the scanned hosts by MAC. Runs after the
     // scan (the IPv4 hosts and their MACs are known), one echo per interface through the scan's
@@ -436,18 +444,19 @@ fn write_record(
 
 /// Hosts, complete flag, errors.
 pub(in crate::ui) type Collected = (Vec<scan::Host>, bool, Vec<String>);
-pub(in crate::ui) fn collect(run: &scan::Running) -> Collected {
-    collect_with(run, false)
+/// `live`: print the progress line of a plain scan on stderr (see [`drive`]).
+pub(in crate::ui) fn collect(run: &scan::Running, live: bool) -> Collected {
+    collect_with(run, false, live)
 }
 /// Like [`collect`], and prints a `scan-event` line to stdout for every host that answers, every
 /// port found open and every responding host that finishes, at the moment the engine reports it.
 pub(in crate::ui) fn collect_streaming(run: &scan::Running) -> Collected {
-    collect_with(run, true)
+    collect_with(run, true, false)
 }
-fn collect_with(run: &scan::Running, stream: bool) -> Collected {
+fn collect_with(run: &scan::Running, stream: bool, live: bool) -> Collected {
     let mut hosts = vec![];
     let stop = crate::ui::interrupt::flag();
-    let (complete, errors) = drive(run, stream, &stop, &mut |h| {
+    let (complete, errors) = drive(run, stream, live, &stop, &mut |h| {
         hosts.push(h);
         Ok(())
     });
@@ -465,16 +474,22 @@ pub(in crate::ui) fn snmp_warnings(opts: &BTreeMap<String, String>, s: &scan::Se
 /// Runs the scan's events to the end: every host worth keeping (responding ones, or all when the
 /// scan is small) goes to `sink`, with `stream` the live events go to stdout. A failing sink
 /// stops the scan and is reported as an error. `stop` (Ctrl+C, see `ui::interrupt`) cancels the
-/// scan: the engine finishes the hosts it is working on and what was found is kept. Returns
-/// (complete, errors); errors never discard results, they only mark the scan partial.
+/// scan: the engine finishes the hosts it is working on and what was found is kept. With `live`
+/// a progress line ([`progress_text`]) is rewritten on stderr every [`PROGRESS_EVERY`] and ended
+/// with a newline. Returns (complete, errors); errors never discard results, they only mark the
+/// scan partial.
 fn drive(
     run: &scan::Running,
     stream: bool,
+    live: bool,
     stop: &AtomicBool,
     sink: &mut dyn FnMut(scan::Host) -> Result<(), String>,
 ) -> (bool, Vec<String>) {
     use std::io::Write;
     let mut errors = vec![];
+    // Hosts finished and hosts that responded, for the progress line; when it was last printed.
+    let (mut done, mut responded) = (0usize, 0usize);
+    let mut printed: Option<Instant> = None;
     let sparse = run.total > scan::MAX_HOSTS;
     // Ports already announced per host still being scanned (dropped when the host finishes).
     let mut announced: HashMap<IpAddr, BTreeSet<u16>> = HashMap::new();
@@ -487,10 +502,23 @@ fn drive(
     };
     let elapsed = || run.started.elapsed().as_millis() as u64;
     loop {
+        // Checked after every event and every timeout: a busy scan never times out.
+        if live && printed.unwrap_or(run.started).elapsed() >= PROGRESS_EVERY {
+            // No padding: every number in the line only grows, so it never gets shorter.
+            eprint!(
+                "\r{}",
+                progress_text(done, run.total, responded, run.started.elapsed())
+            );
+            printed = Some(Instant::now());
+        }
         let event = match run.receiver.recv_timeout(Duration::from_millis(200)) {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => {
                 if stop.load(Ordering::Relaxed) && !run.cancel.swap(true, Ordering::Relaxed) {
+                    if printed.is_some() {
+                        // End the progress line; the next one starts on a line of its own.
+                        eprintln!();
+                    }
                     eprintln!(
                         "Stopping: what was found so far is saved (Ctrl+C again ends at once)"
                     );
@@ -517,6 +545,8 @@ fn drive(
                 }
             }
             scan::Event::Host(h) => {
+                done += 1;
+                responded += usize::from(h.responding);
                 let before = announced.remove(&h.ip).unwrap_or_default();
                 if h.responding {
                     if before.is_empty() && h.open.is_empty() {
@@ -546,8 +576,36 @@ fn drive(
             scan::Event::Error(e) => errors.push(e),
         }
     }
+    if live {
+        // The final count, and the newline that ends the progress line before the report.
+        eprintln!(
+            "\r{}",
+            progress_text(done, run.total, responded, run.started.elapsed())
+        );
+    }
     let complete = errors.is_empty() && !run.cancel.load(Ordering::Relaxed);
     (complete, errors)
+}
+/// How often the progress line of a plain scan is rewritten.
+const PROGRESS_EVERY: Duration = Duration::from_secs(2);
+/// The line a plain scan on a terminal starts with.
+fn start_text(addresses: usize, ports: usize, safe: bool) -> String {
+    let plural = |n: usize, ending: &'static str| if n == 1 { "" } else { ending };
+    format!(
+        "Scanning {addresses} address{}, {ports} TCP port{}, Safe Mode {}",
+        plural(addresses, "es"),
+        plural(ports, "s"),
+        if safe { "on" } else { "off" }
+    )
+}
+/// The progress line of a plain scan: hosts finished of all, how many responded, time so far.
+fn progress_text(done: usize, total: usize, responded: usize, elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    format!(
+        "{done}/{total} hosts done, {responded} responded, {}:{:02} elapsed",
+        seconds / 60,
+        seconds % 60
+    )
 }
 /// Applies one scan event and returns true on `Done`. Errors never discard results: they are
 /// recorded and mark the scan partial (the engine always follows with `Done`).
@@ -936,7 +994,8 @@ mod tests {
         };
         let mut kept = vec![];
         let idle = AtomicBool::new(false);
-        let (complete, errors) = drive(&running(scan::MAX_HOSTS + 1), false, &idle, &mut |h| {
+        let big = running(scan::MAX_HOSTS + 1);
+        let (complete, errors) = drive(&big, false, false, &idle, &mut |h| {
             kept.push(h.ip.to_string());
             Ok(())
         });
@@ -948,16 +1007,54 @@ mod tests {
         );
         // A small scan keeps every host.
         let mut all = 0;
-        drive(&running(3), false, &idle, &mut |_| {
+        // The progress line (stderr) changes nothing about what is kept.
+        drive(&running(3), false, true, &idle, &mut |_| {
             all += 1;
             Ok(())
         });
         assert_eq!(all, 3);
         // A sink that fails (disk full) cancels the scan and marks it partial.
         let run = running(scan::MAX_HOSTS + 1);
-        let (complete, errors) = drive(&run, false, &idle, &mut |_| Err("disk full".into()));
+        let (complete, errors) = drive(&run, false, false, &idle, &mut |_| Err("disk full".into()));
         assert!(!complete && errors == ["disk full"], "{errors:?}");
         assert!(run.cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn the_progress_of_a_plain_scan_reads_as_counts_and_time() {
+        let at = Duration::from_secs;
+        assert_eq!(
+            progress_text(0, 254, 0, at(0)),
+            "0/254 hosts done, 0 responded, 0:00 elapsed"
+        );
+        assert_eq!(
+            progress_text(12, 254, 3, at(42)),
+            "12/254 hosts done, 3 responded, 0:42 elapsed"
+        );
+        assert_eq!(
+            progress_text(254, 254, 12, at(331)),
+            "254/254 hosts done, 12 responded, 5:31 elapsed"
+        );
+        // Nothing to divide by: an empty scan is a line too.
+        assert_eq!(
+            progress_text(0, 0, 0, at(3600)),
+            "0/0 hosts done, 0 responded, 60:00 elapsed"
+        );
+        // The line is rewritten in place without padding, so it must never get shorter.
+        let mut width = 0;
+        for (done, seconds) in [(0, 0), (9, 59), (10, 60), (100, 599), (254, 600)] {
+            let line = progress_text(done, 254, done / 10, at(seconds));
+            assert!(line.len() >= width, "{line}");
+            width = line.len();
+        }
+        assert_eq!(
+            start_text(254, 6, true),
+            "Scanning 254 addresses, 6 TCP ports, Safe Mode on"
+        );
+        assert_eq!(
+            start_text(1, 1, false),
+            "Scanning 1 address, 1 TCP port, Safe Mode off"
+        );
     }
 
     #[test]
