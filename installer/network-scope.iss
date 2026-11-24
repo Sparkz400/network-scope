@@ -43,6 +43,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+; Tell running programs (Explorer, new terminals) that PATH changed, after install and uninstall.
+ChangesEnvironment=yes
 WizardStyle=modern
 UninstallDisplayName=Network Scope
 LicenseFile=..\LICENSE.txt
@@ -82,4 +84,28 @@ begin
   if not RegQueryStringValue(HKCU, 'Environment', 'Path', Paths) then
     Paths := '';
   Result := Pos(';' + Lowercase(Dir) + ';', ';' + Lowercase(Paths) + ';') = 0;
+end;
+
+{ Uninstall: takes the install folder out of the user's PATH again (the addtopath task). }
+procedure RemoveFromPath(Dir: string);
+var
+  Paths, Padded: string;
+  P: Integer;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Paths) then
+    exit;
+  Padded := ';' + Paths + ';';
+  P := Pos(';' + Lowercase(Dir) + ';', Lowercase(Padded));
+  if P = 0 then
+    exit;
+  { Removes ";Dir"; the separators added above are dropped again. }
+  Delete(Padded, P, Length(Dir) + 1);
+  Paths := Copy(Padded, 2, Length(Padded) - 2);
+  RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Paths);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemoveFromPath(ExpandConstant('{app}'));
 end;
