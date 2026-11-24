@@ -281,7 +281,7 @@ Unchanged since previous scan. || Seit dem vorigen Scan unverändert.
 Your note || Ihre Notiz
 Copy IP address || IP-Adresse kopieren
 Actions || Aktionen
-Timeline… || Verlauf…
+Timeline || Verlauf
 When this device was first seen and what changed: address, MAC, name, ports and findings, from the saved scans. || Wann dieses Gerät zuerst gesehen wurde und was sich geändert hat: Adresse, MAC, Name, Ports und Befunde, aus den gespeicherten Scans.
 Test script… || Skript testen…
 Configured script (none set in Settings) || Eingestelltes Skript (keines in den Einstellungen)
@@ -704,3 +704,5 @@ Reported by: {} || Gemeldet über: {}
 SBOM {} ({}), {} components || SBOM {} ({}), {} Komponenten
 {} single files not listed || {} einzelne Dateien nicht aufgeführt
 … and {} more (the CycloneDX export lists all) || … und {} weitere (der CycloneDX-Export führt alle auf)
+Passive / OT || Passiv / OT
+Inventory || Inventar
