@@ -855,7 +855,7 @@ impl Scanner {
                 if !app.cves_error.is_empty() {
                     // Keep the default rules active and tell the user why the file is unused.
                     let _ = risk::init_cves();
-                    app.error = format!(
+                    app.error = tr!(
                         "CVE rules file: {}; using the default rules instead",
                         app.cves_error
                     );
@@ -907,7 +907,7 @@ impl Scanner {
             .is_some_and(|tx| tx.send(job).is_ok());
         if !sent {
             self.busy = Busy::default();
-            self.error = "Background worker stopped; restart the program.".into();
+            self.error = tr!("Background worker stopped; restart the program.").into();
         }
     }
     fn poll_jobs(&mut self) {
@@ -918,7 +918,7 @@ impl Scanner {
                     match result {
                         Ok(id) if kind == "capture" => {
                             self.status =
-                                format!("{observations} observations · saved capture #{id}")
+                                tr!("{} observations · saved capture #{}", observations, id)
                         }
                         Ok(id) if kind == "ot" => {
                             self.status = tr!(
@@ -971,7 +971,7 @@ impl Scanner {
                     self.busy.comparing = false;
                     match result {
                         Ok(changes) if changes.is_empty() => {
-                            self.changes = vec!["No observed changes.".into()]
+                            self.changes = vec![tr!("No observed changes.").into()]
                         }
                         Ok(changes) => self.changes = changes,
                         Err(e) => self.error = e,
@@ -981,8 +981,9 @@ impl Scanner {
                     self.busy.loading = false;
                     match result {
                         Ok(_) if self.live() => {
-                            self.error = format!(
-                                "Inventory #{id} was not opened: a scan or capture is running."
+                            self.error = tr!(
+                                "Inventory #{} was not opened: a scan or capture is running.",
+                                id
                             )
                         }
                         Ok(snapshot) => self.open_snapshot(id, *snapshot),
@@ -1025,14 +1026,14 @@ impl Scanner {
                 Done::PrefsWritten(result) => {
                     self.busy.prefs = false;
                     if let Err(e) = result {
-                        self.error = format!("Preferences could not be saved: {e}");
+                        self.error = tr!("Preferences could not be saved: {}", e);
                     }
                 }
                 Done::Exported(path, result) => {
                     self.busy.exporting = self.busy.exporting.saturating_sub(1);
                     match result {
-                        Ok(()) => self.status = format!("Saved {}", path.display()),
-                        Err(e) => self.error = format!("Export failed: {e}"),
+                        Ok(()) => self.status = tr!("Saved {}", path.display()),
+                        Err(e) => self.error = tr!("Export failed: {}", e),
                     }
                 }
                 Done::History(token, result) => {
@@ -1094,7 +1095,7 @@ impl Scanner {
         self.script_test = None;
         self.previous.clear();
         self.haystacks.clear();
-        self.status = format!("Loaded inventory #{id}");
+        self.status = tr!("Loaded inventory #{}", id);
         self.opened_stamp = self
             .history
             .iter()
@@ -1146,7 +1147,7 @@ impl Scanner {
     }
     fn start_checked(&mut self, unattended: bool) {
         if self.listening.is_some() || self.ot.capturing() {
-            self.error = "Stop passive capture before starting an active scan.".into();
+            self.error = tr!("Stop passive capture before starting an active scan.").into();
             return;
         }
         if self.busy.loading {
@@ -1180,7 +1181,7 @@ impl Scanner {
                 // addresses need a yes in the confirmation dialog first.
                 if let Some(text) = self.scope_check(&hosts, consent) {
                     if unattended {
-                        self.error = format!("Scheduled scan not started. {text}");
+                        self.error = tr!("Scheduled scan not started. {}", text);
                         return;
                     }
                     // The dialog remembers the targets it was shown for.
@@ -1287,7 +1288,7 @@ impl Scanner {
             Err(mpsc::TryRecvError::Empty) => true,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.ipv6_job = None;
-                self.status = format!("{} · IPv6 discovery failed", self.status);
+                self.status = tr!("{} · IPv6 discovery failed", self.status);
                 self.finish_scan();
                 false
             }
@@ -1352,16 +1353,16 @@ impl Scanner {
             }
             if done {
                 self.scan_sent = run.sent.snapshot();
-                self.status = format!(
-                    "{} · {} of {} addresses · {:.1}s · {} packets sent",
+                self.status = tr!(
+                    "{} · {} of {} addresses · {} s · {} packets sent",
                     if run.cancel.load(Ordering::Relaxed) {
-                        "Stopped"
+                        tr!("Stopped")
                     } else {
-                        "Complete"
+                        tr!("Complete")
                     },
                     self.results.len(),
                     run.total,
-                    run.started.elapsed().as_secs_f32(),
+                    format!("{:.1}", run.started.elapsed().as_secs_f32()),
                     crate::sendlog::total(&self.scan_sent)
                 );
                 // The recording ends with the scan; its result follows the scan summary.
@@ -1404,7 +1405,7 @@ impl Scanner {
                     let _ = tx.send((hosts, outcome));
                 });
                 self.ipv6_job = Some(rx);
-                self.status = format!("{} · IPv6 discovery…", self.status);
+                self.status = tr!("{} · IPv6 discovery…", self.status);
             } else {
                 self.finish_scan();
             }
@@ -1510,7 +1511,7 @@ impl Scanner {
     fn export(&mut self, extension: &str) {
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(format!("network-scan.{extension}"))
-            .add_filter("Scan results", &[extension])
+            .add_filter(tr!("Scan results"), &[extension])
             .save_file()
         else {
             return;
@@ -1520,7 +1521,7 @@ impl Scanner {
         snapshot.hosts = self.rows.iter().map(|&i| self.results[i].clone()).collect();
         let stamp = self.opened_stamp.unwrap_or_else(unix_now);
         // Formatting and writing happen on the worker; the dialog stays on this thread.
-        self.status = format!("Writing {}…", path.display());
+        self.status = tr!("Writing {}…", path.display());
         self.submit(Job::Export(
             Box::new(snapshot),
             extension.to_string(),
@@ -1533,14 +1534,14 @@ impl Scanner {
     fn export_all(&mut self, format: &str, extension: &str) {
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(format!("network-scan.{extension}"))
-            .add_filter("CycloneDX JSON", &["json"])
+            .add_filter(tr!("CycloneDX JSON"), &["json"])
             .save_file()
         else {
             return;
         };
         let snapshot = self.snapshot();
         let stamp = self.opened_stamp.unwrap_or_else(unix_now);
-        self.status = format!("Writing {}…", path.display());
+        self.status = tr!("Writing {}…", path.display());
         self.submit(Job::Export(
             Box::new(snapshot),
             format.to_string(),
@@ -1722,7 +1723,7 @@ impl Scanner {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Address list", &["txt", "csv", "lst"])
+            .add_filter(tr!("Address list"), &["txt", "csv", "lst"])
             .pick_file()
         {
             // Read in the background; large lists must not freeze the window.

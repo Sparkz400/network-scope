@@ -23,7 +23,7 @@ pub(super) fn effect(result: Result<update::Outcome, String>) -> Effect {
     match result {
         Ok(update::Outcome::Available(release)) => Effect::Notice(release),
         Ok(_) => Effect::Nothing,
-        Err(e) => Effect::Failed(format!("Update check failed: {e}")),
+        Err(e) => Effect::Failed(tr!("Update check failed: {}", e)),
     }
 }
 

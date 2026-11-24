@@ -23,6 +23,24 @@ Stop and quit || Stoppen und beenden
 Keep running || Weiterlaufen lassen
 Dismiss the message || Meldung ausblenden
 Copy address || Adresse kopieren
+No echo request is sent: the ports are probed directly. For networks that drop ping. || Es wird kein Echo-Request gesendet: Die Ports werden direkt geprüft. Für Netze, die Ping verwerfen.
+Finds hosts that ignore ping, at the cost of probing the ports of every address, also the unused ones. || Findet Hosts, die Ping ignorieren, prüft dafür aber die Ports jeder Adresse, auch der unbenutzten.
+Asks the system for the MAC address of each address of the local network: a device that answers ARP is there, whatever its firewall does with ping. || Fragt das System nach der MAC-Adresse jeder Adresse im lokalen Netz: Ein Gerät, das auf ARP antwortet, ist da, egal was seine Firewall mit Ping macht.
+Sends single SYN packets through the capture interface instead of opening connections: faster on large port ranges. Needs the interface, its IPv4 and MAC address from Passive discovery / OT. || Sendet einzelne SYN-Pakete über die Capture-Schnittstelle, statt Verbindungen aufzubauen: schneller bei großen Portbereichen. Braucht die Schnittstelle, ihre IPv4- und MAC-Adresse aus Passive Erkennung / OT.
+Needs SYN scanning, and not in Safe Mode || Benötigt den SYN-Scan und nicht im Sicheren Modus
+One reverse lookup per responding host through the DNS server this computer uses. || Eine Rückwärtsauflösung je antwortendem Host über den DNS-Server dieses Computers.
+Asks the system for the MAC address of each responding host of the local network; the manufacturer and the device identity across scans come from it. || Fragt das System nach der MAC-Adresse jedes antwortenden Hosts im lokalen Netz; daraus ergeben sich der Hersteller und die Wiedererkennung des Geräts über Scans hinweg.
+How many hosts are scanned at the same time. Safe Mode uses at most 8. || Wie viele Hosts gleichzeitig gescannt werden. Der Sichere Modus nutzt höchstens 8.
+Echo requests sent to a host before it counts as not responding. || Echo-Requests an einen Host, bevor er als nicht antwortend gilt.
+How long one echo request waits for its reply. || Wie lange ein Echo-Request auf seine Antwort wartet.
+The longest a port probe waits for an answer; a port without one is reported as no reply, not as closed. || Die längste Wartezeit einer Portprüfung; ein Port ohne Antwort wird als „keine Antwort“ gemeldet, nicht als geschlossen.
+The adaptive timing never waits less than this, however fast the device answers. || Das adaptive Timing wartet nie kürzer als dies, egal wie schnell das Gerät antwortet.
+The least time between two probes in Safe Mode (never under 100 ms), so fragile devices are not flooded. || Die Mindestzeit zwischen zwei Prüfungen im Sicheren Modus (nie unter 100 ms), damit empfindliche Geräte nicht überlastet werden.
+How many ports of one host are probed at the same time. Safe Mode uses at most 4. || Wie viele Ports eines Hosts gleichzeitig geprüft werden. Der Sichere Modus nutzt höchstens 4.
+A port that gave no answer is tried again this many times, with twice the timeout each time. || Ein Port ohne Antwort wird so oft erneut geprüft, jedes Mal mit doppeltem Zeitlimit.
+An upper limit for the packets of the scan, in packets per second. Outside Safe Mode, which is paced by the probe spacing. || Eine Obergrenze für die Pakete des Scans, in Paketen pro Sekunde. Außerhalb des Sicheren Modus, der über den Prüfabstand getaktet wird.
+A host that answers ping in a few milliseconds gets a shorter port timeout: closed and filtered ports are found sooner. || Ein Host, der in wenigen Millisekunden auf Ping antwortet, bekommt ein kürzeres Port-Zeitlimit: Geschlossene und gefilterte Ports werden schneller erkannt.
+Measures how fast the device answers its first connects and waits only a little longer for the rest. Speeds up hosts with many filtered ports. || Misst, wie schnell das Gerät auf die ersten Verbindungen antwortet, und wartet beim Rest nur wenig länger. Beschleunigt Hosts mit vielen gefilterten Ports.
 Device details · {} || Gerätedetails · {}
 Seen in passive traffic only: the scan on screen did not probe this device. || Nur im passiven Verkehr gesehen: Der angezeigte Scan hat dieses Gerät nicht geprüft.
 Seen by: {} || Gesehen über: {}
@@ -740,3 +758,36 @@ SBOM {} ({}), {} components || SBOM {} ({}), {} Komponenten
 … and {} more (the CycloneDX export lists all) || … und {} weitere (der CycloneDX-Export führt alle auf)
 Passive / OT || Passiv / OT
 Inventory || Inventar
+
+# Messages that were English only
+Background worker stopped; restart the program. || Der Hintergrunddienst wurde beendet; bitte das Programm neu starten.
+No observed changes. || Keine Änderungen festgestellt.
+Inventory #{} was not opened: a scan or capture is running. || Inventar #{} wurde nicht geöffnet: Ein Scan oder Mitschnitt läuft.
+Preferences could not be saved: {} || Die Einstellungen konnten nicht gespeichert werden: {}
+Export failed: {} || Export fehlgeschlagen: {}
+Loaded inventory #{} || Inventar #{} geladen
+Stop passive capture before starting an active scan. || Den passiven Mitschnitt stoppen, bevor ein aktiver Scan startet.
+Scheduled scan not started. {} || Geplanter Scan nicht gestartet. {}
+{} · IPv6 discovery failed || {} · IPv6-Erkennung fehlgeschlagen
+{} · IPv6 discovery… || {} · IPv6-Erkennung…
+{} · {} of {} addresses · {} s · {} packets sent || {} · {} von {} Adressen · {} s · {} Pakete gesendet
+Stopped || Gestoppt
+Complete || Abgeschlossen
+CVE rules file: {}; using the default rules instead || CVE-Regeldatei: {}; es gelten die Standardregeln
+{} observations · saved capture #{} || {} Beobachtungen · Mitschnitt #{} gespeichert
+Scan results || Scan-Ergebnisse
+CycloneDX JSON || CycloneDX-JSON
+Address list || Adressliste
+{} observations · saving capture || {} Beobachtungen · speichere Mitschnitt
+Update check failed: {} || Update-Prüfung fehlgeschlagen: {}
+Wire capture: {} frames recorded to {} || Mitschnitt auf der Leitung: {} Frames nach {} geschrieben
+No wire capture ({}); application-level record of {} payloads written to {} (not a wire capture) || Kein Mitschnitt auf der Leitung ({}); Aufzeichnung von {} Nutzdaten auf Anwendungsebene nach {} geschrieben (kein Leitungsmitschnitt)
+Recording failed: {} || Aufzeichnung fehlgeschlagen: {}
+No wire capture ({}) and no application-level record || Kein Mitschnitt auf der Leitung ({}) und keine Aufzeichnung auf Anwendungsebene
+The script set nothing for this host. || Das Skript hat für diesen Host nichts gesetzt.
+Set script.{} = {} || Gesetzt: script.{} = {}
+Note / error: {} || Hinweis / Fehler: {}
+Rhai script || Rhai-Skript
+MD5 (weak) || MD5 (schwach)
+DES (weak) || DES (schwach)
+CVE rules || CVE-Regeln

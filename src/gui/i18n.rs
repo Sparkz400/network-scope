@@ -380,6 +380,10 @@ mod tests {
             include_str!("workbench.rs"),
             include_str!("menu.rs"),
             include_str!("nav.rs"),
+            include_str!("recording.rs"),
+            include_str!("desktop.rs"),
+            include_str!("icons.rs"),
+            include_str!("a11y.rs"),
         ];
         let catalog = parse_catalog(GERMAN);
         let mut missing = vec![];

@@ -843,7 +843,7 @@ impl Scanner {
             }
             self.listening = None;
             self.data_changed();
-            self.status = format!("{} observations · saving capture", self.observations.len());
+            self.status = tr!("{} observations · saving capture", self.observations.len());
             let snapshot = self.capture_snapshot();
             self.submit(Job::Save(Box::new(snapshot), "capture"));
         }
