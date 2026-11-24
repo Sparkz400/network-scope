@@ -37,13 +37,16 @@ impl Scanner {
                     {
                         run.cancel.store(true, Ordering::Relaxed);
                     }
-                } else if ui
-                    .add(
+                } else if a11y::named(
+                    ui.add(
                         egui::Button::new(RichText::new(tr!("▶ Start")).color(Color32::WHITE))
                             .fill(Color32::from_rgb(33, 105, 180)),
-                    )
-                    .on_hover_text("F5")
-                    .clicked()
+                    ),
+                    // Screen readers would read the triangle out.
+                    tr!("Start"),
+                )
+                .on_hover_text("F5")
+                .clicked()
                 {
                     // The same command as F5 and Scan → Start scan (it shows the Hosts page).
                     let ctx = ui.ctx().clone();
@@ -77,6 +80,7 @@ impl Scanner {
         // with the search box at its end instead of on the right.
         let narrow = ui.available_width() < 640.0;
         let mut row = |ui: &mut egui::Ui| {
+            mode_switch(ui, &mut self.view);
             ui.selectable_value(&mut self.filter, Filter::Responding, tr!("Responding"));
             ui.selectable_value(&mut self.filter, Filter::All, tr!("All hosts"));
             ui.selectable_value(&mut self.filter, Filter::Open, tr!("Open ports"));
@@ -121,6 +125,21 @@ impl Scanner {
         ui.add_space(2.0);
     }
 }
+/// The first control of the Hosts page in both of its modes: one row per scanned address (the
+/// scan results with status and ping) or one row per device (addresses with the same MAC merged,
+/// with devices that were only seen passively).
+pub(super) fn mode_switch(ui: &mut egui::Ui, view: &mut MainView) {
+    ui.selectable_value(view, MainView::Hosts, tr!("By address"))
+        .on_hover_text(tr!(
+            "One row per scanned address, with its status and ping."
+        ));
+    ui.selectable_value(view, MainView::Devices, tr!("By device"))
+        .on_hover_text(tr!(
+            "One row per device: addresses with the same MAC address merged, and devices that were only seen passively."
+        ));
+    ui.separator();
+}
+
 /// Menu behaviour shared by the menu bar and the favorite-addresses menu.
 pub(super) fn menu_config() -> egui::containers::menu::MenuConfig {
     egui::containers::menu::MenuConfig::new()

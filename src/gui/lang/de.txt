@@ -142,7 +142,6 @@ KEV || KEV
 EPSS || EPSS
 
 # Devices window
-Devices (active + passive merged) || Geräte (aktiv + passiv zusammengeführt)
 {} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host. || {} von {} Geräten angezeigt. Einträge sind über die MAC-Adresse zugeordnet, ohne MAC über die IP. Klick auf eine Zeile zeigt den Host.
 Any risk || Beliebiges Risiko
 {} (randomized) || {} (zufällig)
@@ -683,3 +682,8 @@ Services ({}) || Dienste ({})
 All identity fields ({}) || Alle Identitätsfelder ({})
 The hosts of: {} || Die Hosts von: {}
 Show all findings || Alle Befunde anzeigen
+By address || Nach Adresse
+By device || Nach Gerät
+One row per scanned address, with its status and ping. || Eine Zeile pro gescannter Adresse, mit Status und Ping.
+One row per device: addresses with the same MAC address merged, and devices that were only seen passively. || Eine Zeile pro Gerät: Adressen mit derselben MAC-Adresse zusammengefasst, dazu Geräte, die nur passiv gesehen wurden.
+Start || Start

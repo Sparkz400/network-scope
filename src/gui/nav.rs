@@ -1,15 +1,16 @@
 //! The sidebar: the pages of the main window, each with a small count (hosts that answered,
-//! devices, findings in the colour of the worst one, passive observations, saved scans). The
-//! pages are the same as in the View menu and on `Ctrl+1` to `Ctrl+7`; a click runs the same
-//! command.
+//! findings in the colour of the worst one, passive observations, saved scans). The pages are
+//! the same as in the View menu and on `Ctrl+1` to `Ctrl+7` (`Ctrl+3` is the device mode of the
+//! Hosts page); a click runs the same command.
 use super::{palette::Cmd, *};
 
 /// The pages in sidebar order, with the command that opens each. `None` draws a separator.
-const PAGES: [Option<(MainView, Cmd)>; 9] = [
+/// Devices is not a page of its own: it is the "by device" mode of the Hosts page (still
+/// `Ctrl+3`, the View menu and the palette).
+const PAGES: [Option<(MainView, Cmd)>; 8] = [
     Some((MainView::Home, Cmd::Overview)),
     Some((MainView::Hosts, Cmd::Hosts)),
     None,
-    Some((MainView::Devices, Cmd::Devices)),
     Some((MainView::Findings, Cmd::Findings)),
     Some((MainView::Map, Cmd::Map)),
     Some((MainView::Passive, Cmd::Passive)),
@@ -18,12 +19,27 @@ const PAGES: [Option<(MainView, Cmd)>; 9] = [
 ];
 
 /// The width of the sidebar.
-const WIDTH: f32 = 172.0;
-/// Up to this many hosts and observations the sidebar works out the device and finding counts
-/// itself (about 25 ms once per data change in release); above it, a count appears once its page
-/// has been opened, so a large scan never stalls the window for pages nobody looks at (65,536
-/// hosts take about 0.4 s).
+const WIDTH: f32 = 196.0;
+/// Up to this many hosts and observations the sidebar works out the finding count on the UI
+/// thread (about 25 ms once per data change in release). Above it the findings are worked out on
+/// a thread of their own once no scan or capture runs ([`Scanner::background_findings`]; 65,536
+/// hosts take about 0.4 s), so a large scan never stalls the window.
 const EAGER_LIMIT: usize = 4096;
+
+/// Findings being worked out on another thread for one data generation.
+pub(super) struct BackgroundFindings {
+    generation: u64,
+    rx: mpsc::Receiver<Vec<risk::Finding>>,
+}
+
+impl BackgroundFindings {
+    /// The hosts were only sorted (`before` -> `now`): the answer still holds for them.
+    pub(super) fn restamp(&mut self, before: u64, now: u64) {
+        if self.generation == before {
+            self.generation = now;
+        }
+    }
+}
 
 impl Scanner {
     /// Whether findings and devices may be worked out without the user asking for them: no
@@ -32,6 +48,61 @@ impl Scanner {
         !self.live()
             && !self.ot.running()
             && self.results.len() + self.observations.len() <= EAGER_LIMIT
+    }
+
+    /// Starts working out the findings of a large scan on another thread when they are out of
+    /// date and nothing runs, and takes the answer when it is there (once per frame). The answer
+    /// is used only if the data did not change meanwhile; the hosts are copied for the thread,
+    /// so the window keeps showing and sorting them.
+    pub(super) fn background_findings(&mut self, ctx: &egui::Context) {
+        if let Some(job) = &self.background_findings {
+            match job.rx.try_recv() {
+                Ok(findings) => {
+                    if job.generation == self.generation {
+                        self.findings.set(job.generation, findings);
+                    }
+                    self.background_findings = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => self.background_findings = None,
+            }
+        }
+        let wanted = !self.eager()
+            && !self.live()
+            && !self.ot.running()
+            && self.screenshot.is_none()
+            && self.findings.generation != Some(self.generation)
+            && self
+                .background_findings
+                .as_ref()
+                .is_none_or(|job| job.generation != self.generation);
+        if !wanted {
+            return;
+        }
+        let snapshot = store::Snapshot {
+            sent: vec![],
+            targets: String::new(),
+            complete: false,
+            settings: Default::default(),
+            hosts: self.results.clone(),
+            observations: self.observations.clone(),
+            notes: Default::default(),
+        };
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        let started = std::thread::Builder::new()
+            .name("findings".into())
+            .spawn(move || {
+                // A dropped receiver (newer data) is not an error.
+                let _ = tx.send(risk::analyze_snapshot(&snapshot));
+                ctx.request_repaint();
+            });
+        if started.is_ok() {
+            self.background_findings = Some(BackgroundFindings {
+                generation: self.generation,
+                rx,
+            });
+        }
     }
 
     /// The findings of the data on screen, worked out now when that is cheap. False when they
@@ -74,14 +145,6 @@ impl Scanner {
             MainView::Hosts => {
                 (!self.results.is_empty()).then(|| (self.responding.to_string(), None))
             }
-            MainView::Devices => {
-                if eager {
-                    self.ensure_devices();
-                }
-                let n = self.devices.value.len();
-                (self.devices.generation == Some(self.generation) && n > 0)
-                    .then(|| (n.to_string(), None))
-            }
             MainView::Findings => {
                 if eager {
                     self.ensure_findings();
@@ -109,7 +172,8 @@ impl Scanner {
                 };
                 (n > 0).then(|| (n.to_string(), None))
             }
-            MainView::Home | MainView::Map => None,
+            // Devices has no entry of its own (see `PAGES`).
+            MainView::Home | MainView::Map | MainView::Devices => None,
         }
     }
 
@@ -119,32 +183,45 @@ impl Scanner {
             .resizable(false)
             .exact_size(WIDTH)
             .show(root, |ui| {
-                ui.add_space(6.0);
-                for page in PAGES {
-                    let Some((view, cmd)) = page else {
-                        ui.separator();
-                        continue;
-                    };
-                    let mut button = egui::Button::selectable(self.view == view, cmd.menu_label())
-                        .min_size(egui::vec2(ui.available_width(), 28.0));
-                    if let Some((count, color)) = self.badge(view) {
-                        let mut text = RichText::new(count).small();
-                        text = match color {
-                            Some(c) => text.color(c).strong(),
-                            None => text.color(ui.visuals().weak_text_color()),
-                        };
-                        button = button.right_text(text);
-                    }
-                    let mut response = ui.add(button);
-                    if let Some(shortcut) = cmd.shortcut() {
-                        response = response.on_hover_text(ui.ctx().format_shortcut(&shortcut));
-                    }
-                    if response.clicked() {
-                        let ctx = ui.ctx().clone();
-                        self.run_command(&ctx, cmd);
-                    }
-                }
+                // Scrolls only when the window is shorter than the list.
+                egui::ScrollArea::vertical()
+                    .id_salt("pages_scroll")
+                    .show(ui, |ui| self.sidebar_pages(ui));
             });
+    }
+
+    /// The logo and the page buttons.
+    fn sidebar_pages(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        // The app's mark and name, like the title of a document window.
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.add_space(6.0);
+            let logo = icons::logo(ui.ctx());
+            ui.add(egui::Image::new((logo.id(), egui::vec2(22.0, 22.0))));
+            ui.label(RichText::new("Network Scope").strong().size(15.0));
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        for page in PAGES {
+            let Some((view, cmd)) = page else {
+                ui.separator();
+                continue;
+            };
+            let badge = self.badge(view);
+            // The Hosts entry stays highlighted in its device mode.
+            let selected =
+                self.view == view || (view == MainView::Hosts && self.view == MainView::Devices);
+            let mut response =
+                icons::page_button(ui, view, selected, cmd.menu_label(), badge.as_ref());
+            if let Some(shortcut) = cmd.shortcut() {
+                response = response.on_hover_text(ui.ctx().format_shortcut(&shortcut));
+            }
+            if response.clicked() {
+                let ctx = ui.ctx().clone();
+                self.run_command(&ctx, cmd);
+            }
+        }
     }
 
     /// The page of the main window that is chosen in the sidebar.
@@ -184,37 +261,74 @@ mod tests {
     fn small_data_is_counted_at_once_and_large_data_once_its_page_was_opened() {
         let mut small = app_with(20);
         assert_eq!(
-            small.badge(MainView::Devices).map(|b| b.0),
-            Some("20".into())
+            small.badge(MainView::Findings).map(|b| b.0),
+            Some("20".into()),
+            "one telnet finding per host"
         );
-        let _ = small.badge(MainView::Findings);
         assert_eq!(small.findings.generation, Some(small.generation));
         // New data: counted again, never the old number for the new data.
         small.results.truncate(5);
         small.data_changed();
         assert_eq!(
-            small.badge(MainView::Devices).map(|b| b.0),
+            small.badge(MainView::Findings).map(|b| b.0),
             Some("5".into())
         );
 
         let mut large = app_with(EAGER_LIMIT as u32 + 1);
-        assert_eq!(large.badge(MainView::Devices), None);
         assert_eq!(large.badge(MainView::Findings), None);
         assert_eq!(large.findings.generation, None, "nothing was analysed");
-        // What the Devices and Findings pages do when they are opened.
-        large.ensure_devices();
+        // What the Findings page does when it is opened.
         large.ensure_findings();
         assert_eq!(
-            large.badge(MainView::Devices).map(|b| b.0),
+            large.badge(MainView::Findings).map(|b| b.0),
             Some((EAGER_LIMIT + 1).to_string())
         );
         assert_eq!(large.findings.generation, Some(large.generation));
     }
 
     #[test]
+    fn a_large_scan_gets_its_findings_from_another_thread() {
+        let mut large = app_with(EAGER_LIMIT as u32 + 101);
+        // `app_with` is a screenshot run, which never starts threads.
+        large.screenshot = None;
+        let ctx = egui::Context::default();
+        let wait = |app: &mut Scanner| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while app.background_findings.is_some() {
+                assert!(Instant::now() < deadline, "the thread answered");
+                std::thread::sleep(Duration::from_millis(5));
+                app.background_findings(&ctx);
+            }
+        };
+        large.background_findings(&ctx);
+        let first = large.generation;
+        assert_eq!(
+            large.background_findings.as_ref().map(|j| j.generation),
+            Some(first)
+        );
+        // New data while the thread works: its answer is dropped and a new one is asked for.
+        large.results.truncate(EAGER_LIMIT + 1);
+        large.data_changed();
+        large.background_findings(&ctx);
+        assert_eq!(
+            large.background_findings.as_ref().map(|j| j.generation),
+            Some(large.generation)
+        );
+        wait(&mut large);
+        assert_eq!(large.findings.generation, Some(large.generation));
+        assert_eq!(
+            large.badge(MainView::Findings).map(|b| b.0),
+            Some((EAGER_LIMIT + 1).to_string())
+        );
+        // Up to date: nothing more is started.
+        large.background_findings(&ctx);
+        assert!(large.background_findings.is_none());
+    }
+
+    #[test]
     fn every_page_is_in_the_sidebar_once_with_its_view_command() {
         let pages: Vec<(MainView, Cmd)> = PAGES.into_iter().flatten().collect();
-        assert_eq!(pages.len(), 7);
+        assert_eq!(pages.len(), 6, "Devices is a mode of the Hosts page");
         for (i, (view, cmd)) in pages.iter().enumerate() {
             assert!(!pages[..i].iter().any(|(v, _)| v == view), "{view:?} twice");
             assert!(cmd.shortcut().is_some(), "{cmd:?} has no shortcut");
