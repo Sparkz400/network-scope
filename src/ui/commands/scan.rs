@@ -81,8 +81,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         if !["text", "json"].contains(&format) {
             return Err("With --replay-check choose --format text or json".into());
         }
-    } else if !["json", "csv", "html", "nmap", "md", "jsonl"].contains(&format) {
-        return Err("Choose json, csv, html, nmap, md or jsonl".into());
+    } else if !["json", "csv", "html", "nmap", "md", "jsonl", "cyclonedx"].contains(&format) {
+        return Err("Choose json, csv, html, nmap, md, jsonl or cyclonedx".into());
     }
     // Several interfaces (--interface a,b) need a source address and MAC each.
     crate::interfaces::specs(&s)?;

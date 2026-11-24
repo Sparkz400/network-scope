@@ -9,6 +9,8 @@ General rules:
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
 - `--csaf FILE` selects the CSAF advisory cache (default `csaf.json` next to `feeds.json`); see [CISA ICS advisories](findings-and-cves.md#cisa-ics-advisories-for-ot-devices-csaf-offline).
+- `--sboms FILE` selects the firmware SBOM cache (default `sboms.json` next to `feeds.json`); see [Firmware SBOMs](inventory-diff-reports.md#firmware-sboms).
+- `--vex FILE` selects the VEX cache (default `vex.json` next to `feeds.json`); see [Vendor statements (VEX)](findings-and-cves.md#vendor-statements-vex-offline).
 - `--nvd FILE` selects the NVD cache (default `nvd.json` next to `feeds.json`); see [NVD import](findings-and-cves.md#nvd-import-offline).
 - `--feeds FILE` selects the KEV/EPSS cache (default `feeds.json` next to the user `cves.json`); without a cache findings are not enriched. See [Known exploited and EPSS](findings-and-cves.md#known-exploited-and-epss-offline-feeds).
 - `--json-schema v1` selects the version of the JSON output format (any command). Every JSON document carries a `schema` member; see [JSON output and schemas](json-output.md).
@@ -52,7 +54,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `diff OLD_ID NEW_ID [--format lines\|json\|text] [--ignore KEY,KEY] [--fail-on-findings [--min-severity SEV]]` | Compare two snapshots |
 | `changes [--since last\|7d\|DATE] [--format text\|json]` | New, gone and changed devices and new and resolved risks, see [Inventory](inventory-diff-reports.md#what-changed) |
 | `baseline approve [SCAN_ID]` / `enable` / `set DEVICE [...]` / `show` / `remove DEVICE` / `clear` | Approved baseline of expected devices, see [Inventory](inventory-diff-reports.md#approved-baseline) |
-| `export ID --format json\|csv\|html\|nmap\|md\|jsonl [--baseline ID] [--output FILE]` | Export a snapshot |
+| `export ID --format json\|csv\|html\|nmap\|md\|jsonl\|cyclonedx [--baseline ID] [--output FILE]` | Export a snapshot |
+| `export ID --format cyclonedx --push URL --token-env VAR [--dt-project NAME] [--dt-version V]` | Upload the CycloneDX document to Dependency-Track; see [Upload to Dependency-Track](inventory-diff-reports.md#upload-to-dependency-track) |
 | `export ID --format compliance-iec62443\|compliance-nis2\|compliance-cis [-csv] [--output FILE]` | Asset inventory with findings mapped to IEC 62443, NIS2 Art. 21 or CIS Controls v8 (Markdown, or CSV with the `-csv` suffix); see [Compliance exports](inventory-diff-reports.md#compliance-exports) |
 | `export ID --format netbox\|netbox-devices\|snipeit\|splunk\|elastic\|servicenow [--push URL --token-env VAR]` | Export to other systems, optional opt-in push, see [Export](import-export.md#export-to-other-systems) |
 | `report ID [--baseline ID] [--output FILE]` | HTML report with charts and map |
@@ -62,6 +65,8 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `feeds import [--kev FILE] [--epss FILE] [--feeds FILE]` | Import CISA KEV (JSON) and FIRST EPSS (plain CSV) files you downloaded; no network access |
 | `feeds import nvd FILE... [--nvd FILE]` | Import NVD CVE JSON 2.0 feed files (unpack `.gz` first) into the NVD cache; CPE matches become `cve` findings. No network access |
 | `feeds import csaf FILE\|DIR... [--csaf FILE]` | Import CISA ICS advisories (CSAF 2.0 JSON) into the CSAF cache; S7, CIP, Modbus and OPC UA firmware is matched against them. No network access |
+| `feeds import sbom FILE\|DIR... [--sbom-vendor V] [--sbom-product P] [--sbom-version X] [--sboms FILE]` | Import firmware SBOMs (CycloneDX or SPDX JSON) into the SBOM cache; the CycloneDX export nests them under the firmware they describe. No network access. See [Firmware SBOMs](inventory-diff-reports.md#firmware-sboms) |
+| `feeds import vex FILE\|DIR... [--vex FILE]` | Import vendor VEX statements (CSAF 2.0 or CycloneDX JSON); findings they cover are marked, and not-affected ones leave the risk score. No network access. See [Vendor statements (VEX)](findings-and-cves.md#vendor-statements-vex-offline) |
 | `feeds status [--feeds FILE] [--nvd FILE]` | Show what the feeds cache and the NVD cache hold (JSON) |
 | `monitor TARGETS [scan options] --interval 300 [...]` | Repeat scans and alert on changes |
 | `service install\|uninstall\|run` | `monitor` as a Windows service, see [Service and scheduling](service-and-scheduling.md) |
@@ -233,7 +238,7 @@ Packets sent: 24
 
 ## Export formats
 
-`--format json|csv|html|nmap|md|jsonl` for `scan` and `export` (`export` also takes `compliance-iec62443|compliance-nis2|compliance-cis`, with `-csv` for CSV):
+`--format json|csv|html|nmap|md|jsonl|cyclonedx` for `scan` and `export` (`export` also takes `compliance-iec62443|compliance-nis2|compliance-cis`, with `-csv` for CSV):
 
 | Format | Content |
 | --- | --- |
@@ -243,6 +248,7 @@ Packets sent: 24
 | `md` | Markdown summary (scope, totals, findings, findings by host, devices, changes since `--baseline`) |
 | `jsonl` | One JSON object per responding host |
 | `nmap` | nmap-compatible XML |
+| `cyclonedx` | CycloneDX 1.6 JSON inventory of the devices, their reported firmware and services, with known CVEs; see [CycloneDX inventory](inventory-diff-reports.md#cyclonedx-inventory) |
 
 Exports from `scan`, `listen`, `dcp` and `export` carry the stored scan time. Details in [Inventory, diffs and reports](inventory-diff-reports.md).
 

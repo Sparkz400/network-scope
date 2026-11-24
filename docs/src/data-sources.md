@@ -11,6 +11,10 @@ Network Scope embeds four data files at build time. Their provenance and licensi
 
 ## Imported feeds
 
+Vendor VEX statements (CSAF 2.0 or CycloneDX) are imported with `feeds import vex` into `vex.json` next to `feeds.json`; see [Vendor statements (VEX)](findings-and-cves.md#vendor-statements-vex-offline).
+
+Firmware SBOMs (CycloneDX or SPDX JSON from vendors or from firmware-image analysis) are imported with `feeds import sbom` into `sboms.json` next to `feeds.json`; see [Firmware SBOMs](inventory-diff-reports.md#firmware-sboms).
+
 CISA KEV and FIRST EPSS are not embedded. You download them and import them with `feeds import`; the cache is `feeds.json` next to the user `cves.json` (or `--feeds FILE`). See [Findings and CVE hints](findings-and-cves.md#known-exploited-and-epss-offline-feeds) for the download addresses and what changes. The NVD CVE JSON 2.0 feed is imported the same way (`feeds import nvd FILE...`, cache `nvd.json`); see [NVD import](findings-and-cves.md#nvd-import-offline). CISA ICS advisories in CSAF format are imported with `feeds import csaf` (cache `csaf.json`); see [CISA ICS advisories](findings-and-cves.md#cisa-ics-advisories-for-ot-devices-csaf-offline).
 
 ## User overrides

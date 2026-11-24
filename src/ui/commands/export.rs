@@ -1,5 +1,6 @@
 //! `export ID --format ...` and `report ID`: a saved scan as JSON, CSV, HTML, nmap XML,
-//! Markdown, JSON lines or a compliance inventory (`compliance-iec62443|nis2|cis[-csv]`), optionally
+//! Markdown, JSON lines, a CycloneDX device and firmware inventory (`cyclonedx`) or a compliance
+//! inventory (`compliance-iec62443|nis2|cis[-csv]`), optionally
 //! with a "changes since" section (`--baseline ID`); and for other systems as `netbox`,
 //! `netbox-devices`, `snipeit`, `splunk`, `elastic` or `servicenow`, with an opt-in
 //! `--push URL --token-env VAR` for NetBox, Splunk and Elastic.
@@ -18,9 +19,12 @@ pub(super) fn export(ctx: &mut Ctx) -> Result<(), String> {
     if let Some(target) = Target::parse(format) {
         return sync_export(ctx, target, &snapshot, stamp);
     }
+    if matches!(format, "cyclonedx" | "cdx") && opts.contains_key("push") {
+        return push_dependency_track(ctx, &snapshot, stamp);
+    }
     if opts.contains_key("push") || opts.contains_key("token-env") {
         return Err(
-            "--push and --token-env apply to --format netbox, netbox-devices, splunk or elastic"
+            "--push and --token-env apply to --format netbox, netbox-devices, splunk, elastic or cyclonedx (Dependency-Track)"
                 .into(),
         );
     }
@@ -34,6 +38,49 @@ pub(super) fn export(ctx: &mut Ctx) -> Result<(), String> {
         other => store::export_at(&snapshot, other, stamp)?,
     };
     output(&text, opts)
+}
+
+/// `export --format cyclonedx --push URL --token-env VAR`: the CycloneDX document uploaded to
+/// Dependency-Track as project `--dt-project` (default `Network Scope`), version `--dt-version`
+/// (default the scan's targets). The API key comes from the environment variable, never the URL.
+fn push_dependency_track(ctx: &Ctx, snapshot: &store::Snapshot, stamp: i64) -> Result<(), String> {
+    let opts = &ctx.opts;
+    let url = opts.get("push").ok_or("--push needs a URL")?;
+    let var = opts
+        .get("token-env")
+        .ok_or("--push needs --token-env VAR (the name of an environment variable that holds the Dependency-Track API key)")?;
+    let key = sync::token_from_env(var)?;
+    let project = opts
+        .get("dt-project")
+        .cloned()
+        .unwrap_or_else(|| "Network Scope".into());
+    let version = opts.get("dt-version").cloned().unwrap_or_else(|| {
+        let t = snapshot.targets.trim();
+        if t.is_empty() {
+            "inventory".into()
+        } else {
+            t.chars().take(100).collect()
+        }
+    });
+    let bom = crate::cyclonedx::export(snapshot, stamp);
+    crate::cyclonedx::push_dependency_track(
+        url,
+        &key,
+        &project,
+        &version,
+        &bom,
+        Duration::from_secs(60),
+    )?;
+    progress(
+        opts,
+        format_args!(
+            "Uploaded the CycloneDX document to Dependency-Track ({url}) as {project} {version}"
+        ),
+    );
+    if opts.contains_key("output") {
+        output(&bom, opts)?;
+    }
+    Ok(())
 }
 
 /// An export for another system, and with `--push` its delivery. The token comes from the
@@ -190,6 +237,10 @@ mod tests {
         assert!(read(&["--format", "servicenow"]).contains("cmdb_ci"));
         assert!(read(&["--format", "elastic", "--index", "ot"]).contains("\"_index\":\"ot\""));
         assert!(read(&["--format", "splunk"]).contains("network-scope:device"));
+        let bom: serde_json::Value =
+            serde_json::from_str(&read(&["--format", "cyclonedx"])).unwrap();
+        assert_eq!(bom["bomFormat"], "CycloneDX");
+        assert_eq!(bom["components"][0]["type"], "device");
         assert!(
             read(&[
                 "--format",

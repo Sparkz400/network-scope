@@ -420,6 +420,27 @@ pub fn push(
     body: &str,
     timeout: Duration,
 ) -> Result<(), String> {
+    let scheme = header_value("Authorization scheme", auth.0)?;
+    let token = header_value("Token", auth.1)?;
+    push_with_header(
+        url,
+        ("Authorization", &format!("{scheme} {token}")),
+        content_type,
+        body,
+        timeout,
+    )
+}
+
+/// [`push`] with the credential in a header of the caller's choice (`X-Api-Key: ...` for
+/// Dependency-Track). The same rules: no query string or fragment, a token only over https://
+/// (plain http:// to localhost only).
+pub fn push_with_header(
+    url: &str,
+    header: (&str, &str),
+    content_type: &str,
+    body: &str,
+    timeout: Duration,
+) -> Result<(), String> {
     if url.contains(['?', '#']) {
         return Err(
             "The push URL must not contain a query string or fragment: credentials never go in a URL"
@@ -435,9 +456,12 @@ pub fn push(
             w.host
         ));
     }
-    let scheme = header_value("Authorization scheme", auth.0)?;
-    let token = header_value("Token", auth.1)?;
-    let headers = [("Authorization".to_string(), format!("{scheme} {token}"))];
+    let name = header_value("Header name", header.0)?;
+    // The value may hold a scheme and a token ("Bearer x"): one space is allowed between them.
+    if header.1.is_empty() || header.1.chars().any(char::is_control) || header.1.contains("  ") {
+        return Err(format!("{name}: empty, or contains control characters"));
+    }
+    let headers = [(name, header.1.to_string())];
     let config = if w.tls {
         Some(platform_tls_config().map_err(|e| format!("TLS setup failed: {e}"))?)
     } else {

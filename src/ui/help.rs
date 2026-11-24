@@ -20,7 +20,8 @@ network-scope baseline set DEVICE [--owner TEXT] [--tag a,b] [--untag a,b]
 network-scope baseline show [--format text|json]   Expected devices, owners, tags, criticality
 network-scope baseline enable                  Start alerting on unknown devices (baseline from an import)
 network-scope baseline remove DEVICE | clear   Drop one device, or the whole baseline (alerting off)
-network-scope export ID --format json|csv|html|nmap|md|jsonl|compliance-iec62443|compliance-nis2|compliance-cis[-csv] [--baseline ID] [--output FILE]
+network-scope export ID --format json|csv|html|nmap|md|jsonl|cyclonedx|compliance-iec62443|compliance-nis2|compliance-cis[-csv] [--baseline ID] [--output FILE]
+network-scope export ID --format cyclonedx --push URL --token-env VAR [--dt-project NAME] [--dt-version V]   Upload to Dependency-Track
 network-scope export ID --format netbox|netbox-devices|snipeit|splunk|elastic|servicenow [--output FILE]
         [--push URL --token-env VAR] [--netbox-site S --netbox-role R --netbox-device-type T] [--index NAME]
 network-scope report ID [--baseline ID] [--output FILE]   HTML report with charts and map
@@ -33,6 +34,9 @@ network-scope findings ID --top N [--format text|json]   Risk scores and the "fi
 network-scope feeds import [--kev FILE] [--epss FILE]   Offline CISA KEV and EPSS data for findings
 network-scope feeds import nvd FILE...   Offline NVD CVE JSON 2.0 feed files (unzip .gz first) for CVE findings
 network-scope feeds import csaf FILE|DIR...   Offline CISA ICS advisories (CSAF 2.0) matched against OT firmware
+network-scope feeds import sbom FILE|DIR... [--sbom-vendor V] [--sbom-product P] [--sbom-version X]
+                                               Firmware SBOMs (CycloneDX or SPDX JSON) for the CycloneDX export
+network-scope feeds import vex FILE|DIR...       Vendor VEX statements (CSAF 2.0 or CycloneDX) that mark findings as not affected, fixed, ...
 network-scope feeds status                     What the feeds cache holds
 network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--learn]
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
@@ -95,7 +99,7 @@ Scan options:
   --retries 1     Extra attempts for unanswered ports (timeout doubles each time)
   --rate PPS      Cap probe rate outside Safe Mode (0 = unlimited)
   --parallel 64   Concurrent port probes per host outside Safe Mode
-  --tcp-only --arp --ot --dns --tui --format json|csv|html|nmap|md|jsonl --output FILE
+  --tcp-only --arp --ot --dns --tui --format json|csv|html|nmap|md|jsonl|cyclonedx --output FILE
   --services      Identify services: banners, HTTP, TLS (certificate, versions, ciphers), SMB, RDP, databases...
   --udp           Probe UDP: DNS, DHCP, NTP, NetBIOS, SNMP (community "public"), SSDP, mDNS
   --udp-ports 53,123,161   Replace the default UDP port list (OT and printer ports are skipped)

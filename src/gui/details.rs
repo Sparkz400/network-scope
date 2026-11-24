@@ -8,6 +8,14 @@ impl Scanner {
         };
         // Worked out now only when that is cheap (see `fresh_findings`).
         let fresh = self.fresh_findings();
+        self.ensure_firmware_sboms();
+        let (library, by_host) = &self.firmware_sboms.value;
+        let firmware: Vec<(&crate::sbom::FirmwareSbom, &crate::sbom::Sbom)> = by_host
+            .get(&ip)
+            .into_iter()
+            .flatten()
+            .filter_map(|f| library.sboms.get(f.sbom).map(|s| (f, s)))
+            .collect();
         let Some(host) = self.results.iter().find(|h| h.ip == ip) else {
             return;
         };
@@ -154,7 +162,7 @@ impl Scanner {
                     for f in &host_findings {
                         ui.horizontal_wrapped(|ui| {
                             ui.colored_label(home::severity_color(f.severity, dark), home::severity_name(f.severity));
-                            ui.label(&f.title).on_hover_text(&f.advice);
+                            ui.label(f.title_with_vex()).on_hover_text(&f.advice);
                             if let Some(port) = f.port {
                                 ui.weak(format!(":{port}"));
                             }
@@ -166,6 +174,13 @@ impl Scanner {
                     section(ui, "details_services", &tr!("Services ({})", services.len()), true, |ui| {
                         for (port, name) in &services {
                             ui.label(format!("{port} · {name}"));
+                        }
+                    });
+                }
+                if !firmware.is_empty() {
+                    section(ui, "details_firmware_sbom", &tr!("Firmware (SBOM) ({})", firmware.len()), false, |ui| {
+                        for (f, sbom) in &firmware {
+                            firmware_sbom(ui, f, sbom);
                         }
                     });
                 }
@@ -203,7 +218,7 @@ impl Scanner {
                 }
                 ui.horizontal(|ui| {
                     if ui
-                        .button(tr!("Timeline…"))
+                        .button(tr!("Timeline"))
                         .on_hover_text(
                             tr!("When this device was first seen and what changed: address, MAC, name, ports and findings, from the saved scans."),
                         )
@@ -386,6 +401,50 @@ fn script_lines(o: &crate::script::Outcome) -> Vec<String> {
 }
 
 /// A section of the host details: a bold header that opens and closes it.
+/// Components listed per SBOM in the host details; the rest is counted.
+const SBOM_ROWS: usize = 300;
+
+/// One firmware and the components of its SBOM (single files left out, as in the export).
+fn firmware_sbom(ui: &mut egui::Ui, f: &crate::sbom::FirmwareSbom, sbom: &crate::sbom::Sbom) {
+    ui.label(RichText::new(format!("{} {}", f.name, f.version)).strong())
+        .on_hover_text(tr!("Reported by: {}", f.source));
+    let packages: Vec<&crate::sbom::Component> = sbom
+        .components
+        .iter()
+        .filter(|c| c.kind != "file")
+        .collect();
+    let files = sbom.components.len() - packages.len();
+    ui.weak(tr!(
+        "SBOM {} ({}), {} components",
+        sbom.source,
+        sbom.format,
+        packages.len()
+    ));
+    if files > 0 {
+        ui.weak(tr!("{} single files not listed", files));
+    }
+    for c in packages.iter().take(SBOM_ROWS) {
+        let row = ui.label(format!("{} {}", c.name, c.version).trim().to_string());
+        let mut hover = vec![c.kind.clone()];
+        for extra in [&c.supplier, &c.purl, &c.cpe] {
+            if !extra.is_empty() {
+                hover.push(extra.clone());
+            }
+        }
+        if !c.licenses.is_empty() {
+            hover.push(c.licenses.join(", "));
+        }
+        row.on_hover_text(hover.join("\n"));
+    }
+    if packages.len() > SBOM_ROWS {
+        ui.weak(tr!(
+            "… and {} more (the CycloneDX export lists all)",
+            packages.len() - SBOM_ROWS
+        ));
+    }
+    ui.add_space(4.0);
+}
+
 fn section(ui: &mut egui::Ui, id: &str, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
     egui::CollapsingHeader::new(RichText::new(title).strong())
         .id_salt(id)

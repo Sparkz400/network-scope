@@ -216,6 +216,7 @@ fn the_menus_open_their_entries_and_run_them() {
     assert!(h.has("Quit") && h.has("Import address list…"));
     h.hover("Export");
     assert!(h.has("HTML report…"), "the Export submenu opens on hover");
+    assert!(h.has("CycloneDX inventory (all devices)…"));
     // Escape closes the menus; then another menu of the bar.
     h.events.push(egui::Event::Key {
         key: egui::Key::Escape,
@@ -296,7 +297,7 @@ fn the_sidebar_opens_pages_and_a_finding_shows_its_host_beside_the_page() {
     assert_eq!(h.app.selected, ip("10.20.0.5"));
     assert_eq!(h.app.view, MainView::Findings, "the page stays");
     assert!(h.has("Close"));
-    h.click("Saved inventory");
+    h.click("Inventory");
     assert_eq!(h.app.view, MainView::Inventory);
     // The keyboard way: focus an entry and press Enter.
     h.focus_and_press("Network map", egui::Key::Enter);
@@ -508,4 +509,42 @@ fn opening_a_saved_scan_shows_the_hosts_page() {
         .expect("an Open button");
     h.press(first.center(), egui::PointerButton::Primary);
     assert_eq!(h.app.view, MainView::Hosts);
+}
+
+#[test]
+fn the_host_details_list_the_packages_of_a_matching_firmware_sbom() {
+    let mut h = Harness::new("main");
+    let plc = ip("10.20.0.5").unwrap();
+    let host = h.app.results.iter_mut().find(|x| x.ip == plc).unwrap();
+    for (k, v) in [
+        ("S7.order_code", "6ES7 515-2AM02-0AB0"),
+        ("S7.firmware", "V2.9.4"),
+    ] {
+        host.identity.insert(k.into(), v.into());
+    }
+    let file = r#"{"bomFormat":"CycloneDX","specVersion":"1.6",
+      "metadata":{"component":{"type":"firmware","name":"6ES7 515-2AM02-0AB0","version":"V2.9.4",
+        "manufacturer":{"name":"Siemens"}}},
+      "components":[
+        {"type":"library","name":"openssl","version":"3.0.13","purl":"pkg:generic/openssl@3.0.13"},
+        {"type":"file","name":"/etc/passwd"}]}"#;
+    let mut sbom = crate::sbom::parse(file.as_bytes(), &Default::default())
+        .unwrap()
+        .sbom;
+    sbom.source = "plc.cdx.json".into();
+    let library = std::sync::Arc::new(crate::sbom::Library {
+        version: 1,
+        imported_at: 0,
+        sboms: vec![sbom],
+    });
+    let found = crate::sbom::for_hosts(&library, &h.app.results, &h.app.observations);
+    let generation = h.app.generation;
+    h.app.firmware_sboms.set(generation, (library, found));
+    h.click("plc-line-1");
+    assert!(h.has("Firmware (SBOM) (1)"), "the section is there, closed");
+    assert!(!h.has("openssl 3.0.13"));
+    h.click("Firmware (SBOM) (1)");
+    assert!(h.has("6ES7 515-2AM02-0AB0 V2.9.4"));
+    assert!(h.has("openssl 3.0.13"));
+    assert!(h.has("1 single files not listed"));
 }

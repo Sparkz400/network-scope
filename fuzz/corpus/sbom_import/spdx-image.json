@@ -1,0 +1,17 @@
+{
+  "spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "name": "fw.bin",
+  "documentDescribes": [ "SPDXRef-image" ],
+  "packages": [
+    { "SPDXID": "SPDXRef-image", "name": "fw.bin", "versionInfo": "NOASSERTION" },
+    { "SPDXID": "SPDXRef-p1", "name": "dropbear", "versionInfo": "2019.78",
+      "supplier": "Organization: Dropbear (dropbear@example.org)",
+      "licenseConcluded": "MIT", "primaryPackagePurpose": "APPLICATION",
+      "externalRefs": [
+        { "referenceCategory": "SECURITY", "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:dropbear_ssh_project:dropbear_ssh:2019.78:*:*:*:*:*:*:*" },
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
+          "referenceLocator": "pkg:generic/dropbear@2019.78" } ] },
+    { "SPDXID": "SPDXRef-p2", "name": "uclibc", "versionInfo": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION" }
+  ]
+}

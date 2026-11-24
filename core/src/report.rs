@@ -710,7 +710,7 @@ fn findings_table(findings: &[risk::Finding], cpes: &Cpes) -> String {
             "<tr><td><span class=\"badge\" style=\"background:{}\">{}</span></td><td>{}</td><td>{}{}</td>",
             sev_color(f.severity),
             f.severity.name(),
-            esc(&f.title),
+            esc(&f.title_with_vex()),
             f.ip,
             f.port.map_or(String::new(), |p| format!(":{p}")),
         );
@@ -869,7 +869,7 @@ pub fn markdown(snapshot: &Snapshot, baseline: Option<(&Snapshot, i64)>, timesta
                 o,
                 "| {} | {} | {}{} |",
                 f.severity.name(),
-                md(&f.title),
+                md(&f.title_with_vex()),
                 f.ip,
                 f.port.map_or(String::new(), |p| format!(":{p}"))
             );

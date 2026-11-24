@@ -27,12 +27,13 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 /// New findings of a diff at or above `min`: what `diff --fail-on-findings` gates on. Changed
-/// hosts or ports, resolved findings and findings the new scan did not re-check do not count.
+/// hosts or ports, resolved findings, findings the new scan did not re-check and findings a
+/// vendor statement clears (VEX) do not count.
 fn new_findings_at_or_above(report: &store::DiffReport, min: risk::Severity) -> usize {
     report
         .new_findings
         .iter()
-        .filter(|f| f.severity >= min)
+        .filter(|f| f.severity >= min && !f.cleared_by_vex())
         .count()
 }
 
