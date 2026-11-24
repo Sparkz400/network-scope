@@ -816,8 +816,11 @@ fn write_a_large_scan_for_the_export_measurement() {
 #[test]
 #[ignore = "needs a real SBOM file (NS_REAL_SBOM)"]
 fn a_real_firmware_sbom_is_nested_into_the_export() {
+    let Some(file) = std::env::var_os("NS_REAL_SBOM") else {
+        return;
+    };
     let var = |k: &str| std::env::var(k).unwrap_or_default();
-    let bytes = std::fs::read(var("NS_REAL_SBOM")).expect("NS_REAL_SBOM");
+    let bytes = std::fs::read(file).unwrap();
     let subject = crate::sbom::Subject {
         vendor: Some(var("NS_REAL_SBOM_VENDOR")),
         product: Some(var("NS_REAL_SBOM_PRODUCT")),
