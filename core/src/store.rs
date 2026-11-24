@@ -159,7 +159,8 @@ pub(crate) fn open(path: &Path) -> Result<Connection, String> {
 
 /// Opens the inventory for reading only: the read paths the MCP query tools share with the CLI and
 /// GUI ([`list`], [`load`], [`device_history`], [`latest_complete_per_scope`],
-/// [`latest_complete_before_time`]). No directory is created, the journal mode is left alone and
+/// [`latest_complete_before_time`]) and the ones only the MCP tools use ([`alerts_read`],
+/// [`device_registry_read`]). No directory is created, the journal mode is left alone and
 /// nothing is migrated, so reading never changes the file, and a read-only file can be read.
 /// An inventory saved by an older version is read as it is: a table a later version added stands
 /// in empty in the connection's TEMP schema, which is what it holds right after the upgrade. A
@@ -184,6 +185,24 @@ pub(crate) fn open_read(path: &Path) -> Result<Connection, String> {
             "scan_hosts",
             "scan_id INTEGER NOT NULL, seq INTEGER NOT NULL, host TEXT NOT NULL, PRIMARY KEY(scan_id,seq)",
         ),
+        // What `alerts_read`, `device_registry_read` and `baseline::load_read` select from.
+        (
+            "alerts",
+            "id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, scan_id INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL",
+        ),
+        (
+            "known_devices",
+            "key TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL",
+        ),
+        (
+            "device_identifiers",
+            "device_key TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, last_seen INTEGER NOT NULL",
+        ),
+        (
+            "baseline_devices",
+            "device_key TEXT PRIMARY KEY, label TEXT NOT NULL, owner TEXT NOT NULL, criticality TEXT NOT NULL, tags TEXT NOT NULL, expected INTEGER NOT NULL, source TEXT NOT NULL, approved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL",
+        ),
+        ("baseline_meta", "key TEXT PRIMARY KEY, value TEXT NOT NULL"),
     ] {
         let present: bool = c
             .query_row(
@@ -580,6 +599,11 @@ const KEEP_IDENTIFIERS: i64 = crate::identity::MAX_VALUES_PER_KIND as i64;
 pub fn device_registry(path: &Path) -> Result<crate::identity::Registry, String> {
     registry_of(&open(path)?)
 }
+/// [`device_registry`] for a caller that must not write: the inventory is neither created nor
+/// upgraded (see [`open_read`]).
+pub fn device_registry_read(path: &Path) -> Result<crate::identity::Registry, String> {
+    registry_of(&open_read(path)?)
+}
 
 pub(crate) fn registry_of(c: &Connection) -> Result<crate::identity::Registry, String> {
     let mut registry = crate::identity::Registry::new();
@@ -709,6 +733,33 @@ pub fn list_alerts(path: &Path, limit: usize) -> Result<Vec<crate::monitor::Aler
         .query_map([limit as i64], alert_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+/// The stored alerts raised at or after `since` (Unix seconds), newest first: at most `limit` of
+/// them, and how many there are in all. For a caller that must not write (the MCP server): the
+/// inventory is neither created nor upgraded (see [`open_read`]).
+pub fn alerts_read(
+    path: &Path,
+    since: i64,
+    limit: usize,
+) -> Result<(Vec<crate::monitor::Alert>, usize), String> {
+    let c = open_read(path)?;
+    let total: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE timestamp>=?1",
+            [since],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut s = c
+        .prepare(
+            "SELECT timestamp,severity,kind,subject,message FROM alerts WHERE timestamp>=?1 ORDER BY id DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = s
+        .query_map(params![since, limit as i64], alert_from_row)
+        .map_err(|e| e.to_string())?;
+    let alerts = rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    Ok((alerts, total as usize))
 }
 /// Every alert raised at or after `since` (Unix seconds), oldest first and without a row limit.
 /// With `scope` (a monitor's targets text) only alerts of scans of those targets are returned,

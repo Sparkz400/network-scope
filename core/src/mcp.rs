@@ -23,15 +23,16 @@
 //! # Tools
 //!
 //! Read-only queries over the inventory: `list_scans`, `list_devices`, `device_history`,
-//! `list_findings`, `diff_scans`, `search_inventory`, `findings_gained`. They never write and
-//! never touch the network. The `scan` tool is the only one that sends traffic. It **always**
+//! `list_findings`, `diff_scans`, `search_inventory`, `findings_gained`, `changes`, `top_risks`,
+//! `list_alerts`. They never write (a missing inventory is not created, an older one is not
+//! upgraded) and never touch the network. The `scan` tool is the only one that sends traffic. It **always**
 //! runs in Safe Mode (the settings are built from scratch; no argument can change that), refuses
 //! anything but private addresses ([`scope_check`]), names no hostnames, and is limited in
 //! addresses, ports, total probes and time; with `dry_run: true` it returns the plan and sends
 //! nothing, with `background: true` it runs on its own thread and `scan_status` reports it. The server has no consent flags: the engine's scope guard ([`crate::scope::enforce`])
 //! runs without a prompt, so a declared scope is binding too. It is absent with `--no-scan`. Every tool result
 //! carries a `schema` identifier (see [`crate::schema`]) in its `structuredContent`.
-use crate::{devices, risk, scan, schema, store};
+use crate::{changes::Since, devices, risk, scan, schema, score, store};
 use serde_json::{Map, Value, json};
 use std::{
     io::{BufRead, Write},
@@ -114,7 +115,7 @@ fn estimated_seconds(addresses: u64, ports: u64, s: &scan::Settings) -> u64 {
     tokens.max(slots).div_ceil(1000)
 }
 
-const SERVER_INSTRUCTIONS: &str = "Read-only queries over a local Network Scope inventory (scans, devices, findings, history), plus a `scan` tool that always runs in Safe Mode, only on private addresses and within small limits. Findings are hints from read-only probes; verify before acting.";
+const SERVER_INSTRUCTIONS: &str = "Read-only queries over a local Network Scope inventory (scans, devices, findings, history, changes, risk scores, monitor alerts), plus a `scan` tool that always runs in Safe Mode, only on private addresses and within small limits. Findings are hints from read-only probes; verify before acting.";
 
 /// What the server may do.
 #[derive(Clone, Debug)]
@@ -483,6 +484,9 @@ impl Server {
             "diff_scans" => self.diff_scans(args),
             "search_inventory" => self.search_inventory(args),
             "findings_gained" => self.findings_gained(args),
+            "changes" => self.changes(args),
+            "top_risks" => self.top_risks(args),
+            "list_alerts" => self.list_alerts(args),
             "scan" => self.scan(args),
             "scan_status" => self.scan_status(),
             _ => Err(format!("Unknown tool: {name}")),
@@ -643,6 +647,45 @@ impl Server {
                 ),
                 read_only: true,
             },
+            Tool {
+                name: "changes",
+                title: "What changed since the last scan or a date",
+                description: "New, gone and changed devices and new, resolved and unconfirmed risks: the newest completed scan compared with the one before it (since: last), or with the state at the start of a window or at a date. The summary has the full counts; each list is cut at 200 entries.",
+                input_schema: object_schema(
+                    json!({"since": {"type": "string", "minLength": 1, "maxLength": 32, "default": "last",
+                            "description": "last, a window such as 12h, 7d or 2w, or a UTC date such as 2026-11-01 or 2026-11-01T08:30"}}),
+                    &[],
+                ),
+                read_only: true,
+            },
+            Tool {
+                name: "top_risks",
+                title: "Risk score and what to fix first",
+                description: "The network risk score (0 to 100) of a scan, its riskiest hosts and the fixes that lower the risk the most, each with the hosts it applies to and the advice. The scores are computed from the findings, which are hints from read-only probes.",
+                input_schema: object_schema(
+                    json!({
+                        "scan_id": {"type": "integer", "minimum": 1,
+                            "description": "Scan ID from list_scans (default: the newest completed scan)"},
+                        "limit": limit_property(10, 100),
+                    }),
+                    &[],
+                ),
+                read_only: true,
+            },
+            Tool {
+                name: "list_alerts",
+                title: "Alerts raised by monitor runs",
+                description: "The alerts that monitor runs stored (a new or unknown device, an opened port, a new finding, ...), newest first, optionally only those raised since a window or a date.",
+                input_schema: object_schema(
+                    json!({
+                        "since": {"type": "string", "minLength": 1, "maxLength": 32,
+                            "description": "Only alerts raised since: a window such as 12h, 7d or 2w, or a UTC date such as 2026-11-01 or 2026-11-01T08:30"},
+                        "limit": limit_property(50, 500),
+                    }),
+                    &[],
+                ),
+                read_only: true,
+            },
         ];
         if self.cfg.allow_scan {
             tools.push(Tool {
@@ -724,6 +767,20 @@ fn ip_arg(args: &Value) -> Result<Option<IpAddr>, String> {
                 .map_err(|_| format!("Invalid IP address: {text}"))
         })
         .transpose()
+}
+/// Cuts the named lists of a result at 200 entries, so the answer stays readable, and says in
+/// `truncated` whether it did. The summary of the result keeps the full counts.
+fn cut_lists(value: &mut Value, keys: &[&str]) {
+    let mut truncated = false;
+    for key in keys {
+        if let Some(Value::Array(items)) = value.get_mut(*key)
+            && items.len() > 200
+        {
+            items.truncate(200);
+            truncated = true;
+        }
+    }
+    value["truncated"] = json!(truncated);
 }
 /// A typed result as a JSON value with its `schema` identifier first.
 fn enveloped<T: serde::Serialize>(kind: &str, value: &T) -> Result<Value, String> {
@@ -857,23 +914,85 @@ impl Server {
         let ignore = store::IgnoreList::parse(text_arg(args, "ignore").unwrap_or(""));
         let report = store::diff_report(&self.load(old_id)?, &self.load(new_id)?, &ignore)?;
         let mut value = enveloped("diff", &report)?;
-        // Long lists are cut so the answer stays readable; the summary has the full counts.
-        let mut truncated = false;
-        for key in [
-            "changes",
-            "new_findings",
-            "resolved_findings",
-            "unconfirmed_findings",
-        ] {
-            if let Some(Value::Array(items)) = value.get_mut(key)
-                && items.len() > 200
-            {
-                items.truncate(200);
-                truncated = true;
-            }
-        }
+        cut_lists(
+            &mut value,
+            &[
+                "changes",
+                "new_findings",
+                "resolved_findings",
+                "unconfirmed_findings",
+            ],
+        );
+        Ok(value)
+    }
+
+    fn changes(&self, args: &Value) -> Result<Value, String> {
+        let now = store::now();
+        let since = Since::parse(text_arg(args, "since").unwrap_or("last"), now)?;
+        let result = crate::changes::changes_read_only(&self.cfg.db, &since, now)?;
+        let mut value = enveloped("changes", &result)?;
+        cut_lists(
+            &mut value,
+            &[
+                "new_devices",
+                "gone_devices",
+                "changed_devices",
+                "new_risks",
+                "resolved_risks",
+                "unconfirmed_risks",
+            ],
+        );
+        Ok(value)
+    }
+
+    /// The assessment `findings ID --top N` prints, of the newest completed scan unless one is
+    /// named (a partial scan is scored only when asked for by ID).
+    fn top_risks(&self, args: &Value) -> Result<Value, String> {
+        let id = match int_arg(args, "scan_id") {
+            Some(id) => id,
+            None => match store::newest_complete(&self.cfg.db)? {
+                Some(entry) => entry.id,
+                None if self.scans()?.is_empty() => {
+                    return Err("The inventory has no scans yet".into());
+                }
+                None => {
+                    return Err(
+                        "The inventory has no completed scan; name a partial one with scan_id"
+                            .into(),
+                    );
+                }
+            },
+        };
+        let limit = limit_arg(args, 10, 100);
+        let findings = risk::analyze_snapshot(&self.load(id)?);
+        let mut assessment = score::assess(&findings, usize::MAX);
+        let truncated = assessment.top_fixes.len() > limit || assessment.hosts.len() > limit;
+        assessment.top_fixes.truncate(limit);
+        assessment.hosts.truncate(limit);
+        let mut value = enveloped("risk-score", &assessment)?;
+        value["scan_id"] = json!(id);
         value["truncated"] = json!(truncated);
         Ok(value)
+    }
+
+    fn list_alerts(&self, args: &Value) -> Result<Value, String> {
+        let since = match text_arg(args, "since") {
+            None => i64::MIN,
+            Some(text) => match Since::parse(text, store::now())? {
+                Since::At(time) => time,
+                Since::Last => {
+                    return Err(
+                        "since: use a window like 12h, 7d or 2w, or a date like 2026-11-01".into(),
+                    );
+                }
+            },
+        };
+        let limit = limit_arg(args, 50, 500);
+        let (alerts, total) = store::alerts_read(&self.cfg.db, since, limit)?;
+        enveloped(
+            "alerts",
+            &json!({"alerts": alerts, "total": total, "truncated": total > limit}),
+        )
     }
 
     fn search_inventory(&self, args: &Value) -> Result<Value, String> {
