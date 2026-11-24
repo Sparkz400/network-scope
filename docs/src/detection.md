@@ -111,7 +111,7 @@ SYN-ACK fingerprinting needs the SYN engine, so TCP-connect scans get TTL and se
 
 ## Devices
 
-`network-scope devices ID` (and the Devices page of the desktop) merges active results and passive observations into one record per MAC, or per IP when no MAC is known.
+`network-scope devices ID` (and the Hosts page of the desktop, by device) merges active results and passive observations into one record per MAC, or per IP when no MAC is known.
 
 - Routed hosts without a MAC that report the same SMB server GUID and NetBIOS name are one device (the GUID alone is not enough: cloned VMs share it). They keep the device id of the lowest address.
 - SMB NetBIOS/DNS names are added to the host names.

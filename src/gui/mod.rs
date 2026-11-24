@@ -6,6 +6,7 @@ mod desktop;
 mod details;
 mod home;
 mod i18n;
+mod icons;
 mod map;
 mod menu;
 mod nav;
@@ -134,6 +135,9 @@ fn write_prefs(bytes: &[u8]) -> Result<(), String> {
     }
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
+/// The sort index of the Risk column of the hosts table (after the identity columns, 5 to 7).
+const RISK_COLUMN: usize = 8;
+
 /// An identity field of a host, or "" when it has none.
 fn identity_field<'a>(host: &'a scan::Host, key: &str) -> &'a str {
     host.identity.get(key).map_or("", String::as_str)
@@ -617,6 +621,8 @@ struct Scanner {
     hostnames: Cached<HashMap<IpAddr, String>>,
     /// The worst finding per address, for the Risk column and the host details.
     risk_map: Cached<HashMap<IpAddr, risk::Severity>>,
+    /// Findings of a large scan being worked out on a thread of their own (see `nav.rs`).
+    background_findings: Option<nav::BackgroundFindings>,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -731,6 +737,7 @@ impl Scanner {
             finding_groups: vec![],
             hostnames: Default::default(),
             risk_map: Default::default(),
+            background_findings: None,
         };
         i18n::set(i18n::detect(&app.saved.language));
         apply_theme(&cc.egui_ctx, app.saved.dark);
@@ -1266,7 +1273,32 @@ impl Scanner {
             }
         }
     }
+    /// Sorts the hosts after their data changed (new hosts, a loaded scan).
     fn sort(&mut self) {
+        self.sort_hosts(false);
+    }
+
+    /// Sorts the hosts in a new order (a column header was clicked); the data is the same.
+    fn resort(&mut self) {
+        self.sort_hosts(true);
+    }
+
+    fn sort_hosts(&mut self, order_only: bool) {
+        if !order_only {
+            // New data: whatever was worked out from the old data is out of date from here on.
+            self.data_changed();
+        }
+        // The Risk column sorts by the worst finding of each host. A header click works the
+        // findings out even for a large scan (the user asked for this order); after new data
+        // only when that is cheap ([`Self::eager`]), else the last known findings order it.
+        let risk = if self.sort_column == RISK_COLUMN {
+            if (order_only && !self.live()) || self.eager() {
+                self.ensure_findings();
+            }
+            tables::risk_by_ip(&self.findings.value)
+        } else {
+            HashMap::new()
+        };
         self.results.sort_by(|a, b| {
             let order = match self.sort_column {
                 1 => b.responding.cmp(&a.responding),
@@ -1279,6 +1311,8 @@ impl Scanner {
                     // Hosts without the value go last.
                     (x.is_empty(), x).cmp(&(y.is_empty(), y))
                 }
+                // The worst finding first; hosts without findings last.
+                RISK_COLUMN => risk.get(&b.ip).cmp(&risk.get(&a.ip)),
                 _ => a.ip.cmp(&b.ip),
             }
             .then_with(|| a.ip.cmp(&b.ip));
@@ -1299,7 +1333,24 @@ impl Scanner {
                 .collect();
             self.live = live;
         }
+        let before = self.generation;
         self.data_changed();
+        // Sorting moves rows but changes no data: what was worked out from the hosts as they are
+        // now (findings, worst finding and host name per address) still holds, so it is not
+        // worked out again. Values of older data keep their older generation.
+        for generation in [
+            &mut self.findings.generation,
+            &mut self.risk_map.generation,
+            &mut self.hostnames.generation,
+        ] {
+            if *generation == Some(before) {
+                *generation = Some(self.generation);
+            }
+        }
+        // Findings being worked out for the hosts as they are now still hold after the sort.
+        if let Some(job) = self.background_findings.as_mut() {
+            job.restamp(before, self.generation);
+        }
     }
     /// Recomputes the visible row list only when data, notes, filter or query changed.
     fn refresh_rows(&mut self) {
@@ -1468,6 +1519,7 @@ impl eframe::App for Scanner {
         self.poll_capture();
         self.poll_ot();
         self.poll_schedule(ctx);
+        self.background_findings(ctx);
         if self.live() || self.ot.running() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
@@ -1560,6 +1612,7 @@ impl eframe::App for Scanner {
         // Floating windows (Settings, the workbench, ...) open next to the sidebar.
         self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
         self.details(ui);
+        self.timeline_panel(ui);
         egui::CentralPanel::default().show(ui, |ui| {
             if self.page_ui(ui) {
                 return;
@@ -1575,7 +1628,7 @@ impl eframe::App for Scanner {
                 (columns.vendor, Some(5), tr!("Manufacturer")),
                 (columns.kind, Some(6), tr!("Type")),
                 (columns.os, Some(7), tr!("OS guess")),
-                (columns.risk, None, tr!("Risk")),
+                (columns.risk, Some(RISK_COLUMN), tr!("Risk")),
             ]
             .into_iter()
             .filter(|(on, _, _)| *on)
@@ -1589,6 +1642,8 @@ impl eframe::App for Scanner {
                     .position(|&i| self.results.get(i).is_some_and(|h| h.ip == ip))
             });
             tables::plain_labels(ui);
+            // Where the header row starts, so the empty state can stay clear of it.
+            let table_top = ui.cursor().top();
             // Optional columns can make the table wider than the page: it scrolls sideways.
             egui::ScrollArea::horizontal()
                 .id_salt("hosts_scroll")
@@ -1604,15 +1659,15 @@ impl eframe::App for Scanner {
                         // for the host menu.
                         .sense(egui::Sense::click())
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(135.0).at_least(80.0))
+                        .column(Column::initial(120.0).at_least(80.0))
                         .column(Column::initial(110.0))
                         .column(Column::initial(65.0))
-                        .column(Column::remainder().at_least(80.0));
+                        .column(hostname_column(!extra.is_empty()));
                     for _ in &extra {
                         table = table.column(Column::initial(120.0).at_least(50.0).clip(true));
                     }
                     table
-                        .column(Column::initial(140.0))
+                        .column(ports_column(!extra.is_empty()))
                         .header(26.0, |mut row| {
                             let base = [
                                 (Some(0), tr!("IP address")),
@@ -1665,16 +1720,7 @@ impl eframe::App for Scanner {
                                         ));
                                     });
                                 });
-                                row.col(|ui| {
-                                    ui.colored_label(
-                                        if host.responding {
-                                            Color32::from_rgb(40, 150, 95)
-                                        } else {
-                                            Color32::from_gray(115)
-                                        },
-                                        host_status(host),
-                                    );
-                                });
+                                row.col(|ui| status_cell(ui, host));
                                 row.col(|ui| {
                                     ui.label(ping_text(host.ping));
                                 });
@@ -1687,13 +1733,13 @@ impl eframe::App for Scanner {
                                 });
                                 for (sort, _) in &extra {
                                     row.col(|ui| match sort {
-                                        Some(i) => {
+                                        Some(i) if *i != RISK_COLUMN => {
                                             let key = HOST_COLUMN_KEYS[i - 5];
                                             ui.label(
                                                 host.identity.get(key).map_or("", String::as_str),
                                             );
                                         }
-                                        None => {
+                                        _ => {
                                             let worst = risk_fresh
                                                 .then(|| self.risk_map.value.get(&host.ip).copied())
                                                 .flatten();
@@ -1736,11 +1782,24 @@ impl eframe::App for Scanner {
                     self.sort_column = column;
                     self.sort_reverse = false;
                 }
-                self.sort();
+                self.resort();
             }
             if empty {
                 // Overlay the empty state without inserting fake scan results.
                 let center = ui.max_rect().center();
+                if self.results.is_empty() && self.run.is_none() {
+                    let logo = icons::logo(ui.ctx());
+                    let rect = egui::Rect::from_center_size(
+                        center - egui::vec2(0.0, 60.0),
+                        egui::vec2(48.0, 48.0),
+                    );
+                    // Only below the header row (a short window has no room for it).
+                    if rect.top() > table_top + 34.0 {
+                        let uv =
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                        ui.painter().image(logo.id(), rect, uv, Color32::WHITE);
+                    }
+                }
                 ui.painter().text(
                     center - egui::vec2(0.0, 8.0),
                     egui::Align2::CENTER_CENTER,
@@ -1773,7 +1832,6 @@ impl eframe::App for Scanner {
         }
         self.settings(ctx);
         self.update_window(ctx);
-        self.timeline_window(ctx);
         self.workbench_window(ctx);
         self.scope_dialog(ctx);
         self.unsafe_dialog(ctx);
@@ -2066,6 +2124,45 @@ fn badge_color(safe: bool, dark: bool) -> Color32 {
         (false, true) => Color32::from_rgb(255, 190, 70),
     }
 }
+/// The hosts table's host name column. Without optional columns it is wide enough for most
+/// names and the ports take the rest of the width (no gap opens between them); with optional
+/// columns the host name gives way instead, so the ports stay on screen.
+fn hostname_column(extra: bool) -> Column {
+    if extra {
+        Column::remainder().at_least(80.0).clip(true)
+    } else {
+        Column::initial(140.0).at_least(80.0).clip(true)
+    }
+}
+/// The hosts table's last column (open ports); see [`hostname_column`].
+fn ports_column(extra: bool) -> Column {
+    if extra {
+        Column::initial(140.0)
+    } else {
+        Column::remainder().at_least(110.0)
+    }
+}
+
+/// The status of a host in the table: a coloured dot and the status in words (the words carry
+/// the meaning; the dot makes the column scannable).
+fn status_cell(ui: &mut egui::Ui, host: &scan::Host) {
+    let dark = ui.visuals().dark_mode;
+    let color = if host.responding {
+        badge_color(true, dark)
+    } else if !host.errors.is_empty() && !host.errors.iter().any(|e| scan::is_unused_note(e)) {
+        badge_color(false, dark)
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.0, color);
+    if host.responding {
+        ui.label(host_status(host));
+    } else {
+        ui.weak(host_status(host));
+    }
+}
+
 fn host_status(host: &scan::Host) -> &'static str {
     if host.responding {
         tr!("Responding")
@@ -2083,7 +2180,7 @@ fn host_status(host: &scan::Host) -> &'static str {
 /// Windows scales this one image down to the 16 px title bar and 24 px taskbar button, so it gets
 /// the 48 px render of the simplified small-size design; the macOS dock and Linux want 256 px.
 #[cfg(windows)]
-const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../assets/icon/icon-48.png");
+const WINDOW_ICON_PNG: &[u8] = icons::LOGO_PNG;
 #[cfg(not(windows))]
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../assets/icon/icon-256.png");
 
@@ -2643,11 +2740,11 @@ mod tests {
                         .resizable(true)
                         .sense(egui::Sense::click())
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(135.0).at_least(80.0))
+                        .column(Column::initial(120.0).at_least(80.0))
                         .column(Column::initial(110.0))
                         .column(Column::initial(65.0))
-                        .column(Column::remainder().at_least(80.0))
-                        .column(Column::initial(140.0))
+                        .column(hostname_column(false))
+                        .column(ports_column(false))
                         .header(26.0, |mut row| {
                             for name in
                                 ["IP address", "Status", "Ping", "Hostname", "Open TCP ports"]
@@ -2664,9 +2761,7 @@ mod tests {
                                 row.col(|ui| {
                                     let _ = ui.selectable_label(false, host.ip.to_string());
                                 });
-                                row.col(|ui| {
-                                    ui.label(host_status(host));
-                                });
+                                row.col(|ui| status_cell(ui, host));
                                 row.col(|ui| {
                                     ui.label(ping_text(host.ping));
                                 });

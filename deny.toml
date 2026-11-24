@@ -15,8 +15,12 @@ version = 2
 # affect Network Scope, add it here with a reason instead of disabling the check.
 yanked = "deny"
 # Vulnerabilities fail anywhere in the tree. "Unmaintained" fails only for our direct
-# dependencies: transitive ones (today ttf-parser via egui, zbus via rfd, paste, smartstring via
-# rhai) can only be fixed upstream; `cargo audit` and the weekly run still report them.
+# dependencies: transitive ones can only be fixed upstream; `cargo audit` and the weekly run
+# still report them. Today (tracked in issue #78):
+# - zvariant, zvariant_derive, zbus_names: zbus 5 via eframe -> accesskit_unix (Linux screen
+#   reader support); gone once accesskit moves to zbus 6, which merged them.
+# - ttf-parser: winit -> sctk-adwaita -> ab_glyph (Wayland window decorations).
+# - smartstring: rhai (scripting), a non-optional dependency of it.
 unmaintained = "workspace"
 ignore = []
 
