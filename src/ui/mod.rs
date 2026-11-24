@@ -125,6 +125,43 @@ fn findings_exit(fail_on_findings: bool, matching: usize) -> ExitCode {
         ExitCode::Success
     }
 }
+fn unknown(command: &str) -> String {
+    format!("Unknown command {command}. Use --help.")
+}
+/// The help the arguments ask for, if they ask for it: the whole text for no arguments, `--help`,
+/// `-h` and `help`; the help of one command for `help CMD`, `CMD --help` and `CMD -h` (anywhere
+/// after the command, so it is never read as a target). A `-h` that is the value of an option
+/// (`--owner -h`) stays that value. An unknown command is the usual error.
+fn help_request(args: &[String]) -> Option<Result<String, String>> {
+    let command = match args.first().map(String::as_str) {
+        None | Some("--help" | "-h") => None,
+        Some("help") => args
+            .get(1)
+            .map(String::as_str)
+            .filter(|topic| !["help", "--help", "-h"].contains(topic)),
+        Some(command) => {
+            let rest = &args[1..];
+            let value_of_option = |i: usize| {
+                i > 0
+                    && rest[i - 1]
+                        .strip_prefix("--")
+                        .is_some_and(|key| args::VALUES.contains(&key))
+            };
+            let asked = rest
+                .iter()
+                .enumerate()
+                .any(|(i, a)| a == "--help" || (a == "-h" && !value_of_option(i)));
+            if !asked {
+                return None;
+            }
+            Some(command)
+        }
+    };
+    Some(match command {
+        None => Ok(help::HELP.to_string()),
+        Some(command) => help::command(command).ok_or_else(|| unknown(command)),
+    })
+}
 /// Runs one CLI command and returns its exit status. `Err` is an error message for stderr
 /// (status 1); every other status is a result of a command that ran.
 pub fn run(args: &[String]) -> Result<ExitCode, String> {
@@ -138,8 +175,8 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         println!("network-scope {}", env!("CARGO_PKG_VERSION"));
         return Ok(ExitCode::Success);
     }
-    if args.is_empty() || ["help", "--help", "-h"].contains(&args[0].as_str()) {
-        println!("{}", help::HELP);
+    if let Some(text) = help_request(args) {
+        println!("{}", text?);
         return Ok(ExitCode::Success);
     }
     let command = &args[0];
@@ -223,8 +260,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     {
         crate::sbom::load_active(std::path::Path::new(file))?;
     }
-    let handler =
-        commands::find(command).ok_or_else(|| format!("Unknown command {command}. Use --help."))?;
+    let handler = commands::find(command).ok_or_else(|| unknown(command))?;
     let mut ctx = Ctx {
         command: command.clone(),
         pos,
@@ -335,6 +371,49 @@ mod tests {
     fn plain_commands_still_succeed_with_status_0() {
         assert_eq!(run(&args(&["--help"])).unwrap(), ExitCode::Success);
         assert!(run(&args(&["no-such-command"])).is_err());
+    }
+
+    #[test]
+    fn help_is_for_one_command_when_one_is_named() {
+        let help = |a: &[&str]| help_request(&args(a));
+        let text = |a: &[&str]| help(a).unwrap().unwrap();
+        // No command: the whole text.
+        for all in [
+            &[] as &[&str],
+            &["--help"],
+            &["-h"],
+            &["help"],
+            &["help", "help"],
+        ] {
+            assert_eq!(text(all), help::HELP, "{all:?}");
+        }
+        // One command, in each of the three forms.
+        let scan = text(&["help", "scan"]);
+        assert!(scan.starts_with("network-scope scan TARGETS") && scan != help::HELP);
+        assert_eq!(text(&["scan", "--help"]), scan);
+        // `-h` after a command is help, not a target; so is `--help` after other arguments.
+        assert_eq!(text(&["scan", "-h"]), scan);
+        assert_eq!(
+            text(&["scan", "10.0.0.0/24", "--ports", "22", "--help"]),
+            scan
+        );
+        assert!(text(&["findings", "-h"]).starts_with("network-scope findings ID"));
+        for line in [&["scan", "--help"][..], &["help", "diff"], &["mcp", "-h"]] {
+            assert_eq!(run(&args(line)).unwrap(), ExitCode::Success, "{line:?}");
+        }
+        // An unknown command is the usual error, also when it asks for help.
+        for line in [
+            &["help", "nosuch"][..],
+            &["nosuch", "--help"],
+            &["nosuch", "-h"],
+        ] {
+            let err = run(&args(line)).unwrap_err();
+            assert_eq!(err, "Unknown command nosuch. Use --help.", "{line:?}");
+        }
+        // No help asked: the command runs. `-h` as the value of an option is that value.
+        assert!(help(&["scan", "10.0.0.1"]).is_none());
+        assert!(help(&["baseline", "set", "X", "--owner", "-h"]).is_none());
+        assert!(help(&["baseline", "set", "X", "--quiet", "-h"]).is_some());
     }
 
     #[test]

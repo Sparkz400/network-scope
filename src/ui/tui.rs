@@ -446,7 +446,7 @@ pub(super) fn tui(run: &scan::Running) -> Collected {
             // No usable terminal: keep the scan and collect it without the live view.
             drop(restore);
             eprintln!("Live view unavailable ({e}); collecting without it.");
-            return collect(run);
+            return collect(run, false);
         }
     };
     let mut hosts = vec![];
