@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Shorter sidebar names** where a count would cut the name off: **Passive / OT** and **Inventory** (German: Passiv / OT, Inventar). The menus, the command palette and the hover text keep the full names. The host details button is **Timeline** without "…", since it opens a panel and not a dialog.
 - **Host details in sections.** A summary (with the manufacturer), the host's findings with their links, the services per port, the host menu as buttons, and every identity field in a section that starts closed. The **Copy IP address** button and the **Actions** menu became the Actions section.
 - A finding clicked on another page no longer clears the filter and search of the hosts table.
 - **Sidebar and pages instead of floating windows.** A sidebar on the left lists the pages of the desktop (Overview, Hosts, Devices, Findings, Network map, Passive discovery / OT, Saved inventory) with a count next to each: hosts that answered, devices, findings in the colour of the worst one, passive observations, saved scans. Devices, Findings, the network map, passive discovery and the inventory were windows over the hosts table; now each is a full-size page, and wide tables scroll sideways. The filters and search of the hosts table moved onto the Hosts page.
