@@ -22,7 +22,7 @@ and compare the hash with the line in `SHA256SUMS`.
 
 The installer installs per user by default (no administrator rights needed; the setup dialog lets you choose an all-users install). Optional tasks: a desktop shortcut and adding the install folder to your user `PATH` so `network-scope-cli` works from any shell. It installs `network-scope.exe`, `network-scope-cli.exe`, the README, third-party notices, the example scripts and the lab files.
 
-The installer and binaries are **not code-signed** yet, so Windows SmartScreen will warn: the release workflow signs them once the maintainer has set up a signing account ([Code signing](supply-chain.md#code-signing)). CI compiles the installer on every change and installs it silently, runs both installed binaries and uninstalls it again (`scripts/installer_smoke.ps1`); release builds run the same test.
+The installer and binaries are **not code-signed** yet, so Windows SmartScreen will warn: the release workflow signs them once the maintainer has set up a signing account ([Code signing](supply-chain.md#code-signing)); the project is applying for free signing by SignPath Foundation ([code signing policy](code-signing-policy.md)). CI compiles the installer on every change and installs it silently, runs both installed binaries and uninstalls it again (`scripts/installer_smoke.ps1`); release builds run the same test.
 
 ### Portable
 

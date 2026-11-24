@@ -63,7 +63,7 @@ Download from the [latest release](https://github.com/Sparkz400/network-scope/re
 | `network-scope-<version>-windows-x64.zip` | Portable: `network-scope.exe` (GUI) and `network-scope-cli.exe` (console) |
 | `SHA256SUMS` | Checksums for all release files |
 
-The binaries are not code-signed, so Windows SmartScreen will warn on first start. Verify the checksum if in doubt.
+The binaries are not code-signed yet, so Windows SmartScreen will warn on first start. Verify the checksum if in doubt. The project is applying for free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org); see the [code signing policy](https://sparkz400.github.io/network-scope/code-signing-policy.html).
 
 ### Linux and macOS
 

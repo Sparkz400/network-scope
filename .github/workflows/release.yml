@@ -141,9 +141,16 @@ jobs:
     environment: release
     permissions:
       contents: read
+      actions: read # SignPath reads this job and downloads the unsigned files it uploaded
       id-token: write # Azure login (OIDC); unused when signing is off
+    outputs:
+      signed-with: ${{ steps.signer.outputs.signed-with }}
     env:
-      SIGN_WINDOWS: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      # SignPath Foundation (free for open source) when its API token is set; otherwise Azure
+      # Artifact Signing when its client ID is set; otherwise unsigned. See
+      # docs/src/supply-chain.md#code-signing.
+      SIGN_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      SIGN_WINDOWS: ${{ secrets.SIGNPATH_API_TOKEN == '' && secrets.AZURE_CLIENT_ID != '' }}
       INNO_SETUP_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
       INNO_SETUP_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
     steps:
@@ -172,6 +179,42 @@ jobs:
           $p = Start-Process $setup -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/ALLUSERS', "/DIR=`"$dir`""
           if ($p.ExitCode -ne 0) { throw "Inno Setup install exited with $($p.ExitCode)" }
           if (-not (Test-Path "$dir\ISCC.exe")) { throw "ISCC.exe not found in $dir" }
+
+      - name: Signing service
+        id: signer
+        shell: bash
+        run: |
+          if [ "$SIGN_SIGNPATH" = true ]; then echo "signed-with=signpath" >> "$GITHUB_OUTPUT"
+          elif [ "$SIGN_WINDOWS" = true ]; then echo "signed-with=azure" >> "$GITHUB_OUTPUT"
+          else echo "signed-with=none" >> "$GITHUB_OUTPUT"; fi
+
+      # SignPath signs files that a GitHub artifact of this job holds; it checks on GitHub that
+      # the artifact came from this repository's workflow run (origin verification) and returns
+      # the signed files, which replace the unsigned ones.
+      - name: Upload the executables for SignPath
+        id: unsigned-executables
+        if: env.SIGN_SIGNPATH == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-windows-executables
+          path: |
+            target/release/network-scope.exe
+            target/release/network-scope-cli.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the executables (SignPath)
+        if: env.SIGN_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'network-scope' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: executables
+          github-artifact-id: ${{ steps.unsigned-executables.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/release
 
       - name: Azure login for code signing
         if: env.SIGN_WINDOWS == 'true'
@@ -210,8 +253,31 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
           Get-ChildItem dist
 
+      - name: Upload the installer for SignPath
+        id: unsigned-installer
+        if: env.SIGN_SIGNPATH == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-windows-installer
+          path: dist/NetworkScope-${{ steps.version.outputs.version }}-setup.exe
+          if-no-files-found: error
+          retention-days: 1
+
       # The uninstaller inside the installer (unins000.exe) stays unsigned: Inno Setup signs it
-      # only through its own SignTool hook, which this action does not provide.
+      # only through its own SignTool hook, which neither service's step provides.
+      - name: Sign the installer (SignPath)
+        if: env.SIGN_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'network-scope' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist
+
       - name: Sign the installer (Azure Artifact Signing)
         if: env.SIGN_WINDOWS == 'true'
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
@@ -227,7 +293,7 @@ jobs:
           description-url: https://sparkz400.github.io/network-scope/
 
       - name: Check the signatures
-        if: env.SIGN_WINDOWS == 'true'
+        if: env.SIGN_WINDOWS == 'true' || env.SIGN_SIGNPATH == 'true'
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -488,6 +554,8 @@ jobs:
         run: cp "$BUNDLE" "dist/network-scope-${GITHUB_REF_NAME#v}.sbom.sigstore.json"
 
       - name: Release notes from CHANGELOG.md
+        env:
+          SIGNED_WITH: ${{ needs.package-windows.outputs.signed-with }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v ver="$version" '
@@ -497,6 +565,15 @@ jobs:
           if ! grep -q '[^[:space:]]' release-notes.md; then
             echo "::error::No CHANGELOG.md section for $version"
             exit 1
+          fi
+          # SignPath Foundation's terms ask every release it signed to say so.
+          if [ "$SIGNED_WITH" = signpath ]; then
+            {
+              echo
+              echo '---'
+              echo
+              echo 'Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [code signing policy](https://sparkz400.github.io/network-scope/code-signing-policy.html).'
+            } >> release-notes.md
           fi
           cat release-notes.md
 
