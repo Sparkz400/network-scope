@@ -83,6 +83,7 @@
 - [Lab and testing](lab-and-testing.md)
 - [Contributing fingerprints](contributing-fingerprints.md)
 - [Supply chain: SBOM, signing and reproducible builds](supply-chain.md)
+- [Code signing policy](code-signing-policy.md)
 - [Assurance case](assurance-case.md)
 - [Data sources](data-sources.md)
 - [FAQ and troubleshooting](faq.md)

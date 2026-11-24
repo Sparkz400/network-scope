@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration "executables" (paste it into the SignPath project).
+     The GitHub artifact uploaded by release.yml ("unsigned-windows-executables") is a ZIP with
+     the two executables at its root; both get an Authenticode signature. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="network-scope.exe" product-name="Network Scope">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="network-scope-cli.exe" product-name="Network Scope">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
