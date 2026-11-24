@@ -423,24 +423,27 @@ impl Scanner {
         let mut workbench = false;
         let devices = &self.devices.value;
         let view = &mut self.devices_view;
-        page(ui, tr!("Devices (active + passive merged)"), |ui| {
-            ui.label(tr!(
-                    "{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host.",
-                    view.rows.len(),
-                    devices.len()
-                ));
-            ui.horizontal(|ui| {
-                    view.controls(ui, "devices_severity", tr!("Any risk"));
-                    if ui
-                        .button(tr!("Unknown devices…"))
-                        .on_hover_text(tr!(
-                            "Group the banners that no rule identified, compare firmware versions and draft a probe rule."
-                        ))
-                        .clicked()
-                    {
-                        workbench = true;
-                    }
-                });
+        let mode = &mut self.view;
+        // No heading: this is the Hosts page in its device mode, with the same switch first.
+        ui.scope(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                super::controls::mode_switch(ui, mode);
+                view.controls(ui, "devices_severity", tr!("Any risk"));
+                if ui
+                    .button(tr!("Unknown devices…"))
+                    .on_hover_text(tr!(
+                        "Group the banners that no rule identified, compare firmware versions and draft a probe rule."
+                    ))
+                    .clicked()
+                {
+                    workbench = true;
+                }
+            });
+            ui.weak(tr!(
+                "{} of {} devices shown. Records are keyed by MAC address, or by IP when no MAC is known. Click a row to show the host.",
+                view.rows.len(),
+                devices.len()
+            ));
             tables::plain_labels(ui);
             egui::ScrollArea::horizontal()
                 .id_salt("devices_scroll")

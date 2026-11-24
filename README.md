@@ -44,8 +44,8 @@ Network Scope finds the hosts on a network, identifies what runs on them, flags 
 | Main window | Findings |
 | --- | --- |
 | <img src="assets/screenshots/main.png" alt="Main window with scan results" width="400"> | <img src="assets/screenshots/findings.png" alt="Findings page" width="400"> |
-| **Devices** | **OT passive discovery** |
-| <img src="assets/screenshots/devices.png" alt="Devices page" width="400"> | <img src="assets/screenshots/ot.png" alt="OT passive asset discovery" width="400"> |
+| **Hosts by device** | **OT passive discovery** |
+| <img src="assets/screenshots/devices.png" alt="Hosts page by device" width="400"> | <img src="assets/screenshots/ot.png" alt="OT passive asset discovery" width="400"> |
 | **Script dry-run** | |
 | <img src="assets/screenshots/script.png" alt="Script test dialog" width="400"> | |
 

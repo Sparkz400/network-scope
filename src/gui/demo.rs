@@ -1,5 +1,5 @@
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
-//! (main, findings, devices, settings, ot, script, timeline, scan-details, workbench, home, home-empty, map, map-large,
+//! (main, findings, devices, settings, ot, script, timeline, scan-details, workbench, home, home-empty, hosts-empty, map, map-large,
 //! quick, palette, palette-actions, appearance, schedule, shortcuts, safe-off, findings-grouped,
 //! columns, wake; append "-small" for the default 800x450 window, "-fast" for Safe Mode off,
 //! "-dark" for the dark theme and "-de" for German, e.g. "home-dark" or "main-de"). Screenshot
@@ -257,6 +257,12 @@ impl Scanner {
             "home" => {
                 self.view = MainView::Home;
                 self.home.data = Some(Ok(Box::new(self.demo_home())));
+            }
+            "hosts-empty" => {
+                self.view = MainView::Hosts;
+                self.results.clear();
+                self.recount();
+                self.data_changed();
             }
             "home-empty" => {
                 self.view = MainView::Home;

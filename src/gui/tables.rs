@@ -32,6 +32,8 @@ pub(super) struct View {
     /// Findings only: show only the findings of this rule (a row of the grouped view was
     /// clicked). An exact id, unlike the text filter.
     pub rule: Option<String>,
+    /// Give the filter box the keyboard focus on the next frame (Ctrl+F).
+    pub focus_query: bool,
     pub rows: Vec<usize>,
     key: Option<ViewKey>,
 }
@@ -95,7 +97,7 @@ impl View {
                     }
                 });
             super::a11y::named(severity.response, tr!("Minimum severity"));
-            super::a11y::named(
+            let filter = super::a11y::named(
                 ui.add(
                     egui::TextEdit::singleline(&mut self.query)
                         .hint_text(tr!("Filter…"))
@@ -103,6 +105,9 @@ impl View {
                 ),
                 tr!("Filter…"),
             );
+            if std::mem::take(&mut self.focus_query) {
+                filter.request_focus();
+            }
             if !self.query.is_empty() && ui.small_button(tr!("Clear")).clicked() {
                 self.query.clear();
             }

@@ -1,4 +1,4 @@
-//! The device timeline window, opened from the host details: when a device was first seen, when
+//! The device timeline, a panel under the page opened from the host details: when a device was first seen, when
 //! its address, MAC or name changed, which ports opened or closed and which findings appeared or
 //! were resolved, newest first. The data is `store::device_history`, the same function behind
 //! `devices --history`; it runs on the inventory worker, never on the UI thread.
@@ -161,7 +161,9 @@ impl Scanner {
         }
     }
 
-    pub(super) fn timeline_window(&mut self, ctx: &egui::Context) {
+    /// The timeline panel under the page, while a device's timeline is open. It spans the page
+    /// (not the sidebar or the host details) and can be made taller by dragging its edge.
+    pub(super) fn timeline_panel(&mut self, root: &mut egui::Ui) {
         let Some(t) = self.timeline.as_ref() else {
             return;
         };
@@ -171,51 +173,66 @@ impl Scanner {
         let mut copy = None;
         let busy = t.result.is_none();
         let result = &t.result;
-        egui::Window::new(title)
-            .open(&mut open)
-            .default_size(win_size([620.0, 420.0]))
-            .default_pos([430.0, 60.0])
-            .vscroll(false)
-            .show(ctx, |ui| {
+        let max = (root.available_height() * 0.5).max(140.0);
+        egui::Panel::bottom("device_timeline")
+            .resizable(true)
+            .default_size(240.0_f32.min(max))
+            .size_range(120.0..=max)
+            .show(root, |ui| {
+                ui.add_space(4.0);
+                // A narrow panel puts the title above the buttons, so it stays readable.
+                let narrow = ui.available_width() < 460.0;
+                if narrow {
+                    ui.add(egui::Label::new(RichText::new(&title).strong()).truncate());
+                }
                 ui.horizontal(|ui| {
-                    ui.label(tr!("Looked up by {}", query));
+                    if !narrow {
+                        ui.add(egui::Label::new(RichText::new(&title).strong()).truncate());
+                    }
                     if busy {
                         ui.spinner();
                     }
-                    if ui
-                        .add_enabled(!busy, egui::Button::new(tr!("Refresh")))
-                        .clicked()
-                    {
-                        refresh = true;
-                    }
-                    if let Some(Ok(h)) = result
-                        && ui.button(tr!("Copy as text")).clicked()
-                    {
-                        copy = Some(history_text(h));
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(tr!("Close")).clicked() {
+                            open = false;
+                        }
+                        if let Some(Ok(h)) = result
+                            && ui.button(tr!("Copy as text")).clicked()
+                        {
+                            copy = Some(history_text(h));
+                        }
+                        if ui
+                            .add_enabled(!busy, egui::Button::new(tr!("Refresh")))
+                            .clicked()
+                        {
+                            refresh = true;
+                        }
+                    });
                 });
                 ui.separator();
-                match result {
-                    None => {
-                        ui.label(tr!("Reading the saved inventory…"));
-                    }
-                    Some(Err(e)) => {
-                        ui.colored_label(Color32::from_rgb(205, 70, 70), e);
-                    }
-                    Some(Ok(h)) => {
-                        for line in summary(h) {
-                            ui.label(line);
-                        }
-                        ui.separator();
-                        let rows = rows(h);
-                        if rows.is_empty() {
-                            ui.label(tr!(
-                                "No events yet: the device was not seen in a saved scan."
-                            ));
-                        }
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
+                // Everything under the header scrolls together.
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.weak(tr!("Looked up by {}", query));
+                        match result {
+                            None => {
+                                ui.label(tr!("Reading the saved inventory…"));
+                            }
+                            Some(Err(e)) => {
+                                ui.colored_label(Color32::from_rgb(205, 70, 70), e);
+                            }
+                            Some(Ok(h)) => {
+                                for line in summary(h) {
+                                    ui.label(line);
+                                }
+                                ui.separator();
+                                let rows = rows(h);
+                                if rows.is_empty() {
+                                    ui.label(tr!(
+                                        "No events yet: the device was not seen in a saved scan."
+                                    ));
+                                }
                                 egui::Grid::new("timeline_rows")
                                     .num_columns(4)
                                     .striped(true)
@@ -232,12 +249,12 @@ impl Scanner {
                                             ui.end_row();
                                         }
                                     });
-                            });
-                    }
-                }
+                            }
+                        }
+                    });
             });
         if let Some(text) = copy {
-            ctx.copy_text(text);
+            root.ctx().copy_text(text);
         }
         if refresh {
             let host = self.results.iter().find(|h| query_for(h) == query).cloned();
