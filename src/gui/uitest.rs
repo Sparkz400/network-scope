@@ -11,6 +11,7 @@ const SIZE: egui::Vec2 = egui::vec2(1100.0, 720.0);
 /// A widget of the last frame: its accessible name, role and place.
 #[derive(Debug, Clone)]
 struct Widget {
+    id: egui::accesskit::NodeId,
     name: String,
     role: String,
     rect: egui::Rect,
@@ -76,7 +77,7 @@ impl Harness {
         self.widgets = update
             .nodes
             .iter()
-            .filter_map(|(_, node)| {
+            .filter_map(|(id, node)| {
                 let b = node.bounds()?;
                 let name = node
                     .label()
@@ -84,6 +85,7 @@ impl Harness {
                     .unwrap_or_default()
                     .to_string();
                 Some(Widget {
+                    id: *id,
                     name,
                     role: format!("{:?}", node.role()),
                     rect: egui::Rect::from_min_max(
@@ -163,6 +165,34 @@ impl Harness {
     fn right_click(&mut self, name: &str) {
         let pos = self.one(name).center();
         self.press(pos, egui::PointerButton::Secondary);
+    }
+
+    /// Gives the one widget with this name the keyboard focus, as a screen reader does, then
+    /// presses a key.
+    fn focus_and_press(&mut self, name: &str, key: egui::Key) {
+        let found = self.find(name);
+        assert_eq!(found.len(), 1, "one widget named {name:?}");
+        let target_node = found[0].id;
+        self.events.push(egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Focus,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node,
+                data: None,
+            },
+        ));
+        self.step();
+        for pressed in [true, false] {
+            self.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Default::default(),
+            });
+            self.step();
+        }
+        self.step();
     }
 
     /// Moves the pointer onto the widget (a submenu opens on hover).
@@ -268,6 +298,31 @@ fn the_sidebar_opens_pages_and_a_finding_shows_its_host_beside_the_page() {
     assert!(h.has("Close"));
     h.click("Saved inventory");
     assert_eq!(h.app.view, MainView::Inventory);
+    // The keyboard way: focus an entry and press Enter.
+    h.focus_and_press("Network map", egui::Key::Enter);
+    assert_eq!(h.app.view, MainView::Map);
+}
+
+#[test]
+fn devices_are_the_hosts_page_by_device() {
+    let mut h = Harness::new("main");
+    assert!(!h.has("Devices"), "no sidebar entry of their own");
+    // The Start button is read as "Start", not with the triangle of its label.
+    assert!(h.find("Start").iter().any(|w| w.role == "Button"));
+    h.click("By device");
+    assert_eq!(h.app.view, MainView::Devices);
+    assert!(h.has("Unknown devices…"));
+    // Ctrl+F filters the devices instead of going back to the addresses.
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::Search);
+    assert_eq!(h.app.view, MainView::Devices);
+    assert!(h.app.devices_view.focus_query);
+    h.step();
+    assert!(
+        !h.app.devices_view.focus_query,
+        "the filter box took the focus"
+    );
+    h.click("By address");
+    assert_eq!(h.app.view, MainView::Hosts);
 }
 
 #[test]
@@ -308,6 +363,51 @@ fn ticking_a_column_adds_it_and_keeps_the_menu_open() {
     h.press(egui::pos2(600.0, 650.0), egui::PointerButton::Primary);
     assert!(h.has("Manufacturer"), "the table has the column");
     assert!(h.has("Siemens AG"));
+}
+
+#[test]
+fn the_timeline_is_a_panel_under_the_page_with_its_own_close() {
+    let mut h = Harness::new("timeline");
+    assert!(h.app.timeline.is_some());
+    assert!(h.has("Copy as text"));
+    // Two Close buttons: the host details (top right) and the timeline (lower down).
+    let closes = h.find("Close");
+    assert_eq!(closes.len(), 2, "details and timeline");
+    let lower = closes
+        .iter()
+        .max_by(|a, b| a.rect.min.y.total_cmp(&b.rect.min.y))
+        .unwrap()
+        .rect
+        .center();
+    h.press(lower, egui::PointerButton::Primary);
+    assert!(h.app.timeline.is_none(), "the timeline closed");
+    assert!(h.app.selected.is_some(), "the host details stay");
+}
+
+#[test]
+fn the_risk_column_sorts_the_worst_host_first() {
+    let mut h = Harness::new("columns");
+    let generation = h.app.findings.generation;
+    assert!(generation.is_some(), "the sample findings are worked out");
+    h.click("Risk");
+    assert_eq!(h.app.sort_column, RISK_COLUMN);
+    // 10.20.0.5 has the only high finding; hosts without findings come last.
+    let first = h.app.rows[0];
+    assert_eq!(
+        h.app.results[first].ip,
+        "10.20.0.5".parse::<IpAddr>().unwrap()
+    );
+    let last = *h.app.rows.last().unwrap();
+    assert_eq!(h.app.results[last].hostname, "laptop-qa");
+    // Sorting changed no data, so the findings were not worked out again.
+    assert_eq!(h.app.findings.generation, Some(h.app.generation));
+    // New data sorted in (a scan batch, a loaded scan) makes them out of date again: the
+    // sample is small, so they are worked out anew for the order and then still hold.
+    let worked_out = h.app.findings.generation;
+    h.app.results[0].open.push(23);
+    h.app.sort();
+    assert_ne!(h.app.findings.generation, worked_out, "worked out again");
+    assert_eq!(h.app.findings.generation, Some(h.app.generation));
 }
 
 #[test]

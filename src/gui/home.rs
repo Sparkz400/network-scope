@@ -285,6 +285,8 @@ impl Scanner {
         let busy = self.busy.home;
         let scanning = self.run.is_some();
         let window = self.home.window;
+        // A short window keeps the logo out, so "Scan my network" stays on screen.
+        let room = ui.available_height() > 420.0;
         egui::ScrollArea::vertical()
             .id_salt("home_scroll")
             .auto_shrink([false, false])
@@ -322,7 +324,7 @@ impl Scanner {
                         ui.colored_label(severity_color(risk::Severity::Critical, dark), e);
                     }
                     Some(Ok(d)) if d.scans > 0 => home_body(ui, d, dark, &mut act),
-                    _ => empty_state(ui, scanning, &mut act),
+                    _ => empty_state(ui, scanning, room, &mut act),
                 }
             });
         match act {
@@ -340,9 +342,14 @@ impl Scanner {
 }
 
 /// No scan yet: one clear next step.
-fn empty_state(ui: &mut egui::Ui, scanning: bool, act: &mut Option<Action>) {
+fn empty_state(ui: &mut egui::Ui, scanning: bool, logo: bool, act: &mut Option<Action>) {
     ui.add_space(40.0);
     ui.vertical_centered(|ui| {
+        if logo {
+            let logo = super::icons::logo(ui.ctx());
+            ui.add(egui::Image::new((logo.id(), egui::vec2(48.0, 48.0))));
+            ui.add_space(8.0);
+        }
         ui.heading(tr!("No scan yet"));
         ui.add_space(6.0);
         ui.label(tr!("Network Scope has not scanned anything on this computer yet."));

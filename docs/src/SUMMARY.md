@@ -81,6 +81,7 @@
 - [Comparison with other tools](comparison.md)
 - [Speed comparison](speed.md)
 - [Lab and testing](lab-and-testing.md)
+- [Manual checks](manual-checks.md)
 - [Contributing fingerprints](contributing-fingerprints.md)
 - [Supply chain: SBOM, signing and reproducible builds](supply-chain.md)
 - [Code signing policy](code-signing-policy.md)
