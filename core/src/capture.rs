@@ -149,10 +149,18 @@ pub fn interfaces() -> Result<Vec<(String, String)>, String> {
         Ok(result)
     }
 }
-/// Kernel filter for the SYN engine: only TCP addressed to our source IPv4 reaches
-/// user space. The engine resolves MACs through the OS, so it needs no ARP frames.
-pub fn syn_filter(source: std::net::Ipv4Addr) -> String {
-    format!("tcp and dst host {source}")
+/// Kernel filter for the SYN engine: only TCP addressed to our source IPv4, or to one of the
+/// interface's IPv6 source addresses (`v6`), reaches user space. The engine resolves MACs
+/// through the OS, so it needs no ARP or NDP frames.
+pub fn syn_filter(source: std::net::Ipv4Addr, v6: &[std::net::Ipv6Addr]) -> String {
+    if v6.is_empty() {
+        return format!("tcp and dst host {source}");
+    }
+    let hosts: Vec<String> = std::iter::once(source.to_string())
+        .chain(v6.iter().map(ToString::to_string))
+        .map(|host| format!("dst host {host}"))
+        .collect();
+    format!("tcp and ({})", hosts.join(" or "))
 }
 impl Capture {
     /// Promiscuous capture without a kernel filter (passive discovery and DCP).
@@ -379,8 +387,15 @@ mod tests {
     #[test]
     fn syn_filter_selects_tcp_to_source() {
         assert_eq!(
-            syn_filter("10.0.0.9".parse().unwrap()),
+            syn_filter("10.0.0.9".parse().unwrap(), &[]),
             "tcp and dst host 10.0.0.9"
+        );
+        assert_eq!(
+            syn_filter(
+                "10.0.0.9".parse().unwrap(),
+                &["fe80::5".parse().unwrap(), "2001:db8::5".parse().unwrap()]
+            ),
+            "tcp and (dst host 10.0.0.9 or dst host fe80::5 or dst host 2001:db8::5)"
         );
     }
 }

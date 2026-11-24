@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Findings grouped by rule.** **Group by finding** on the Findings page shows one row per finding with the number of affected hosts; a click lists the hosts of that finding (**Show all findings** goes back). The flat view shows the host name next to each address.
 - **Manual checks** (`docs/src/manual-checks.md`): what to try by hand on the Windows installer, the desktop in a real window and with a screen reader, and what should happen.
 - **Click tests of the desktop.** `src/gui/uitest.rs` renders real frames of the window, finds widgets by their accessible names and clicks them: menus and submenus, the favorites menu, the preset picker with the Safe Mode question, row clicks and right clicks, the sidebar, grouped findings, the columns menu, dragging the details panel and scrolling a table sideways.
+- **SYN scanning of IPv6 targets** (`--syn`), on-link and routed, on Windows, Linux, macOS and the BSDs.
+  - **On-link:** a link-local target is sent from a link-local address of the capture interface, a target inside the on-link prefix of one of its addresses from that address, both to the target's own MAC.
+  - **Routed** (as for IPv4): the route comes from the OS (Windows `GetBestRoute2`, Linux `ip -6 route get`, macOS/BSD `route -n get -inet6`). It must leave through the capture interface. The frame goes to the gateway's MAC from a global or unique-local source of the target's kind, never a link-local one.
+  - **MACs** come from the OS neighbour cache of that interface (Windows `GetIpNetTable2`, Linux `ip -6 neigh`, macOS/BSD `ndp -an`). Without an entry: one `ResolveIpNetEntry2` on Windows, else one UDP datagram to port 9 and a second look. The lookup is done once per next hop.
+  - **No new setting:** the interface's IPv6 addresses are read when the engine starts (Windows by the interface that owns `--source-ip`, Linux `/proc/net/if_inet6` and macOS/BSD `ifconfig -a` by `--interface`). The capture filter adds them. A driver that refuses that filter gets the IPv4-only one, so IPv4 SYN is unaffected and IPv6 falls back.
+  - **Fingerprint:** the SYN-ACK's hop limit is the TTL, with `df` 0.
+  - **TCP connect instead,** with the usual note and before any frame is sent: no route, a route through another interface, no source address of the target's kind, our own addresses, or a missing MAC for the target or its gateway.
+  - **Behaviour change:** with `--syn` and one interface, an IPv6 target the engine cannot reach now gets that per-port note; before, it was probed by connect silently. It keeps the adaptive connect timing.
+  - **Not tested on a real network:** only synthetic frames and simulated link, routing and neighbour tables. The IPv6 capture filter has never been compiled by a real libpcap or Npcap, and the `GetBestRoute2` row offsets were not checked against a real route. The macOS/BSD path is type-checked on Windows but has never run.
+
+  See [IPv6 targets](docs/src/scanning-engine.md#ipv6-targets).
 
 ### Changed
 

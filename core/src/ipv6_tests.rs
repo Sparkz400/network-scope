@@ -605,21 +605,382 @@ fn windows_table_rows_decode() {
     );
     // a partial trailing row is ignored
     assert_eq!(win::parse_net_rows(&net[..win::NET_ROW * 3 - 5]).len(), 1);
-    let mut uni = vec![0u8; win::UNICAST_ROW * 2];
-    for (n, (ip, index, dad)) in [(v6("fe80::5"), 9u32, 4u32), (v6("2001:db8::5"), 9, 4)]
-        .into_iter()
-        .enumerate()
-    {
+    let rows = [
+        (v6("fe80::5"), 9u32, 4u32, 64u8),
+        (v6("2001:db8::5"), 9, 4, 64),
+        (v6("2001:db8::6"), 9, 1, 64), // tentative
+        (v6("fd00::5"), 7, 4, 48),     // another interface
+    ];
+    let mut uni = vec![0u8; win::UNICAST_ROW * rows.len()];
+    for (n, (ip, index, dad, prefix)) in rows.into_iter().enumerate() {
         let r = &mut uni[n * win::UNICAST_ROW..(n + 1) * win::UNICAST_ROW];
         r[..2].copy_from_slice(&23u16.to_le_bytes());
         r[8..24].copy_from_slice(&ip.octets());
         r[40..44].copy_from_slice(&index.to_le_bytes());
+        r[60] = prefix;
         r[64..68].copy_from_slice(&dad.to_le_bytes());
     }
+    let parsed = win::parse_unicast_rows(&uni);
     assert_eq!(
-        win::parse_unicast_rows(&uni),
-        [(9, v6("fe80::5"), 4), (9, v6("2001:db8::5"), 4)]
+        parsed[..2],
+        [(9, v6("fe80::5"), 4, 64), (9, v6("2001:db8::5"), 4, 64)]
     );
+    assert_eq!(
+        win::link_addresses(&parsed, 9),
+        [
+            LocalAddress {
+                address: v6("fe80::5"),
+                prefix: 64
+            },
+            LocalAddress {
+                address: v6("2001:db8::5"),
+                prefix: 64
+            }
+        ]
+    );
+}
+
+fn link(addresses: &[(&str, u8)]) -> Link {
+    Link {
+        index: 3,
+        name: "eth0".into(),
+        addresses: addresses
+            .iter()
+            .map(|(a, prefix)| LocalAddress {
+                address: v6(a),
+                prefix: *prefix,
+            })
+            .collect(),
+        own: vec![],
+    }
+}
+
+/// The SYN engine's on-link rule: link-local targets from a link-local source, others inside an
+/// on-link prefix of the interface from that address; anything else needs a route.
+#[test]
+fn syn_source_for_on_link_targets() {
+    let l = link(&[
+        ("fe80::5", 64),
+        ("2001:db8:1::5", 64),
+        ("2001:db8:1:0:8000::5", 65),
+        ("fd00:1::5", 48),
+    ]);
+    let on_link = |l: &Link, t: &str| l.on_link_source(v6(t));
+    assert_eq!(on_link(&l, "fe80::1"), Ok(Some(v6("fe80::5"))));
+    assert_eq!(on_link(&l, "2001:db8:1::99"), Ok(Some(v6("2001:db8:1::5"))));
+    // the longest matching prefix wins
+    assert_eq!(
+        on_link(&l, "2001:db8:1:0:8000::99"),
+        Ok(Some(v6("2001:db8:1:0:8000::5")))
+    );
+    assert_eq!(on_link(&l, "fd00:1:0:ffff::1"), Ok(Some(v6("fd00:1::5"))));
+    // outside every prefix: routed (decided by the routing table)
+    assert_eq!(on_link(&l, "fd00:1:ffff::1"), Ok(None), "outside the /48");
+    assert_eq!(on_link(&l, "2001:db8:2::1"), Ok(None));
+    for refused in [
+        "fe80::5",
+        "2001:db8:1::5",
+        "ff02::1",
+        "::",
+        "::1",
+        "::ffff:10.0.0.1",
+    ] {
+        assert!(on_link(&l, refused).is_err(), "{refused}");
+        assert!(!l.may_reach(v6(refused)), "{refused}");
+    }
+    // no link-local source for a link-local target
+    let only_global = link(&[("2001:db8:1::5", 64)]);
+    let e = on_link(&only_global, "fe80::1").unwrap_err();
+    assert!(e.contains("link-local"), "{e}");
+    assert!(!only_global.may_reach(v6("fe80::1")));
+    assert!(on_link(&Link::default(), "fe80::1").is_err());
+    // a /128 or /0 prefix makes nothing on-link
+    let odd = link(&[("2001:db8:1::5", 128), ("2001:db8:2::5", 0)]);
+    assert_eq!(on_link(&odd, "2001:db8:1::6"), Ok(None));
+    assert_eq!(on_link(&odd, "2001:db8:3::6"), Ok(None));
+    assert_eq!(l.sources().len(), 4);
+    // An address of this computer that is no source (a deprecated temporary address inside the
+    // on-link prefix, or one on another interface) is refused as a target too.
+    let with_own = Link {
+        own: vec![v6("2001:db8:1::77"), v6("fe80::77")],
+        ..l.clone()
+    };
+    for own in ["2001:db8:1::77", "fe80::77"] {
+        let e = on_link(&with_own, own).unwrap_err();
+        assert!(e.contains("own address"), "{own}: {e}");
+        assert!(matches!(on_link(&l, own), Ok(Some(_))), "{own}");
+    }
+}
+
+/// The source of a routed target: the OS's choice when the capture filter passes it, else one
+/// of the target's kind; never link-local.
+#[test]
+fn syn_source_for_routed_targets() {
+    let l = link(&[("fe80::5", 64), ("2001:db8:1::5", 64), ("fd00:1::5", 64)]);
+    let target = v6("2001:db8:9::1");
+    assert_eq!(l.routed_source(target, None), Ok(v6("2001:db8:1::5")));
+    assert_eq!(
+        l.routed_source(v6("fd00:9::1"), None),
+        Ok(v6("fd00:1::5")),
+        "unique-local target, unique-local source"
+    );
+    // the OS's choice, when it is ours and global
+    let both = link(&[("2001:db8:1::5", 64), ("2001:db8:1::6", 64)]);
+    assert_eq!(
+        both.routed_source(target, Some(v6("2001:db8:1::6"))),
+        Ok(v6("2001:db8:1::6"))
+    );
+    // not ours (the filter would drop the reply), or link-local: our own choice
+    for suggested in ["2001:db8:7::7", "fe80::5"] {
+        assert_eq!(
+            l.routed_source(target, Some(v6(suggested))),
+            Ok(v6("2001:db8:1::5")),
+            "{suggested}"
+        );
+    }
+    let only_link_local = link(&[("fe80::5", 64)]);
+    let e = only_link_local.routed_source(target, None).unwrap_err();
+    assert!(e.contains("no global"), "{e}");
+    assert!(!only_link_local.may_reach(target));
+    assert!(l.may_reach(target));
+    let only_ula = link(&[("fd00:1::5", 64)]);
+    assert!(
+        only_ula.routed_source(target, None).is_err(),
+        "a unique-local source does not reach a global target"
+    );
+}
+
+#[test]
+fn route_answers_decide_the_next_hop() {
+    let l = Link {
+        own: vec![v6("2001:db8:1::77")],
+        ..link(&[("fe80::5", 64), ("2001:db8:1::5", 64)])
+    };
+    let dest = v6("2001:db8:9::1");
+    // Linux `ip -6 route get`
+    let via = "2001:db8:9::1 from :: via fe80::1 dev eth0 proto ra src 2001:db8:1::5 metric 100 pref medium\n";
+    assert_eq!(
+        parse_ip_route_get6(via, &l, dest),
+        Ok(Route6 {
+            hop: Hop6::Gateway(v6("fe80::1")),
+            source: Some(v6("2001:db8:1::5"))
+        })
+    );
+    let direct =
+        "2001:db8:9::1 from :: dev eth0 proto kernel src 2001:db8:1::5 metric 256 pref medium\n";
+    assert_eq!(
+        parse_ip_route_get6(direct, &l, dest).unwrap().hop,
+        Hop6::OnLink
+    );
+    let other =
+        "2001:db8:9::1 from :: via fe80::1 dev wlan0 proto ra src 2001:db8:5::5 metric 600\n";
+    let e = parse_ip_route_get6(other, &l, dest).unwrap_err();
+    assert!(e.contains("another interface"), "{e}");
+    for none in [
+        "",
+        "unreachable 2001:db8:9::1 from :: dev lo proto kernel metric 4294967295 error -101 pref medium\n",
+        "prohibit 2001:db8:9::1 from :: dev lo metric 1024\n",
+        "2001:db8:9::1 from :: via fe80::1 proto ra\n",
+    ] {
+        assert!(parse_ip_route_get6(none, &l, dest).is_err(), "{none}");
+    }
+    // our own address as the gateway
+    let own_gateway = "2001:db8:9::1 from :: via 2001:db8:1::77 dev eth0 metric 1\n";
+    assert!(parse_ip_route_get6(own_gateway, &l, dest).is_err());
+    // macOS/BSD `route -n get -inet6`
+    let mac = Link {
+        name: "en0".into(),
+        ..l.clone()
+    };
+    let routed = "   route to: 2001:db8:9::1
+destination: default
+       mask: default
+    gateway: fe80::1%en0
+  interface: en0
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING>
+ recvpipe  sendpipe  ssthresh  rtt,msec    mtu        weight    expire
+       0         0         0         0      1500         1         0
+";
+    assert_eq!(
+        parse_route_get6(routed, &mac, dest),
+        Ok(Route6 {
+            hop: Hop6::Gateway(v6("fe80::1")),
+            source: None
+        })
+    );
+    let on_link = "   route to: 2001:db8:9::1
+destination: 2001:db8:9::
+       mask: ffff:ffff:ffff:ffff::
+    gateway: link#4
+  interface: en0
+      flags: <UP,DONE,CLONING>
+";
+    assert_eq!(
+        parse_route_get6(on_link, &mac, dest).unwrap().hop,
+        Hop6::OnLink
+    );
+    let elsewhere = routed.replace("interface: en0", "interface: utun3");
+    assert!(parse_route_get6(&elsewhere, &mac, dest).is_err());
+    for none in ["", "route: writing to routing socket: not in table\n"] {
+        assert!(parse_route_get6(none, &mac, dest).is_err(), "{none}");
+    }
+    // Windows `GetBestRoute2`: the interface index decides
+    assert!(route_decision(&l, dest, true, Some(Ipv6Addr::UNSPECIFIED), None).is_ok());
+    assert!(route_decision(&l, dest, false, Some(v6("fe80::1")), None).is_err());
+}
+
+#[test]
+fn macos_ifconfig_gives_the_capture_interface_with_prefixes() {
+    let text = "\
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+\tinet 127.0.0.1 netmask 0xff000000
+\tinet6 ::1 prefixlen 128
+\tinet6 fe80::1%lo0 prefixlen 64 scopeid 0x1
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tether 3c:22:fb:01:02:03
+\tinet6 fe80::1c2b:3d4e:5f60:7182%en0 prefixlen 64 secured scopeid 0x4
+\tinet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255
+\tinet6 2001:db8:1::5 prefixlen 64 autoconf secured
+\tinet6 2001:db8:1::6 prefixlen 64 deprecated autoconf temporary
+\tinet6 2001:db8:1::7 prefixlen 64 tentative
+\tinet6 fd00:1::5 prefixlen 48 autoconf secured
+\tnd6 options=201<PERFORMNUD,DAD>
+\tstatus: active
+utun0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380
+\tinet6 fe80::a1b2:c3d4:e5f6:1%utun0 prefixlen 64 scopeid 0xb
+";
+    let l = parse_ifconfig_link(text, "en0");
+    assert_eq!(l.index, 4);
+    assert_eq!(
+        l.addresses,
+        [
+            LocalAddress {
+                address: v6("fe80::1c2b:3d4e:5f60:7182"),
+                prefix: 64
+            },
+            LocalAddress {
+                address: v6("2001:db8:1::5"),
+                prefix: 64
+            },
+            LocalAddress {
+                address: v6("fd00:1::5"),
+                prefix: 48
+            }
+        ],
+        "deprecated and tentative addresses are no sources"
+    );
+    // Every inet6 address is ours, except link-local ones of other interfaces: lo0's fe80::1 is
+    // not on en0's link, where fe80::1 is often the router.
+    assert_eq!(l.own.len(), 6);
+    assert!(l.own.contains(&v6("2001:db8:1::6")) && l.own.contains(&v6("::1")));
+    assert!(!l.own.contains(&v6("fe80::1")) && !l.own.contains(&v6("fe80::a1b2:c3d4:e5f6:1")));
+    assert!(matches!(l.on_link_source(v6("fe80::1")), Ok(Some(_))));
+    let utun = parse_ifconfig_link(text, "utun0");
+    assert_eq!((utun.index, utun.addresses.len()), (0xb, 1));
+    assert!(parse_ifconfig_link(text, "en1").addresses.is_empty());
+}
+
+/// macOS `ndp -an` as the SYN engine reads it: scoped link-local addresses, the capture
+/// interface only, incomplete entries skipped.
+#[test]
+fn macos_ndp_gives_the_mac_on_the_capture_interface() {
+    let text = "\
+Neighbor                             Linklayer Address  Netif Expire    St Flgs Prbs
+fe80::1%en0                          0:1b:21:a:b:c         en0 23h59m50s S  R
+fe80::1%en1                          2:0:0:0:0:9           en1 10s       R  R
+fe80::99%en0                         (incomplete)          en0 expired   N     1
+2001:db8:1::20                       a4:83:e7:1:2:3        en0 permanent R
+";
+    let mac = Link {
+        index: 4,
+        name: "en0".into(),
+        ..Link::default()
+    };
+    let list = parse_ndp_an(text);
+    assert_eq!(
+        mac_on_link(&list, v6("fe80::1"), &mac).as_deref(),
+        Some("00:1B:21:0A:0B:0C")
+    );
+    assert_eq!(mac_on_link(&list, v6("fe80::99"), &mac), None, "incomplete");
+    assert_eq!(
+        mac_on_link(&list, v6("2001:db8:1::20"), &mac).as_deref(),
+        Some("A4:83:E7:01:02:03")
+    );
+}
+
+#[test]
+fn linux_if_inet6_gives_the_capture_interface_with_prefixes() {
+    let text = "\
+fe800000000000000211223344556677 02 40 20 80     eth0
+20010db8000100000000000000000005 02 40 00 00     eth0
+20010db8000100000000000000000006 02 40 00 40     eth0
+20010db8000100000000000000000007 02 40 00 08     eth0
+fd000000000000000000000000000005 03 30 00 00     eth1
+00000000000000000000000000000001 01 80 10 80       lo
+";
+    let l = parse_if_inet6_link(text, "eth0");
+    assert_eq!(l.index, 2);
+    assert_eq!(
+        l.addresses,
+        [
+            LocalAddress {
+                address: v6("fe80::211:2233:4455:6677"),
+                prefix: 64
+            },
+            LocalAddress {
+                address: v6("2001:db8:1::5"),
+                prefix: 64
+            }
+        ],
+        "tentative and duplicate addresses are left out"
+    );
+    // Every address of every interface is ours, whatever its state.
+    assert_eq!(l.own.len(), 6);
+    assert!(l.own.contains(&v6("2001:db8:1::6")) && l.own.contains(&v6("fd00::5")));
+    let other = parse_if_inet6_link(text, "eth1");
+    assert_eq!((other.index, other.addresses.len()), (3, 1));
+    assert_eq!(other.addresses[0].prefix, 48);
+    assert!(parse_if_inet6_link(text, "wlan0").addresses.is_empty());
+    assert!(
+        parse_if_inet6_link("garbage\n", "eth0")
+            .addresses
+            .is_empty()
+    );
+}
+
+#[test]
+fn neighbor_mac_is_taken_only_from_the_capture_interface() {
+    let l = link(&[("fe80::5", 64)]);
+    let list = [
+        Neighbor {
+            interface: "eth1".into(),
+            ..neighbor("fe80::1", "02:00:00:00:00:01", State::Reachable)
+        },
+        Neighbor {
+            interface: "eth0".into(),
+            ..neighbor("fe80::1", "02:00:00:00:00:02", State::Stale)
+        },
+        Neighbor {
+            interface: "3".into(),
+            ..neighbor("fe80::3", "02:00:00:00:00:03", State::Reachable)
+        },
+    ];
+    assert_eq!(
+        mac_on_link(&list, v6("fe80::1"), &l).as_deref(),
+        Some("02:00:00:00:00:02")
+    );
+    // Windows reports the interface by index
+    assert_eq!(
+        mac_on_link(&list, v6("fe80::3"), &l).as_deref(),
+        Some("02:00:00:00:00:03")
+    );
+    assert_eq!(mac_on_link(&list, v6("fe80::9"), &l), None);
+    let elsewhere = Link {
+        index: 0,
+        name: "eth2".into(),
+        ..Link::default()
+    };
+    assert_eq!(mac_on_link(&list, v6("fe80::1"), &elsewhere), None);
 }
 
 /// The real tables of this machine: reading them sends nothing. On Windows this checks the row
@@ -642,6 +1003,63 @@ fn the_real_tables_of_this_machine_decode_sensibly() {
             );
         }
     }
+}
+
+/// Manual check of the on-link prefix length at offset 60 of the real address table (reading
+/// it sends nothing): Windows gives every link-local address a /64. It depends on the adapters
+/// of the machine, so it is not run by default.
+/// `cargo test -p network-scope-core --lib the_real_address_table -- --ignored`
+#[cfg(windows)]
+#[test]
+#[ignore]
+fn the_real_address_table_has_on_link_prefixes() {
+    let Ok((interfaces, _)) = os_interfaces() else {
+        return;
+    };
+    let rows = win::unicast_rows().unwrap();
+    for i in interfaces {
+        let addresses = win::link_addresses(&rows, i.index);
+        let link_local: Vec<_> = addresses
+            .iter()
+            .filter(|a| is_link_local(&a.address))
+            .collect();
+        assert!(!link_local.is_empty(), "{i:?}: {addresses:?}");
+        for a in link_local {
+            assert_eq!(a.prefix, 64, "{i:?}: {a:?}");
+        }
+    }
+}
+
+/// Manual check of the GetBestRoute2 row offsets with this machine's own on-link prefixes
+/// (table reads only, nothing is sent): a neighbour address inside the on-link prefix of one
+/// of its global or unique-local addresses must route through that address's interface,
+/// on-link (next hop `::`), from an address of that interface.
+/// `cargo test -p network-scope-core --lib the_real_on_link_routes -- --ignored --nocapture`
+#[cfg(windows)]
+#[test]
+#[ignore]
+fn the_real_on_link_routes_decode() {
+    let rows = win::unicast_rows().unwrap();
+    let mut checked = 0;
+    for &(index, address, dad, prefix) in &rows {
+        if dad != 4 || is_link_local(&address) || !(1..128).contains(&prefix) {
+            continue;
+        }
+        // the neighbouring address in the same prefix
+        let dest = Ipv6Addr::from(u128::from(address) ^ 1);
+        let (route_index, next_hop, source) = crate::platform::best_route6(dest).unwrap();
+        println!(
+            "prefix /{prefix} on interface {index}: route via {route_index}, next hop {next_hop}"
+        );
+        assert_eq!(route_index, index, "{dest}");
+        assert!(next_hop.is_unspecified(), "on-link: {next_hop}");
+        assert!(
+            rows.iter().any(|r| r.0 == index && r.1 == source),
+            "the source is an address of that interface"
+        );
+        checked += 1;
+    }
+    println!("{checked} on-link prefixes checked");
 }
 
 /// Manual check against the OS: prints what the real tables hold, to compare with

@@ -11,7 +11,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, HashMap},
-    net::Ipv4Addr,
+    net::{IpAddr, Ipv4Addr},
 };
 
 /// A fuzz target: its name (the file `fuzz/fuzz_targets/<name>.rs`) and entry point.
@@ -694,29 +694,41 @@ pub fn arp_reply(data: &[u8]) {
     std::hint::black_box(arp::parse_reply(data, me));
 }
 
-/// A captured frame answering a SYN probe (SYN-ACK with TCP options, or RST). The pending
-/// probe is derived from the frame so the cookie check can pass.
+/// A captured frame answering a SYN probe (SYN-ACK with TCP options, or RST), over IPv4 or
+/// IPv6 (EtherType 0x86DD). The pending probe is derived from the frame so the cookie check can
+/// pass.
 pub fn syn_reply(data: &[u8]) {
     let field = |at: usize, n: usize| data.get(at..at + n);
-    let ihl = data.get(14).map_or(20, |b| usize::from(b & 15) * 4);
+    let v6 = data.get(12..14) == Some(&[0x86, 0xdd][..]);
+    let (addr_len, src_at, tcp_at) = if v6 {
+        (16, 22, 54)
+    } else {
+        let ihl = data.get(14).map_or(20, |b| usize::from(b & 15) * 4);
+        (4, 26, 14 + ihl)
+    };
     let (Some(src), Some(dst), Some(ports), Some(ack)) = (
-        field(26, 4),
-        field(30, 4),
-        field(14 + ihl, 4),
-        field(14 + ihl + 8, 4),
+        field(src_at, addr_len),
+        field(src_at + addr_len, addr_len),
+        field(tcp_at, 4),
+        field(tcp_at + 8, 4),
     ) else {
-        std::hint::black_box(syn::classify(data, Ipv4Addr::UNSPECIFIED, &HashMap::new()));
+        std::hint::black_box(syn::classify(data, &HashMap::new()));
         return;
     };
-    let ip = |b: &[u8]| Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+    let ip = |b: &[u8]| -> IpAddr {
+        match <[u8; 16]>::try_from(b) {
+            Ok(v6) => IpAddr::from(v6),
+            Err(_) => IpAddr::from([b[0], b[1], b[2], b[3]]),
+        }
+    };
     let key = (
         ip(src),
         u16::from_be_bytes([ports[0], ports[1]]),
         u16::from_be_bytes([ports[2], ports[3]]),
     );
     let cookie = u32::from_be_bytes([ack[0], ack[1], ack[2], ack[3]]).wrapping_sub(1);
-    let pending = HashMap::from([(key, cookie)]);
-    std::hint::black_box(syn::classify(data, ip(dst), &pending));
+    let pending = HashMap::from([(key, (cookie, ip(dst)))]);
+    std::hint::black_box(syn::classify(data, &pending));
 }
 
 /// The TCP options of a SYN-ACK (OS fingerprint).
