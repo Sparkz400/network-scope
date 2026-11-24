@@ -119,22 +119,44 @@ Equal hashes mean the release binary was built from this source with this toolch
 
 Signing happens in the jobs `package-windows` and `package-macos`, which take the unsigned binaries from the `build` job, sign them and only then package them. They compile nothing, never run the built binaries and run no package-manager install scripts (Inno Setup is downloaded from its GitHub release and checked against a pinned SHA-256), so the build scripts of the third-party crates never run where the signing credentials or the OIDC token are available. The zip, the installer and the tar.gz contain the signed binaries, and `SHA256SUMS`, the SBOM attestation and the build provenance (all made later, in the `release` job) cover the signed files.
 
+### Windows: SignPath Foundation (free for open source)
+
+[SignPath Foundation](https://signpath.org/) signs open-source projects for free with a certificate issued to the foundation: Windows shows **SignPath Foundation** as the publisher. The project has to apply and be accepted; the conditions include an OSI license, a public repository, automated builds from that repository, multi-factor authentication for the team, and a published [code signing policy](code-signing-policy.md). When `SIGNPATH_API_TOKEN` exists, `package-windows` signs with SignPath and the Azure steps below are skipped:
+
+1. The job uploads the two executables as the artifact `unsigned-windows-executables` (kept one day) and submits it with `signpath/github-action-submit-signing-request` (pinned to its commit), artifact configuration `executables`. SignPath verifies on GitHub that the artifact belongs to this repository's workflow run, waits for the signing request to be approved, signs both files and returns them; they replace the unsigned ones before the zip and the installer are made.
+2. After packaging, the installer goes the same way with the artifact configuration `installer`.
+3. `Get-AuthenticodeSignature` checks all three files (valid and timestamped), and the `release` job appends SignPath's attribution line, *Free code signing provided by SignPath.io, certificate by SignPath Foundation*, to the release notes.
+
+Setting it up, once SignPath Foundation has accepted the project:
+
+- In SignPath: a project with the slug `network-scope` linked to this GitHub repository as a trusted build system; a signing policy `release-signing` with the foundation's certificate and manual approval; the artifact configurations `executables` and `installer` from [`.signpath/artifact-configurations/`](https://github.com/Sparkz400/network-scope/tree/main/.signpath/artifact-configurations) (both are ZIPs because GitHub artifacts are; each restricts the files to the product name `Network Scope` from their version resources); a CI user with submitter rights on the policy and an API token for it.
+- In GitHub, in the `release` environment (limited to `v*` tags):
+
+| Name | Kind | Value |
+| --- | --- | --- |
+| `SIGNPATH_API_TOKEN` | Secret | API token of the SignPath CI user. **Its presence switches SignPath signing on** (and Azure signing off). |
+| `SIGNPATH_ORGANIZATION_ID` | Variable | The SignPath organization ID |
+| `SIGNPATH_PROJECT_SLUG` | Variable, optional | Project slug; default `network-scope` |
+| `SIGNPATH_SIGNING_POLICY_SLUG` | Variable, optional | Signing policy slug; default `release-signing` |
+
+The job needs `actions: read` so SignPath can read the run and download the artifact with the job's token. Not tried yet: no signing request has been sent, and the artifact configurations have not been loaded into a SignPath project.
+
 ### Windows: Azure Artifact Signing
 
-`network-scope.exe`, `network-scope-cli.exe` and `NetworkScope-<version>-setup.exe` are signed with [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/) (formerly Trusted Signing), SHA-256 file digest, RFC 3161 timestamp from `http://timestamp.acs.microsoft.com`. The job checks each signature with `Get-AuthenticodeSignature` (valid and timestamped); the separate job `test-windows`, which holds no credentials, then installs, runs and uninstalls the signed installer (`scripts/installer_smoke.ps1`).
+Used when `AZURE_CLIENT_ID` is set and `SIGNPATH_API_TOKEN` is not. `network-scope.exe`, `network-scope-cli.exe` and `NetworkScope-<version>-setup.exe` are signed with [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/) (formerly Trusted Signing), SHA-256 file digest, RFC 3161 timestamp from `http://timestamp.acs.microsoft.com`. The job checks each signature with `Get-AuthenticodeSignature` (valid and timestamped); the separate job `test-windows`, which holds no credentials, then installs, runs and uninstalls the signed installer (`scripts/installer_smoke.ps1`).
 
 Why Artifact Signing and not `signtool` with a PFX file in a secret: since June 2023 publicly trusted code signing keys must be generated and kept in hardware (CA/Browser Forum baseline requirements), so a new certificate cannot be exported to a PFX file at all. Artifact Signing keeps the key in Microsoft's HSM, costs a monthly fee instead of a yearly certificate, and the workflow logs in with GitHub's OIDC token (a federated credential), so no key or password is stored in GitHub.
 
 Limits:
 
-- Public trust identities are only validated for organizations in some countries and for **individual developers in the United States and Canada** (as of 2026). If the maintainer cannot get an identity, the alternatives are a certificate on a cloud HSM from a CA (DigiCert KeyLocker, SSL.com eSigner, Certum SimplySign) or [SignPath Foundation](https://signpath.org/) for open-source projects; each needs its own signing step in place of the two `azure/artifact-signing-action` steps.
+- Public trust identities are only validated for organizations in some countries and for **individual developers in the United States and Canada** (as of 2026). If the maintainer cannot get an identity, the alternatives are a certificate on a cloud HSM from a CA (DigiCert KeyLocker, SSL.com eSigner, Certum SimplySign) or SignPath Foundation (above), which the workflow already supports.
 - The uninstaller inside the installer (`unins000.exe`) stays unsigned: Inno Setup signs it only through its own `SignTool` hook.
 
 Set them as secrets of the `release` environment and limit that environment to `v*` tags (Settings, Environments, Deployment branches and tags), so no other workflow or branch can use them; repository secrets work too.
 
 | Secret | Value |
 | --- | --- |
-| `AZURE_CLIENT_ID` | Application (client) ID of the Entra ID app registration with a federated credential for this repository, entity type *Environment*, name `release` (the `package-windows` job runs in that environment) and the role *Artifact Signing Certificate Profile Signer* on the signing account. **Its presence switches Windows signing on.** |
+| `AZURE_CLIENT_ID` | Application (client) ID of the Entra ID app registration with a federated credential for this repository, entity type *Environment*, name `release` (the `package-windows` job runs in that environment) and the role *Artifact Signing Certificate Profile Signer* on the signing account. **Its presence switches Azure signing on** (unless `SIGNPATH_API_TOKEN` is set). |
 | `AZURE_TENANT_ID` | Directory (tenant) ID |
 | `AZURE_SUBSCRIPTION_ID` | Subscription that holds the signing account |
 | `ARTIFACT_SIGNING_ENDPOINT` | Endpoint of the signing account's region, for example `https://weu.codesigning.azure.net/` |
