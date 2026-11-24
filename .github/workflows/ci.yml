@@ -55,6 +55,31 @@ jobs:
       # for every package (no dev-dependency of the two default members turns one on), so the
       # library and both binaries the tests built are the ones the lab steps below run.
       - run: cargo build --release --locked
+      # `export --format cyclonedx` against the official CycloneDX 1.6 schema (cyclonedx-cli,
+      # pinned by SHA-256): the unit-test sample (firmware from S7 and LLDP-MED, a service with a
+      # CPE, CVEs on a service, a firmware and a device) and a real export of an imported scan.
+      - name: CycloneDX export against the official schema (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          CYCLONEDX_CLI_URL: https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.33.1/cyclonedx-linux-x64
+          CYCLONEDX_CLI_SHA256: bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746
+          # The .NET single-file tool otherwise needs ICU, which the check does not use.
+          DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
+        run: |
+          set -euo pipefail
+          cli="$RUNNER_TEMP/cyclonedx"
+          curl -sSfL "$CYCLONEDX_CLI_URL" -o "$cli"
+          echo "$CYCLONEDX_CLI_SHA256  $cli" | sha256sum -c -
+          chmod +x "$cli"
+          # No `-p` (see the Schannel step): the lib tests built above are reused.
+          CYCLONEDX_SAMPLE="$RUNNER_TEMP/sample.cdx.json" cargo test --release --locked --lib cyclonedx::tests::write_the_sample
+          db="$RUNNER_TEMP/cyclonedx.sqlite"
+          target/release/network-scope-cli import tests/fixtures/nmap-lab.xml --db "$db" --quiet
+          target/release/network-scope-cli export 1 --db "$db" --quiet --format cyclonedx --output "$RUNNER_TEMP/import.cdx.json"
+          for f in sample import; do
+            "$cli" validate --input-file "$RUNNER_TEMP/$f.cdx.json" --input-format json --input-version v1_6 --fail-on-errors
+          done
       # The bundle the release signs (packaging/macos/make_app.sh), ad-hoc signed here: valid
       # plist, icon in place, a bundle signature that verifies, and the bundled binary runs.
       - name: App bundle (macOS)

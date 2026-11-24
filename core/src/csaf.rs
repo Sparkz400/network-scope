@@ -150,7 +150,7 @@ pub struct Parsed {
 // ---- version ranges ------------------------------------------------------------------------
 
 /// `V4.5.1` and `4.5.1` are the same version; leading `v` and white space go.
-fn norm_version(v: &str) -> &str {
+pub(crate) fn norm_version(v: &str) -> &str {
     let v = v.trim();
     v.strip_prefix(['v', 'V']).map_or(v, str::trim_start)
 }
@@ -505,6 +505,175 @@ fn ids(v: Option<&Value>) -> Vec<String> {
 }
 
 /// Parses one CSAF 2.0 advisory (see the module documentation for what is used).
+/// Every product id the `product_tree` defines (branches, full product names, relationships).
+fn product_tree(doc: &Value) -> BTreeMap<String, Product> {
+    let mut products: BTreeMap<String, Product> = BTreeMap::new();
+    let mut nodes = 0usize;
+    if let Some(tree) = doc.get("product_tree") {
+        for b in tree
+            .get("branches")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            walk(b, Trail::default(), 0, &mut nodes, &mut products);
+        }
+        for p in tree
+            .get("full_product_names")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            leaf(p, &Trail::default(), &mut products);
+        }
+        relationships(tree, &mut products);
+    }
+    products
+}
+
+/// A product status of a CSAF document (a VEX document or an advisory): what the vendor says
+/// about one CVE for one product.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatusEntry {
+    pub cve: String,
+    pub vendor: String,
+    pub products: Vec<String>,
+    /// Versions in canonical form (`*` when the product names no version, see [`parse_range`]).
+    pub range: String,
+    /// `known_not_affected`, `fixed`, `known_affected` or `under_investigation`.
+    pub status: &'static str,
+    /// The flag label for the product (`vulnerable_code_not_present`, ...), may be empty.
+    pub justification: String,
+    /// The vendor's text: an impact statement for not-affected products, else the remediation.
+    pub detail: String,
+}
+
+/// The product statuses of a CSAF 2.0 document: its tracking id, one entry per CVE, product
+/// and status (`first_fixed` counts as `fixed`, `first_affected` and `last_affected` as
+/// `known_affected`, `recommended` is not a status), and the number of pairs that could not be
+/// used (no CVE id, a product id the tree does not define, a version text that is no range).
+pub fn parse_statuses(bytes: &[u8]) -> Result<(String, Vec<StatusEntry>, usize), String> {
+    let doc: Value = serde_json::from_slice(bytes).map_err(|e| format!("not JSON: {e}"))?;
+    let document = doc
+        .get("document")
+        .ok_or("not a CSAF document: no `document`")?;
+    let category = text(document, "category");
+    if !category.starts_with("csaf_") {
+        return Err(format!("not a CSAF document: category {category:?}"));
+    }
+    if !text(document, "csaf_version").starts_with("2.") {
+        return Err("unsupported CSAF version (2.0 is read)".into());
+    }
+    let id = document
+        .get("tracking")
+        .map(|t| text(t, "id"))
+        .filter(|id| !id.is_empty())
+        .ok_or("the document has no tracking id")?;
+    let products = product_tree(&doc);
+    let vulns = doc
+        .get("vulnerabilities")
+        .and_then(Value::as_array)
+        .ok_or("the document has no vulnerabilities")?;
+    let mut out = vec![];
+    let mut skipped = 0;
+    for v in vulns.iter().take(MAX_VULNERABILITIES) {
+        let cve = text(v, "cve").to_ascii_uppercase();
+        if !valid_cve(&cve) {
+            skipped += 1;
+            continue;
+        }
+        // Flags (the VEX justification) and impact statements per product id.
+        let mut flag_of: BTreeMap<String, String> = BTreeMap::new();
+        for f in v
+            .get("flags")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let label = text(f, "label");
+            for pid in ids(f.get("product_ids")) {
+                flag_of.entry(pid).or_insert_with(|| label.clone());
+            }
+        }
+        let mut impact_of: BTreeMap<String, String> = BTreeMap::new();
+        for t in v
+            .get("threats")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if text(t, "category") == "impact" {
+                let details = text(t, "details");
+                for pid in ids(t.get("product_ids")) {
+                    impact_of.entry(pid).or_insert_with(|| details.clone());
+                }
+            }
+        }
+        let mut fix_of: BTreeMap<String, String> = BTreeMap::new();
+        for r in v
+            .get("remediations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let details = text(r, "details");
+            for pid in ids(r.get("product_ids")) {
+                fix_of.entry(pid).or_insert_with(|| details.clone());
+            }
+        }
+        let status = v.get("product_status");
+        for (keys, label) in [
+            (&["known_not_affected"][..], "known_not_affected"),
+            (&["fixed", "first_fixed"][..], "fixed"),
+            (
+                &["known_affected", "first_affected", "last_affected"][..],
+                "known_affected",
+            ),
+            (&["under_investigation"][..], "under_investigation"),
+        ] {
+            let mut pids: Vec<String> = keys
+                .iter()
+                .flat_map(|k| ids(status.and_then(|s| s.get(*k))))
+                .collect();
+            pids.sort();
+            pids.dedup();
+            for pid in pids {
+                let Some(p) = products.get(&pid) else {
+                    skipped += 1;
+                    continue;
+                };
+                let range = match p.version.as_deref() {
+                    None => "*".to_string(),
+                    Some(v) => match parse_range(v) {
+                        Some(r) => r,
+                        None => {
+                            skipped += 1;
+                            continue;
+                        }
+                    },
+                };
+                if out.len() >= MAX_ENTRIES_PER_FILE {
+                    break;
+                }
+                out.push(StatusEntry {
+                    cve: cve.clone(),
+                    vendor: p.vendor.clone(),
+                    products: p.names.clone(),
+                    range,
+                    status: label,
+                    justification: flag_of.get(&pid).cloned().unwrap_or_default(),
+                    detail: impact_of
+                        .get(&pid)
+                        .or_else(|| fix_of.get(&pid))
+                        .cloned()
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+    Ok((id, out, skipped))
+}
+
 pub fn parse_csaf(bytes: &[u8]) -> Result<Parsed, String> {
     let doc: Value = serde_json::from_slice(bytes).map_err(|e| format!("not JSON: {e}"))?;
     let document = doc
@@ -536,27 +705,7 @@ pub fn parse_csaf(bytes: &[u8]) -> Result<Parsed, String> {
         .find(|u| u.starts_with("https://") || u.starts_with("http://"))
         .unwrap_or_default();
 
-    let mut products: BTreeMap<String, Product> = BTreeMap::new();
-    let mut nodes = 0usize;
-    if let Some(tree) = doc.get("product_tree") {
-        for b in tree
-            .get("branches")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            walk(b, Trail::default(), 0, &mut nodes, &mut products);
-        }
-        for p in tree
-            .get("full_product_names")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            leaf(p, &Trail::default(), &mut products);
-        }
-        relationships(tree, &mut products);
-    }
+    let products = product_tree(&doc);
 
     let mut parsed = Parsed {
         advisory: advisory.clone(),
@@ -676,14 +825,14 @@ pub fn parse_csaf(bytes: &[u8]) -> Result<Parsed, String> {
 // ---- matching ------------------------------------------------------------------------------
 
 /// Letters and digits only, lower case: `6ES7 214-1AG40` and `6es72141ag40` compare equal.
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     s.chars()
         .filter(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
         .collect()
 }
 
-fn vendor_matches(a: &str, b: &str) -> bool {
+pub(crate) fn vendor_matches(a: &str, b: &str) -> bool {
     let (a, b) = (norm(a), norm(b));
     a.len() >= 3 && b.len() >= 3 && (a.contains(&b) || b.contains(&a))
 }
@@ -691,7 +840,7 @@ fn vendor_matches(a: &str, b: &str) -> bool {
 /// `S7-1200` for `CPU 1214C`, `S7-1500` for `CPU 1511-1 PN`, `S7-300` for `CPU 315-2 DP`:
 /// advisories name the family, the S7 identification gives the CPU. Only Siemens CPU names of
 /// the common families are recognised.
-fn siemens_family(name: &str) -> Option<&'static str> {
+pub(crate) fn siemens_family(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     let at = lower.find("cpu")?;
     let digits: String = lower[at + 3..]
@@ -707,6 +856,25 @@ fn siemens_family(name: &str) -> Option<&'static str> {
         (3, Some("41")) | (3, Some("42")) => Some("S7-400"),
         _ => None,
     }
+}
+
+/// Whether a device's names match a product's names: the matching rule of the advisories
+/// (normalised names of at least 5 characters, one containing the other; Siemens S7 CPUs also by
+/// their family), for callers with plain names (VEX statements, SBOMs).
+pub(crate) fn names_match(device: &[String], wanted: &[String]) -> bool {
+    let mut names: Vec<String> = device.iter().map(|n| norm(n)).collect();
+    for n in device {
+        if let Some(f) = siemens_family(n) {
+            names.push(norm(f));
+        }
+    }
+    let wanted: Vec<String> = wanted.iter().map(|w| norm(w)).collect();
+    names.iter().filter(|n| n.len() >= 5).any(|n| {
+        wanted
+            .iter()
+            .filter(|w| w.len() >= 5)
+            .any(|w| n.contains(w.as_str()) || w.contains(n.as_str()))
+    })
 }
 
 fn product_matches(device: &OtDevice, entry: &Entry) -> bool {

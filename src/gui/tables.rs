@@ -382,6 +382,7 @@ mod tests {
             exploit: Default::default(),
             reference: None,
             confidence: 0,
+            vex: None,
         }
     }
 

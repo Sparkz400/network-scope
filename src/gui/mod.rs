@@ -162,6 +162,12 @@ fn standard_settings(current: &scan::Settings) -> scan::Settings {
 
 /// While a scan or capture is running, derived views refresh at most this often.
 const LIVE_REFRESH: Duration = Duration::from_millis(500);
+/// The SBOM library and, per address, the firmware SBOMs found in it (see `ensure_firmware_sboms`).
+type FirmwareSboms = (
+    std::sync::Arc<crate::sbom::Library>,
+    BTreeMap<IpAddr, Vec<crate::sbom::FirmwareSbom>>,
+);
+
 /// A value derived from results/observations, recomputed only when the data generation changed.
 struct Cached<T> {
     generation: Option<u64>,
@@ -259,6 +265,15 @@ enum Job {
     Draft(u64, Box<crate::service::workbench::Group>),
     /// Writes a draft probe file and its checklist (`FILE`, `FILE.checklist.md`).
     WriteDraft(Box<workbench::DraftView>, PathBuf),
+    /// Imports firmware SBOMs or VEX statements into their cache (`feeds import sbom|vex`).
+    ImportFeed(FeedKind, Vec<PathBuf>),
+}
+
+/// Which cache a desktop import fills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FeedKind {
+    Sbom,
+    Vex,
 }
 enum Done {
     Saved(&'static str, usize, Result<i64, String>),
@@ -277,6 +292,8 @@ enum Done {
     /// A draft (token, group id, result).
     Drafted(u64, String, Result<Box<workbench::DraftView>, String>),
     DraftWritten(Result<(String, String), String>),
+    /// What an SBOM or VEX import did (its report lines), or why it failed.
+    FeedImported(FeedKind, Result<Vec<String>, String>),
 }
 fn write_file(path: &std::path::Path, data: Result<String, String>) -> Result<(), String> {
     data.and_then(|d| std::fs::write(path, d).map_err(|e| format!("{}: {e}", path.display())))
@@ -298,6 +315,22 @@ fn run_job(job: Job) -> Done {
         Job::ReadFile(file) => Done::Read(
             std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display())),
         ),
+        Job::ImportFeed(kind, files) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let result = match kind {
+                FeedKind::Sbom => crate::sbom::default_path()
+                    .ok_or_else(|| "No location for the SBOM cache".to_string())
+                    .and_then(|cache| crate::sbom::import(&files, &Default::default(), &cache, now))
+                    .map(|r| r.lines()),
+                FeedKind::Vex => crate::vex::default_path()
+                    .ok_or_else(|| "No location for the VEX cache".to_string())
+                    .and_then(|cache| crate::vex::import(&files, &cache, now))
+                    .map(|r| r.lines()),
+            };
+            Done::FeedImported(kind, result)
+        }
         Job::WritePrefs(bytes) => Done::PrefsWritten(write_prefs(&bytes)),
         Job::Export(snapshot, format, stamp, file) => {
             let result = write_file(&file, store::export_at(&snapshot, &format, stamp));
@@ -621,6 +654,9 @@ struct Scanner {
     hostnames: Cached<HashMap<IpAddr, String>>,
     /// The worst finding per address, for the Risk column and the host details.
     risk_map: Cached<HashMap<IpAddr, risk::Severity>>,
+    /// The imported SBOMs of the firmware each host reported, for the host details, with the
+    /// SBOM library they were found in.
+    firmware_sboms: Cached<FirmwareSboms>,
     /// Findings of a large scan being worked out on a thread of their own (see `nav.rs`).
     background_findings: Option<nav::BackgroundFindings>,
 }
@@ -737,6 +773,7 @@ impl Scanner {
             finding_groups: vec![],
             hostnames: Default::default(),
             risk_map: Default::default(),
+            firmware_sboms: Default::default(),
             background_findings: None,
         };
         i18n::set(i18n::detect(&app.saved.language));
@@ -789,7 +826,7 @@ impl Scanner {
             Job::List => self.busy.listing = true,
             Job::Diff(..) => self.busy.comparing = true,
             Job::Load(_) => self.busy.loading = true,
-            Job::ReadFile(_) => self.busy.importing = true,
+            Job::ReadFile(_) | Job::ImportFeed(..) => self.busy.importing = true,
             Job::WritePrefs(_) => self.busy.prefs = true,
             Job::Export(..) | Job::ExportAssets(..) => self.busy.exporting += 1,
             Job::TestScript(..) => self.busy.testing = true,
@@ -867,6 +904,22 @@ impl Scanner {
                             )
                         }
                         Ok(snapshot) => self.open_snapshot(id, *snapshot),
+                        Err(e) => self.error = e,
+                    }
+                }
+                Done::FeedImported(kind, result) => {
+                    self.busy.importing = false;
+                    match result {
+                        Ok(lines) => {
+                            // The next export and analysis read the new cache.
+                            match kind {
+                                FeedKind::Sbom => crate::sbom::reload(),
+                                FeedKind::Vex => crate::vex::reload(),
+                            }
+                            // VEX changes what the findings say: work them out again.
+                            self.data_changed();
+                            self.status = lines.join(" · ");
+                        }
                         Err(e) => self.error = e,
                     }
                 }
@@ -1342,6 +1395,7 @@ impl Scanner {
             &mut self.findings.generation,
             &mut self.risk_map.generation,
             &mut self.hostnames.generation,
+            &mut self.firmware_sboms.generation,
         ] {
             if *generation == Some(before) {
                 *generation = Some(self.generation);
@@ -1386,6 +1440,26 @@ impl Scanner {
         self.submit(Job::Export(
             Box::new(snapshot),
             extension.to_string(),
+            stamp,
+            path,
+        ));
+    }
+    /// Exports every result and observation (not only the visible rows) in `format`, to a file
+    /// ending in `.{extension}`: the CycloneDX inventory should list the whole network.
+    fn export_all(&mut self, format: &str, extension: &str) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("network-scan.{extension}"))
+            .add_filter("CycloneDX JSON", &["json"])
+            .save_file()
+        else {
+            return;
+        };
+        let snapshot = self.snapshot();
+        let stamp = self.opened_stamp.unwrap_or_else(unix_now);
+        self.status = format!("Writing {}…", path.display());
+        self.submit(Job::Export(
+            Box::new(snapshot),
+            format.to_string(),
             stamp,
             path,
         ));
@@ -1494,6 +1568,23 @@ impl Scanner {
     fn set_language(&mut self, code: &str) {
         self.saved.language = code.to_string();
         i18n::set(i18n::detect(code));
+    }
+    /// The file picker for firmware SBOMs or VEX statements, imported on the worker.
+    pub(super) fn import_feed(&mut self, kind: FeedKind) {
+        if self.busy.importing {
+            return;
+        }
+        let title = match kind {
+            FeedKind::Sbom => "SBOM (CycloneDX or SPDX JSON)",
+            FeedKind::Vex => "VEX (CSAF or CycloneDX JSON)",
+        };
+        if let Some(files) = rfd::FileDialog::new()
+            .add_filter(title, &["json"])
+            .pick_files()
+        {
+            self.status = tr!("Importing {} files…", files.len());
+            self.submit(Job::ImportFeed(kind, files));
+        }
     }
     /// The file picker for an address list (read in the background; `#` comments allowed).
     fn import_address_list(&mut self) {

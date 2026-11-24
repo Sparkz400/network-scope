@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!-- Made-up nmap -sV scan of a lab network (invented addresses and MACs), imported by CI to
+     export a CycloneDX inventory and check it against the official schema. -->
+<nmaprun scanner="nmap" args="nmap -sV 10.99.0.0/24" start="1795000000">
+<host starttime="1795000000"><status state="up"/><address addr="10.99.0.1" addrtype="ipv4"/><address addr="00:1B:1B:4A:10:01" addrtype="mac"/><hostnames><hostname name="core-sw" type="PTR"/></hostnames><ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="7.4"/></port>
+<port protocol="tcp" portid="23"><state state="open"/><service name="telnet"/></port>
+<port protocol="tcp" portid="443"><state state="open"/><service name="https" product="nginx" version="1.14.0"/></port>
+</ports></host>
+<host starttime="1795000000"><status state="up"/><address addr="10.99.0.5" addrtype="ipv4"/><address addr="00:1B:1B:7C:22:05" addrtype="mac"/><hostnames><hostname name="plc-1" type="PTR"/></hostnames><ports>
+<port protocol="tcp" portid="102"><state state="open"/><service name="iso-tsap"/></port>
+<port protocol="tcp" portid="502"><state state="open"/><service name="modbus"/></port>
+</ports></host>
+<host starttime="1795000000"><status state="up"/><address addr="10.99.0.6" addrtype="ipv4"/><address addr="00:1D:9C:31:08:06" addrtype="mac"/><hostnames><hostname name="plc-2" type="PTR"/></hostnames><ports>
+<port protocol="tcp" portid="44818"><state state="open"/><service name="EtherNet-IP-2"/></port>
+</ports></host>
+<host starttime="1795000000"><status state="up"/><address addr="10.99.0.20" addrtype="ipv4"/><address addr="00:50:56:A1:3C:14" addrtype="mac"/><hostnames><hostname name="historian" type="PTR"/></hostnames><ports>
+<port protocol="tcp" portid="135"><state state="open"/><service name="msrpc"/></port>
+<port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/></port>
+<port protocol="tcp" portid="1433"><state state="open"/><service name="ms-sql-s"/></port>
+</ports></host>
+<host starttime="1795000000"><status state="up"/><address addr="10.99.0.40" addrtype="ipv4"/><address addr="00:11:32:9B:44:28" addrtype="mac"/><hostnames><hostname name="nas" type="PTR"/></hostnames><ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="7.4"/></port>
+<port protocol="tcp" portid="80"><state state="open"/><service name="http" product="nginx" version="1.14.0"/></port>
+</ports></host>
+<host starttime="1795000000"><status state="up"/><address addr="10.99.0.77" addrtype="ipv4"/><address addr="00:1B:A9:E5:02:4D" addrtype="mac"/><hostnames><hostname name="printer" type="PTR"/></hostnames><ports>
+<port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port>
+<port protocol="tcp" portid="9100"><state state="open"/><service name="jetdirect"/></port>
+</ports></host>
+</nmaprun>

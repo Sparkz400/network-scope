@@ -132,6 +132,15 @@ impl Scanner {
         }
     }
 
+    /// The imported SBOMs of the firmware each host reported (see [`crate::sbom::for_hosts`]).
+    pub(super) fn ensure_firmware_sboms(&mut self) {
+        if self.firmware_sboms.stale(self.generation, self.live()) {
+            let library = crate::sbom::active();
+            let found = crate::sbom::for_hosts(&library, &self.results, &self.observations);
+            self.firmware_sboms.set(self.generation, (library, found));
+        }
+    }
+
     /// The host name of every address that has one, for the Findings page.
     pub(super) fn ensure_hostnames(&mut self) {
         if self.hostnames.stale(self.generation, self.live()) {

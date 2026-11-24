@@ -452,14 +452,7 @@ pub fn evaluate_with(
                 ));
             }
         }
-        let old_findings: HashSet<String> = risk::analyze_snapshot(prev)
-            .iter()
-            .map(risk::Finding::key)
-            .collect();
-        for f in risk::analyze_snapshot(cur)
-            .into_iter()
-            .filter(|f| !old_findings.contains(&f.key()))
-        {
+        for f in new_findings(&risk::analyze_snapshot(prev), risk::analyze_snapshot(cur)) {
             out.push(alert(
                 now,
                 f.severity,
@@ -898,6 +891,16 @@ pub fn run(
     }
 }
 
+/// Findings of the new scan that the previous one did not have. A finding an imported vendor
+/// statement clears (VEX: not affected, fixed, false positive) is not alerted: it does not count
+/// anywhere else either.
+fn new_findings(before: &[risk::Finding], now: Vec<risk::Finding>) -> Vec<risk::Finding> {
+    let old: HashSet<String> = before.iter().map(risk::Finding::key).collect();
+    now.into_iter()
+        .filter(|f| !old.contains(&f.key()) && !f.cleared_by_vex())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1122,6 +1125,40 @@ mod tests {
         };
         assert!(!kinds(&with(Some(baseline), &high)).contains(&"unknown-device"));
         assert!(severity_hint(&high).unwrap().contains("unknown-device"));
+    }
+
+    #[test]
+    fn a_new_finding_a_vendor_statement_clears_is_not_alerted() {
+        let finding = |id: &str, vex: Option<crate::vex::State>| risk::Finding {
+            severity: Severity::High,
+            id: id.into(),
+            title: id.into(),
+            ip: "10.0.0.5".parse().unwrap(),
+            port: Some(102),
+            evidence: String::new(),
+            cve: vec![],
+            advice: String::new(),
+            exploit: Default::default(),
+            reference: None,
+            confidence: 40,
+            vex: vex.map(|state| crate::vex::Applied {
+                state,
+                justification: String::new(),
+                detail: String::new(),
+                source: "VEX-1".into(),
+            }),
+        };
+        let now = vec![
+            finding("cve-cve-2099-1", Some(crate::vex::State::NotAffected)),
+            finding("cve-cve-2099-2", Some(crate::vex::State::Affected)),
+            finding("cve-cve-2099-3", None),
+            finding("telnet-open", None),
+        ];
+        let ids: Vec<String> = new_findings(&[finding("telnet-open", None)], now)
+            .into_iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(ids, ["cve-cve-2099-2", "cve-cve-2099-3"]);
     }
 
     #[test]
