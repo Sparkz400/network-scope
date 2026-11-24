@@ -538,6 +538,7 @@ mod tests {
             exploit: Default::default(),
             reference: None,
             confidence: 40,
+            vex: None,
         });
         f
     }

@@ -88,8 +88,8 @@ mod wire;
 
 pub use ber::{Oid, Value};
 pub use collect::{
-    Address, Collected, Interface, LldpNeighbor, MAX_REQUESTS, MAX_SECONDS, SAFE_MAX_REQUESTS,
-    SAFE_MAX_SECONDS, System, collect, enabled,
+    Address, Collected, Interface, LldpNeighbor, MAX_REQUESTS, MAX_SECONDS, MAX_SOFTWARE,
+    SAFE_MAX_REQUESTS, SAFE_MAX_SECONDS, System, collect, enabled,
 };
 pub use usm::{AuthProto, PrivProto};
 

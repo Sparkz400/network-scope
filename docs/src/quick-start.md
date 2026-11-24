@@ -7,7 +7,7 @@ Read [Responsible use](responsible-use.md) first: only scan networks you are aut
 1. Start `network-scope.exe` (or `network-scope` / `cargo run --release`).
 2. Enter an IP, an IPv4 range (`192.168.1.10-50`), a CIDR block (`192.168.1.0/24`) or several comma/space-separated addresses.
 3. Press **Start**. Nothing scans automatically.
-4. Click a host for its identity, probe errors and notes. Open **Findings** and **Saved inventory** in the sidebar on the left (or `Ctrl+4`, `Ctrl+7`), and **By device** on the Hosts page (`Ctrl+3`) for one row per device; the host details stay docked on the right. `F1` lists all keyboard shortcuts.
+4. Click a host for its identity, probe errors and notes. Open **Findings** and **Inventory** in the sidebar on the left (or `Ctrl+4`, `Ctrl+7`), and **By device** on the Hosts page (`Ctrl+3`) for one row per device; the host details stay docked on the right. `F1` lists all keyboard shortcuts.
 
 See the [GUI guide](gui-guide.md).
 

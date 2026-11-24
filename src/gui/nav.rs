@@ -41,6 +41,16 @@ impl BackgroundFindings {
     }
 }
 
+/// The name of a page in the sidebar: the menu's name, shortened where the sidebar has no room
+/// for it next to a count (the menus, the palette and the hover text keep the full name).
+fn sidebar_label(cmd: Cmd) -> &'static str {
+    match cmd {
+        Cmd::Passive => tr!("Passive / OT"),
+        Cmd::Inventory => tr!("Inventory"),
+        other => other.menu_label(),
+    }
+}
+
 impl Scanner {
     /// Whether findings and devices may be worked out without the user asking for them: no
     /// scan or capture runs and the data is small ([`EAGER_LIMIT`]).
@@ -119,6 +129,15 @@ impl Scanner {
         if self.fresh_findings() && self.risk_map.generation != Some(self.generation) {
             let map = tables::risk_by_ip(&self.findings.value);
             self.risk_map.set(self.generation, map);
+        }
+    }
+
+    /// The imported SBOMs of the firmware each host reported (see [`crate::sbom::for_hosts`]).
+    pub(super) fn ensure_firmware_sboms(&mut self) {
+        if self.firmware_sboms.stale(self.generation, self.live()) {
+            let library = crate::sbom::active();
+            let found = crate::sbom::for_hosts(&library, &self.results, &self.observations);
+            self.firmware_sboms.set(self.generation, (library, found));
         }
     }
 
@@ -212,10 +231,21 @@ impl Scanner {
             // The Hosts entry stays highlighted in its device mode.
             let selected =
                 self.view == view || (view == MainView::Hosts && self.view == MainView::Devices);
-            let mut response =
-                icons::page_button(ui, view, selected, cmd.menu_label(), badge.as_ref());
+            let label = sidebar_label(cmd);
+            let mut response = icons::page_button(ui, view, selected, label, badge.as_ref());
+            // The full name (when the sidebar shortens it) and the shortcut.
+            let mut hover = String::new();
+            if label != cmd.menu_label() {
+                hover.push_str(cmd.menu_label());
+            }
             if let Some(shortcut) = cmd.shortcut() {
-                response = response.on_hover_text(ui.ctx().format_shortcut(&shortcut));
+                if !hover.is_empty() {
+                    hover.push_str(" · ");
+                }
+                hover.push_str(&ui.ctx().format_shortcut(&shortcut));
+            }
+            if !hover.is_empty() {
+                response = response.on_hover_text(hover);
             }
             if response.clicked() {
                 let ctx = ui.ctx().clone();

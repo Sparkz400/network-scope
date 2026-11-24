@@ -62,6 +62,9 @@ impl Cmd {
             Cmd::ExportJson => tr!("Visible rows as JSON…"),
             Cmd::ExportHtml => tr!("HTML report…"),
             Cmd::ExportMarkdown => tr!("Markdown summary…"),
+            Cmd::ExportCycloneDx => tr!("CycloneDX inventory (all devices)…"),
+            Cmd::ImportSboms => tr!("Import firmware SBOMs…"),
+            Cmd::ImportVex => tr!("Import VEX statements…"),
             Cmd::ClearResults => tr!("Clear results and captures"),
             Cmd::Preset(p) => preset_ui::name(p),
             Cmd::Faster => tr!("Faster (turns Safe Mode off)"),
@@ -117,7 +120,8 @@ impl Scanner {
             Cmd::StopScan | Cmd::PauseScan => stoppable,
             Cmd::ImportList => self.run.is_none() && !self.busy.importing,
             Cmd::ExportCsv | Cmd::ExportJson => has_rows,
-            Cmd::ExportHtml | Cmd::ExportMarkdown => has_data,
+            Cmd::ExportHtml | Cmd::ExportMarkdown | Cmd::ExportCycloneDx => has_data,
+            Cmd::ImportSboms | Cmd::ImportVex => !self.busy.importing,
             Cmd::ClearResults => !self.live() && !self.busy.loading,
             Cmd::Preset(_) | Cmd::Faster | Cmd::Thorough => self.run.is_none(),
             _ => true,
@@ -181,9 +185,18 @@ impl Scanner {
             .ui(ui, |ui| {
                 ui.menu_button(tr!("File"), |ui| {
                     self.item(ui, Cmd::ImportList);
+                    self.item(ui, Cmd::ImportSboms).on_hover_text(tr!(
+                        "SBOMs of device firmware, from the vendor or from firmware analysis; the CycloneDX export lists them inside the matching firmware. A file must name its product and version."
+                    ));
+                    self.item(ui, Cmd::ImportVex).on_hover_text(tr!(
+                        "Vendor statements that a CVE does not affect a product; findings they cover are marked and leave the risk score."
+                    ));
                     ui.menu_button(tr!("Export"), |ui| {
                         self.item(ui, Cmd::ExportHtml);
                         self.item(ui, Cmd::ExportMarkdown);
+                        self.item(ui, Cmd::ExportCycloneDx).on_hover_text(tr!(
+                            "Devices, the firmware they reported and their services, with known CVEs, for tools such as Dependency-Track. Firmware contents only for firmware with an imported SBOM (feeds import sbom)."
+                        ));
                         ui.separator();
                         self.item(ui, Cmd::ExportCsv);
                         self.item(ui, Cmd::ExportJson);

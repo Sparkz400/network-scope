@@ -1,0 +1,23 @@
+{
+  "document": { "category": "csaf_vex", "csaf_version": "2.0", "title": "VEX",
+    "tracking": { "id": "VEX-TEST-0001" } },
+  "product_tree": { "branches": [ { "category": "vendor", "name": "Siemens", "branches": [
+    { "category": "product_name", "name": "SIMATIC S7-1200 CPU", "branches": [
+      { "category": "product_version_range", "name": ">=V4.0|<V5.0",
+        "product": { "product_id": "S12", "name": "SIMATIC S7-1200 CPU V4" } } ] },
+    { "category": "product_name", "name": "SIMATIC S7-1500 CPU", "branches": [
+      { "category": "product_version_range", "name": "<V3.1",
+        "product": { "product_id": "S15old", "name": "SIMATIC S7-1500 CPU < V3.1" } },
+      { "category": "product_version", "name": "V3.1",
+        "product": { "product_id": "S15new", "name": "SIMATIC S7-1500 CPU V3.1" } } ] } ] } ] },
+  "vulnerabilities": [ {
+    "cve": "CVE-2099-1000",
+    "product_status": {
+      "known_not_affected": ["S12"], "known_affected": ["S15old"], "fixed": ["S15new"] },
+    "flags": [ { "label": "vulnerable_code_not_present", "product_ids": ["S12"] } ],
+    "threats": [ { "category": "impact", "details": "The OpenSSL in this firmware is built without SM2.",
+      "product_ids": ["S12"] } ],
+    "remediations": [ { "category": "vendor_fix", "details": "Update to V3.1",
+      "product_ids": ["S15old"] } ]
+  } ]
+}

@@ -209,6 +209,18 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     {
         crate::csaf::load_active(std::path::Path::new(file))?;
     }
+    // Vendor statements (`feeds import vex`) mark the findings they cover.
+    if command != "feeds"
+        && let Some(file) = opts.get("vex")
+    {
+        crate::vex::load_active(std::path::Path::new(file))?;
+    }
+    // Firmware SBOMs (`feeds import sbom`) are nested into the CycloneDX export.
+    if command != "feeds"
+        && let Some(file) = opts.get("sboms")
+    {
+        crate::sbom::load_active(std::path::Path::new(file))?;
+    }
     let handler =
         commands::find(command).ok_or_else(|| format!("Unknown command {command}. Use --help."))?;
     let mut ctx = Ctx {

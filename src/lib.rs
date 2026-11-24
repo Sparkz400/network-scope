@@ -15,7 +15,9 @@ pub(crate) use network_scope_core::{
     store, store_stream, syn, sync, targets, topology, trace, update, wol,
 };
 // Research and security-research modules (ROADMAP section L).
-pub(crate) use network_scope_core::{csaf, otmodel, pivot, provenance, research, segmentation};
+pub(crate) use network_scope_core::{
+    csaf, cyclonedx, otmodel, pivot, provenance, research, sbom, segmentation, vex,
+};
 #[cfg(feature = "gui")]
 pub(crate) use network_scope_core::{localnets, netmap, pcapfile, schedule};
 // The pcap writers of the core crate's tests, compiled into the GUI tests of this crate as well.

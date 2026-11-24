@@ -367,6 +367,31 @@ Measured on Windows 11, 22 logical cores, release build, 2026-11-20 (the CI limi
 
 The GUI test cannot drive the real window (that needs a display): it draws the same `TableBuilder` columns and cells as the results table and repeats the sort and the row filter, so a change to the table code itself (not these helpers) is not covered.
 
+### Large CycloneDX export
+
+`cargo test -p network-scope-core --release --lib write_a_large_scan -- --ignored` with `NS_LARGE_SCAN_DB=FILE` writes a saved scan of 65,536 hosts (OpenSSH 7.4 and nginx 1.14.0 on each, every hundredth host an S7 PLC that reports its firmware), and `export 1 --format cyclonedx` exports it. Measured on Windows 11, 22 logical cores, release build, 2026-11-24:
+
+| Measurement | Result |
+| --- | --- |
+| Export time | 4.5 s |
+| File | 86 MB (compact JSON above 1,000 devices; 180 MB indented before) |
+| Peak memory | about 1.75 GB (about 2 GB before `found-on` was capped at 100 addresses per vulnerability) |
+
+The peak comes from building the whole document as a JSON value before writing it; a streaming writer would bring it down, but nobody exports a /16 of identical hosts often enough to need it yet. Not checked: this file against the CycloneDX schema (the Python validator did not finish on 86 MB within ten minutes); the compact form has the same structure as the indented sample CI checks.
+
+## Real public files
+
+The parsers were run on public files, not only on fixtures written to the specifications (2026-11-24; the files were downloaded into a scratch folder and are not in the repository):
+
+| Input | Result |
+| --- | --- |
+| 334 CISA ICS advisories of 2026 (CSAF 2.0, `cisagov/CSAF` on GitHub), `feeds import csaf` | All import: 9,195 product entries |
+| The same files, `feeds import vex` | 10,293 statements, 1,090 of them clearing (not affected or fixed), 892 of those with a version range |
+| The 25 example documents of the CycloneDX VEX guide | 19 import (99 statements, one by package URL); 6 only refer to components of other documents by opaque references and are skipped with a reason |
+| Syft 1.57.2 (official release, checksum checked) on the root file system of OpenWrt 25.12.6 x86-64 (checksum checked against the release's `sha256sums`) | 179 packages and 890 files; the CycloneDX 1.7 and the SPDX 2.3 output both import, and the export nests the 179 packages under a device that announces OpenWrt 25.12.6 over LLDP-MED (files left out and counted). A VEX statement by a package's package URL clears that package's CVE. The export passes the CycloneDX 1.6 schema (`cyclonedx-python-lib`, strict) |
+
+The OpenWrt run is a test that takes the file from the environment: `NS_REAL_SBOM=openwrt.cdx.json NS_REAL_SBOM_VENDOR=OpenWrt NS_REAL_SBOM_PRODUCT=OpenWrt NS_REAL_SBOM_VERSION=25.12.6 cargo test -p network-scope-core --lib real_firmware_sbom -- --ignored --nocapture` (`NS_REAL_SBOM_OUT=FILE` writes the export). The device is made up; the SBOM and the VEX matching are what is tested.
+
 ## Performance tests
 
 `bench/benches/hot_paths.rs` holds [criterion](https://criterion-rs.github.io/book/) benchmarks of the hot paths: parsing a 2,000-frame pcap, decoding 2,000 passive frames, the risk analysis of a 1,000-host snapshot, the diff of two 1,000-host snapshots, expanding and parsing targets, and matching banners against every service probe. They touch no network.

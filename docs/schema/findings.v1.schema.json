@@ -64,6 +64,36 @@
         "kev": {
           "type": "boolean",
           "description": "Present only with imported feeds"
+        },
+        "vex": {
+          "type": "object",
+          "description": "Present only when an imported VEX statement (feeds import vex) covers the finding's CVE for the product and version the scan saw",
+          "required": [
+            "state",
+            "source"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "not_affected",
+                "fixed",
+                "false_positive",
+                "affected",
+                "under_investigation"
+              ]
+            },
+            "justification": {
+              "type": "string",
+              "description": "CSAF flag label or CycloneDX justification"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string",
+              "description": "CSAF tracking id or CycloneDX serial number of the statement"
+            }
+          }
         }
       }
     }
