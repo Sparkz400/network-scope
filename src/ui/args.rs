@@ -47,11 +47,18 @@ pub(super) const FLAGS: [&str; 39] = [
     "incremental",
     "ipv6-discover",
 ];
-pub(super) const VALUES: [&str; 80] = [
+pub(super) const VALUES: [&str; 87] = [
     "feeds",
     "top",
     "nvd",
     "csaf",
+    "sboms",
+    "vex",
+    "dt-project",
+    "dt-version",
+    "sbom-vendor",
+    "sbom-product",
+    "sbom-version",
     "model",
     "maintenance",
     "zones",

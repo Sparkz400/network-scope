@@ -7,7 +7,7 @@
 //! seed corpus in `fuzz/corpus/<target>` runs as a unit test (`seed_corpus_runs_cleanly`).
 use crate::{
     arp, csaf, favicon, fingerprint, import, ipv6, jarm, nmap, nvd, osfp, ot, otpassive, passive,
-    pcapfile, platform, risk, service, syn, tls, udp, update,
+    pcapfile, platform, risk, sbom, service, syn, tls, udp, update, vex,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -64,6 +64,8 @@ pub const TARGETS: &[Target] = &[
     ("feeds_import", feeds_import),
     ("nvd_import", nvd_import),
     ("csaf_import", csaf_import),
+    ("sbom_import", sbom_import),
+    ("vex_import", vex_import),
     ("ot_model", ot_model),
     ("zones_file", zones_file),
     ("banner_groups", banner_groups),
@@ -302,6 +304,55 @@ pub fn csaf_import(data: &[u8]) {
             std::hint::black_box(csaf::range_holds(&range, "4.2.3"));
         }
         std::hint::black_box(csaf::range_holds(text, "1.0"));
+    }
+}
+
+/// A firmware SBOM (CycloneDX or SPDX JSON, with and without the import's own subject) and the
+/// matching of what it produced against firmware of several vendors.
+pub fn sbom_import(data: &[u8]) {
+    let subjects = [
+        sbom::Subject::default(),
+        sbom::Subject {
+            vendor: Some("Siemens".into()),
+            product: Some("CPU 1214C".into()),
+            version: Some("V4.2.3".into()),
+        },
+    ];
+    for subject in &subjects {
+        if let Ok(parsed) = sbom::parse(data, subject) {
+            let library = sbom::Library {
+                version: 1,
+                imported_at: 0,
+                sboms: vec![parsed.sbom],
+            };
+            for (vendor, product, version) in [
+                ("Siemens", "6ES7 214-1AG40-0XB0", "4.2.3"),
+                ("", "LabSwitch 24", "2.4.1"),
+                ("Rockwell Automation", "1756-L81E", ""),
+            ] {
+                std::hint::black_box(library.find(vendor, &[product.to_string()], version));
+            }
+        }
+    }
+}
+
+/// A VEX document (CSAF 2.0 or CycloneDX JSON) and the lookup of what it produced for products
+/// of several vendors and versions.
+pub fn vex_import(data: &[u8]) {
+    if let Ok(statements) = vex::parse(data, "fuzz.json") {
+        let library = vex::Library {
+            version: 1,
+            imported_at: 0,
+            sources: vec![],
+            statements,
+        };
+        for (cve, vendor, product, version) in [
+            ("CVE-2099-1000", "Siemens", "CPU 1214C", "4.2.1"),
+            ("CVE-2099-2000", "", "LabSwitch 24", "2.4.1"),
+            ("CVE-2099-2001", "Lab Networks", "LabSwitch 24", ""),
+        ] {
+            std::hint::black_box(library.lookup(cve, vendor, &[product.to_string()], version));
+        }
     }
 }
 

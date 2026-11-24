@@ -333,10 +333,30 @@ impl Scanner {
                                 body.rows(22.0, view.rows.len(), |mut row| {
                                     let f = &findings[view.rows[row.index()]];
                                     row.col(|ui| {
-                                        ui.colored_label(
-                                            severity_color(f.severity),
-                                            home::severity_name(f.severity),
-                                        );
+                                        match &f.vex {
+                                            // The vendor says it does not apply: greyed, with why.
+                                            Some(v) if v.state.resolves() => {
+                                                ui.weak(format!(
+                                                    "{} · {}",
+                                                    home::severity_name(f.severity),
+                                                    tr!("VEX: {}", v.state.label())
+                                                ))
+                                                .on_hover_text(vex_hover(v));
+                                            }
+                                            Some(v) => {
+                                                ui.colored_label(
+                                                    severity_color(f.severity),
+                                                    home::severity_name(f.severity),
+                                                )
+                                                .on_hover_text(vex_hover(v));
+                                            }
+                                            None => {
+                                                ui.colored_label(
+                                                    severity_color(f.severity),
+                                                    home::severity_name(f.severity),
+                                                );
+                                            }
+                                        }
                                     });
                                     row.col(|ui| {
                                         // The address with the port, then the host name when known.
@@ -355,7 +375,7 @@ impl Scanner {
                                     row.col(|ui| {
                                         // The "?" first: the column clips long titles.
                                         super::explain_button(ui, &f.id);
-                                        ui.label(&f.title).on_hover_text(&f.advice);
+                                        ui.label(f.title_with_vex()).on_hover_text(&f.advice);
                                     });
                                     row.col(|ui| {
                                         ui.label(f.evidence.chars().take(90).collect::<String>())
@@ -936,6 +956,18 @@ pub(super) fn page(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::U
     ui.heading(title);
     ui.add_space(2.0);
     add(ui);
+}
+
+/// What a VEX statement says, for the hover text of a finding.
+fn vex_hover(v: &crate::vex::Applied) -> String {
+    let mut text = tr!("Vendor statement (VEX {}): {}", v.source, v.state.label());
+    if !v.justification.is_empty() {
+        text.push_str(&format!(" ({})", v.justification));
+    }
+    if !v.detail.is_empty() {
+        text.push_str(&format!("\n{}", v.detail));
+    }
+    text
 }
 
 pub(super) fn severity_color(s: risk::Severity) -> egui::Color32 {
