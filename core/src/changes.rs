@@ -242,6 +242,30 @@ const MAX_CANDIDATES: usize = 25;
 
 /// What changed in the inventory at `db` since `since`. Errors only for an unreadable database.
 pub fn changes(db: &Path, since: &Since, now: i64) -> Result<Changes, String> {
+    compare(db, since, now, false)
+}
+/// [`changes`] for a caller that must not write (the MCP server): an inventory that does not
+/// exist is not created and one saved by an older version is not upgraded.
+pub fn changes_read_only(db: &Path, since: &Since, now: i64) -> Result<Changes, String> {
+    compare(db, since, now, true)
+}
+fn compare(db: &Path, since: &Since, now: i64, read_only: bool) -> Result<Changes, String> {
+    // The scans are read without writing either way; these two open the inventory for writing
+    // (which creates and upgrades it) unless told not to.
+    let device_registry = || {
+        if read_only {
+            store::device_registry_read(db)
+        } else {
+            store::device_registry(db)
+        }
+    };
+    let load_baseline = || {
+        if read_only {
+            crate::baseline::load_read(db)
+        } else {
+            crate::baseline::load(db)
+        }
+    };
     let label = match since {
         Since::Last => "last".to_string(),
         Since::At(t) => crate::report::fmt_time(*t),
@@ -297,8 +321,8 @@ pub fn changes(db: &Path, since: &Since, now: i64) -> Result<Changes, String> {
         let prev = store::load(db, entry.id)?;
         match store::diff_report(&prev, &cur, &IgnoreList::new(&[])) {
             Ok(_) => {
-                let registry = store::device_registry(db)?;
-                let baseline = crate::baseline::load(db)?;
+                let registry = device_registry()?;
+                let baseline = load_baseline()?;
                 let parts = between(&prev, &cur, registry, Some(&baseline))?;
                 out.previous = Some(ScanRef {
                     id: entry.id,
@@ -339,10 +363,10 @@ pub fn changes(db: &Path, since: &Since, now: i64) -> Result<Changes, String> {
         (false, None) => "No earlier scan can be compared.".into(),
     });
     // With no partner, the unknown-device count of the current scan is still worth showing.
-    let baseline = crate::baseline::load(db)?;
+    let baseline = load_baseline()?;
     if baseline.exists() {
         let devices = devices::merge(&cur.hosts, &cur.observations);
-        let keys: Vec<String> = identity::resolve(&store::device_registry(db)?, &devices)
+        let keys: Vec<String> = identity::resolve(&device_registry()?, &devices)
             .into_iter()
             .map(|m| m.key)
             .collect();
