@@ -90,9 +90,65 @@ The report contains no scripts, sets a restrictive Content-Security-Policy, and 
 | `jsonl` | One JSON object per responding host (passive-only devices: use `devices ID --format json`) |
 | `html` | The HTML report |
 | `nmap` | nmap-compatible XML |
+| `cyclonedx` | CycloneDX 1.6 JSON: the devices, the firmware they reported and their services, with known CVEs. See [CycloneDX inventory](#cyclonedx-inventory) |
 | `compliance-iec62443`, `compliance-nis2`, `compliance-cis` | Asset inventory with findings mapped to controls, as Markdown; add `-csv` (`compliance-nis2-csv`) for CSV. See [Compliance exports](#compliance-exports) |
 
 Exports carry the real scan time: the stored time for saved or reopened scans, the current time for live GUI results.
+
+## CycloneDX inventory
+
+```sh
+network-scope-cli export 3 --format cyclonedx --output network.cdx.json
+```
+
+In the desktop: **File → Export → CycloneDX inventory (all devices)…**, which exports every result and observation, not only the visible rows.
+
+The file is a [CycloneDX](https://cyclonedx.org/) 1.6 document for tools that read bills of materials, such as OWASP Dependency-Track. **On its own it is an inventory of what the network shows, not a software bill of materials of what is inside each device.** A scan sees what a device announces about itself; the libraries in its firmware image (a Linux kernel, OpenSSL, BusyBox) only come from the vendor's own SBOM or from analysing the image. Import those SBOMs ([Firmware SBOMs](#firmware-sboms)) and the export nests them under the firmware they describe, which makes it a full SBOM for those devices.
+
+| CycloneDX | From |
+| --- | --- |
+| A `device` component per device | The merged devices of the scan (one per MAC, or per address without one): addresses, MAC, host names, device type and its evidence, the OS guess, open ports and the sources, as `network-scope:*` properties. The manufacturer comes from the industrial identification or LLDP-MED when there is one, else from the MAC address (OUI), and `network-scope:manufacturer-source` says which. |
+| A `firmware` component inside it | Only what the device reported: S7 (order code, firmware), Modbus device identification, EtherNet/IP and OPC UA identity, passive industrial traffic, and the LLDP-MED firmware and software revision. |
+| An `application` component inside it | A service whose banner or handshake named its product (OpenSSH 7.4 on port 22), with the CPE name when the CVE table knows the product. An open port that named nothing stays a property of the device. |
+| `dependencies` | The switch each device hangs off, from the LLDP neighbour tables read over SNMP (the links of the network map): the device `dependsOn` the switch, and the device gets `network-scope:connected-to` with the switch's address and port. Of the two ends of a link the uplink is the network gear (switch, router, access point by device type), else the end with more links; a link the rules cannot orient (two equal ends) or to a neighbour that is not a device of the scan gives no dependency. Without SNMP LLDP data there is no `dependencies` section. |
+| `vulnerabilities` | One entry per CVE of the findings. A version-based finding points at the component whose product or CPE it matched (the service, or the firmware an industrial identification reported); a CVE from a probe or a setting (Heartbleed, SMBv1, BlueKeep) points at the device, so no product is blamed for a CVE that is not about its version. `network-scope:found-on` lists the address and port (the first 100; `network-scope:found-on-total` gives the count when there are more). With an imported vendor statement (VEX) the entry has an `analysis` (state, justification, detail), and devices with and without a statement are separate entries. The rating is the finding's severity with method `other`, not a CVSS score; version-based hints carry their confidence (`network-scope:confidence`) and can be false positives where a vendor backported a fix. KEV and EPSS appear when the feeds are imported. Findings without a CVE (Telnet open, a self-signed certificate) are not in this file; see the other exports. |
+
+Every value carries its source (`network-scope:source`: `S7 identification`, `LLDP-MED firmware revision`, `service banner`, ...). The serial number is derived from the scan's content and time, so exporting the same saved scan twice gives the same file (a desktop export of live results is stamped with the current time). The OS guess is a property, not an `operating-system` component, because it is inferred from fingerprints and not reported. Up to 1,000 devices the file is indented for reading; above that it is written compact (a scan of 65,536 hosts gives about 86 MB instead of 180 MB; see [Lab and testing](lab-and-testing.md#large-cyclonedx-export)).
+
+The file holds what the inventory holds: addresses, MAC addresses, host names and serial numbers. Treat it like the inventory before sharing it.
+
+CI checks the export of a sample network (firmware, services, CVEs) and of an imported nmap scan against the official CycloneDX 1.6 schema with `cyclonedx-cli`. Not tried: importing the file into Dependency-Track or another BOM tool.
+
+### Upload to Dependency-Track
+
+```sh
+export DTRACK_KEY=odt_...      # an API key with BOM_UPLOAD (and PROJECT_CREATION_UPLOAD to create the project)
+network-scope-cli export 3 --format cyclonedx --push https://dtrack.example --token-env DTRACK_KEY --dt-project "Plant A" --dt-version 2026-11
+```
+
+`--push` uploads the document to [OWASP Dependency-Track](https://dependencytrack.org/) (`POST /api/v1/bom`, a multipart form with `projectName`, `projectVersion`, `autoCreate=true` and the BOM) instead of printing it; `--output FILE` writes it as well. The project defaults to `Network Scope` and the version to the scan's targets; uploading again to the same name and version replaces that project's BOM, so one version per site or network keeps a current picture. The API key comes from the environment variable named by `--token-env` and is sent only in the `X-Api-Key` header, only over `https://` (plain `http://` to localhost only), never in the URL. The form fields are those of Dependency-Track's `BomResource` (`POST /api/v1/bom`, read in its source); not tried against a real server yet, a test checks the request against a local listener.
+
+### Firmware SBOMs
+
+```sh
+# A vendor's SBOM that names its product and version
+network-scope-cli feeds import sbom vendor-sboms/
+# An SBOM made from a firmware image names the image or its file system: say what it is.
+# Unpack the image first (for example with unblob or binwalk), then e.g. Syft on the root file system:
+syft dir:rootfs -o spdx-json > fw.spdx.json
+network-scope-cli feeds import sbom fw.spdx.json --sbom-vendor Siemens --sbom-product "6ES7 214-1AG40-0XB0" --sbom-version V4.2.1
+network-scope-cli feeds status    # "sboms": what the cache holds
+```
+
+`feeds import sbom` reads CycloneDX JSON (1.2 to 1.7) and SPDX JSON (2.2, 2.3) files, or the `.json` files of a folder, into `sboms.json` next to `feeds.json` (`--sboms FILE` picks another). Each SBOM describes one product version: the CycloneDX `metadata.component` or the package an SPDX document `DESCRIBES`, overridden by `--sbom-vendor`, `--sbom-product` and `--sbom-version` (they describe one file and are refused for a folder). A file without a product name or version is skipped and the import says which option it needs. Importing the same vendor, product and version again replaces the earlier SBOM. Nothing is fetched: you download or generate the files yourself.
+
+When the CycloneDX export finds a firmware a device reported (S7, Modbus, EtherNet/IP, OPC UA, passive industrial traffic, LLDP-MED), it looks for an SBOM with **the same version** (`V4.2.1` is `4.2.1`), **a matching name** (letters and digits only, at least 5 characters, one containing the other; Siemens CPUs also by their family, so `CPU 1214C` matches an SBOM for `S7-1200`) and **the same vendor** when both name one. A matching SBOM's components are nested inside the firmware component, with their versions, package URLs, CPE names, suppliers and licences (single files are left out and counted in `network-scope:sbom-files-left-out`: Syft lists every file of an image, which would repeat under each device on that firmware); the firmware says which SBOM it was (`network-scope:sbom`, its SHA-256 and format). With the NVD feed imported (`feeds import nvd`), every nested component with a CPE name is looked up there, and its CVEs become vulnerabilities pointing at that library (rule `sbom-cve-...`, a version-based hint: the vendor may have backported the fix).
+
+With the NVD feed, the same CPE is looked up once however many devices run that firmware; more than 200,000 CVE links in one document are counted in `network-scope:sbom-cves-not-linked` instead of written. CVEs of SBOM components get KEV and EPSS data from the imported feeds like every other finding. In the desktop, **File → Import firmware SBOMs…** imports files that name their own product and version (use the command line for `--sbom-product` and the other options); the next export uses them without a restart. The document's `network-scope:scope` says how many firmware components got an SBOM.
+
+Tried on a real image: Syft 1.57.2 on the root file system of OpenWrt 25.12.6 (x86-64) gives 179 packages and 890 files, as CycloneDX 1.7 and as SPDX 2.3; both import (`--sbom-vendor OpenWrt --sbom-product OpenWrt --sbom-version 25.12.6`), nest under a device that announces that firmware over LLDP-MED, and the export passes the CycloneDX 1.6 schema ([Lab and testing](lab-and-testing.md#real-public-files)). Not tried: an SBOM published by a device vendor, and the output of Trivy or EMBA.
+
+Limits: matching is by name, so an SBOM for a product name the device does not report (an order code against a marketing name) is not found; pass the name the device reports with `--sbom-product` (see the device's firmware component in the export). An SBOM is kept up to 20,000 components; files up to 64 MB.
 
 ## Compliance exports
 

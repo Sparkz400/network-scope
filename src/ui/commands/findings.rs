@@ -36,7 +36,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         return Ok(());
     }
     output(&schema::list("findings", "findings", &list)?, opts)?;
-    ctx.status = findings_exit(ctx.fail_on_findings(), list.len());
+    // A finding the vendor says does not apply (VEX) does not fail a gate.
+    let open = list.iter().filter(|f| !f.cleared_by_vex()).count();
+    ctx.status = findings_exit(ctx.fail_on_findings(), open);
     Ok(())
 }
 

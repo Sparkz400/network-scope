@@ -278,6 +278,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "sbom_import"
+path = "fuzz_targets/sbom_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vex_import"
+path = "fuzz_targets/vex_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ot_model"
 path = "fuzz_targets/ot_model.rs"
 test = false

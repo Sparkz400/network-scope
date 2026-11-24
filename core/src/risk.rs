@@ -63,7 +63,26 @@ pub struct Finding {
     /// exports written before the score existed, and then left out of the JSON.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub confidence: u8,
+    /// What the vendor says about the CVE for this product (an imported VEX statement, see
+    /// [`crate::vex`]); left out of the JSON without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vex: Option<crate::vex::Applied>,
 }
+impl Finding {
+    /// The vendor says the CVE does not affect this product (an imported VEX statement: not
+    /// affected, fixed, false positive): the finding stays listed but does not count.
+    pub fn cleared_by_vex(&self) -> bool {
+        self.vex.as_ref().is_some_and(|v| v.state.resolves())
+    }
+    /// The title with the vendor statement, for reports: `Title (VEX: not affected)`.
+    pub fn title_with_vex(&self) -> String {
+        match &self.vex {
+            Some(v) => format!("{} (VEX: {})", self.title, v.state.label()),
+            None => self.title.clone(),
+        }
+    }
+}
+
 fn is_zero(v: &u8) -> bool {
     *v == 0
 }
@@ -657,6 +676,7 @@ impl Out<'_> {
                 .map(str::to_string)
                 .or_else(|| cve.first().and_then(|c| nvd_url(&c.to_ascii_uppercase()))),
             confidence: rule_confidence(id).unwrap_or(0),
+            vex: None,
         });
     }
 }
@@ -1236,6 +1256,7 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             exploit: Default::default(),
             reference: reference_for("ot-control-traffic").map(str::to_string),
             confidence: rule_confidence("ot-control-traffic").unwrap_or(0),
+            vex: None,
         });
     }
     all.sort_by(|a, b| {
@@ -1246,6 +1267,8 @@ pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
             .then(a.id.cmp(&b.id))
     });
     crate::feeds::apply(&mut all);
+    // Vendor statements (VEX) about the CVEs for the products the scan saw.
+    crate::vex::apply(&mut all, &s.hosts);
     all
 }
 

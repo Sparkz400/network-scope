@@ -955,3 +955,45 @@ fn device_text_is_sanitised() {
     assert_eq!(oper_status(99), "?");
     assert!(!lab_mib().is_empty());
 }
+
+/// `hrSWInstalledName` is read last, bounded, and becomes `snmp.sw.<n>` identity keys.
+#[tokio::test]
+async fn installed_software_is_read_last_and_bounded() {
+    let mut agent = Agent::community("sw");
+    for n in 1..=250 {
+        agent.mib.insert(
+            oid(&format!("1.3.6.1.2.1.25.6.3.1.2.{n}")),
+            Value::Octets(format!("package-{n}").into_bytes()),
+        );
+    }
+    // A duplicate name and control characters from the device.
+    agent.mib.insert(
+        oid("1.3.6.1.2.1.25.6.3.1.2.251"),
+        Value::Octets(b"package-1".to_vec()),
+    );
+    let (addr, _) = agent.spawn().await;
+    let gate = Gate::unlimited();
+    let c = collect(
+        ip(),
+        &community(Version::V2c, "sw", addr),
+        false,
+        1000,
+        &gate,
+    )
+    .await
+    .unwrap();
+    assert_eq!(c.software.len(), MAX_SOFTWARE);
+    assert_eq!(c.software[0], "package-1");
+    assert!(
+        c.notes.iter().any(|n| n.contains("stopped after 200 rows")),
+        "{:?}",
+        c.notes
+    );
+    let id = c.identity();
+    let listed: Vec<&str> = id["snmp.software"].split("; ").collect();
+    assert_eq!(listed.len(), MAX_SOFTWARE);
+    assert!(listed.windows(2).all(|w| w[0] <= w[1]), "sorted");
+    assert!(!id.keys().any(|k| k.starts_with("snmp.sw.")));
+    // The tables read before it are complete.
+    assert_eq!(c.interfaces.len(), 3);
+}

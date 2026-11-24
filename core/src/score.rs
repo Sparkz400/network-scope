@@ -74,6 +74,10 @@ pub fn is_exposure(id: &str) -> bool {
 
 /// The points of one finding (see the module documentation).
 pub fn finding_points(f: &Finding) -> f64 {
+    // The vendor says the CVE does not affect this product (VEX): it does not add risk.
+    if f.cleared_by_vex() {
+        return 0.0;
+    }
     let mut p = severity_weight(f.severity);
     if f.exploit.kev {
         p *= if f.exploit.kev_ransomware { 2.5 } else { 2.0 };
@@ -178,7 +182,7 @@ pub struct Assessment {
 /// findings are not listed; their score is 0.
 pub fn host_scores(findings: &[Finding]) -> Vec<HostScore> {
     let mut by_host: BTreeMap<IpAddr, (f64, usize, Option<Severity>)> = BTreeMap::new();
-    for f in findings {
+    for f in findings.iter().filter(|f| !f.cleared_by_vex()) {
         let e = by_host.entry(f.ip).or_insert((0.0, 0, None));
         e.0 += finding_points(f);
         e.1 += 1;
@@ -241,7 +245,7 @@ pub fn top_fixes(findings: &[Finding], limit: usize) -> Vec<FixGroup> {
         reference: Option<String>,
     }
     let mut groups: BTreeMap<&str, Acc> = BTreeMap::new();
-    for f in findings {
+    for f in findings.iter().filter(|f| !f.cleared_by_vex()) {
         let g = groups.entry(f.id.as_str()).or_insert_with(|| Acc {
             title: f.title.clone(),
             severity: f.severity,
@@ -333,6 +337,7 @@ mod tests {
             exploit: Exploit::default(),
             reference: None,
             confidence: 0,
+            vex: None,
         }
     }
 
@@ -556,5 +561,33 @@ mod tests {
         assert_eq!(json["top_fixes"][0]["severity"], "high");
         assert_eq!(hosts_text(&a.top_fixes[0].hosts), "2 hosts");
         assert_eq!(hosts_text(&a.top_fixes[0].hosts[..1]), "10.0.0.1");
+    }
+
+    #[test]
+    fn findings_a_vendor_statement_clears_leave_the_scores_and_the_fix_list() {
+        let mut cleared = f("10.0.0.9", "cve-cve-2099-1", Severity::Critical);
+        cleared.vex = Some(crate::vex::Applied {
+            state: crate::vex::State::NotAffected,
+            justification: String::new(),
+            detail: String::new(),
+            source: "VEX-1".into(),
+        });
+        let list = vec![
+            cleared.clone(),
+            f("10.0.0.8", "telnet-open", Severity::High),
+        ];
+        assert!(
+            host_scores(&list).iter().all(|h| h.ip != cleared.ip),
+            "no score for it"
+        );
+        assert!(
+            top_fixes(&list, 10)
+                .iter()
+                .all(|g| g.id != "cve-cve-2099-1")
+        );
+        assert_eq!(
+            cleared.title_with_vex(),
+            format!("{} (VEX: not affected)", cleared.title)
+        );
     }
 }

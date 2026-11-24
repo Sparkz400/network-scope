@@ -1257,9 +1257,10 @@ pub fn export_at(snapshot: &Snapshot, format: &str, timestamp: i64) -> Result<St
         "nmap" | "xml" => Ok(crate::nmap::export(snapshot, timestamp)),
         "md" | "markdown" => Ok(crate::report::markdown(snapshot, None, timestamp)),
         "jsonl" => crate::report::jsonl(snapshot, timestamp),
+        "cyclonedx" | "cdx" => Ok(crate::cyclonedx::export(snapshot, timestamp)),
         other => match crate::compliance::Standard::from_format(other) {
             Some((standard, csv)) => Ok(crate::compliance::export(snapshot, standard, csv, timestamp)),
-            None => Err("Choose json, csv, html, nmap, md or jsonl, or compliance-iec62443, compliance-nis2 or compliance-cis (add -csv for CSV)".into()),
+            None => Err("Choose json, csv, html, nmap, md, jsonl or cyclonedx, or compliance-iec62443, compliance-nis2 or compliance-cis (add -csv for CSV)".into()),
         },
     }
 }
@@ -2111,7 +2112,20 @@ mod tests {
                 .unwrap()
                 .contains("time not recorded")
         );
-        assert!(export_at(&s, "pdf", 0).unwrap_err().contains("md or jsonl"));
+        let bom: serde_json::Value =
+            serde_json::from_str(&export_at(&s, "cyclonedx", ts).unwrap()).unwrap();
+        assert_eq!(bom["metadata"]["timestamp"], "2023-11-14T22:13:20Z");
+        let bom: serde_json::Value =
+            serde_json::from_str(&export_at(&s, "cyclonedx", 0).unwrap()).unwrap();
+        assert!(
+            bom["metadata"].get("timestamp").is_none(),
+            "no invented 1970"
+        );
+        assert!(
+            export_at(&s, "pdf", 0)
+                .unwrap_err()
+                .contains("jsonl or cyclonedx")
+        );
     }
 
     #[test]

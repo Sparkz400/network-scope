@@ -1,0 +1,18 @@
+{
+  "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000001",
+  "components": [ { "bom-ref": "sw", "type": "firmware", "name": "LabSwitch 24",
+    "version": "2.4.1", "manufacturer": { "name": "Lab Networks" } } ],
+  "vulnerabilities": [
+    { "id": "CVE-2099-2000",
+      "analysis": { "state": "not_affected", "justification": "code_not_reachable",
+        "detail": "The web server is not compiled in." },
+      "affects": [ { "ref": "sw" } ] },
+    { "id": "CVE-2099-2001",
+      "analysis": { "state": "not_affected" },
+      "affects": [ { "ref": "urn:cdx:00000000-0000-4000-8000-000000000001/1#sw",
+        "versions": [ { "version": "2.4.1", "status": "unaffected" },
+                      { "version": "2.3.0", "status": "affected" } ] } ] },
+    { "id": "not-a-cve", "analysis": { "state": "not_affected" }, "affects": [ { "ref": "sw" } ] }
+  ]
+}

@@ -1,6 +1,7 @@
 //! What a scan reads over SNMP: the system group, `ifTable` and `ifName` (`ifXTable`),
-//! `ipAddrTable` and the IPv6-capable `ipAddressTable`, and the LLDP remote-systems table, within
-//! hard limits, and how that becomes host identity.
+//! `ipAddrTable` and the IPv6-capable `ipAddressTable`, the LLDP remote-systems table, and the
+//! installed software (`hrSWInstalledName`, HOST-RESOURCES-MIB) last, within hard limits, and how
+//! that becomes host identity.
 use super::{
     Oid, SnmpConfig, SnmpRequest, Value, Version,
     client::{Response, Session},
@@ -18,6 +19,9 @@ pub const SAFE_MAX_SECONDS: u64 = 40;
 const MAX_INTERFACES: usize = 128;
 const MAX_ADDRESSES: usize = 64;
 const MAX_NEIGHBORS: usize = 64;
+/// Installed software entries kept (servers list hundreds of packages; the rest is noted).
+pub const MAX_SOFTWARE: usize = 200;
+const SAFE_MAX_SOFTWARE: usize = 100;
 /// `max-repetitions` of the GetBulk requests.
 const BULK: u8 = 20;
 const BULK_SAFE: u8 = 10;
@@ -51,6 +55,10 @@ mod mib {
     /// lldpLocPortDesc: the name of each local port, by lldpLocPortNum (which need not be the
     /// ifIndex).
     pub const LLDP_LOC_PORT_DESC: &str = "1.0.8802.1.1.2.1.3.7.1.4";
+    /// HOST-RESOURCES-MIB `hrSWInstalledName` (RFC 2790): the name of each installed software
+    /// package, by hrSWInstalledIndex. Servers (Net-SNMP, Windows) and some printers and
+    /// appliances answer it; most embedded devices do not.
+    pub const HR_SW_INSTALLED_NAME: &str = "1.3.6.1.2.1.25.6.3.1.2";
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,6 +110,8 @@ pub struct Collected {
     pub interfaces: Vec<Interface>,
     pub addresses: Vec<Address>,
     pub lldp: Vec<LldpNeighbor>,
+    /// Installed software names (`hrSWInstalledName`), in the agent's order, without duplicates.
+    pub software: Vec<String>,
     /// Limits that were reached and tables that could not be read.
     pub notes: Vec<String>,
     /// Datagrams sent (retransmissions included).
@@ -532,6 +542,23 @@ pub async fn collect(
             });
         }
     }
+    // Installed software: last, so it never takes the budget of the tables above.
+    if !session.exhausted() {
+        let base = oid(mib::HR_SW_INSTALLED_NAME);
+        let max = if limits.safe {
+            SAFE_MAX_SOFTWARE
+        } else {
+            MAX_SOFTWARE
+        };
+        for (_, v) in walk(&mut session, &base, max, &limits, &mut notes).await {
+            if let Some(name) = v.as_octets().map(clean)
+                && !name.is_empty()
+                && !out.software.contains(&name)
+            {
+                out.software.push(name);
+            }
+        }
+    }
     if session.exhausted() {
         notes.push(if limits.safe {
             "Safe Mode request or time limit reached; the tables may be incomplete".into()
@@ -591,6 +618,11 @@ impl Collected {
                 ),
             );
         }
+        // One sorted list under one key: a package added or removed changes one value, and
+        // the agent's order does not matter (`; ` does not occur in package names in practice).
+        let mut software = self.software.clone();
+        software.sort();
+        put("snmp.software", &software.join("; "));
         for (n, l) in self.lldp.iter().enumerate() {
             put(
                 &format!("snmp.lldp.{n}.local_port"),

@@ -37,6 +37,9 @@ pub(super) enum Cmd {
     ExportJson,
     ExportHtml,
     ExportMarkdown,
+    ExportCycloneDx,
+    ImportSboms,
+    ImportVex,
     ClearResults,
     Preset(Preset),
     Faster,
@@ -136,6 +139,21 @@ pub(super) fn entries() -> Vec<Entry> {
             Cmd::ExportMarkdown,
             tr!("Export the Markdown summary…"),
             "save file report",
+        ),
+        (
+            Cmd::ImportSboms,
+            tr!("Import firmware SBOMs (CycloneDX or SPDX)…"),
+            "sbom firmware libraries feeds",
+        ),
+        (
+            Cmd::ImportVex,
+            tr!("Import VEX statements (CSAF or CycloneDX)…"),
+            "vex not affected vendor statement csaf feeds",
+        ),
+        (
+            Cmd::ExportCycloneDx,
+            tr!("Export a CycloneDX inventory of the devices, firmware and services…"),
+            "save file sbom hbom bom cyclonedx firmware dependency-track",
         ),
         (
             Cmd::ClearResults,
@@ -529,6 +547,9 @@ impl Scanner {
             Cmd::ExportJson => self.export("json"),
             Cmd::ExportHtml => self.export("html"),
             Cmd::ExportMarkdown => self.export("md"),
+            Cmd::ExportCycloneDx => self.export_all("cyclonedx", "cdx.json"),
+            Cmd::ImportSboms => self.import_feed(FeedKind::Sbom),
+            Cmd::ImportVex => self.import_feed(FeedKind::Vex),
             Cmd::ClearResults => {
                 if !self.live() && !self.busy.loading {
                     self.clear();
