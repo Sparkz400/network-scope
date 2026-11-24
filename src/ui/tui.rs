@@ -491,7 +491,14 @@ pub(super) fn tui(run: &scan::Running) -> Collected {
                 && let Event::Key(k) = event::read()?
                 && k.kind == KeyEventKind::Press
             {
-                match view.key(k.code, &hosts) {
+                // In raw mode Ctrl+C arrives as a key: it stops (and saves) like Q.
+                let ctrl_c = k.code == event::KeyCode::Char('c')
+                    && k.modifiers.contains(event::KeyModifiers::CONTROL);
+                let action = match ctrl_c {
+                    true => TuiAction::Stop,
+                    false => view.key(k.code, &hosts),
+                };
+                match action {
                     TuiAction::Stop => run.cancel.store(true, Ordering::Relaxed),
                     TuiAction::Pause => {
                         run.pause.fetch_xor(true, Ordering::Relaxed);

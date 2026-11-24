@@ -572,6 +572,9 @@ pub struct RunConfig {
     pub incremental: bool,
     /// With `incremental`: every Nth cycle (the first, then the N+1st, ...) is a full scan; 0 never.
     pub full_every: u32,
+    /// Keep only the newest this many scans of these targets in the inventory (0: all). A
+    /// monitor saves one scan per cycle, 288 a day at the default interval.
+    pub keep_scans: usize,
     /// Set from another thread (a service control handler, a signal handler) to end the run
     /// cleanly: the cycle in progress is cancelled (a partial scan is saved as such), the wait
     /// between cycles is cut short and [`run`] returns `Ok`. `None`: runs until the process ends.
@@ -659,6 +662,11 @@ fn collect_observations(
     warnings
 }
 
+/// Cycles in a row that may fail before the monitor gives up. One failed cycle (the inventory
+/// was locked by another program, an adapter was down after standby) is reported and the next
+/// one is tried; a monitor that ended on the first error stayed down until someone noticed.
+const MAX_FAILED_CYCLES: u32 = 5;
+
 /// Seeds `dedup` from the alerts this monitor raised before a restart: those of scans of the
 /// same targets. Other monitors on the same database (other targets) are not considered, so they
 /// neither suppress nor renotify each other.
@@ -688,202 +696,252 @@ pub fn run(
             eprintln!("Alert history not read ({e}); persisting alerts may repeat once");
         }
     }
+    let mut outbox = crate::notify::Outbox::default();
     let mut cycle = 0;
+    let (mut failed, mut last_error) = (0, None);
     loop {
         if cfg.stopped() {
             return Ok(());
         }
         cycle += 1;
-        let mut observations = vec![];
-        let mut notices = vec![];
-        if !cfg.interface.is_empty() {
-            let listening = crate::passive::start(cfg.interface.clone(), cfg.listen_seconds, None);
-            // A capture problem never ends monitoring: the cycle continues with what was seen.
-            let items = until_stopped(&listening.receiver, cfg, &listening.cancel);
-            for warning in collect_observations(&mut observations, items) {
-                if !cfg.quiet {
-                    eprintln!("Cycle {cycle}: warning: {warning}");
-                }
-                notices.push(alert(
-                    now(),
-                    Severity::Low,
-                    "capture-incomplete",
-                    cfg.interface.as_str(),
-                    format!("Passive capture incomplete: {warning}"),
-                ));
-            }
-        }
-        let total = targets.count() as usize;
-        let full_cycle = cfg.full_every != 0 && (cycle - 1) % cfg.full_every == 0;
-        let previous = if cfg.incremental && !full_cycle {
-            match crate::incremental::load_base(db, targets_text, &settings)? {
-                Ok(base) => Some(base),
-                Err(why) => {
+        let result = (|| -> Result<(), String> {
+            let mut observations = vec![];
+            let mut notices = vec![];
+            if !cfg.interface.is_empty() {
+                let listening =
+                    crate::passive::start(cfg.interface.clone(), cfg.listen_seconds, None);
+                // A capture problem never ends monitoring: the cycle continues with what was seen.
+                let items = until_stopped(&listening.receiver, cfg, &listening.cancel);
+                for warning in collect_observations(&mut observations, items) {
                     if !cfg.quiet {
-                        eprintln!("Cycle {cycle}: full scan instead of an incremental one: {why}");
+                        eprintln!("Cycle {cycle}: warning: {warning}");
                     }
-                    None
+                    notices.push(alert(
+                        now(),
+                        Severity::Low,
+                        "capture-incomplete",
+                        cfg.interface.as_str(),
+                        format!("Passive capture incomplete: {warning}"),
+                    ));
                 }
             }
-        } else {
-            None
-        };
-        let run = scan::start_incremental(
-            Box::new(targets.iter_interleaved()),
-            total,
-            ports.clone(),
-            settings.clone(),
-            previous,
-        );
-        let mut hosts = vec![];
-        let sparse = total > scan::MAX_HOSTS;
-        let mut complete = true;
-        loop {
-            let event = match run.receiver.recv_timeout(STOP_POLL) {
-                Ok(event) => event,
-                Err(RecvTimeoutError::Timeout) => {
-                    if cfg.stopped() {
-                        run.cancel.store(true, Ordering::Relaxed);
+            let total = targets.count() as usize;
+            let full_cycle = cfg.full_every != 0 && (cycle - 1) % cfg.full_every == 0;
+            let previous = if cfg.incremental && !full_cycle {
+                match crate::incremental::load_base(db, targets_text, &settings)? {
+                    Ok(base) => Some(base),
+                    Err(why) => {
+                        if !cfg.quiet {
+                            eprintln!(
+                                "Cycle {cycle}: full scan instead of an incremental one: {why}"
+                            );
+                        }
+                        None
                     }
-                    continue;
                 }
-                Err(e) => return Err(e.to_string()),
+            } else {
+                None
             };
-            match event {
-                scan::Event::Host(h) => {
-                    if h.responding || !sparse {
-                        hosts.push(h)
+            let run = scan::start_incremental(
+                Box::new(targets.iter_interleaved()),
+                total,
+                ports.clone(),
+                settings.clone(),
+                previous,
+            );
+            let mut hosts = vec![];
+            let sparse = total > scan::MAX_HOSTS;
+            let mut complete = true;
+            loop {
+                let event = match run.receiver.recv_timeout(STOP_POLL) {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if cfg.stopped() {
+                            run.cancel.store(true, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                    Err(e) => return Err(e.to_string()),
+                };
+                match event {
+                    scan::Event::Host(h) => {
+                        if h.responding || !sparse {
+                            hosts.push(h)
+                        }
+                    }
+                    scan::Event::Partial(_) => {}
+                    scan::Event::Done => break,
+                    scan::Event::Error(e) => return Err(e),
+                }
+            }
+            if run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                complete = false;
+            }
+            // --ipv6-discover: the local link over IPv6, once per cycle, after the scan (the IPv4
+            // hosts and their MACs are known). One echo per interface through the scan's own pacing
+            // and sent log. Only a neighbour that answered this cycle's echo becomes a host of its
+            // own: one whose cache entry merely flips between reachable and stale would otherwise
+            // appear and vanish from cycle to cycle. The rest stays an observation.
+            if settings.ipv6_discover && complete && !cfg.stopped() {
+                let outcome = crate::ipv6::after_scan(
+                    &settings,
+                    run.sent.clone(),
+                    &mut hosts,
+                    crate::ipv6::AddHosts::Answered,
+                );
+                if !cfg.quiet {
+                    for note in &outcome.found.notes {
+                        eprintln!("Cycle {cycle}: warning: {note}");
                     }
                 }
-                scan::Event::Partial(_) => {}
-                scan::Event::Done => break,
-                scan::Event::Error(e) => return Err(e),
+                observations.extend(outcome.observations);
             }
-        }
-        if run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            complete = false;
-        }
-        // --ipv6-discover: the local link over IPv6, once per cycle, after the scan (the IPv4
-        // hosts and their MACs are known). One echo per interface through the scan's own pacing
-        // and sent log. Only a neighbour that answered this cycle's echo becomes a host of its
-        // own: one whose cache entry merely flips between reachable and stale would otherwise
-        // appear and vanish from cycle to cycle. The rest stays an observation.
-        if settings.ipv6_discover && complete && !cfg.stopped() {
-            let outcome = crate::ipv6::after_scan(
-                &settings,
-                run.sent.clone(),
-                &mut hosts,
-                crate::ipv6::AddHosts::Answered,
-            );
+            let dhcp_log = crate::sendlog::SentLog::new();
+            if cfg.dhcp_discover && !cfg.stopped() {
+                match crate::udp::dhcp_discover(Duration::from_secs(4), &dhcp_log) {
+                    Ok(offers) => {
+                        for o in offers {
+                            observations.push(crate::passive::Observation {
+                                protocol: "DHCP offer".into(),
+                                mac: String::new(),
+                                ip: Some(IpAddr::V4(o.server)),
+                                fields: BTreeMap::from([
+                                    ("offered_ip".to_string(), o.offered.to_string()),
+                                    (
+                                        "router".to_string(),
+                                        o.router.map_or(String::new(), |r| r.to_string()),
+                                    ),
+                                    (
+                                        "dns".to_string(),
+                                        o.dns
+                                            .iter()
+                                            .map(ToString::to_string)
+                                            .collect::<Vec<_>>()
+                                            .join(","),
+                                    ),
+                                    (
+                                        "lease_seconds".to_string(),
+                                        o.lease.map_or(String::new(), |l| l.to_string()),
+                                    ),
+                                ]),
+                            });
+                        }
+                    }
+                    Err(e) => notices.push(alert(
+                        now(),
+                        Severity::Low,
+                        "dhcp-discover-failed",
+                        "dhcp",
+                        format!("DHCP discovery could not run: {e}"),
+                    )),
+                }
+            }
+            let snapshot = Snapshot {
+                targets: targets_text.to_string(),
+                complete,
+                settings: crate::provenance::stamped(&settings),
+                hosts,
+                observations,
+                notes: BTreeMap::new(),
+                sent: crate::sendlog::merge([run.sent.snapshot(), dhcp_log.snapshot()]),
+            };
+            // Everything that can fail is read before the scan is saved. A scan that is saved but
+            // never compared becomes the "previous" one of the next cycle, and what changed up to
+            // it would never be reported.
+            let prev = store::latest_complete(db, targets_text, i64::MAX)?.map(|(_, _, s)| s);
+            let known = store::known_devices(db)?;
+            let t = now();
+            // Match the devices of both scans against the inventory, so a device that changed its
+            // address or randomised MAC keeps its key. The registry is written only after the
+            // comparison (and only for complete scans), or every new device would already be known.
+            let cur_devices = devices::merge(&snapshot.hosts, &snapshot.observations);
+            let registry = store::device_registry(db)?;
+            let matches = crate::identity::resolve(&registry, &cur_devices);
+            let mut ctx = Context {
+                keys: crate::identity::key_map(&cur_devices, &matches),
+                // Read every cycle, so an approval made while the monitor runs applies at once.
+                baseline: Some(crate::baseline::load(db)?),
+            };
+            if let Some(p) = &prev {
+                let prev_devices = devices::merge(&p.hosts, &p.observations);
+                let prev_matches = crate::identity::resolve(&registry, &prev_devices);
+                for (id, key) in crate::identity::key_map(&prev_devices, &prev_matches) {
+                    ctx.keys.entry(id).or_insert(key);
+                }
+            }
+            let id = store::save(db, &snapshot)?;
+            let mut alerts = evaluate_with(prev.as_ref(), &snapshot, &known, &cfg.policy, &ctx, t);
+            alerts.extend(notices);
+            let mut suppressed = 0;
+            if notify.dedup {
+                (alerts, suppressed) = dedup.filter(alerts, t, complete);
+            }
             if !cfg.quiet {
-                for note in &outcome.found.notes {
-                    eprintln!("Cycle {cycle}: warning: {note}");
-                }
-            }
-            observations.extend(outcome.observations);
-        }
-        let dhcp_log = crate::sendlog::SentLog::new();
-        if cfg.dhcp_discover && !cfg.stopped() {
-            match crate::udp::dhcp_discover(Duration::from_secs(4), &dhcp_log) {
-                Ok(offers) => {
-                    for o in offers {
-                        observations.push(crate::passive::Observation {
-                            protocol: "DHCP offer".into(),
-                            mac: String::new(),
-                            ip: Some(IpAddr::V4(o.server)),
-                            fields: BTreeMap::from([
-                                ("offered_ip".to_string(), o.offered.to_string()),
-                                (
-                                    "router".to_string(),
-                                    o.router.map_or(String::new(), |r| r.to_string()),
-                                ),
-                                (
-                                    "dns".to_string(),
-                                    o.dns
-                                        .iter()
-                                        .map(ToString::to_string)
-                                        .collect::<Vec<_>>()
-                                        .join(","),
-                                ),
-                                (
-                                    "lease_seconds".to_string(),
-                                    o.lease.map_or(String::new(), |l| l.to_string()),
-                                ),
-                            ]),
-                        });
+                eprintln!(
+                    "Cycle {cycle}: scan #{id}, {} hosts, {} alerts{}",
+                    snapshot.hosts.len(),
+                    alerts.len(),
+                    if suppressed > 0 {
+                        format!(" ({suppressed} still-active alerts not repeated)")
+                    } else {
+                        String::new()
                     }
-                }
-                Err(e) => notices.push(alert(
-                    now(),
-                    Severity::Low,
-                    "dhcp-discover-failed",
-                    "dhcp",
-                    format!("DHCP discovery could not run: {e}"),
-                )),
+                );
             }
-        }
-        let snapshot = Snapshot {
-            targets: targets_text.to_string(),
-            complete,
-            settings: crate::provenance::stamped(&settings),
-            hosts,
-            observations,
-            notes: BTreeMap::new(),
-            sent: crate::sendlog::merge([run.sent.snapshot(), dhcp_log.snapshot()]),
-        };
-        let id = store::save(db, &snapshot)?;
-        let prev = store::latest_complete(db, targets_text, id)?.map(|(_, _, s)| s);
-        let known = store::known_devices(db)?;
-        let t = now();
-        // Match the devices of both scans against the inventory, so a device that changed its
-        // address or randomised MAC keeps its key. The registry is written only after the
-        // comparison (and only for complete scans), or every new device would already be known.
-        let cur_devices = devices::merge(&snapshot.hosts, &snapshot.observations);
-        let registry = store::device_registry(db)?;
-        let matches = crate::identity::resolve(&registry, &cur_devices);
-        let mut ctx = Context {
-            keys: crate::identity::key_map(&cur_devices, &matches),
-            // Read every cycle, so an approval made while the monitor runs applies at once.
-            baseline: Some(crate::baseline::load(db)?),
-        };
-        if let Some(p) = &prev {
-            let prev_devices = devices::merge(&p.hosts, &p.observations);
-            let prev_matches = crate::identity::resolve(&registry, &prev_devices);
-            for (id, key) in crate::identity::key_map(&prev_devices, &prev_matches) {
-                ctx.keys.entry(id).or_insert(key);
+            for a in &alerts {
+                emit(a);
             }
-        }
-        let mut alerts = evaluate_with(prev.as_ref(), &snapshot, &known, &cfg.policy, &ctx, t);
-        alerts.extend(notices);
-        let mut suppressed = 0;
-        if notify.dedup {
-            (alerts, suppressed) = dedup.filter(alerts, t, complete);
-        }
-        if complete {
-            store::record_devices(db, &cur_devices, t)?;
-        }
-        store::save_alerts(db, id, &alerts)?;
-        if !cfg.quiet {
-            eprintln!(
-                "Cycle {cycle}: scan #{id}, {} hosts, {} alerts{}",
-                snapshot.hosts.len(),
-                alerts.len(),
-                if suppressed > 0 {
-                    format!(" ({suppressed} still-active alerts not repeated)")
-                } else {
-                    String::new()
+            // Delivery problems are reported and never end monitoring; what a sink did not take
+            // is sent again with the next cycle.
+            for warning in outbox.deliver(&notify.sinks, &alerts, notify.timeout) {
+                eprintln!("Cycle {cycle}: alert delivery failed: {warning}");
+            }
+            // The bookkeeping comes after the alerts went out: a failure here costs the stored
+            // copy of an alert or raises a new device once more, never the alert itself.
+            store::save_alerts(db, id, &alerts)?;
+            if complete {
+                store::record_devices(db, &cur_devices, t)?;
+            }
+            if cfg.keep_scans > 0 {
+                let rule = store::Prune {
+                    scope: Some(targets_text),
+                    keep: Some(cfg.keep_scans),
+                    ..Default::default()
+                };
+                // Housekeeping never fails a cycle.
+                if let Err(e) = store::prune(db, &rule) {
+                    eprintln!("Cycle {cycle}: older scans not deleted: {e}");
                 }
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            failed += 1;
+            // Also with --quiet: a cycle that did not run is an error, not progress.
+            eprintln!("Cycle {cycle} failed: {e}");
+            let notice = alert(
+                now(),
+                Severity::Medium,
+                "monitor-cycle-failed",
+                targets_text,
+                format!("Monitoring cycle {cycle} failed: {e}"),
             );
-        }
-        for a in &alerts {
-            emit(a);
-        }
-        // Delivery problems are reported and never end monitoring.
-        for warning in crate::notify::deliver(&notify.sinks, &alerts, notify.timeout) {
-            eprintln!("Cycle {cycle}: alert delivery failed: {warning}");
+            emit(&notice);
+            for warning in
+                outbox.deliver(&notify.sinks, std::slice::from_ref(&notice), notify.timeout)
+            {
+                eprintln!("Cycle {cycle}: alert delivery failed: {warning}");
+            }
+            if failed >= MAX_FAILED_CYCLES {
+                return Err(format!("{e} ({failed} cycles in a row failed)"));
+            }
+            last_error = Some(e);
+        } else {
+            failed = 0;
         }
         if cfg.cycles != 0 && cycle >= cfg.cycles {
-            return Ok(());
+            // A run of a fixed length (a script, a test) reports a cycle that failed.
+            return last_error.map_or(Ok(()), Err);
         }
         if sleep_or_stop(cfg.interval, cfg) {
             return Ok(());
@@ -893,9 +951,14 @@ pub fn run(
 
 /// Findings of the new scan that the previous one did not have. A finding an imported vendor
 /// statement clears (VEX: not affected, fixed, false positive) is not alerted: it does not count
-/// anywhere else either.
+/// anywhere else either. One that was cleared in the previous scan and is not any more (other
+/// firmware, a withdrawn statement) is new: nobody was told about it yet.
 fn new_findings(before: &[risk::Finding], now: Vec<risk::Finding>) -> Vec<risk::Finding> {
-    let old: HashSet<String> = before.iter().map(risk::Finding::key).collect();
+    let old: HashSet<String> = before
+        .iter()
+        .filter(|f| !f.cleared_by_vex())
+        .map(risk::Finding::key)
+        .collect();
     now.into_iter()
         .filter(|f| !old.contains(&f.key()) && !f.cleared_by_vex())
         .collect()
@@ -1159,6 +1222,12 @@ mod tests {
             .map(|f| f.id)
             .collect();
         assert_eq!(ids, ["cve-cve-2099-2", "cve-cve-2099-3"]);
+        // Cleared before, live now (the firmware left the statement's range): alerted.
+        let cleared = finding("cve-cve-2099-1", Some(crate::vex::State::NotAffected));
+        let live = finding("cve-cve-2099-1", None);
+        let before = std::slice::from_ref(&cleared);
+        assert_eq!(new_findings(before, vec![live]).len(), 1);
+        assert!(new_findings(before, vec![cleared.clone()]).is_empty());
     }
 
     #[test]
@@ -1896,8 +1965,88 @@ mod tests {
             quiet: true,
             incremental: false,
             full_every: 0,
+            keep_scans: 0,
             stop: Some(stop.clone()),
         }
+    }
+
+    /// A database path that cannot be opened while `blocker` (a file where its directory should
+    /// be) exists.
+    fn blocked_db(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let blocker = std::env::temp_dir().join(format!(
+            "netscope-monitor-{tag}-{}-{}",
+            std::process::id(),
+            now()
+        ));
+        let _ = std::fs::remove_dir_all(&blocker);
+        std::fs::write(&blocker, b"").unwrap();
+        (blocker.join("inventory.sqlite"), blocker)
+    }
+    fn loopback() -> scan::Settings {
+        scan::Settings {
+            ports: "1".into(),
+            tcp_only: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_failed_cycle_is_reported_and_the_next_one_runs() {
+        let (db, blocker) = blocked_db("retry");
+        let idle = Arc::new(AtomicBool::new(false));
+        let cfg = RunConfig {
+            cycles: 2,
+            ..stop_config(&idle, Duration::from_millis(1))
+        };
+        let mut kinds = vec![];
+        let result = run("127.0.0.1", loopback(), &db, &cfg, &mut |a| {
+            kinds.push(a.kind.clone());
+            // The first cycle could not open the inventory: make room for the second.
+            if a.kind == "monitor-cycle-failed" {
+                std::fs::remove_file(&blocker).unwrap();
+            }
+        });
+        assert!(
+            result.is_err(),
+            "a fixed-length run reports the failed cycle"
+        );
+        assert_eq!(
+            kinds.first().map(String::as_str),
+            Some("monitor-cycle-failed")
+        );
+        assert_eq!(store::list(&db).unwrap().len(), 1, "the second cycle saved");
+        std::fs::remove_dir_all(&blocker).unwrap();
+    }
+
+    #[test]
+    fn a_monitor_gives_up_after_cycles_that_fail_in_a_row() {
+        let (db, blocker) = blocked_db("give-up");
+        let idle = Arc::new(AtomicBool::new(false));
+        // No cycle limit: without the give-up this would never return.
+        let cfg = stop_config(&idle, Duration::from_millis(1));
+        let mut failures = 0;
+        let error = run("127.0.0.1", loopback(), &db, &cfg, &mut |a| {
+            failures += u32::from(a.kind == "monitor-cycle-failed");
+        })
+        .unwrap_err();
+        assert_eq!(failures, MAX_FAILED_CYCLES);
+        assert!(error.contains("cycles in a row failed"), "{error}");
+        std::fs::remove_file(&blocker).unwrap();
+    }
+
+    #[test]
+    fn a_monitor_keeps_only_the_newest_scans_it_is_told_to() {
+        let db = temp_db("keep-scans");
+        let idle = Arc::new(AtomicBool::new(false));
+        let cfg = RunConfig {
+            cycles: 4,
+            keep_scans: 2,
+            ..stop_config(&idle, Duration::from_millis(1))
+        };
+        run("127.0.0.1", loopback(), &db, &cfg, &mut |_| {}).unwrap();
+        let ids: Vec<i64> = store::list(&db).unwrap().iter().map(|e| e.id).collect();
+        assert_eq!(ids, [4, 3]);
+        remove_db(&db);
     }
 
     /// An incremental cycle (ROADMAP B14) compares exactly the ports it looked at: a known port

@@ -121,19 +121,39 @@ fn saved_path() -> PathBuf {
         .join("NetworkScope")
         .join("preferences.json")
 }
-/// The saved preferences; the defaults when there is no file or it does not parse.
-fn load_saved() -> Saved {
-    std::fs::read(saved_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// The file a preferences file that could not be read is kept as, next to it.
+const BAD_PREFS: &str = "preferences.bad.json";
+/// The saved preferences at `path`, and why the file could not be used. No file: the defaults,
+/// silently (a first start). A file that cannot be read or does not parse: the defaults and the
+/// reason, and the file is kept as [`BAD_PREFS`], because the next save writes the defaults over
+/// it and the notes, stars and favorites exist nowhere else.
+fn load_saved(path: &std::path::Path) -> (Saved, Option<String>) {
+    let why = match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(saved) => return (saved, None),
+            Err(e) => e.to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Saved::default(), None),
+        Err(e) => e.to_string(),
+    };
+    let _ = std::fs::copy(path, path.with_file_name(BAD_PREFS));
+    (Saved::default(), Some(why))
 }
 fn write_prefs(bytes: &[u8]) -> Result<(), String> {
-    let path = saved_path();
+    write_prefs_to(&saved_path(), bytes)
+}
+/// Writes the preferences through a temporary file and a rename, so a crash or a power loss in
+/// the middle leaves the old file and not half of the new one.
+fn write_prefs_to(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, bytes).map_err(|e| e.to_string())
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 /// The sort index of the Risk column of the hosts table (after the identity columns, 5 to 7).
 const RISK_COLUMN: usize = 8;
@@ -2300,10 +2320,10 @@ pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
             desktop::Instance::First(guard) => Some(guard),
         },
     };
-    let saved = if screenshot.is_none() {
-        load_saved()
+    let (saved, unreadable) = if screenshot.is_none() {
+        load_saved(&saved_path())
     } else {
-        Saved::default()
+        (Saved::default(), None)
     };
     // Screenshot states show the larger windows; the plain screenshot keeps the default.
     let size = if screenshot.is_some()
@@ -2328,7 +2348,17 @@ pub fn run(screenshot: Option<PathBuf>) -> eframe::Result<()> {
     eframe::run_native(
         "Network Scope",
         options,
-        Box::new(move |cc| Ok(Box::new(Scanner::new(cc, screenshot, saved)))),
+        Box::new(move |cc| {
+            let mut app = Scanner::new(cc, screenshot, saved);
+            if let Some(why) = unreadable {
+                app.error = tr!(
+                    "The preferences could not be read ({}); the defaults are in use. The old file was kept as {}.",
+                    why,
+                    BAD_PREFS
+                );
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -2792,6 +2822,33 @@ mod tests {
             filter_rows(&results, Filter::All, "basement", &mut hay, &notes, &stars),
             [1]
         );
+    }
+
+    #[test]
+    fn preferences_survive_a_broken_file_and_are_written_whole() {
+        let dir = std::env::temp_dir().join(format!("ns-gui-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("preferences.json");
+        // No file (a first start): the defaults, and nothing to report.
+        let (first, why) = load_saved(&path);
+        assert!(why.is_none() && first.notes.is_empty());
+        let mut saved = Saved::default();
+        saved
+            .notes
+            .insert("10.0.0.5".parse().unwrap(), "the PLC".into());
+        write_prefs_to(&path, &saved.to_disk()).unwrap();
+        assert!(!path.with_extension("json.tmp").exists());
+        let (back, why) = load_saved(&path);
+        assert!(why.is_none());
+        assert_eq!(back.notes, saved.notes);
+        // A file cut short: reported, and kept next to the preferences.
+        let bytes = std::fs::read(&path).unwrap();
+        let half = &bytes[..bytes.len() / 2];
+        std::fs::write(&path, half).unwrap();
+        let (fresh, why) = load_saved(&path);
+        assert!(why.is_some() && fresh.notes.is_empty());
+        assert_eq!(std::fs::read(dir.join(BAD_PREFS)).unwrap(), half);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// GUI budget (ROADMAP B17): a table of 65,536 hosts stays within one 60 fps frame (16.6 ms).

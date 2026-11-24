@@ -752,6 +752,21 @@ fn software_a_device_listed_over_snmp_becomes_application_components() {
     names.sort();
     assert_eq!(names, ["net-snmp-5.9.4", "openssh-server-9.6p1"]);
     assert!(apps.iter().all(|c| c["type"] == "application"));
+    // A long list (far beyond the length limit of one value) is exported whole.
+    let many: Vec<String> = (0..150)
+        .map(|i| format!("package-number-{i:03}-1.0"))
+        .collect();
+    s.hosts[1]
+        .identity
+        .insert("snmp.software".into(), many.join("; "));
+    let v = bom(&s, &[]);
+    let mut exported: Vec<String> = all_components(&v)
+        .into_iter()
+        .filter(|c| prop(c, "source") == ["SNMP hrSWInstalledName"])
+        .filter_map(|c| c["name"].as_str().map(str::to_string))
+        .collect();
+    exported.sort();
+    assert_eq!(exported, many);
 }
 
 /// Writes a scan of 65,536 hosts to the database named by `NS_LARGE_SCAN_DB`, for measuring

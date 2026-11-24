@@ -988,10 +988,12 @@ impl Server {
                 continue;
             }
             let baseline = store::latest_complete_before_time(&self.cfg.db, &scope, since)?;
-            let before: Vec<(IpAddr, Option<u16>)> = match baseline {
+            // (address, port, cleared by a vendor statement) in the baseline: a finding that
+            // was cleared there and is not any more was gained.
+            let before: Vec<(IpAddr, Option<u16>, bool)> = match baseline {
                 Some(b) => matching(&self.load(b)?)
                     .iter()
-                    .map(|f| (f.ip, f.port))
+                    .map(|f| (f.ip, f.port, f.cleared_by_vex()))
                     .collect(),
                 None => vec![],
             };
@@ -1001,7 +1003,9 @@ impl Server {
                 ));
             }
             for f in matching(&self.load(latest_id)?) {
-                if before.contains(&(f.ip, f.port)) {
+                if before.iter().any(|&(ip, port, cleared)| {
+                    (ip, port) == (f.ip, f.port) && (!cleared || f.cleared_by_vex())
+                }) {
                     continue;
                 }
                 hosts.push(json!({

@@ -36,7 +36,28 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     };
     let sent = std::sync::Arc::new(crate::sendlog::SentLog::new());
     let run = passive::start_logged(interface.clone(), seconds, source, sent.clone());
-    let (observations, error) = drain_observations(&run.receiver);
+    // Ctrl+C cancels the capture; what was observed until then is saved as partial.
+    let stop = crate::ui::interrupt::flag();
+    let items = std::iter::from_fn(|| {
+        loop {
+            match run
+                .receiver
+                .recv_timeout(std::time::Duration::from_millis(200))
+            {
+                Ok(item) => return Some(item),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if stop.load(Ordering::Relaxed) {
+                        run.cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    });
+    let (observations, mut error) = drain_observations(items);
+    if error.is_none() && stop.load(Ordering::Relaxed) {
+        error = Some("stopped with Ctrl+C".into());
+    }
     if error.is_some() {
         run.cancel.store(true, Ordering::Relaxed);
     }
