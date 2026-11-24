@@ -146,6 +146,83 @@ pub(super) fn plain_labels(ui: &mut egui::Ui) {
     ui.style_mut().interaction.selectable_labels = false;
 }
 
+/// The first text of a table row as a control: Tab reaches it and Enter or Space clicks it, so
+/// the row can be used without a mouse (as the address in the hosts table). Tight padding, so
+/// it fits the lower rows of the Findings and device tables.
+pub(super) fn row_link(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(2.0, 1.0);
+        ui.selectable_label(false, text)
+    })
+    .inner
+}
+
+/// A context menu that copies text: (menu entry, text) pairs from `items`, which is only asked
+/// while the menu is open.
+pub(super) fn copy_menu(response: &egui::Response, items: impl FnOnce() -> Vec<(String, String)>) {
+    response.context_menu(|ui| {
+        for (label, text) in items() {
+            if ui.button(label).clicked() {
+                ui.ctx().copy_text(text);
+                ui.close();
+            }
+        }
+    });
+}
+
+/// What the context menu of a finding's row copies.
+pub(super) fn finding_copies(f: &risk::Finding, name: Option<&String>) -> Vec<(String, String)> {
+    let name = name.map_or("", String::as_str);
+    let mut items = vec![
+        (tr!("Copy address").to_string(), f.ip.to_string()),
+        (tr!("Copy finding").to_string(), f.title.clone()),
+    ];
+    if !f.cve.is_empty() {
+        items.push((tr!("Copy CVE").to_string(), f.cve.join(", ")));
+    }
+    if !f.evidence.is_empty() {
+        items.push((tr!("Copy evidence").to_string(), f.evidence.clone()));
+    }
+    items.push((
+        tr!("Copy row").to_string(),
+        [
+            super::home::severity_name(f.severity),
+            &host_port(f),
+            name,
+            &f.title,
+            &f.evidence,
+            &f.cve.join(", "),
+        ]
+        .join("\t"),
+    ));
+    items
+}
+
+/// What the context menu of a device's row copies.
+pub(super) fn device_copies(d: &crate::devices::Device) -> Vec<(String, String)> {
+    let ips = d
+        .ips
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ports = (d.open_tcp.iter().map(u16::to_string))
+        .chain(d.open_udp.iter().map(|p| format!("{p}/udp")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut items = vec![(tr!("Copy address").to_string(), ips.clone())];
+    if !d.mac.is_empty() {
+        items.push((tr!("Copy MAC address").to_string(), d.mac.clone()));
+    }
+    items.push((
+        tr!("Copy row").to_string(),
+        [&ips, &d.mac, &d.vendor, &d.device_type, &d.os, &ports]
+            .map(String::as_str)
+            .join("\t"),
+    ));
+    items
+}
+
 /// Header cell: a clickable label with the sort direction; returns true when clicked.
 pub(super) fn header(ui: &mut egui::Ui, view: &View, column: usize, name: &str) -> bool {
     let text = if view.sort == column {

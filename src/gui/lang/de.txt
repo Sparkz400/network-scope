@@ -15,6 +15,40 @@ Reading inventory… || Lese Inventar…
 Reading address list… || Lese Adressliste…
 saved #{} || gespeichert als #{}
 Inventory could not be saved: {} || Das Inventar konnte nicht gespeichert werden: {}
+A capture is already being read. || Es wird bereits ein Mitschnitt gelesen.
+{} was not opened: drop an address list (.txt, .csv, .lst) or a capture (.pcap, .pcapng) here. || {} wurde nicht geöffnet: Hier lassen sich Adresslisten (.txt, .csv, .lst) und Mitschnitte (.pcap, .pcapng) ablegen.
+Quit while a scan is running? || Beenden, während ein Scan läuft?
+A scan or capture is still running. Quitting stops it; what it found so far is saved as a partial scan. || Ein Scan oder Mitschnitt läuft noch. Beenden stoppt ihn; das bisher Gefundene wird als unvollständiger Scan gespeichert.
+Stop and quit || Stoppen und beenden
+Keep running || Weiterlaufen lassen
+Dismiss the message || Meldung ausblenden
+Copy address || Adresse kopieren
+Device details · {} || Gerätedetails · {}
+Seen in passive traffic only: the scan on screen did not probe this device. || Nur im passiven Verkehr gesehen: Der angezeigte Scan hat dieses Gerät nicht geprüft.
+Seen by: {} || Gesehen über: {}
+{} is not in the active scan results (seen passively only) || {} ist nicht in den aktuellen Scan-Ergebnissen (nur passiv gesehen)
+This device || Dieses Gerät
+Use the interface's addresses || Adressen der Schnittstelle übernehmen
+Fills in the MAC and IPv4 address of the chosen interface, replacing what is there. || Trägt MAC- und IPv4-Adresse der gewählten Schnittstelle ein und ersetzt die vorhandenen Werte.
+The addresses of this interface could not be read; enter them by hand. || Die Adressen dieser Schnittstelle ließen sich nicht lesen; bitte von Hand eintragen.
+choose a scan || Scan wählen
+Compare || Vergleiche
+with || mit
+Older scan (A) || Älterer Scan (A)
+Newer scan (B) || Neuerer Scan (B)
+Open scan #{} || Scan #{} öffnen
+Delete scan #{} || Scan #{} löschen
+Delete || Löschen
+Keep || Behalten
+Delete scan #{}? || Scan #{} löschen?
+The scan of {} from {} ({} hosts) is deleted from the inventory with the alerts raised for it. This cannot be undone. || Der Scan von {} vom {} ({} Hosts) wird mit den dazu ausgelösten Alarmen aus dem Inventar gelöscht. Das lässt sich nicht rückgängig machen.
+Deleted scan #{} || Scan #{} gelöscht
+Scan #{} was not deleted: {} || Scan #{} wurde nicht gelöscht: {}
+#{} · {} · {} hosts · {} · {} || #{} · {} · {} Hosts · {} · {}
+Copy finding || Befund kopieren
+Copy CVE || CVE kopieren
+Copy evidence || Beleg kopieren
+Copy row || Zeile kopieren
 The preferences could not be read ({}); the defaults are in use. The old file was kept as {}. || Die Einstellungen konnten nicht gelesen werden ({}); es gelten die Standardwerte. Die alte Datei wurde als {} aufbewahrt.
 The list has no addresses. || Die Liste enthält keine Adressen.
 Address list ignored: a scan is running. || Adressliste ignoriert: Ein Scan läuft.
@@ -159,7 +193,6 @@ Refresh || Aktualisieren
 Compare A to B || A mit B vergleichen
 Select baseline A || Wählen Sie die Basis A
 Select scan B || Wählen Sie den Scan B
-#{} · {} hosts · {} · {} || #{} · {} Hosts · {} · {}
 complete || vollständig
 partial || teilweise
 Open || Öffnen

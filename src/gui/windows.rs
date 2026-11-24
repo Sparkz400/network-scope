@@ -1,4 +1,4 @@
-use super::{Job, Scanner, home, i18n::tr, tables};
+use super::{Job, Scanner, a11y, home, i18n::tr, tables};
 use crate::{capture, devices, passive, risk, scan, store};
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -205,11 +205,16 @@ impl Scanner {
             ui,
             tr!("Findings (weak configuration, risky services, CVE hints)"),
             |ui| {
-                ui.label(tr!(
-                    "{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host.",
-                    view.rows.len(),
-                    findings.len()
-                ));
+                // One line, cut short in a narrow window (hovering shows all of it): two wrapped
+                // lines cost the table two rows.
+                ui.add(
+                    egui::Label::new(tr!(
+                        "{} of {} findings shown. CVE entries are version-based hints; vendors often backport fixes. Click a row to show the host.",
+                        view.rows.len(),
+                        findings.len()
+                    ))
+                    .truncate(),
+                );
                 if findings.is_empty() {
                     ui.label(tr!("Nothing found. Enable service detection in Settings to collect the evidence these checks use."));
                     return;
@@ -247,13 +252,15 @@ impl Scanner {
                                 .resizable(true)
                                 .sense(egui::Sense::click())
                                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                // The finding takes the room that is left: its title is what
+                                // the row is about.
                                 .column(Column::initial(65.0))
-                                .column(Column::initial(215.0).clip(true))
+                                .column(Column::remainder().at_least(215.0).clip(true))
                                 .column(Column::initial(180.0).clip(true))
-                                .column(Column::initial(100.0).clip(true))
+                                .column(Column::initial(110.0).clip(true))
                                 .column(Column::initial(65.0).clip(true))
                                 .column(Column::initial(55.0))
-                                .column(Column::remainder().at_least(140.0))
+                                .column(Column::initial(150.0))
                                 .header(22.0, |mut row| {
                                     for h in [
                                         tr!("Severity"),
@@ -279,9 +286,12 @@ impl Scanner {
                                                 home::severity_name(f.severity),
                                             );
                                         });
+                                        let mut chosen = false;
                                         row.col(|ui| {
                                             super::explain_button(ui, &f.id);
-                                            ui.label(&f.title).on_hover_text(&f.advice);
+                                            chosen = tables::row_link(ui, &f.title)
+                                                .on_hover_text(&f.advice)
+                                                .clicked();
                                         });
                                         row.col(|ui| {
                                             ui.strong(members.len().to_string());
@@ -302,7 +312,7 @@ impl Scanner {
                                         row.col(|ui| {
                                             links(ui, f);
                                         });
-                                        if row.response().clicked() {
+                                        if row.response().clicked() || chosen {
                                             open_group = Some(f.id.clone());
                                         }
                                     });
@@ -315,16 +325,16 @@ impl Scanner {
                             .resizable(true)
                             .sense(egui::Sense::click())
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            // Fits a 1100 px window next to the sidebar. The links take what is
-                            // left, so a table a little too wide cuts empty space, not a link.
+                            // The finding takes the room that is left (a wide window shows
+                            // the whole title); below 1100 px the table scrolls sideways.
                             .column(Column::initial(65.0))
                             .column(Column::initial(150.0).clip(true))
-                            .column(Column::initial(155.0).clip(true))
+                            .column(Column::remainder().at_least(190.0).clip(true))
                             .column(Column::initial(120.0).clip(true))
-                            .column(Column::initial(100.0).clip(true))
-                            .column(Column::initial(65.0).clip(true))
+                            .column(Column::initial(110.0).clip(true))
+                            .column(Column::initial(50.0).clip(true))
                             .column(Column::initial(55.0))
-                            .column(Column::remainder().at_least(140.0))
+                            .column(Column::initial(150.0))
                             .header(22.0, |mut row| {
                                 for (i, h) in tables::finding_columns().iter().enumerate() {
                                     row.col(|ui| {
@@ -366,18 +376,20 @@ impl Scanner {
                                             }
                                         }
                                     });
+                                    let mut chosen = false;
                                     row.col(|ui| {
-                                        // The address with the port, then the host name when known.
+                                        // The address with the port, then the host name when
+                                        // known. The address is the keyboard way to the row.
                                         let address = tables::host_port(f);
-                                        match names.get(&f.ip) {
-                                            Some(name) => {
-                                                ui.label(&address)
-                                                    .on_hover_text(format!("{address} · {name}"));
-                                                ui.weak(name);
-                                            }
-                                            None => {
-                                                ui.label(address);
-                                            }
+                                        let name = names.get(&f.ip);
+                                        let cell = tables::row_link(ui, &address);
+                                        chosen = cell.clicked();
+                                        tables::copy_menu(&cell, || {
+                                            tables::finding_copies(f, name)
+                                        });
+                                        if let Some(name) = name {
+                                            cell.on_hover_text(format!("{address} · {name}"));
+                                            ui.weak(name);
                                         }
                                     });
                                     row.col(|ui| {
@@ -401,7 +413,11 @@ impl Scanner {
                                     row.col(|ui| {
                                         links(ui, f);
                                     });
-                                    if row.response().clicked() {
+                                    let whole = row.response();
+                                    tables::copy_menu(&whole, || {
+                                        tables::finding_copies(f, names.get(&f.ip))
+                                    });
+                                    if whole.clicked() || chosen {
                                         focus = Some(vec![f.ip]);
                                     }
                                 });
@@ -503,14 +519,19 @@ impl Scanner {
                         .body(|body| {
                             body.rows(22.0, view.rows.len(), |mut row| {
                                 let d = &devices[view.rows[row.index()]];
+                                let mut chosen = false;
                                 row.col(|ui| {
-                                    ui.label(
-                                        d.ips
+                                    // The keyboard way to the row, as in the hosts table.
+                                    let cell = tables::row_link(
+                                        ui,
+                                        &d.ips
                                             .iter()
                                             .map(ToString::to_string)
                                             .collect::<Vec<_>>()
                                             .join(", "),
                                     );
+                                    chosen = cell.clicked();
+                                    tables::copy_menu(&cell, || tables::device_copies(d));
                                 });
                                 row.col(|ui| {
                                     ui.label(if d.randomized_mac {
@@ -546,8 +567,10 @@ impl Scanner {
                                         ui.colored_label(severity_color(s), home::severity_name(s));
                                     }
                                 });
-                                if row.response().clicked() {
-                                    focus = Some(d.ips.clone());
+                                let whole = row.response();
+                                tables::copy_menu(&whole, || tables::device_copies(d));
+                                if whole.clicked() || chosen {
+                                    focus = Some((d.ips.clone(), d.id.clone()));
                                 }
                             });
                         });
@@ -556,8 +579,12 @@ impl Scanner {
         if let Some(column) = sort {
             self.devices_view.click(column);
         }
-        if let Some(ips) = focus {
-            self.focus_host(&ips);
+        if let Some((ips, id)) = focus {
+            // A device the scan did not reach has no host to show: its own details open.
+            if !self.try_focus_host(&ips) {
+                self.selected = None;
+                self.selected_device = Some(id);
+            }
         }
         if workbench {
             self.open_workbench();
@@ -578,12 +605,44 @@ impl Scanner {
                     ui.label(tr!(
                     "Scans are saved automatically, including interrupted scans marked as partial."
                 ));
-                    ui.horizontal(|ui| {
+                    // What a scan is called in the list and in the two pickers.
+                    let when = |h: &store::Entry| crate::report::fmt_time(h.timestamp);
+                    let pick = |id: Option<i64>, history: &[store::Entry]| {
+                        (history.iter().find(|h| Some(h.id) == id))
+                            .map_or(tr!("choose a scan").to_string(), |h| {
+                                format!("#{} · {}", h.id, when(h))
+                            })
+                    };
+                    ui.horizontal_wrapped(|ui| {
                         if ui
                             .add_enabled(!self.busy.listing, egui::Button::new(tr!("Refresh")))
                             .clicked()
                         {
                             self.refresh_history();
+                        }
+                        ui.separator();
+                        // Two pickers instead of an "A" and a "B" button on every row.
+                        ui.label(tr!("Compare"));
+                        for (salt, name, slot) in [
+                            ("compare_a", tr!("Older scan (A)"), &mut self.compare_a),
+                            ("compare_b", tr!("Newer scan (B)"), &mut self.compare_b),
+                        ] {
+                            let combo = egui::ComboBox::from_id_salt(salt)
+                                .selected_text(pick(*slot, &self.history))
+                                .width(210.0)
+                                .show_ui(ui, |ui| {
+                                    for h in &self.history {
+                                        ui.selectable_value(
+                                            slot,
+                                            Some(h.id),
+                                            format!("#{} · {} · {}", h.id, when(h), h.targets),
+                                        );
+                                    }
+                                });
+                            a11y::named(combo.response, name).on_hover_text(name);
+                            if salt == "compare_a" {
+                                ui.label(tr!("with"));
+                            }
                         }
                         if ui
                             .add_enabled(
@@ -598,23 +657,37 @@ impl Scanner {
                                 (_, None) => self.error = tr!("Select scan B").into(),
                             }
                         }
-                        if self.busy.listing || self.busy.comparing || self.busy.loading {
-                            ui.spinner();
-                        }
                     });
                     let mut load = None;
                     let can_open = !self.live() && !self.busy.loading;
+                    let row_height = ui.spacing().interact_size.y;
+                    if self.history.is_empty() && !self.busy.listing {
+                        ui.label(tr!("No saved scans yet. Run a scan to start an inventory."));
+                    }
+                    // Only the rows in view are laid out: a monitor fills this list.
                     egui::ScrollArea::vertical()
                         .id_salt("history")
                         .max_height(220.0)
-                        .show(ui, |ui| {
-                            for h in &self.history {
+                        .show_rows(ui, row_height, self.history.len(), |ui, range| {
+                            for h in &self.history[range] {
                                 ui.horizontal(|ui| {
-                                    ui.radio_value(&mut self.compare_a, Some(h.id), "A");
-                                    ui.radio_value(&mut self.compare_b, Some(h.id), "B");
+                                    let open =
+                                        ui.add_enabled(can_open, egui::Button::new(tr!("Open")));
+                                    if a11y::named(open, &tr!("Open scan #{}", h.id)).clicked() {
+                                        load = Some(h.id);
+                                    }
+                                    let delete = ui.add_enabled(
+                                        !self.busy.listing,
+                                        egui::Button::new(tr!("Delete")),
+                                    );
+                                    if a11y::named(delete, &tr!("Delete scan #{}", h.id)).clicked()
+                                    {
+                                        self.delete_ask = Some(h.id);
+                                    }
                                     ui.label(tr!(
-                                        "#{} · {} hosts · {} · {}",
+                                        "#{} · {} · {} hosts · {} · {}",
                                         h.id,
+                                        when(h),
                                         h.hosts,
                                         if h.complete {
                                             tr!("complete")
@@ -623,18 +696,7 @@ impl Scanner {
                                         },
                                         h.targets
                                     ));
-                                    if ui
-                                        .add_enabled(can_open, egui::Button::new(tr!("Open")))
-                                        .clicked()
-                                    {
-                                        load = Some(h.id);
-                                    }
                                 });
-                            }
-                            if self.history.is_empty() && !self.busy.listing {
-                                ui.label(tr!(
-                                    "No saved scans yet. Run a scan to start an inventory."
-                                ));
                             }
                         });
                     if let Some(id) = load {
@@ -663,6 +725,47 @@ impl Scanner {
                     });
                 });
         });
+    }
+    /// Asked before a saved scan is deleted (the Inventory page): it cannot be undone.
+    pub(super) fn delete_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.delete_ask else {
+            return;
+        };
+        let Some(scan) = self.history.iter().find(|h| h.id == id) else {
+            self.delete_ask = None;
+            return;
+        };
+        let mut choice = None;
+        egui::Window::new(tr!("Delete scan #{}?", id))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(tr!(
+                    "The scan of {} from {} ({} hosts) is deleted from the inventory with the alerts raised for it. This cannot be undone.",
+                    scan.targets,
+                    crate::report::fmt_time(scan.timestamp),
+                    scan.hosts
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button(tr!("Delete")).clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button(tr!("Keep")).clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            choice = Some(false);
+        }
+        if let Some(delete) = choice {
+            self.delete_ask = None;
+            if delete && self.screenshot.is_none() {
+                self.submit(Job::Delete(id));
+            }
+        }
     }
     /// Where the scan on screen came from: its source, whether it finished and the provenance
     /// stamp (tool version and rule hashes) with a button that copies the line to cite it by.
@@ -796,17 +899,29 @@ impl Scanner {
                 ui.add_enabled_ui(
                     self.listening.is_none() && self.run.is_none() && !self.ot.capturing(),
                     |ui| {
+                        // The list is read once when the page is first shown (quietly: without
+                        // a capture driver the page still explains what it needs).
+                        if !std::mem::replace(&mut self.interfaces_tried, true)
+                            && self.interfaces.is_empty()
+                            && self.screenshot.is_none()
+                        {
+                            self.interfaces = capture::interfaces().unwrap_or_default();
+                        }
                         if ui.button(tr!("Refresh interfaces")).clicked() {
                             match capture::interfaces() {
                                 Ok(v) => self.interfaces = v,
                                 Err(e) => self.error = e,
                             }
                         }
+                        let chosen_before = self.saved.settings.interface.clone();
+                        let chosen = &self.saved.settings.interface;
                         egui::ComboBox::from_label(tr!("Interface"))
-                            .selected_text(if self.saved.settings.interface.is_empty() {
-                                tr!("Choose interface")
+                            .selected_text(if chosen.is_empty() {
+                                tr!("Choose interface").to_string()
                             } else {
-                                &self.saved.settings.interface
+                                // By its name when the list has it; the device id says little.
+                                (self.interfaces.iter().find(|(id, _)| id == chosen))
+                                    .map_or(chosen.clone(), |(id, name)| format!("{name} · {id}"))
                             })
                             .width(440.0)
                             .show_ui(ui, |ui| {
@@ -827,6 +942,23 @@ impl Scanner {
                             )
                             .labelled_by(label.id);
                         });
+                        // The interface's own addresses, where the system tells them: filled
+                        // in when the interface is chosen and the fields are empty (a typed
+                        // value, or a list for several interfaces, is never replaced unasked).
+                        let own = (self.saved.settings.interface != chosen_before)
+                            .then(|| {
+                                capture::interface_addresses(&self.saved.settings.interface)
+                            })
+                            .flatten();
+                        if let Some((mac, ip)) = own {
+                            let s = &mut self.saved.settings;
+                            if s.source_mac.trim().is_empty() {
+                                s.source_mac = mac;
+                            }
+                            if s.source_ip.trim().is_empty() {
+                                s.source_ip = ip;
+                            }
+                        }
                         ui.horizontal(|ui| {
                             let label = ui.label(tr!("Interface MAC (DCP / SYN)"));
                             ui.text_edit_singleline(&mut self.saved.settings.source_mac)
@@ -836,6 +968,31 @@ impl Scanner {
                             let label = ui.label(tr!("Interface IPv4 (SYN)"));
                             ui.text_edit_singleline(&mut self.saved.settings.source_ip)
                                 .labelled_by(label.id);
+                            if ui
+                                .add_enabled(
+                                    !self.saved.settings.interface.is_empty(),
+                                    egui::Button::new(tr!("Use the interface's addresses")),
+                                )
+                                .on_hover_text(tr!(
+                                    "Fills in the MAC and IPv4 address of the chosen interface, replacing what is there."
+                                ))
+                                .clicked()
+                            {
+                                match capture::interface_addresses(
+                                    &self.saved.settings.interface,
+                                ) {
+                                    Some((mac, ip)) if !mac.is_empty() || !ip.is_empty() => {
+                                        self.saved.settings.source_mac = mac;
+                                        self.saved.settings.source_ip = ip;
+                                    }
+                                    _ => {
+                                        self.error = tr!(
+                                            "The addresses of this interface could not be read; enter them by hand."
+                                        )
+                                        .into()
+                                    }
+                                }
+                            }
                         });
                         ui.horizontal(|ui| {
                             if ui

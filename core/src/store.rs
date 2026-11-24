@@ -420,6 +420,15 @@ pub fn prune(path: &Path, rule: &Prune) -> Result<Pruned, String> {
     if rule.dry_run {
         return Ok(done);
     }
+    delete_scans(&mut c, &ids)?;
+    Ok(done)
+}
+/// Deletes one saved scan with everything stored for it, as [`prune`] does. Any scan the user
+/// picks, also the newest one.
+pub fn delete(path: &Path, id: i64) -> Result<(), String> {
+    delete_scans(&mut open(path)?, &[id])
+}
+fn delete_scans(c: &mut Connection, ids: &[i64]) -> Result<(), String> {
     for batch in ids.chunks(PRUNE_BATCH) {
         // Ids from the database, so the list is safe to put into the statement.
         let list = batch
@@ -447,7 +456,7 @@ pub fn prune(path: &Path, rule: &Prune) -> Result<Pruned, String> {
         }
         tx.commit().map_err(|e| e.to_string())?;
     }
-    Ok(done)
+    Ok(())
 }
 pub fn load(path: &Path, id: i64) -> Result<Snapshot, String> {
     load_on(&open_read(path)?, id)
@@ -2250,6 +2259,10 @@ mod tests {
         );
         assert_eq!(ids(), [5, 4]);
         assert_eq!(prune(&path, &by_age).unwrap().deleted, 0);
+        // One scan by its id, also the newest of its scope.
+        delete(&path, 5).unwrap();
+        assert_eq!(ids(), [4]);
+        assert_eq!(count("SELECT count(*) FROM hosts WHERE scan_id=5"), 0);
         remove_db(&path);
     }
 
