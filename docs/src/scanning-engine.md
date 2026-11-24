@@ -146,12 +146,47 @@ A diff of an old (0.4) /23-or-larger snapshot against a new one of the same text
 
 `--fast --syn --interface ID --source-ip IP --source-mac MAC`. Source values must match that interface.
 
-- One Npcap/libpcap handle, opened non-promiscuous with the kernel filter `tcp and dst host <source-ip>`, is owned by one I/O thread that sends and receives.
-- Replies are matched on target, ports and a hashed sequence cookie.
+- One Npcap/libpcap handle, opened non-promiscuous with the kernel filter `tcp and dst host <source-ip>` (with IPv6 source addresses on the interface: `tcp and (dst host <source-ip> or dst host <ipv6-1> or ...)`), is owned by one I/O thread that sends and receives.
+- Replies are matched on target, ports, the address the probe was sent from and a hashed sequence cookie.
 - **Routed IPv4 targets** are scanned too: the next hop comes from the OS routing table (Windows `GetBestRoute`, Linux longest-prefix match in `/proc/net/route`, macOS/BSD `route -n get`). An on-link target is sent to its own MAC, a routed one to the gateway MAC, resolved once per gateway. The route must leave through the capture interface.
 - A failed lookup, a silent gateway or another interface falls back to TCP connect with a note "SYN unavailable; TCP connect fallback: …". So does an address of this computer (the source address; on Windows any of its adapters' addresses): a frame to it leaves on the wire and is never looped back. TCP traceroute to such an address says so. Driver or configuration errors trigger the same explicit fallback; a missing reply is reported as unanswered.
-- IPv4 only, untagged frames; no IPv6 SYN.
+- **IPv6 targets** are SYN-scanned too, on-link and routed (see below). Untagged frames only.
 - After Stop no queued SYN or retransmit leaves.
+
+### IPv6 targets
+
+The engine reads the capture interface's IPv6 addresses once when it starts. No setting is needed.
+
+- **Windows:** the interface that owns `--source-ip`, its preferred addresses and on-link prefix lengths (`GetUnicastIpAddressTable`).
+- **Linux:** the interface named by `--interface` in `/proc/net/if_inet6`, without tentative or duplicate addresses.
+- **macOS and the BSDs:** the interface named by `--interface` in `ifconfig -a` (`prefixlen`, and the `scopeid` of its link-local address as its index), without `tentative`, `duplicated`, `detached` or `deprecated` addresses.
+
+For each IPv6 target:
+
+- **On-link targets** need no route. A link-local target (`fe80::/10`) is sent from a link-local address of the interface. A target inside the on-link prefix of one of the interface's global or unique-local addresses is sent from that address (the longest such prefix wins). Both go to the target's own MAC. On Linux and macOS the prefix length is that of the address, which is the on-link prefix unless the address was configured without its prefix route.
+- **Routed targets** (in none of those prefixes) follow the IPv4 design.
+  - The interface must first have a global or unique-local source address of the target's kind: unique-local for a unique-local target, global for any other. A link-local address is never used.
+  - The route then comes from the OS routing table, once per target, as a table read without a `--rate` token: Windows `GetBestRoute2`, Linux `ip -6 route get`, macOS/BSD `route -n get -inet6`. It must leave through the capture interface.
+  - A route via a gateway sends the frame to the gateway's MAC; an on-link route outside our prefixes sends it to the target's own MAC.
+  - The source is the one the OS names for the route (Windows, Linux) when the capture filter lists it, else the first suitable address of the interface.
+- **MAC:** from the OS neighbour cache **of the capture interface**, so `fe80::1` on another link is never used. A stale entry counts, as for IPv4. The cache is Windows `GetIpNetTable2`, Linux `ip -6 neigh show`, macOS/BSD `ndp -an`.
+  - Without an entry the OS resolves it once: Windows `ResolveIpNetEntry2` (one Neighbor Solicitation); Linux, macOS and the BSDs one 1-byte UDP datagram to port 9 and a second look after 250 ms.
+  - The lookup takes one `--rate` token and is done once per next hop (one lookup for all targets behind the same gateway).
+- **The frame:** Ethernet, an IPv6 header (hop limit 64, no extension headers) and the same TCP SYN as over IPv4, except an MSS of 1440; the TCP checksum covers the IPv6 pseudo-header. An open port is reset from the same source address.
+- **The answer:** the SYN-ACK's hop limit is the fingerprint's TTL. The OS guess uses the same initial values (64/128/255), and a routed target's hop limit is lower by the hops on the way, as with IPv4. `df` is always 0 (IPv6 has no DF bit; the guess does not use it). A reply with extension headers before TCP is not recognised, so the port would show as unanswered.
+- **TCP connect instead,** with the note "SYN unavailable; TCP connect fallback: …", and before any frame is sent, when:
+  - there is no route to the target, the route leaves through another interface, or its gateway is this computer;
+  - the interface has no link-local address (link-local target), or no global or unique-local address of the target's kind (routed target);
+  - the target is one of this computer's own addresses: any address in any state on any interface, including deprecated temporary ones, but link-local addresses only those of the capture interface (another link's `fe80::1` may be a neighbour here);
+  - the target is a multicast or IPv4-mapped address;
+  - the target or its gateway has no MAC in the neighbour cache, and the resolution found none.
+- **Filter refused:** if the capture driver refuses the filter with the IPv6 addresses, the engine opens with the IPv4-only filter instead. The IPv4 SYN scan is unaffected, and every IPv6 target falls back with that reason.
+- **Several interfaces:** an IPv6 target goes to the first engine whose interface has it on-link, else to the first whose route to it leaves through its own interface. If none does, it is probed by TCP connect without a note, like an IPv4 target that no interface routes.
+- **Not tested on a real network.**
+  - Tested only with synthetic frames and a simulated link, routing table and neighbour table: the frames, the reply matching, the source and route decisions, the fallbacks and the engine's I/O loop. The parsers of `ip -6 route get`, `route -n get -inet6`, `ifconfig -a` and `ndp -an` are tested on samples written in those formats.
+  - Never done on a real system: compiling the IPv6 capture filter in libpcap or Npcap, `ResolveIpNetEntry2`, the Linux and macOS lookups, and `GetBestRoute2`. Its row offsets come from the Windows headers; the development machine had no IPv6 route to check them against.
+  - Checked against the development machine's real table: the Windows address table offsets, including the on-link prefix length.
+  - The macOS/BSD code is type-checked on Windows (it uses runtime `cfg!` branches) but has never run.
 
 Packet construction uses `pnet_packet`; Npcap/libpcap is loaded at run time.
 

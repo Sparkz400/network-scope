@@ -6,7 +6,9 @@
 //! interface; every target then goes out through the interface the operating system's routing
 //! table picks for it ([`choose`]): an interface on whose subnet the target lies first, else the
 //! first interface that routes to it, else none (the TCP connect scan, which the OS routes itself,
-//! takes over). With one interface, or none, nothing changes.
+//! takes over). An IPv6 target goes to the first SYN engine whose interface has it on-link, else
+//! to the first whose route to it leaves through its own interface, else to none. With one
+//! interface, or none, nothing changes.
 //!
 //! The pairing and the choice are pure functions, tested here; opening the capture drivers needs
 //! Npcap or libpcap and administrator rights, and that part has not been run against two real

@@ -239,9 +239,32 @@ struct Raw<E> {
     source: std::net::Ipv4Addr,
 }
 
+/// The SYN engine for an IPv6 target: one engine is used as it is (it reports a target it cannot
+/// reach, and the probe falls back to TCP connect with a note); of several, the first whose
+/// interface has the target on-link, else the first whose route to it leaves through its own
+/// interface, else none (TCP connect, as for an IPv4 target that no interface routes).
+async fn pick_v6(engines: &[Raw<SynEngine>], ip: IpAddr) -> Option<usize> {
+    match engines {
+        [] => None,
+        [_] => Some(0),
+        _ => {
+            if let Some(i) = engines.iter().position(|e| e.engine.on_link(ip)) {
+                return Some(i);
+            }
+            for (i, e) in engines.iter().enumerate() {
+                if e.engine.has_path(ip).await {
+                    return Some(i);
+                }
+            }
+            None
+        }
+    }
+}
+
 /// The engine whose interface the routing table picks for `ip` (see `interfaces::choose`). With
 /// one engine nothing is asked: it behaves as before and the engine itself reports a route that
-/// leaves elsewhere. IPv6 targets have no raw engine.
+/// leaves elsewhere. IPv6 targets get none here (the ARP sweep and TCP traceroute are IPv4
+/// only; the SYN engine is picked by [`pick_v6`]).
 async fn pick<E: Send + Sync + 'static>(
     blocking: &Arc<Semaphore>,
     engines: &[Raw<E>],
@@ -958,12 +981,17 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         let mut early: Option<String> = None;
         let mut probes: JoinSet<(u16, PortProbe)> = JoinSet::new();
         // Per-host RTT of completed connects (connect scan only; the SYN engine has its own).
-        let syn_index = pick(&ctx.blocking, &ctx.syn, ip).await;
+        let syn_index = match ip {
+            IpAddr::V4(_) => pick(&ctx.blocking, &ctx.syn, ip).await,
+            IpAddr::V6(_) => pick_v6(&ctx.syn, ip).await,
+        };
         let syn_engine: Option<Arc<SynEngine>> = syn_index.map(|i| ctx.syn[i].engine.clone());
+        // An IPv6 target the engine cannot reach at all is probed by TCP connect.
+        let syn_probes = syn_engine.as_ref().is_some_and(|e| e.reaches(ip));
         // Only where the ping RTT does not already set the timeout: a host that answers ping
         // keeps exactly that timeout and order (the pilot cost a power-saving Wi-Fi device
         // closed ports in 5 of 20 runs, for no gain).
-        let host_rtt = (s.tcp_adaptive && syn_engine.is_none() && (rtts.is_empty() || !s.adaptive))
+        let host_rtt = (s.tcp_adaptive && !syn_probes && (rtts.is_empty() || !s.adaptive))
             .then(|| Arc::new(HostRtt::default()));
         // The likeliest ports first, and the order follows what the host turns out to be.
         let vendor = if h.mac.is_empty() || crate::oui::locally_administered(&h.mac) {
