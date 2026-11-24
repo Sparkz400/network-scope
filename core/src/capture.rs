@@ -113,6 +113,12 @@ fn error_text(error: &ErrorBuffer) -> String {
         .collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
+/// The MAC address and the first IPv4 address of a capture interface of [`interfaces`], as
+/// text; either is empty when the interface has none, and `None` means the system was not
+/// asked (see `platform::interface_addresses`: Windows only so far).
+pub fn interface_addresses(name: &str) -> Option<(String, String)> {
+    crate::platform::interface_addresses(name)
+}
 pub fn interfaces() -> Result<Vec<(String, String)>, String> {
     unsafe {
         let lib = library()?;

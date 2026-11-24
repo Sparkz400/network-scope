@@ -561,15 +561,16 @@ impl Scanner {
             Cmd::Language(l) => self.set_language(l.code()),
             Cmd::DarkTheme => self.set_dark(ctx, true),
             Cmd::LightTheme => self.set_dark(ctx, false),
-            // The search of the Hosts page in either mode (the device mode has its own filter).
-            Cmd::Search => {
-                if self.view == MainView::Devices {
-                    self.devices_view.focus_query = true;
-                } else {
+            // The filter box of the page that has one (Findings, Hosts by device), else the
+            // search of the Hosts page.
+            Cmd::Search => match self.view {
+                MainView::Devices => self.devices_view.focus_query = true,
+                MainView::Findings => self.findings_view.focus_query = true,
+                _ => {
                     self.view = MainView::Hosts;
                     self.focus_search = true;
                 }
-            }
+            },
             Cmd::Schedule => {
                 self.settings_open = true;
                 self.scroll_to_schedule = true;

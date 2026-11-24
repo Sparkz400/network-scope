@@ -414,6 +414,49 @@ impl Scanner {
         }
     }
 
+    /// Asked when the window is closed while a scan or capture runs.
+    pub(super) fn quit_dialog(&mut self, ctx: &egui::Context) {
+        if !self.quit_ask {
+            return;
+        }
+        // It ended while the question was open: nothing left to ask.
+        if !self.live() && !self.ot.running() {
+            self.quit_ask = false;
+            return;
+        }
+        let mut choice = None;
+        egui::Window::new(tr!("Quit while a scan is running?"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(tr!(
+                    "A scan or capture is still running. Quitting stops it; what it found so far is saved as a partial scan."
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button(tr!("Stop and quit")).clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button(tr!("Keep running")).clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            choice = Some(false);
+        }
+        match choice {
+            Some(true) => {
+                self.quit_ok = true;
+                self.quit_ask = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(false) => self.quit_ask = false,
+            None => {}
+        }
+    }
+
     /// The list of keyboard shortcuts (F1), built from the same commands as the menus.
     pub(super) fn shortcuts_window(&mut self, ctx: &egui::Context) {
         if !self.shortcuts_open {
@@ -468,7 +511,8 @@ impl Scanner {
         if dialog || ctx.text_edit_focused() || egui::Popup::is_any_open(ctx) {
             return;
         }
-        if self.selected.is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        if (self.selected.is_some() || self.selected_device.is_some())
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
         {
             self.selected = None;
             self.script_test = None;

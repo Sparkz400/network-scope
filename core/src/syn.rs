@@ -2473,6 +2473,11 @@ mod tests {
                 println!("{label}: no OS interface");
                 continue;
             };
+            // What the desktop fills in for this interface (compare with `Get-NetAdapter`).
+            println!(
+                "{label}: addresses {:?}",
+                crate::platform::interface_addresses(&name)
+            );
             let Some(v4) = crate::platform::ipv4_of(index) else {
                 println!("{label}: no IPv4 address (the engine needs one)");
                 continue;

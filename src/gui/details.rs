@@ -339,6 +339,105 @@ impl Scanner {
             self.selected = None;
         }
     }
+    /// The details of a device that is not among the scanned hosts (seen in passive traffic
+    /// only), in the place of the host details: what was observed, and by which protocols.
+    pub(super) fn device_details(&mut self, root: &mut egui::Ui) {
+        if self.selected.is_some() {
+            // A host was chosen since: its details are the ones shown.
+            self.selected_device = None;
+        }
+        let Some(id) = self.selected_device.clone() else {
+            return;
+        };
+        self.ensure_devices();
+        let Some(d) = self.devices.value.iter().find(|d| d.id == id) else {
+            self.selected_device = None;
+            return;
+        };
+        let join = |list: &[String]| list.join(", ");
+        let ips: Vec<String> = d.ips.iter().map(ToString::to_string).collect();
+        let title = (d.hostnames.first())
+            .or(ips.first())
+            .unwrap_or(&d.mac)
+            .clone();
+        let mut open = true;
+        let max = ((root.ctx().content_rect().width() - 172.0) * 0.45).max(220.0);
+        egui::Panel::right("host_details")
+            .resizable(true)
+            .default_size(330.0_f32.min(max))
+            .size_range(220.0..=max)
+            .show(root, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.strong(tr!("Device details · {}", title));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(tr!("Close"))
+                            .on_hover_text(tr!("Close the host details (Esc)"))
+                            .clicked()
+                        {
+                            open = false;
+                        }
+                    });
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("device_details")
+                    .show(ui, |ui| {
+                        ui.weak(tr!(
+                            "Seen in passive traffic only: the scan on screen did not probe this device."
+                        ));
+                        let mac = match (d.mac.is_empty(), d.randomized_mac) {
+                            (true, _) => "—".to_string(),
+                            (false, true) => tr!("{} (randomized)", d.mac),
+                            (false, false) => d.mac.clone(),
+                        };
+                        ui.label(format!("MAC: {mac}"));
+                        if !d.vendor.is_empty() {
+                            ui.label(tr!("Manufacturer: {}", d.vendor));
+                        }
+                        if !d.device_type.is_empty() {
+                            ui.label(format!("{}: {}", tr!("Type"), d.device_type))
+                                .on_hover_text(&d.type_evidence);
+                        }
+                        if !d.os.is_empty() {
+                            ui.label(format!("{}: {} {}", tr!("OS"), d.os, d.os_confidence));
+                        }
+                        if !ips.is_empty() {
+                            ui.label(tr!("Addresses: {}", join(&ips)));
+                        }
+                        if !d.hostnames.is_empty() {
+                            ui.label(tr!("Names: {}", join(&d.hostnames)));
+                        }
+                        if !d.sources.is_empty() {
+                            ui.label(tr!("Seen by: {}", join(&d.sources)));
+                        }
+                        // What each protocol said about the device, as it was observed.
+                        for (protocol, fields) in &d.observations {
+                            egui::CollapsingHeader::new(protocol)
+                                .id_salt(("device_observation", protocol))
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    for (key, value) in fields {
+                                        ui.label(format!("{key}: {value}"));
+                                    }
+                                });
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            if !ips.is_empty() && ui.button(tr!("Copy address")).clicked() {
+                                ui.ctx().copy_text(join(&ips));
+                            }
+                            if !d.mac.is_empty() && ui.button(tr!("Copy MAC address")).clicked()
+                            {
+                                ui.ctx().copy_text(d.mac.clone());
+                            }
+                        });
+                    });
+            });
+        if !open {
+            self.selected_device = None;
+        }
+    }
     /// Adds the result of the finished dry-run to the host it ran on, if it is still there.
     fn apply_script_test(&mut self) {
         let Some(ScriptTest {
