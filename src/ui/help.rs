@@ -112,7 +112,7 @@ Scan options:
   --script PATH   Rhai script (or folder of .rhai files) run against every host
   --db FILE       Defaults to LOCALAPPDATA/NetworkScope/inventory.sqlite
   --fast          Disable conservative rate limits (read-only OT still applies)
-  --syn           IPv4 SYN via Npcap (routed targets via the gateway MAC); else TCP connect
+  --syn           SYN via Npcap, IPv4 and IPv6 (routed targets via the gateway MAC); else TCP connect
   --adaptive-syn  RTT-based SYN reply windows and congestion window (with --syn --fast)
   --no-adaptive-tcp  By default a host without a ping RTT (drops ping, or --tcp-only) gets a connect
                   timeout from its measured connect RTT (shortens waits only); this turns it off
