@@ -21,7 +21,7 @@ The click tests drive the app through synthetic frames, and one run drove a real
 1. **Sidebar**: each entry shows its icon, name and count; the Findings count has the colour of the worst finding. Tab moves through the entries, Enter opens one. At 800×450 all six entries fit (the list scrolls if the window is shorter).
 2. **Hosts page**: **By address** and **By device** switch between the two tables; `Ctrl+3` opens By device and `Ctrl+F` there focuses its filter. Clicking anywhere in a row shows the host details on the right; Up and Down move the selection; `Escape` closes the details.
 3. **Columns**: add Manufacturer, Type, OS guess and Risk; each sorts by a click on its header (Risk: worst first). Restart the app: the columns are still there.
-4. **Host details**: drag the left edge of the panel; **Timeline…** opens the timeline under the page; drag its top edge; its **Close** closes only the timeline.
+4. **Host details**: drag the left edge of the panel; **Timeline** opens the timeline under the page; drag its top edge; its **Close** closes only the timeline.
 5. **A scan of your own network** (Overview → **Scan my network**, Safe Mode): rows appear while it runs, the counts update when it ends. For a large range (a /16 in a lab) the Findings count appears a moment after the scan, without the window freezing.
 6. **Theme and language**: View → theme dark and light, Settings → Appearance → German; the sidebar, the switch and the timeline are translated and nothing is cut off.
 7. **Window placement**: move and resize the window, maximize it, restart: it comes back the same way.
