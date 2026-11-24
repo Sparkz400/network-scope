@@ -283,8 +283,7 @@ jobs:
   # tests. rsyslog receives the syslog alerts over UDP and TCP (octet counting) and nginx the
   # webhook POSTs over HTTP and HTTPS (a private CA through SSL_CERT_FILE; a second HTTPS server
   # with an untrusted certificate must get nothing). Everything binds loopback and runs as the
-  # runner user. See lab/alert_receivers.sh. Written without being able to run it on the runner
-  # image; the first run may need adjustments.
+  # runner user. See lab/alert_receivers.sh.
   alert-receivers:
     name: alert delivery to real receivers (rsyslog, nginx)
     runs-on: ubuntu-latest

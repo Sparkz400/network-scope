@@ -15,8 +15,8 @@
 # Environment: CLI (path of network-scope-cli, default target/release/), PYTHON (default python3),
 # SUDO (default sudo), WORK (scratch directory), INSTALL=1 (apt).
 #
-# Status: written for the ubuntu-latest runner (rsyslog 8, nginx 1.24, OpenSSL 3) and not yet run
-# there; the first CI run may need adjustments. Nothing here needs root except apt.
+# Status: passes on the ubuntu-latest runner (first run 2026-11-24: rsyslog 8.2512.0, nginx
+# 1.28.3). Nothing here needs root except apt.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
@@ -81,8 +81,11 @@ openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
 printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "$WORK/san.ext"
 openssl x509 -req -in "$WORK/server.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca.key" \
   -CAcreateserial -days 2 -extfile "$WORK/san.ext" -out "$WORK/server.pem" 2>/dev/null
+# An ordinary server certificate (not a CA) that no trusted CA issued, so the rejection is for
+# the unknown issuer and for nothing else.
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" \
-  -addext "subjectAltName=IP:127.0.0.1" \
+  -addext "subjectAltName=IP:127.0.0.1" -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "extendedKeyUsage=serverAuth" \
   -keyout "$WORK/untrusted.key" -out "$WORK/untrusted.pem" 2>/dev/null
 
 log "rsyslog on udp/$SYSLOG_UDP and tcp/$SYSLOG_TCP"

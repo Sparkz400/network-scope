@@ -120,6 +120,10 @@ def check(work: Path) -> list[str]:
     failed = [l for l in err.splitlines() if "alert delivery failed" in l and "18444" in l]
     if not failed:
         problems.append("monitor did not report the failed delivery to the untrusted webhook")
+    elif not any("UnknownIssuer" in l for l in failed):
+        # The certificate is an ordinary server certificate: the only thing wrong with it is
+        # that no trusted CA issued it.
+        problems.append(f"the untrusted webhook was rejected for another reason: {failed}")
     return problems
 
 
