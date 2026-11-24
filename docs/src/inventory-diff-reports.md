@@ -4,6 +4,21 @@
 
 Every scan and passive capture is stored in a SQLite database, by default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows; `--db FILE` selects another. SQLite is bundled into the executable. Scan settings are recorded per snapshot; notes are retained in JSON/CSV exports. Completed, stopped and partial runs are stored and marked as such.
 
+### Deleting old scans
+
+Nothing is deleted on its own, and a `monitor` saves one scan per cycle (288 a day at the default interval), so an inventory that is monitored grows until it is pruned:
+
+```sh
+network-scope-cli history prune --keep 2000                 # the newest 2000 scans of every target set
+network-scope-cli history prune --older-than 90d --dry-run  # count what is older than 90 days
+network-scope-cli monitor 192.168.1.0/24 --keep 2000        # prune this monitor's scans after every cycle
+```
+
+- A scan is deleted when either rule says so, together with what is stored per scan: its research rows and the alerts raised for it. Devices, their identifiers and the approved baseline stay.
+- The newest completed scan of every target set always stays, because the next scan is compared with it.
+- Device timelines, `changes --since` and `search` only see scans that are still there. A monitor that is restarted restores its [de-duplication](monitoring-alerts.md#de-duplication) from stored alerts, so with a `--keep` that covers less than the re-alert time (24 hours by default) a persisting condition can be alerted once more after a restart.
+- The file does not shrink; SQLite reuses the freed space for later scans.
+
 `network-scope history` lists the saved snapshots as JSON.
 
 ## Diff

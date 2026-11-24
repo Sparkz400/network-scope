@@ -270,6 +270,7 @@ fn a_clearing_statement_must_be_exact_and_affected_wins() {
         cve: "CVE-2099-4000".into(),
         vendor: vendor.into(),
         products: vec![product.into()],
+        specific: vec![],
         range: range.into(),
         state,
         justification: String::new(),
@@ -404,4 +405,93 @@ fn package_urls_are_read_and_match_sbom_components() {
         lib.lookup_purl("CVE-2099-5002", "pkg:deb/debian/openssl@3.0.11", "")
             .is_none()
     );
+}
+
+/// A CSAF VEX document that says product `P` of `tree` is not affected by CVE-2099-4100.
+fn not_affected(tree: &str) -> Library {
+    let text = format!(
+        r#"{{"document":{{"category":"csaf_vex","csaf_version":"2.0","title":"T",
+            "tracking":{{"id":"VEX-TREE"}}}},"product_tree":{{{tree}}},
+            "vulnerabilities":[{{"cve":"CVE-2099-4100",
+            "product_status":{{"known_not_affected":["P"]}}}}]}}"#
+    );
+    library(&[("tree.json", &text)])
+}
+
+/// A statement for one model must not clear its siblings through the family name above it in
+/// the product tree, however the tree spells the model: as a `product_name` branch, in the
+/// product's own name, in a flat list, or as the platform of a relationship.
+#[test]
+fn a_statement_for_one_model_does_not_clear_the_rest_of_its_family() {
+    let cleared = |lib: &Library, vendor: &str, device: &str, version: &str| {
+        lib.lookup("CVE-2099-4100", vendor, &names(&[device]), version)
+            .is_some_and(|s| s.state.resolves())
+    };
+    let (other, same) = ("CPU 1214C DC/DC/DC", "CPU 1217C DC/DC/DC");
+    let range = r#"{"category":"product_version_range","name":">=V4.0|<V5.0","product":"#;
+    let siemens = |inner: &str| {
+        not_affected(&format!(
+            r#""branches":[{{"category":"vendor","name":"Siemens","branches":[{inner}]}}]"#
+        ))
+    };
+    // Family, then model, then versions.
+    let branch = siemens(&format!(
+        r#"{{"category":"product_family","name":"SIMATIC S7-1200","branches":[
+            {{"category":"product_name","name":"CPU 1217C DC/DC/DC","branches":[
+            {range}{{"product_id":"P","name":"SIMATIC S7-1200 CPU 1217C DC/DC/DC V4"}}}}]}}]}}"#
+    ));
+    assert!(!cleared(&branch, "Siemens", other, "4.2.1"));
+    assert!(cleared(&branch, "Siemens", same, "4.2.1"));
+    assert!(
+        !cleared(&branch, "Siemens", same, "5.0"),
+        "outside the range"
+    );
+    // The model only in the product's own name, directly under the family.
+    let leaf = siemens(&format!(
+        r#"{{"category":"product_family","name":"SIMATIC S7-1200","branches":[
+            {range}{{"product_id":"P","name":"Siemens SIMATIC S7-1200 CPU 1217C DC/DC/DC"}}}}]}}"#
+    ));
+    assert!(!cleared(&leaf, "Siemens", other, "4.2.1"));
+    assert!(cleared(&leaf, "Siemens", same, "4.2.1"));
+    // A statement for the family itself still covers every CPU of it.
+    let family = siemens(&format!(
+        r#"{{"category":"product_family","name":"SIMATIC S7-1200","branches":[
+            {range}{{"product_id":"P","name":"SIMATIC S7-1200 CPU family V4"}}}}]}}"#
+    ));
+    assert!(cleared(&family, "Siemens", other, "4.2.1"));
+    assert!(cleared(&family, "Siemens", same, "4.2.1"));
+    // A flat product list: vendor, model and versions in one name.
+    let flat = not_affected(
+        r#""full_product_names":[{"product_id":"P",
+            "name":"Siemens SIMATIC S7-1200 CPU 1217C DC/DC/DC: >=V4.0|<V5.0"}]"#,
+    );
+    assert!(!cleared(&flat, "Siemens", other, "4.2.1"));
+    assert!(cleared(&flat, "Siemens", same, "4.2.1"));
+    // A relationship: the firmware (named after the family) installed on one controller. The
+    // platform's names decide, not the family name the component carries.
+    let relationship = not_affected(
+        r#""branches":[{"category":"vendor","name":"Rockwell Automation","branches":[
+            {"category":"product_family","name":"ControlLogix","branches":[
+              {"category":"product_name","name":"1756-L81E",
+               "product":{"product_id":"HW","name":"ControlLogix 1756-L81E"}}]},
+            {"category":"product_name","name":"ControlLogix firmware","branches":[
+              {"category":"product_version_range","name":">=V33.0|<V34.0",
+               "product":{"product_id":"FW","name":"ControlLogix firmware V33"}}]}]}],
+          "relationships":[{"category":"installed_on","product_reference":"FW",
+            "relates_to_product_reference":"HW",
+            "full_product_name":{"product_id":"P","name":"ControlLogix firmware V33 on 1756-L81E"}}]"#,
+    );
+    let rockwell = "Rockwell Automation";
+    assert!(!cleared(
+        &relationship,
+        rockwell,
+        "1756-L83E/B ControlLogix",
+        "33.11"
+    ));
+    assert!(cleared(
+        &relationship,
+        rockwell,
+        "1756-L81E/B ControlLogix",
+        "33.11"
+    ));
 }

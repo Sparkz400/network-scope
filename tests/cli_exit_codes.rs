@@ -125,6 +125,51 @@ fn errors_exit_1() {
 }
 
 #[test]
+fn history_prune_deletes_old_scans_and_refuses_what_it_cannot_do() {
+    let fixture = Fixture::new("prune");
+    let scans = |f: &Fixture| -> usize {
+        let (code, out, err) = f.run(&["history"]);
+        assert_eq!(code, 0, "{err}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        v["scans"].as_array().unwrap().len()
+    };
+    assert_eq!(scans(&fixture), 3);
+    // Without a rule, with a rule that deletes everything, and --dry-run on the listing.
+    let (code, _, err) = fixture.run(&["history", "prune"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("history prune --keep"), "{err}");
+    assert_eq!(fixture.run(&["history", "prune", "--keep", "0"]).0, 1);
+    assert_eq!(
+        fixture.run(&["history", "prune", "--older-than", "last"]).0,
+        1
+    );
+    assert_eq!(fixture.run(&["history", "--dry-run"]).0, 1);
+    // A dry run counts and deletes nothing.
+    let (code, out, err) = fixture.run(&["history", "prune", "--keep", "1", "--dry-run"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("Would delete 2 scans; 1 stay."), "{out}");
+    assert_eq!(scans(&fixture), 3);
+    let (code, out, err) = fixture.run(&["history", "prune", "--keep", "1"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("Deleted 2 scans; 1 stay."), "{out}");
+    assert_eq!(scans(&fixture), 1);
+    // The fixture's scans are years old, but the newest completed one always stays.
+    let (code, out, _) = fixture.run(&["history", "prune", "--older-than", "30d"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("Deleted 0 scans; 1 stay."), "{out}");
+    // A mistyped --db is an error and creates no inventory.
+    let missing = fixture.dir.join("typo.sqlite");
+    let (code, _, err) = run_bin(
+        env!("CARGO_BIN_EXE_network-scope-cli"),
+        &["history", "prune", "--keep", "1"],
+        missing.to_str(),
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("no such inventory"), "{err}");
+    assert!(!missing.exists());
+}
+
+#[test]
 fn findings_default_is_unchanged_and_the_gate_exits_3() {
     let fixture = Fixture::new("findings");
     // Scan 2 has Telnet: a finding, but without the flag the status stays 0.

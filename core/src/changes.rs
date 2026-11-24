@@ -246,12 +246,13 @@ pub fn changes(db: &Path, since: &Since, now: i64) -> Result<Changes, String> {
         Since::Last => "last".to_string(),
         Since::At(t) => crate::report::fmt_time(*t),
     };
-    let scans = store::list(db)?;
-    let Some(current) = scans.iter().find(|s| s.complete) else {
+    // Asked of the database, not of `store::list` (the newest 500 scans only): a monitor saves
+    // 500 scans in under two days, and the scan from before the window would seem not to exist.
+    let Some(current) = store::newest_complete(db)? else {
         return Ok(Changes::empty(
             label,
             now,
-            if scans.is_empty() {
+            if store::list(db)?.is_empty() {
                 "The inventory has no scans yet."
             } else {
                 "The inventory has no completed scan (partial scans do not establish changes)."
@@ -277,27 +278,16 @@ pub fn changes(db: &Path, since: &Since, now: i64) -> Result<Changes, String> {
         ));
         return Ok(out);
     }
-    let earlier: Vec<&store::Entry> = scans
-        .iter()
-        .filter(|s| s.complete && s.id < current.id && s.targets == current.targets)
-        .collect();
-    // Candidates in the order they are tried.
-    let (ordered, later_than_cutoff): (Vec<&store::Entry>, usize) = match since {
-        Since::Last => (earlier.clone(), 0),
+    let earlier =
+        |which| store::earlier_complete(db, &current.targets, current.id, which, MAX_CANDIDATES);
+    // Candidates in the order they are tried: the newest from before the window, then the
+    // oldest inside it.
+    let (ordered, later_than_cutoff): (Vec<store::Entry>, usize) = match since {
+        Since::Last => (earlier(store::Earlier::Any)?, 0),
         Since::At(cutoff) => {
-            let mut at_or_before: Vec<&store::Entry> = earlier
-                .iter()
-                .copied()
-                .filter(|s| s.timestamp <= *cutoff)
-                .collect();
-            let mut after: Vec<&store::Entry> = earlier
-                .iter()
-                .copied()
-                .filter(|s| s.timestamp > *cutoff)
-                .collect();
-            after.reverse(); // oldest first
+            let mut at_or_before = earlier(store::Earlier::AtOrBefore(*cutoff))?;
             let n = at_or_before.len();
-            at_or_before.extend(after);
+            at_or_before.extend(earlier(store::Earlier::After(*cutoff))?);
             (at_or_before, n)
         }
     };
@@ -337,7 +327,7 @@ pub fn changes(db: &Path, since: &Since, now: i64) -> Result<Changes, String> {
             Err(e) => last_error = Some(e),
         }
     }
-    out.notice = Some(match (earlier.is_empty(), last_error) {
+    out.notice = Some(match (ordered.is_empty(), last_error) {
         (true, _) => format!(
             "There is no earlier completed scan of {} to compare with.",
             current.targets
@@ -761,6 +751,34 @@ mod tests {
         ("ssh.22.hostkey_sha256", "aaaa"),
         ("tls.443.spki_sha256", "bbbb"),
     ];
+
+    /// A monitor saves more scans than `store::list` returns: the scan from before the window
+    /// is still the one compared with.
+    #[test]
+    fn the_scan_before_the_window_is_found_behind_more_than_500_newer_ones() {
+        let path = temp_db("many");
+        let base = snap(vec![host("10.0.0.5", "", "a", &[22], &[])]);
+        store::save_at(&path, &base, NOW - 10 * 86_400).unwrap();
+        {
+            let c = store::open(&path).unwrap();
+            c.execute_batch("BEGIN").unwrap();
+            for i in 0..520 {
+                c.execute(
+                    "INSERT INTO scans(timestamp,targets,complete,hosts,snapshot) SELECT ?1,targets,complete,hosts,snapshot FROM scans WHERE id=1",
+                    [NOW - 86_400 + i],
+                )
+                .unwrap();
+            }
+            c.execute_batch("COMMIT").unwrap();
+        }
+        let c = changes(&path, &Since::At(NOW - 7 * 86_400), NOW).unwrap();
+        assert_eq!(c.current.as_ref().unwrap().id, 521);
+        assert_eq!(c.previous.as_ref().unwrap().id, 1);
+        assert!(c.notice.is_none(), "{:?}", c.notice);
+        let c = changes(&path, &Since::Last, NOW).unwrap();
+        assert_eq!(c.previous.unwrap().id, 520);
+        remove_db(&path);
+    }
 
     #[test]
     fn an_empty_inventory_a_single_scan_and_partial_scans_are_answers_not_errors() {

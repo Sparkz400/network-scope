@@ -7,7 +7,11 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::IpAddr,
-    sync::atomic::Ordering,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::RecvTimeoutError,
+    },
+    time::Duration,
 };
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
@@ -161,7 +165,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let (mut results, complete, errors) = if tui_view {
         tui::tui(&run)
     } else if let Some(w) = writer.as_mut() {
-        let (complete, errors) = drive(&run, stream, &mut |h| w.push(&h));
+        let stop = crate::ui::interrupt::flag();
+        let (complete, errors) = drive(&run, stream, &stop, &mut |h| w.push(&h));
         (vec![], complete, errors)
     } else if stream {
         collect_streaming(&run)
@@ -441,7 +446,8 @@ pub(in crate::ui) fn collect_streaming(run: &scan::Running) -> Collected {
 }
 fn collect_with(run: &scan::Running, stream: bool) -> Collected {
     let mut hosts = vec![];
-    let (complete, errors) = drive(run, stream, &mut |h| {
+    let stop = crate::ui::interrupt::flag();
+    let (complete, errors) = drive(run, stream, &stop, &mut |h| {
         hosts.push(h);
         Ok(())
     });
@@ -458,11 +464,13 @@ pub(in crate::ui) fn snmp_warnings(opts: &BTreeMap<String, String>, s: &scan::Se
 }
 /// Runs the scan's events to the end: every host worth keeping (responding ones, or all when the
 /// scan is small) goes to `sink`, with `stream` the live events go to stdout. A failing sink
-/// stops the scan and is reported as an error. Returns (complete, errors); errors never discard
-/// results, they only mark the scan partial.
+/// stops the scan and is reported as an error. `stop` (Ctrl+C, see `ui::interrupt`) cancels the
+/// scan: the engine finishes the hosts it is working on and what was found is kept. Returns
+/// (complete, errors); errors never discard results, they only mark the scan partial.
 fn drive(
     run: &scan::Running,
     stream: bool,
+    stop: &AtomicBool,
     sink: &mut dyn FnMut(scan::Host) -> Result<(), String>,
 ) -> (bool, Vec<String>) {
     use std::io::Write;
@@ -479,9 +487,17 @@ fn drive(
     };
     let elapsed = || run.started.elapsed().as_millis() as u64;
     loop {
-        let event = match run.receiver.recv() {
+        let event = match run.receiver.recv_timeout(Duration::from_millis(200)) {
             Ok(event) => event,
-            Err(_) => {
+            Err(RecvTimeoutError::Timeout) => {
+                if stop.load(Ordering::Relaxed) && !run.cancel.swap(true, Ordering::Relaxed) {
+                    eprintln!(
+                        "Stopping: what was found so far is saved (Ctrl+C again ends at once)"
+                    );
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => {
                 errors.push("Scan worker disconnected".into());
                 break;
             }
@@ -919,7 +935,8 @@ mod tests {
             }
         };
         let mut kept = vec![];
-        let (complete, errors) = drive(&running(scan::MAX_HOSTS + 1), false, &mut |h| {
+        let idle = AtomicBool::new(false);
+        let (complete, errors) = drive(&running(scan::MAX_HOSTS + 1), false, &idle, &mut |h| {
             kept.push(h.ip.to_string());
             Ok(())
         });
@@ -931,14 +948,14 @@ mod tests {
         );
         // A small scan keeps every host.
         let mut all = 0;
-        drive(&running(3), false, &mut |_| {
+        drive(&running(3), false, &idle, &mut |_| {
             all += 1;
             Ok(())
         });
         assert_eq!(all, 3);
         // A sink that fails (disk full) cancels the scan and marks it partial.
         let run = running(scan::MAX_HOSTS + 1);
-        let (complete, errors) = drive(&run, false, &mut |_| Err("disk full".into()));
+        let (complete, errors) = drive(&run, false, &idle, &mut |_| Err("disk full".into()));
         assert!(!complete && errors == ["disk full"], "{errors:?}");
         assert!(run.cancel.load(Ordering::Relaxed));
     }

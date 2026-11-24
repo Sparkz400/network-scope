@@ -178,6 +178,14 @@ impl Scanner {
     pub(super) fn findings_view(&mut self, ui: &mut egui::Ui) {
         self.ensure_findings();
         self.ensure_hostnames();
+        // The rule a grouped row opened has no findings any more (a new scan, an opened scan, a
+        // vendor statement): back to the full list. Nothing would be listed, and "Show all
+        // findings" is only offered next to a rule that exists.
+        let findings = &self.findings.value;
+        if (self.findings_view.rule.as_ref()).is_some_and(|r| !findings.iter().any(|f| &f.id == r))
+        {
+            self.findings_view.rule = None;
+        }
         if self.findings_view.stale(self.findings.generation) {
             self.findings_view.rows =
                 tables::finding_rows(&self.findings.value, &self.findings_view);

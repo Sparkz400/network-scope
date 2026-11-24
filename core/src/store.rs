@@ -116,13 +116,18 @@ fn snapshot_of(c: &Connection, id: i64, data: &str) -> Result<Snapshot, String> 
     Ok(snapshot)
 }
 
+/// How long a statement waits for another program's write transaction (the desktop app, a
+/// `monitor`, `research rebuild` on the same inventory). Saving a large scan or rebuilding the
+/// research tables holds the lock for longer than a few seconds, and a writer that gives up
+/// fails its whole operation.
+pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(crate) fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let c = Connection::open(path).map_err(|e| e.to_string())?;
-    c.busy_timeout(std::time::Duration::from_secs(3))
-        .map_err(|e| e.to_string())?;
+    c.busy_timeout(BUSY_TIMEOUT).map_err(|e| e.to_string())?;
     // The DDL and the (persistent) WAL switch only need to run once per database file; later
     // opens just read the stamped schema version. Newer versions are left untouched.
     let version: i64 = c
@@ -169,8 +174,7 @@ pub(crate) fn open_read(path: &Path) -> Result<Connection, String> {
         Connection::open_in_memory()
     }
     .map_err(|e| e.to_string())?;
-    c.busy_timeout(std::time::Duration::from_secs(3))
-        .map_err(|e| e.to_string())?;
+    c.busy_timeout(BUSY_TIMEOUT).map_err(|e| e.to_string())?;
     for (table, columns) in [
         (
             "scans",
@@ -268,24 +272,182 @@ pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
+const ENTRY_COLUMNS: &str = "id,timestamp,targets,complete,hosts";
+fn entry_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
+    Ok(Entry {
+        id: r.get(0)?,
+        timestamp: r.get(1)?,
+        targets: r.get(2)?,
+        complete: r.get(3)?,
+        hosts: usize::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
+    })
+}
+/// The newest 500 scans, newest first. Anything that must find a particular scan asks the
+/// database for it ([`newest_complete`], [`earlier_complete`]): a monitor saves 500 scans in
+/// under two days.
 pub fn list(path: &Path) -> Result<Vec<Entry>, String> {
     let c = open_read(path)?;
     let mut statement = c
-        .prepare("SELECT id,timestamp,targets,complete,hosts FROM scans ORDER BY id DESC LIMIT 500")
+        .prepare(&format!(
+            "SELECT {ENTRY_COLUMNS} FROM scans ORDER BY id DESC LIMIT 500"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = statement
-        .query_map([], |r| {
-            Ok(Entry {
-                id: r.get(0)?,
-                timestamp: r.get(1)?,
-                targets: r.get(2)?,
-                complete: r.get(3)?,
-                hosts: usize::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
-            })
-        })
+        .query_map([], entry_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
+}
+/// The newest completed scan.
+pub fn newest_complete(path: &Path) -> Result<Option<Entry>, String> {
+    open_read(path)?
+        .query_row(
+            &format!("SELECT {ENTRY_COLUMNS} FROM scans WHERE complete=1 ORDER BY id DESC LIMIT 1"),
+            [],
+            entry_from_row,
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })
+        .map_err(|e| e.to_string())
+}
+/// Which of the completed scans before a scan [`earlier_complete`] returns.
+#[derive(Clone, Copy)]
+pub enum Earlier {
+    /// All of them, newest first.
+    Any,
+    /// Those saved at or before this time (Unix seconds), newest first.
+    AtOrBefore(i64),
+    /// Those saved after this time, oldest first.
+    After(i64),
+}
+/// At most `limit` completed scans of `targets` with an id below `before`.
+pub fn earlier_complete(
+    path: &Path,
+    targets: &str,
+    before: i64,
+    which: Earlier,
+    limit: usize,
+) -> Result<Vec<Entry>, String> {
+    let (time, order) = match which {
+        Earlier::Any => ("", "DESC"),
+        Earlier::AtOrBefore(_) => ("AND timestamp<=?3", "DESC"),
+        Earlier::After(_) => ("AND timestamp>?3", "ASC"),
+    };
+    let cutoff = match which {
+        Earlier::Any => None,
+        Earlier::AtOrBefore(t) | Earlier::After(t) => Some(t),
+    };
+    let c = open_read(path)?;
+    let mut statement = c
+        .prepare(&format!(
+            "SELECT {ENTRY_COLUMNS} FROM scans WHERE complete=1 AND targets=?1 AND id<?2 {time} ORDER BY id {order} LIMIT ?4"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(
+            params![
+                targets,
+                before,
+                cutoff,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            entry_from_row,
+        )
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+/// Which saved scans [`prune`] deletes. A scan goes when either rule says so; the newest
+/// completed scan of every scope always stays (it is what the next scan is compared with).
+#[derive(Clone, Copy, Default)]
+pub struct Prune<'a> {
+    /// Only scans of these targets (a monitor prunes its own scans); `None`: every scope.
+    pub scope: Option<&'a str>,
+    /// Keep the newest this many scans of each scope.
+    pub keep: Option<usize>,
+    /// Delete scans saved before this time (Unix seconds).
+    pub before: Option<i64>,
+    /// Only count what would be deleted.
+    pub dry_run: bool,
+}
+/// What [`prune`] did (or, for a dry run, would do).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Pruned {
+    pub deleted: usize,
+    pub kept: usize,
+}
+/// Scans deleted per transaction: the write lock is given up in between, so a first prune of a
+/// large backlog does not lock other programs out for its whole length.
+const PRUNE_BATCH: usize = 200;
+
+/// Deletes saved scans (see [`Prune`]) with everything stored per scan: the hosts of batched
+/// scans, the research rows and the alerts raised for them. Devices, their identifiers and the
+/// baseline are kept. The file does not shrink; SQLite reuses the freed pages.
+pub fn prune(path: &Path, rule: &Prune) -> Result<Pruned, String> {
+    let mut c = open(path)?;
+    let (ids, total): (Vec<i64>, usize) = {
+        let all: i64 = c
+            .query_row("SELECT count(*) FROM scans", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let mut s = c
+            .prepare(
+                "SELECT id FROM (SELECT id, timestamp, row_number() OVER (PARTITION BY targets ORDER BY id DESC) AS n FROM scans WHERE (?1 IS NULL OR targets=?1)) \
+                 WHERE ((?2 IS NOT NULL AND n>?2) OR (?3 IS NOT NULL AND timestamp<?3)) \
+                 AND id NOT IN (SELECT MAX(id) FROM scans WHERE complete=1 GROUP BY targets) ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let ids = s
+            .query_map(
+                params![
+                    rule.scope,
+                    rule.keep.map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
+                    rule.before
+                ],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        (ids, usize::try_from(all).unwrap_or(0))
+    };
+    let done = Pruned {
+        deleted: ids.len(),
+        kept: total.saturating_sub(ids.len()),
+    };
+    if rule.dry_run {
+        return Ok(done);
+    }
+    for batch in ids.chunks(PRUNE_BATCH) {
+        // Ids from the database, so the list is safe to put into the statement.
+        let list = batch
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let per_scan = crate::research::TABLES
+            .iter()
+            .map(|t| (t.name, "scan_id"))
+            .chain([
+                ("scan_hosts", "scan_id"),
+                ("alerts", "scan_id"),
+                ("scans", "id"),
+            ]);
+        for (table, column) in per_scan {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE {column} IN ({list})"),
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    Ok(done)
 }
 pub fn load(path: &Path, id: i64) -> Result<Snapshot, String> {
     load_on(&open_read(path)?, id)
@@ -1111,17 +1273,28 @@ type Findings = Vec<crate::risk::Finding>;
 /// resolved only when the new scan looked at its evidence again: the host answered and the port
 /// was checked again (TCP ports checked; UDP port probed in both scans), or, for findings from
 /// passive traffic of a silent host, traffic was captured at all. Otherwise it is unconfirmed.
+/// A finding a vendor statement (VEX) cleared in the old scan and no longer clears is new.
 fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings) {
-    let (fa, fb) = (
+    finding_changes_of(
+        a,
+        b,
         crate::risk::analyze_snapshot(a),
         crate::risk::analyze_snapshot(b),
-    );
-    let keys = |list: &[crate::risk::Finding]| {
+    )
+}
+fn finding_changes_of(
+    a: &Snapshot,
+    b: &Snapshot,
+    fa: Findings,
+    fb: Findings,
+) -> (Findings, Findings, Findings) {
+    let keys = |list: &[crate::risk::Finding], cleared: bool| {
         list.iter()
+            .filter(|f| cleared || !f.cleared_by_vex())
             .map(crate::risk::Finding::key)
             .collect::<std::collections::HashSet<_>>()
     };
-    let (ka, kb) = (keys(&fa), keys(&fb));
+    let (ka, ka_live, kb) = (keys(&fa, true), keys(&fa, false), keys(&fb, true));
     let old: HashMap<IpAddr, &crate::scan::Host> = a.hosts.iter().map(|h| (h.ip, h)).collect();
     let answered: HashMap<IpAddr, &crate::scan::Host> = b
         .hosts
@@ -1142,7 +1315,13 @@ fn finding_changes(a: &Snapshot, b: &Snapshot) -> (Findings, Findings, Findings)
         (!was_udp || (udp_probed.contains(&port) && now.ports_checked))
             && (!was_tcp || crate::incremental::checked(now, port))
     };
-    let new = fb.into_iter().filter(|f| !ka.contains(&f.key())).collect();
+    let new = fb
+        .into_iter()
+        .filter(|f| {
+            let before = if f.cleared_by_vex() { &ka } else { &ka_live };
+            !before.contains(&f.key())
+        })
+        .collect();
     let (mut resolved, mut unconfirmed) = (vec![], vec![]);
     for f in fa.into_iter().filter(|f| !kb.contains(&f.key())) {
         let checked = rechecked(&f);
@@ -1995,6 +2174,111 @@ mod tests {
         c.hosts[0].udp_open = vec![161];
         let r = diff_report(&a, &c, &IgnoreList::new(&[])).unwrap();
         assert_eq!((r.summary.udp_opened, r.summary.tcp_opened), (1, 0));
+    }
+
+    #[test]
+    fn prune_deletes_old_scans_with_their_rows_and_keeps_the_newest_complete_one() {
+        let path = temp_db("prune");
+        let alert = |t: i64, subject: &str| crate::monitor::Alert {
+            timestamp: t,
+            severity: crate::risk::Severity::High,
+            kind: "new-device".into(),
+            subject: subject.into(),
+            message: format!("New device {subject}"),
+        };
+        let (mut a, mut b) = (snapshot(), snapshot());
+        a.targets = "10.0.0.0/24".into();
+        b.targets = "10.1.0.0/24".into();
+        for t in 1..=4 {
+            save_at(&path, &a, t * 100).unwrap(); // #1 to #4
+        }
+        save_at(&path, &b, 150).unwrap(); // #5
+        let mut partial = a.clone();
+        partial.complete = false;
+        save_at(&path, &partial, 500).unwrap(); // #6
+        save_alerts(&path, 1, &[alert(100, "10.0.0.1")]).unwrap();
+        save_alerts(&path, 4, &[alert(400, "10.0.0.1")]).unwrap();
+        let ids = || -> Vec<i64> { list(&path).unwrap().iter().map(|e| e.id).collect() };
+        let count = |sql: &str| -> i64 {
+            open(&path)
+                .unwrap()
+                .query_row(sql, [], |r| r.get(0))
+                .unwrap()
+        };
+        assert!(count("SELECT count(*) FROM hosts WHERE scan_id=1") > 0);
+        // The newest scan of the first scope is partial: the newest complete one stays too.
+        let rule = Prune {
+            scope: Some("10.0.0.0/24"),
+            keep: Some(1),
+            dry_run: true,
+            ..Default::default()
+        };
+        let would = Pruned {
+            deleted: 3,
+            kept: 3,
+        };
+        assert_eq!(prune(&path, &rule).unwrap(), would);
+        assert_eq!(ids().len(), 6, "a dry run deletes nothing");
+        let rule = Prune {
+            dry_run: false,
+            ..rule
+        };
+        assert_eq!(prune(&path, &rule).unwrap(), would);
+        assert_eq!(ids(), [6, 5, 4]);
+        assert_eq!(
+            count("SELECT count(*) FROM hosts WHERE scan_id IN (1,2,3)"),
+            0
+        );
+        assert_eq!(
+            count("SELECT count(*) FROM alerts"),
+            1,
+            "the alert of scan #4"
+        );
+        assert!(count("SELECT count(*) FROM hosts WHERE scan_id=4") > 0);
+        // By age, every scope: only the partial scan is neither new enough nor the newest
+        // complete scan of its scope.
+        let by_age = Prune {
+            before: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(
+            prune(&path, &by_age).unwrap(),
+            Pruned {
+                deleted: 1,
+                kept: 2
+            }
+        );
+        assert_eq!(ids(), [5, 4]);
+        assert_eq!(prune(&path, &by_age).unwrap().deleted, 0);
+        remove_db(&path);
+    }
+
+    #[test]
+    fn a_finding_that_is_no_longer_cleared_by_vex_is_new() {
+        let mut a = snapshot();
+        a.hosts = vec![host("10.0.0.1", &[23], &[("svc.23", "telnet")])];
+        let live = crate::risk::analyze_snapshot(&a);
+        assert!(!live.is_empty());
+        let mut cleared = live.clone();
+        for f in &mut cleared {
+            f.vex = Some(crate::vex::Applied {
+                state: crate::vex::State::NotAffected,
+                justification: String::new(),
+                detail: String::new(),
+                source: "VEX-1".into(),
+            });
+        }
+        let new = |fa: &Findings, fb: &Findings| {
+            finding_changes_of(&a, &a, fa.clone(), fb.clone()).0.len()
+        };
+        assert_eq!(new(&cleared, &live), live.len(), "cleared before, live now");
+        assert_eq!(new(&cleared, &cleared), 0, "cleared in both scans");
+        assert_eq!(new(&live, &live), 0);
+        assert_eq!(
+            new(&live, &cleared),
+            0,
+            "newly cleared is not a new finding"
+        );
     }
 
     #[test]

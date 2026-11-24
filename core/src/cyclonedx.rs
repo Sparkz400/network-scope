@@ -433,14 +433,16 @@ pub fn build(input: &Input) -> Value {
             }
             // Installed software the device listed over SNMP (HOST-RESOURCES-MIB): the name as the
             // agent gives it, which often includes the version.
-            let software = get("snmp.software".to_string());
+            // Split before cleaning: `clean` cuts a value to its length limit, and the list is
+            // far longer than one name.
+            let software = id.get("snmp.software").map_or("", String::as_str);
             for (n, name) in software
                 .split("; ")
+                .map(clean)
                 .filter(|s| !s.is_empty())
                 .take(crate::snmp::MAX_SOFTWARE)
                 .enumerate()
             {
-                let name = name.to_string();
                 let r = refs.unique(&format!("{device_ref}:snmp-sw:{n}"));
                 let mut p = Props::default();
                 p.add("source", "SNMP hrSWInstalledName".to_string());
