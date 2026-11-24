@@ -350,6 +350,15 @@ fn a_rule_in_the_grouped_findings_lists_its_hosts() {
     h.click("Show all findings");
     assert_eq!(h.app.findings_view.rule, None);
     assert!(h.has("Group by finding"), "back to the grouped view");
+    // A rule that is shown and then has no findings any more (a new scan) does not leave an
+    // empty list without a way back.
+    h.click("Industrial protocol port is reachable from the scanner");
+    assert!(h.app.findings_view.rule.is_some());
+    h.app.findings_view.rule = Some("a-rule-of-an-earlier-scan".into());
+    h.step();
+    assert_eq!(h.app.findings_view.rule, None);
+    assert!(!h.app.findings_view.rows.is_empty());
+    assert!(h.has("Group by finding"));
 }
 
 #[test]

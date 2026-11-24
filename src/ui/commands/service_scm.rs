@@ -106,6 +106,7 @@ const SERVICE_ERROR_NORMAL: u32 = 1;
 const SERVICE_CONFIG_DESCRIPTION: u32 = 1;
 const SERVICE_CONFIG_FAILURE_ACTIONS: u32 = 2;
 const SERVICE_CONFIG_DELAYED_AUTO_START_INFO: u32 = 3;
+const SERVICE_CONFIG_FAILURE_ACTIONS_FLAG: u32 = 4;
 const SC_ACTION_RESTART: u32 = 1;
 const SERVICE_CONTROL_STOP: u32 = 1;
 const SERVICE_CONTROL_INTERROGATE: u32 = 4;
@@ -211,6 +212,8 @@ pub(super) fn install(name: &str, command_line: &str) -> Result<(), String> {
             delay_ms: 60_000,
         },
     ];
+    // SERVICE_FAILURE_ACTIONS_FLAG: one BOOL, fFailureActionsOnNonCrashFailures.
+    let mut on_error_exit: i32 = 1;
     let mut failure = FailureActions {
         reset_period_s: 86_400,
         reboot_msg: std::ptr::null_mut(),
@@ -233,6 +236,13 @@ pub(super) fn install(name: &str, command_line: &str) -> Result<(), String> {
             service.0,
             SERVICE_CONFIG_FAILURE_ACTIONS,
             (&raw mut failure).cast(),
+        );
+        // Without this flag the actions above only follow a crash. The monitor that gives up
+        // (several cycles in a row failed) stops with an error code, and must be restarted too.
+        ChangeServiceConfig2W(
+            service.0,
+            SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+            (&raw mut on_error_exit).cast(),
         );
     }
     Ok(())

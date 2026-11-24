@@ -2,13 +2,66 @@
 //! `import KIND FILE...` for lists of known devices).
 use crate::{
     baseline, import, nmap, schema, store,
-    ui::{Ctx, output, progress},
+    ui::{Ctx, args::number, output, progress},
 };
 
 pub(super) fn history(ctx: &mut Ctx) -> Result<(), String> {
+    if ctx.pos.first().is_some_and(|p| p == "prune") {
+        return prune(ctx);
+    }
+    if ctx.opts.contains_key("dry-run") {
+        return Err("--dry-run applies to history prune".into());
+    }
     output(
         &schema::list("scans", "scans", &store::list(&ctx.db)?)?,
         &ctx.opts,
+    )
+}
+
+/// `history prune [--keep N] [--older-than WINDOW|DATE] [--dry-run]`: deletes saved scans (and
+/// what is stored per scan). The newest completed scan of every target set always stays.
+fn prune(ctx: &mut Ctx) -> Result<(), String> {
+    const USAGE: &str = "Use: history prune --keep N and/or --older-than 30d [--dry-run]";
+    let opts = &ctx.opts;
+    let keep = match opts.contains_key("keep") {
+        true => Some(number(opts, "keep", 1usize)?).filter(|n| *n > 0),
+        false => None,
+    };
+    if opts.contains_key("keep") && keep.is_none() {
+        return Err("--keep must be at least 1".into());
+    }
+    let before = match opts.get("older-than") {
+        Some(text) => match crate::changes::Since::parse(text, store::now())? {
+            crate::changes::Since::At(t) => Some(t),
+            crate::changes::Since::Last => return Err(USAGE.into()),
+        },
+        None => None,
+    };
+    if keep.is_none() && before.is_none() {
+        return Err(USAGE.into());
+    }
+    // A mistyped --db must not create an inventory and report that it is tidy.
+    if !ctx.db.exists() {
+        return Err(format!("{}: no such inventory", ctx.db.display()));
+    }
+    let dry_run = opts.contains_key("dry-run");
+    let done = store::prune(
+        &ctx.db,
+        &store::Prune {
+            scope: None,
+            keep,
+            before,
+            dry_run,
+        },
+    )?;
+    output(
+        &format!(
+            "{} {} scans; {} stay.",
+            if dry_run { "Would delete" } else { "Deleted" },
+            done.deleted,
+            done.kept
+        ),
+        opts,
     )
 }
 

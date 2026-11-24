@@ -289,6 +289,8 @@ fn valid_cve(s: &str) -> bool {
 struct Product {
     vendor: String,
     names: Vec<String>,
+    /// The names that narrow the product down, broadest first (see [`StatusEntry::specific`]).
+    specific: Vec<String>,
     version: Option<String>,
 }
 
@@ -296,6 +298,9 @@ struct Product {
 struct Trail {
     vendor: String,
     names: Vec<String>,
+    specific: Vec<String>,
+    /// A `product_name` branch is on the path: the leaf's own name then only repeats the path.
+    model: bool,
     version: Option<String>,
 }
 
@@ -321,6 +326,7 @@ fn leaf_with(product: &Value, path: &Trail, out: &mut BTreeMap<String, Product>,
     let mut p = Product {
         vendor: path.vendor.clone(),
         names: path.names.clone(),
+        specific: path.specific.clone(),
         version: path.version.clone(),
     };
     let full = text(product, "name");
@@ -331,6 +337,22 @@ fn leaf_with(product: &Value, path: &Trail, out: &mut BTreeMap<String, Product>,
         _ => (full.clone(), None),
     };
     if add_name {
+        if !path.model {
+            // Without a `product_name` branch the leaf's name is what narrows the product down
+            // (a flat list, or a model directly under a family); the vendor is not part of it.
+            let vendor = if path.vendor.is_empty() {
+                full.split_whitespace().next().unwrap_or("")
+            } else {
+                path.vendor.as_str()
+            };
+            let own = match name_part.get(..vendor.len()) {
+                Some(v) if !v.is_empty() && v.eq_ignore_ascii_case(vendor) => {
+                    name_part[v.len()..].trim()
+                }
+                _ => name_part.as_str(),
+            };
+            add_unique(&mut p.specific, own.to_string());
+        }
         add_unique(&mut p.names, name_part);
     }
     if p.version.is_none() {
@@ -395,7 +417,11 @@ fn walk(
     let name = text(branch, "name");
     match branch.get("category").and_then(Value::as_str).unwrap_or("") {
         "vendor" => path.vendor = name,
-        "product_family" | "product_name" => add_unique(&mut path.names, name),
+        category @ ("product_family" | "product_name") => {
+            path.model |= category == "product_name" && !name.is_empty();
+            add_unique(&mut path.specific, name.clone());
+            add_unique(&mut path.names, name);
+        }
         "product_version_range" | "product_version" => path.version = Some(name),
         _ => {}
     }
@@ -461,6 +487,13 @@ fn relationships(tree: &Value, out: &mut BTreeMap<String, Product>) {
                     platform.vendor.clone()
                 },
                 names: platform.names.clone(),
+                // The device is the platform: its names decide which model a statement is for.
+                specific: if platform.specific.is_empty() {
+                    component.specific.clone()
+                } else {
+                    platform.specific.clone()
+                },
+                model: true,
                 version: component
                     .version
                     .clone()
@@ -538,6 +571,11 @@ pub struct StatusEntry {
     pub cve: String,
     pub vendor: String,
     pub products: Vec<String>,
+    /// The names that narrow the product down, broadest first: the `product_family` and
+    /// `product_name` branches above it, and its own name when no `product_name` branch is (a
+    /// relationship: those of the platform). A statement for `S7-1200` > `CPU 1217C` is about
+    /// the 1217C only, although `products` also holds the family for matching advisories.
+    pub specific: Vec<String>,
     /// Versions in canonical form (`*` when the product names no version, see [`parse_range`]).
     pub range: String,
     /// `known_not_affected`, `fixed`, `known_affected` or `under_investigation`.
@@ -659,6 +697,7 @@ pub fn parse_statuses(bytes: &[u8]) -> Result<(String, Vec<StatusEntry>, usize),
                     cve: cve.clone(),
                     vendor: p.vendor.clone(),
                     products: p.names.clone(),
+                    specific: p.specific.clone(),
                     range,
                     status: label,
                     justification: flag_of.get(&pid).cloned().unwrap_or_default(),
