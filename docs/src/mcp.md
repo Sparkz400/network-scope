@@ -56,7 +56,7 @@ All results are JSON with a `schema` identifier (see [JSON output and schemas](j
 
 The query tools only read. They never send traffic and never write to the inventory; asking against a database that does not exist reports an empty inventory and does not create the file. They open the inventory read-only, so a write-protected file works too. An inventory saved by an older version is read as it is and is not upgraded (the app upgrades it the next time it saves a scan). `device_history` counts saved scans it could not read in `unreadable`, so a damaged inventory is not mistaken for "not seen". `changes` and `list_alerts` read tables that an older inventory may not have yet (alerts, the device registry, the baseline): they count as empty there.
 
-`since` has two spellings, for historical reasons: `findings_gained` takes a date or Unix seconds, `changes` and `list_alerts` take what the CLI option `changes --since` takes (a window or a date).
+`since` has two spellings: `findings_gained` takes a date or Unix seconds; `changes` and `list_alerts` take what the CLI option `changes --since` takes (a window or a date), so an assistant can ask for "the last 24 hours" without knowing the time.
 
 ## The scan tool
 
