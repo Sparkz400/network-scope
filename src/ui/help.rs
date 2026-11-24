@@ -1,5 +1,6 @@
 //! The `--help` text. A new command gets a line here (the test in `ui/mod.rs` checks that every
-//! registered command is mentioned).
+//! registered command is mentioned). The help of one command ([`command`]: `CMD --help`,
+//! `help CMD`) is cut out of the same text, so only the [`EXAMPLES`] are written separately.
 pub(super) const HELP: &str = r#"Network Scope — portable Rust network inventory
 
 network-scope                         Desktop GUI
@@ -88,7 +89,9 @@ network-scope segmentation check --zones FILE --from ZONE [SCAN_ID] [--format te
                                                conduits do not allow (reads a stored scan, sends nothing)
 network-scope update check                     Ask GitHub for the latest release (one HTTPS request); prints
                                                the release page and how to verify a download; never downloads
-network-scope completions powershell|bash      Print a shell completion script
+network-scope completions powershell|bash|zsh|fish   Print a shell completion script
+
+One command: network-scope COMMAND --help (or: network-scope help COMMAND)
 
 Scan options:
   --preset quick|office|plant|full  Named settings bundle (explicit options still win): quick = the
@@ -188,3 +191,295 @@ Npcap is optional for TCP connect; capture/DCP/SYN require its driver and access
 TUI: Space pause/resume, Q/Esc stop and save a partial scan, Up/Down select,
 Enter host details (Enter/Backspace back), S change sort. No scan starts by itself.
 "#;
+
+/// Two or three examples for the common commands, shown by [`command`]. A test checks that
+/// every option in them is a declared one.
+const EXAMPLES: &[(&str, &[&str])] = &[
+    (
+        "scan",
+        &[
+            "network-scope scan 192.168.1.0/24",
+            "network-scope scan 192.168.1.0/24 --preset office --format html --output scan.html",
+            "network-scope scan 192.168.1.10 --ports 22,80,443 --services --dry-run",
+        ],
+    ),
+    (
+        "monitor",
+        &[
+            "network-scope monitor 192.168.1.0/24 --interval 300",
+            "network-scope monitor 192.168.1.0/24 --interval 900 --keep 100 --alerts alerts.jsonl",
+        ],
+    ),
+    (
+        "findings",
+        &[
+            "network-scope findings 12 --min-severity medium",
+            "network-scope findings 12 --top 5",
+            "network-scope findings 12 --fail-on-findings --min-severity high",
+        ],
+    ),
+    (
+        "diff",
+        &[
+            "network-scope diff 11 12",
+            "network-scope diff 11 12 --format text",
+            "network-scope diff 11 12 --fail-on-findings --min-severity high",
+        ],
+    ),
+    (
+        "export",
+        &[
+            "network-scope export 12 --format csv --output scan.csv",
+            "network-scope export 12 --format html --baseline 11 --output report.html",
+            "network-scope export 12 --format cyclonedx --output bom.json",
+        ],
+    ),
+    (
+        "history",
+        &[
+            "network-scope history",
+            "network-scope history prune --keep 20 --dry-run",
+            "network-scope history prune --older-than 90d",
+        ],
+    ),
+    (
+        "changes",
+        &[
+            "network-scope changes",
+            "network-scope changes --since 7d",
+            "network-scope changes --since 2026-11-01 --format json",
+        ],
+    ),
+    (
+        "listen",
+        &[
+            "network-scope listen --interface ID",
+            "network-scope listen --interface ID --seconds 300",
+        ],
+    ),
+    (
+        "feeds",
+        &[
+            "network-scope feeds import --kev kev.json --epss epss.csv",
+            "network-scope feeds import nvd nvdcve-2.0-2026.json",
+            "network-scope feeds status",
+        ],
+    ),
+    (
+        "devices",
+        &[
+            "network-scope devices 12",
+            "network-scope devices 12 --format csv --output devices.csv",
+            "network-scope devices --history 192.168.1.20",
+        ],
+    ),
+    (
+        "search",
+        &[
+            "network-scope search 192.168.1.20",
+            "network-scope search printer --top 10",
+            "network-scope search telnet-open --format json",
+        ],
+    ),
+    (
+        "trace",
+        &[
+            "network-scope trace 192.168.1.1",
+            "network-scope trace 10.20.0.1 --max-hops 10 --dry-run",
+        ],
+    ),
+];
+
+/// The option names (`--name` without the dashes) in a piece of help text.
+fn option_names(text: &str) -> Vec<&str> {
+    text.split("--")
+        .skip(1)
+        .map(|rest| {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Whether a line of an option description says the option is for `command`: the command word
+/// in the list in front of a colon (`scan, monitor: ...`, `history prune: ...`).
+fn names_command(line: &str, command: &str) -> bool {
+    let boundary = |c: Option<char>| c.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '-'));
+    line.match_indices(command).any(|(at, _)| {
+        let after = &line[at + command.len()..];
+        boundary(line[..at].chars().next_back())
+            && boundary(after.chars().next())
+            && after.split_once(':').is_some_and(|(list, _)| {
+                list.chars()
+                    .all(|c| c.is_ascii_lowercase() || " ,/-".contains(c))
+            })
+    })
+}
+
+/// The help of one command, cut out of [`HELP`]: its usage lines, the descriptions of the
+/// options that apply to it and, for the common commands, examples. `None` when the text has
+/// no usage line for `name`, which is the case exactly for an unknown command.
+///
+/// An option description applies when the command takes the scan options (its usage says
+/// `options]`), when the usage names every option the description is about, when the
+/// description names the command in front of a colon, or when it says "any command".
+pub(super) fn command(name: &str) -> Option<String> {
+    let (commands, rest) = HELP.split_once("\nScan options:\n")?;
+    let (options, notes) = rest.split_once("\n\n")?;
+    // Usage: the `network-scope NAME ...` lines, each with its indented continuation lines.
+    let mut usage = vec![];
+    let mut mine = false;
+    for line in commands.lines() {
+        if !line.starts_with(' ') {
+            mine = line
+                .strip_prefix("network-scope ")
+                .is_some_and(|rest| rest.split_whitespace().next() == Some(name));
+        }
+        if mine {
+            usage.push(line);
+        }
+    }
+    if usage.is_empty() {
+        return None;
+    }
+    let usage = usage.join("\n");
+    let scans = usage.contains("options]");
+    let named = option_names(&usage);
+    // Option descriptions: a line indented by two spaces starts one, deeper lines continue it.
+    let mut blocks: Vec<Vec<&str>> = vec![];
+    for line in options.lines() {
+        match blocks.last_mut() {
+            Some(block) if line.starts_with("   ") => block.push(line),
+            _ => blocks.push(vec![line]),
+        }
+    }
+    let applies = |block: &Vec<&str>| {
+        // What the description is about: the options before the gap that starts the text.
+        let about = block[0].trim_start();
+        let about = option_names(about.split_once("  ").map_or(about, |(spec, _)| spec));
+        scans
+            || about.iter().all(|o| named.contains(o))
+            || block
+                .iter()
+                .any(|l| l.contains("any command") || names_command(l, name))
+    };
+    let mut out = format!("{usage}\n\nOptions:\n");
+    for block in blocks.iter().filter(|b| applies(b)) {
+        out.push_str(&block.join("\n"));
+        out.push('\n');
+    }
+    if scans {
+        // The two lines about Safe Mode: what a scan does unless `--fast` is given.
+        let safe: Vec<&str> = notes
+            .lines()
+            .skip_while(|l| !l.starts_with("Safe Mode"))
+            .take(2)
+            .collect();
+        out.push_str(&format!("\n{}\n", safe.join("\n")));
+    }
+    if let Some((_, examples)) = EXAMPLES.iter().find(|(command, _)| *command == name) {
+        out.push_str("\nExamples:\n");
+        for example in *examples {
+            out.push_str(&format!("  {example}\n"));
+        }
+    }
+    out.push_str("\nEvery command and option: network-scope --help");
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::{args::options, commands};
+
+    #[test]
+    fn every_command_has_its_own_help() {
+        for (name, _) in commands::COMMANDS {
+            let text = command(name).unwrap_or_else(|| panic!("{name}"));
+            assert!(
+                text.starts_with(&format!("network-scope {name}")),
+                "{name}: {text}"
+            );
+            assert!(text.len() < HELP.len(), "{name} is not the whole help");
+            // The options of every command are in each one.
+            assert!(text.contains("\n  --quiet "), "{name}");
+            // Only this command's usage lines.
+            for line in text.lines() {
+                if let Some(rest) = line.strip_prefix("network-scope ") {
+                    assert_eq!(rest.split_whitespace().next(), Some(*name), "{line}");
+                }
+            }
+        }
+        assert!(command("help").is_none() && command("no-such-command").is_none());
+        // A prefix of a command word is not that command.
+        assert!(command("ot").is_none() && command("scans").is_none());
+    }
+
+    #[test]
+    fn a_command_lists_the_options_that_apply_to_it() {
+        let has = |name: &str, option: &str| {
+            command(name)
+                .unwrap()
+                .lines()
+                .any(|l| l.starts_with(&format!("  --{option} ")))
+        };
+        // The scanning commands take every scan option, and say what Safe Mode is.
+        for name in ["scan", "monitor", "service"] {
+            for option in ["ports", "targets-file", "fast", "older-than", "quiet"] {
+                assert!(has(name, option), "{name} --{option}");
+            }
+            assert!(
+                command(name)
+                    .unwrap()
+                    .contains("\nSafe Mode is on by default")
+            );
+        }
+        assert!(!command("scan").unwrap().contains("history prune ["));
+        // Named in the usage line, or named by the description.
+        for (name, option) in [
+            ("history", "keep"),
+            ("history", "older-than"),
+            ("history", "db"),
+            ("findings", "fail-on-findings"),
+            ("diff", "fail-on-findings"),
+            ("trace", "trace-method"),
+            ("trace", "dry-run"),
+            ("trace", "sent-log"),
+            ("dcp", "sent-log"),
+            ("wol", "dry-run"),
+            ("export", "json-schema"),
+        ] {
+            assert!(has(name, option), "{name} --{option}");
+        }
+        // And not the rest.
+        for (name, option) in [
+            ("history", "ports"),
+            ("findings", "keep"),
+            ("export", "no-report"),
+            ("report", "no-report"),
+            ("interfaces", "interface"),
+            ("trace", "trace"),
+            ("alerts", "fast"),
+        ] {
+            assert!(!has(name, option), "{name} --{option}");
+        }
+        assert!(!command("history").unwrap().contains("Safe Mode"));
+    }
+
+    #[test]
+    fn examples_are_for_known_commands_and_use_declared_options() {
+        for (name, examples) in EXAMPLES {
+            assert!(commands::find(name).is_some(), "{name}");
+            assert!((2..=3).contains(&examples.len()), "{name}");
+            for example in *examples {
+                let words: Vec<String> = example.split_whitespace().map(str::to_string).collect();
+                assert_eq!(words[..2], ["network-scope", *name], "{example}");
+                options(&words[2..]).unwrap_or_else(|e| panic!("{example}: {e}"));
+                assert!(command(name).unwrap().contains(example), "{example}");
+            }
+        }
+    }
+}

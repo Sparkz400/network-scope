@@ -102,6 +102,22 @@ fn help_and_plain_success_exit_0() {
     assert_eq!(code, 0);
     assert!(out.contains("--fail-on-findings"), "{out}");
     assert!(out.contains("Exit status"), "{out}");
+    // The help of one command, in its three forms: on stdout, status 0, nothing on stderr, and
+    // nothing is scanned (`-h` is not a target).
+    for args in [&["scan", "--help"][..], &["scan", "-h"], &["help", "scan"]] {
+        let (code, one, err) = run_bin(env!("CARGO_BIN_EXE_network-scope-cli"), args, None);
+        assert_eq!((code, err.as_str()), (0, ""), "{args:?}");
+        assert!(one.starts_with("network-scope scan TARGETS"), "{one}");
+        assert!(one.contains("Examples:") && one.len() < out.len(), "{one}");
+        assert!(!one.contains("network-scope findings"), "{one}");
+    }
+    let (code, _, err) = run_bin(
+        env!("CARGO_BIN_EXE_network-scope-cli"),
+        &["frobnicate", "--help"],
+        None,
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("Unknown command frobnicate"), "{err}");
 }
 
 #[test]
