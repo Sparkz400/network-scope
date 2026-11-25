@@ -28,7 +28,7 @@ pub(super) fn file_in(dir: &Path, unix_secs: u64) -> PathBuf {
 /// Starts the wire capture for `hosts` (when possible) before the scan sends anything.
 pub(super) fn start(path: PathBuf, interface: &str, hosts: &[IpAddr]) -> Recording {
     let started = if hosts.len() > wirecap::MAX_FILTER_HOSTS {
-        Err(format!(
+        Err(tr!(
             "{} targets are too many for a capture filter (at most {})",
             hosts.len(),
             wirecap::MAX_FILTER_HOSTS
@@ -60,7 +60,7 @@ impl Recording {
             let captured = wire.finish();
             if captured.frames.is_empty() {
                 why = Some(captured.error.unwrap_or_else(|| {
-                    "no frame matched the filter (the targets may be reached through another interface, or are this computer's own addresses)".into()
+                    tr!("no frame matched the filter (the targets may be reached through another interface, or are this computer's own addresses)").into()
                 }));
             } else {
                 match network_scope_core::record::write_wire_pcapng(

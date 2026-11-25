@@ -357,11 +357,11 @@ fn run_job(job: Job) -> Done {
                 .map_or(0, |d| d.as_secs());
             let result = match kind {
                 FeedKind::Sbom => crate::sbom::default_path()
-                    .ok_or_else(|| "No location for the SBOM cache".to_string())
+                    .ok_or_else(|| tr!("No location for the SBOM cache").to_string())
                     .and_then(|cache| crate::sbom::import(&files, &Default::default(), &cache, now))
                     .map(|r| r.lines()),
                 FeedKind::Vex => crate::vex::default_path()
-                    .ok_or_else(|| "No location for the VEX cache".to_string())
+                    .ok_or_else(|| tr!("No location for the VEX cache").to_string())
                     .and_then(|cache| crate::vex::import(&files, &cache, now))
                     .map(|r| r.lines()),
             };
@@ -1250,8 +1250,9 @@ impl Scanner {
             // An unreadable scope file blocks the scan until the user confirms once.
             Err(_) if consent.out_of_scope => None,
             Err(e) => {
-                return Some(format!(
-                    "The scope file is invalid ({e}), so nothing is known to be in scope."
+                return Some(tr!(
+                    "The scope file is invalid ({}), so nothing is known to be in scope.",
+                    e
                 ));
             }
         };
@@ -1684,8 +1685,8 @@ impl Scanner {
             return;
         }
         let title = match kind {
-            FeedKind::Sbom => "SBOM (CycloneDX or SPDX JSON)",
-            FeedKind::Vex => "VEX (CSAF or CycloneDX JSON)",
+            FeedKind::Sbom => tr!("SBOM (CycloneDX or SPDX JSON)"),
+            FeedKind::Vex => tr!("VEX (CSAF or CycloneDX JSON)"),
         };
         if let Some(files) = rfd::FileDialog::new()
             .add_filter(title, &["json"])

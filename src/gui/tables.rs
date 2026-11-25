@@ -77,11 +77,19 @@ impl View {
     }
     /// Severity selector and text box above a table.
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str, any: &str) {
-        self.controls_with(ui, id, any, false);
+        self.controls_with(ui, id, any, false, |_| {});
     }
     /// The same, plus (for findings) the filters on the feed data: known exploited (KEV) only
     /// and a minimum EPSS.
-    pub fn controls_with(&mut self, ui: &mut egui::Ui, id: &str, any: &str, exploit: bool) {
+    /// `more` adds what else belongs in that row: a line of its own costs the table a row.
+    pub fn controls_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &str,
+        any: &str,
+        exploit: bool,
+        more: impl FnOnce(&mut egui::Ui),
+    ) {
         ui.horizontal_wrapped(|ui| {
             let severity = egui::ComboBox::from_id_salt(id)
                 .selected_text(
@@ -145,6 +153,7 @@ impl View {
                         "EPSS: the estimated probability that the vulnerability is exploited in the next 30 days."
                     ));
             }
+            more(ui);
         });
     }
 }

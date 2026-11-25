@@ -220,24 +220,24 @@ impl Scanner {
                     ui.label(tr!("Nothing found. Enable service detection in Settings to collect the evidence these checks use."));
                     return;
                 }
-                view.controls_with(ui, "findings_severity", tr!("All severities"), true);
-                // The hosts of one rule (a grouped row was clicked), or the choice to group.
+                // The hosts of one rule (a grouped row was clicked), or the choice to group: in
+                // the row of the filters.
                 let shown_rule = view
                     .rule
                     .as_ref()
                     .and_then(|r| findings.iter().find(|f| &f.id == r))
                     .map(|f| f.title.clone());
-                if let Some(title) = shown_rule {
-                    ui.horizontal_wrapped(|ui| {
+                view.controls_with(ui, "findings_severity", tr!("All severities"), true, |ui| {
+                    if let Some(title) = shown_rule {
                         ui.label(tr!("The hosts of: {}", title));
                         if ui.button(tr!("Show all findings")).clicked() {
                             show_all = true;
                         }
-                    });
-                } else {
-                    ui.checkbox(group, tr!("Group by finding"))
-                        .on_hover_text(tr!("One row per finding with the hosts it affects. Click a row to list its hosts."));
-                }
+                    } else {
+                        ui.checkbox(group, tr!("Group by finding"))
+                            .on_hover_text(tr!("One row per finding with the hosts it affects. Click a row to list its hosts."));
+                    }
+                });
                 let grouped = *group && view.rule.is_none();
                 tables::plain_labels(ui);
                 // Wide tables scroll sideways instead of running past the edge.
@@ -329,8 +329,8 @@ impl Scanner {
                             .sense(egui::Sense::click())
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             // The finding takes the room that is left (a wide window shows
-                            // the whole title). The fixed columns fit a 1100 px window with
-                            // both links in view; below that the table scrolls sideways.
+                            // the whole title). The fixed columns fit a 1100 px window;
+                            // below that the table scrolls sideways.
                             .column(tables::sized(widths, FINDING_WIDTHS[0]))
                             .column(tables::sized(widths, FINDING_WIDTHS[1]).clip(true))
                             .column(Column::remainder().at_least(150.0).clip(true))
@@ -1129,7 +1129,7 @@ fn kev_label(ui: &mut egui::Ui, f: &risk::Finding) {
         return;
     }
     let text = if f.exploit.kev_ransomware {
-        "KEV · ransomware"
+        tr!("KEV · ransomware")
     } else {
         "KEV"
     };
@@ -1168,7 +1168,7 @@ const FINDING_WIDTHS: [(&str, f32); 8] = [
     ("findings.cve", 105.0),
     ("findings.kev", 50.0),
     ("findings.epss", 55.0),
-    ("findings.links", 160.0),
+    ("findings.links", 85.0),
 ];
 const GROUP_WIDTHS: [(&str, f32); 7] = [
     ("groups.severity", 65.0),
@@ -1177,7 +1177,7 @@ const GROUP_WIDTHS: [(&str, f32); 7] = [
     ("groups.cve", 110.0),
     ("groups.kev", 65.0),
     ("groups.epss", 55.0),
-    ("groups.links", 150.0),
+    ("groups.links", 85.0),
 ];
 const DEVICE_WIDTHS: [(&str, f32); 7] = [
     ("devices.address", 130.0),
@@ -1190,9 +1190,13 @@ const DEVICE_WIDTHS: [(&str, f32); 7] = [
 ];
 
 pub(super) fn links(ui: &mut egui::Ui, f: &risk::Finding) {
-    super::convenience::link_to(ui, tr!("Learn more"), &super::docs_url(&f.id));
+    // Short words, so the column leaves its width to the finding; read out in full.
+    let link = |ui: &mut egui::Ui, short: &str, name: &str, url: &str| {
+        super::a11y::named(super::convenience::link_to(ui, short, url), name);
+    };
+    link(ui, tr!("Docs"), tr!("Learn more"), &super::docs_url(&f.id));
     if let Some(url) = f.reference.as_deref().filter(|u| u.starts_with("https://")) {
-        super::convenience::link_to(ui, tr!("Reference"), url);
+        link(ui, tr!("Ref."), tr!("Reference"), url);
     }
 }
 

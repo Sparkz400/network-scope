@@ -791,3 +791,15 @@ Rhai script || Rhai-Skript
 MD5 (weak) || MD5 (schwach)
 DES (weak) || DES (schwach)
 CVE rules || CVE-Regeln
+No location for the SBOM cache || Kein Speicherort für den SBOM-Zwischenspeicher
+No location for the VEX cache || Kein Speicherort für den VEX-Zwischenspeicher
+The scope file is invalid ({}), so nothing is known to be in scope. || Die Scope-Datei ist ungültig ({}); es ist daher nichts als erlaubt bekannt.
+SBOM (CycloneDX or SPDX JSON) || SBOM (CycloneDX- oder SPDX-JSON)
+VEX (CSAF or CycloneDX JSON) || VEX (CSAF- oder CycloneDX-JSON)
+{} targets are too many for a capture filter (at most {}) || {} Ziele sind zu viele für einen Mitschnittfilter (höchstens {})
+no frame matched the filter (the targets may be reached through another interface, or are this computer's own addresses) || kein Frame passte zum Filter (die Ziele werden vielleicht über eine andere Schnittstelle erreicht oder sind eigene Adressen dieses Computers)
+KEV · ransomware || KEV · Ransomware
+Copy {} addresses || {} Adressen kopieren
+Copy {} rows || {} Zeilen kopieren
+Docs || Doku
+Ref. || Ref.
