@@ -1826,6 +1826,62 @@ fn the_host_details_show_what_changed_and_keep_a_note() {
 }
 
 #[test]
+fn a_passive_capture_lists_what_it_hears_and_is_saved_when_it_stops() {
+    let mut h = Harness::sized("main", egui::vec2(1100.0, 1400.0));
+    h.app.view = MainView::Passive;
+    let (tx, receiver) = mpsc::channel();
+    h.app.listening = Some(passive::Listening {
+        receiver,
+        cancel: Default::default(),
+    });
+    h.step();
+    let heard = passive::Observation {
+        protocol: "mDNS".into(),
+        mac: "02:AA:BB:00:00:99".into(),
+        ip: "10.20.0.200".parse().ok(),
+        fields: [("name".to_string(), "tablet-lobby".to_string())].into(),
+    };
+    tx.send(Ok(heard)).unwrap();
+    tx.send(Err("truncated frame".into())).unwrap();
+    h.step();
+    h.step();
+    assert_eq!(h.app.observations.len(), 1);
+    assert_eq!(h.app.error, "truncated frame");
+    assert!(h.has("1 observed device/protocol combinations"));
+    // One observation's fields, shown on a click.
+    h.click("mDNS · 02:AA:BB:00:00:99 · 10.20.0.200");
+    assert!(h.has("name: tablet-lobby"));
+    // No active scan while the interface is held.
+    h.app.start();
+    assert_eq!(
+        h.app.error,
+        "Stop passive capture before starting an active scan."
+    );
+    assert!(h.app.run.is_none());
+    h.click("Stop capture");
+    assert!(
+        h.app
+            .listening
+            .as_ref()
+            .unwrap()
+            .cancel
+            .load(Ordering::Relaxed)
+    );
+    // The capture thread ends: what was heard is saved, as a stopped (partial) capture.
+    drop(tx);
+    h.step();
+    assert!(h.app.listening.is_none());
+    assert_eq!(h.app.status, "1 observations · saving capture");
+    match h.job() {
+        Some(Job::Save(snapshot, "capture")) => {
+            assert_eq!(snapshot.observations.len(), 1);
+            assert!(!snapshot.complete, "stopped by the user");
+        }
+        _ => panic!("the capture is saved"),
+    }
+}
+
+#[test]
 fn a_passive_device_copies_its_address_and_mac_and_closes() {
     let mut h = Harness::new("devices");
     h.app.observations.push(passive::Observation {
