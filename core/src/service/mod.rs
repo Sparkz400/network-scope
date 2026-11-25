@@ -653,11 +653,11 @@ mod tests {
     async fn trickled_reply_ends_at_the_deadline() {
         let port = trickle(b"").await;
         let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        let start = std::time::Instant::now();
         let first = Duration::from_millis(200);
-        let data = read_within(&mut s, first, 32 * 1024, Duration::from_millis(300)).await;
-        let took = start.elapsed();
-        assert!(took < Duration::from_millis(1500), "took {took:?}");
+        let read = read_within(&mut s, first, 32 * 1024, Duration::from_millis(300));
+        let data = timeout(Duration::from_millis(1500), read)
+            .await
+            .expect("the read ends at its deadline");
         assert!(!data.is_empty() && data.len() < 100, "{} bytes", data.len());
     }
 

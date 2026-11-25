@@ -314,10 +314,10 @@ mod tests {
         let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
-        let start = std::time::Instant::now();
-        let f = ssh_fields(&mut s, b"SSH-2.0-x\r\n", Duration::from_millis(100)).await;
-        let took = start.elapsed();
-        assert!(took < Duration::from_secs(3), "took {took:?}");
+        let read = ssh_fields(&mut s, b"SSH-2.0-x\r\n", Duration::from_millis(100));
+        let f = tokio::time::timeout(Duration::from_secs(3), read)
+            .await
+            .expect("the key exchange read ends at its deadline");
         assert!(f.is_empty());
     }
 }
