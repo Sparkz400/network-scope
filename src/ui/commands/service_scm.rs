@@ -405,6 +405,17 @@ const BROAD_GROUPS: [&str; 4] = ["S-1-1-0", "S-1-5-4", "S-1-5-11", "S-1-5-32-545
 /// generic all and generic write.
 const WRITE_RIGHTS: u32 =
     0x2 | 0x4 | 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000 | 0x4000_0000;
+/// The rights on a folder further up that let the holder rename or replace what is in it:
+/// delete a child, delete, change the permissions or the owner, generic all. Adding files or
+/// folders is not among them (every user may create a folder in the root of a drive).
+const REPLACE_RIGHTS: u32 = 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000;
+/// SYSTEM, Administrators and TrustedInstaller: the accounts that may own or change what a
+/// service runs.
+const ADMIN_SIDS: [&str; 3] = [
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+];
 
 /// A null-terminated UTF-16 path.
 fn wide_path(path: &Path) -> Vec<u16> {
@@ -594,17 +605,56 @@ pub(super) fn prepare_data_dir(dir: &Path, protect: bool) -> Result<(), String> 
     prepare_dir(dir, protect.then_some(DATA_DIR_SDDL), &TRUSTED_OWNERS)
 }
 
-/// Refuses files the service runs or obeys (the program, scripts, probes, the scope file) when
-/// every user may change them or the folder they are in (and so replace them, or put a DLL next
-/// to the program): the service would run what they put there as SYSTEM.
+/// The account other than `admins` that owns `s` or holds one of `rights` on it (entries only
+/// for what is created below do not count).
+fn other_writer(s: &Security, rights: u32, admins: &[&str]) -> Option<String> {
+    if !admins.contains(&s.owner.as_str()) {
+        return Some(format!("its owner {}", s.owner));
+    }
+    let Some(entries) = &s.allowed else {
+        return Some("everyone (it has no access list)".into());
+    };
+    entries
+        .iter()
+        .find(|(sid, mask, flags)| {
+            flags & INHERIT_ONLY_ACE == 0 && mask & rights != 0 && !admins.contains(&sid.as_str())
+        })
+        .map(|(sid, _, _)| sid.clone())
+}
+
+/// Refuses files the service runs or obeys (the program, scripts, probes, the scope file) unless
+/// only SYSTEM, Administrators and TrustedInstaller own or may change them and the folder they
+/// are in (another account could replace them, or put a DLL next to the program), no link sits
+/// anywhere on the path, and no other account may rename or replace a folder further up: the
+/// service would run as SYSTEM what is there.
 pub(super) fn check_not_writable(paths: &[PathBuf]) -> Result<(), String> {
+    check_paths(paths, &ADMIN_SIDS)
+}
+
+fn check_paths(paths: &[PathBuf], admins: &[&str]) -> Result<(), String> {
+    let refuse = |p: &Path, why: String| {
+        format!(
+            "{}: {why}, and the service would run as SYSTEM what is there. Copy the program (and the files the service reads) to a folder only administrators can change, such as C:\\Program Files\\Network Scope, and install the service from there",
+            p.display()
+        )
+    };
     for path in paths {
-        for p in [Some(path.as_path()), path.parent()].into_iter().flatten() {
-            if open_to_users(&security(p)?) {
-                return Err(format!(
-                    "{}: every local user may change this, and the service would run as SYSTEM what is there. Copy the program (and the files the service reads) to a folder only administrators can write to, such as C:\\Program Files\\Network Scope, and install the service from there",
-                    p.display()
-                ));
+        let absolute = std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        for p in absolute.ancestors() {
+            let meta = std::fs::symlink_metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(refuse(p, "this is a link (reparse point)".into()));
+            }
+        }
+        // No link on the way, so this is the same place; checked as the system resolves it.
+        let canonical =
+            std::fs::canonicalize(&absolute).map_err(|e| format!("{}: {e}", path.display()))?;
+        for (i, p) in canonical.ancestors().enumerate() {
+            // The file and its folder: no other account may change either; further up: none
+            // may rename or replace a folder.
+            let rights = if i < 2 { WRITE_RIGHTS } else { REPLACE_RIGHTS };
+            if let Some(who) = other_writer(&security(p)?, rights, admins) {
+                return Err(refuse(p, format!("{who} may change this")));
             }
         }
     }
@@ -1026,28 +1076,130 @@ mod tests {
         remove(&base);
     }
 
-    /// The program and the files a service obeys: refused when every user may change the file or
-    /// its folder (`%TEMP%` itself is the test user's alone, so the folder check passes there).
+    /// The program and the files a service obeys. The test user stands in for Administrators (it
+    /// owns the temp folder and its profile), so the rules can be tried without elevation; so do
+    /// the accounts that may change the folders above `%TEMP%` on this machine.
     #[test]
-    fn program_files_other_users_may_change_are_refused() {
+    fn program_files_other_accounts_may_change_are_refused() {
         let base = temp("files");
         let me = security(&base).unwrap().owner;
-        let file = base.join("policy.rhai");
+        let mut admins = vec![me.clone(), "S-1-5-18".into(), "S-1-5-32-544".into()];
+        admins.push(ADMIN_SIDS[2].into());
+        for p in std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .ancestors()
+        {
+            let s = security(p).unwrap();
+            admins.push(s.owner);
+            for (sid, mask, flags) in s.allowed.unwrap_or_default() {
+                if flags & INHERIT_ONLY_ACE == 0 && mask & REPLACE_RIGHTS != 0 {
+                    admins.push(sid);
+                }
+            }
+        }
+        if ["S-1-5-32-545", "S-1-5-11", "S-1-5-32-546"]
+            .iter()
+            .any(|sid| admins.iter().any(|a| a == sid))
+        {
+            eprintln!("skipped: the folders above %TEMP% are open to Users or Guests here");
+            return remove(&base);
+        }
+        let admins: Vec<&str> = admins.iter().map(String::as_str).collect();
+        let check = |p: &Path| check_paths(&[p.to_path_buf()], &admins);
+        let dir = base.join("app");
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("policy.rhai");
         std::fs::write(&file, "fn on_host(h) { }").unwrap();
-        check_not_writable(std::slice::from_ref(&file)).unwrap();
-        // The folder: anyone may add files (a DLL next to the program, a replaced script).
-        set_dacl(&base, &format!("D:P(A;OICI;FA;;;{me})(A;CI;0x116;;;BU)")).unwrap();
-        let err = check_not_writable(std::slice::from_ref(&file)).unwrap_err();
-        assert!(err.contains("Program Files"), "{err}");
-        // The file itself.
-        set_dacl(&base, &format!("D:P(A;OICI;FA;;;{me})")).unwrap();
-        check_not_writable(std::slice::from_ref(&file)).unwrap();
-        set_dacl(&file, &format!("D:P(A;;FA;;;{me})(A;;0x6;;;AU)")).unwrap();
-        let err = check_not_writable(std::slice::from_ref(&file)).unwrap_err();
-        assert!(err.contains("policy.rhai"), "{err}");
+        let mine = format!("D:P(A;OICI;FA;;;{me})");
+        set_dacl(&base, &mine).unwrap();
+        set_dacl(&dir, &mine).unwrap();
+        check(&file).unwrap();
+        // The file's folder: another account may add files (a DLL next to the program).
+        set_dacl(&dir, &format!("{mine}(A;CI;0x116;;;BU)")).unwrap();
+        let err = check(&file).unwrap_err();
+        assert!(
+            err.contains("Program Files") && err.contains("S-1-5-32-545"),
+            "{err}"
+        );
+        set_dacl(&dir, &mine).unwrap();
+        // The file: any account other than the administrators counts, not only Users.
+        set_dacl(&file, &format!("D:P(A;;FA;;;{me})(A;;0x4;;;BG)")).unwrap();
+        let err = check(&file).unwrap_err();
+        assert!(
+            err.contains("policy.rhai") && err.contains("S-1-5-32-546"),
+            "{err}"
+        );
+        set_dacl(&file, &format!("D:P(A;;FA;;;{me})(A;;0x1200a9;;;BU)")).unwrap();
+        check(&file).unwrap();
+        // A folder further up: creating folders in it is fine (as in C:\), renaming or
+        // replacing what is in it is not; entries only for what is created below do not count.
+        set_dacl(&base, &format!("{mine}(A;;0x4;;;AU)(A;OICIIO;FA;;;AU)")).unwrap();
+        check(&file).unwrap();
+        set_dacl(&base, &format!("{mine}(A;;0x40;;;AU)")).unwrap();
+        let err = check(&file).unwrap_err();
+        assert!(err.contains("S-1-5-11"), "{err}");
+        set_dacl(&base, &mine).unwrap();
+        // A junction anywhere on the path.
+        let link = base.join("link");
+        let junction = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&dir)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if junction {
+            let err = check(&link.join("policy.rhai")).unwrap_err();
+            assert!(err.contains("reparse point"), "{err}");
+        }
         // A missing file fails the check instead of passing it.
-        assert!(check_not_writable(&[base.join("missing.rhai")]).is_err());
+        assert!(check(&dir.join("missing.rhai")).is_err());
+        // With the real list, a file in the test user's profile is refused (the user owns
+        // it), one in Program Files passes.
+        let err = check_not_writable(std::slice::from_ref(&file)).unwrap_err();
+        assert!(err.contains("owner") || err.contains(&me), "{err}");
+        let common = Path::new(r"C:\Program Files\Common Files");
+        if common.is_dir() {
+            check_not_writable(&[common.to_path_buf()]).unwrap();
+        }
+        let _ = std::fs::remove_dir(&link);
+        remove(&dir);
         remove(&base);
+    }
+
+    #[test]
+    fn owners_and_entries_of_other_accounts_count_as_writers() {
+        let entry = |sid: &str, mask: u32, flags: u8| (sid.to_string(), mask, flags);
+        let s = |owner: &str, allowed| Security {
+            owner: owner.into(),
+            allowed,
+        };
+        let admins = &ADMIN_SIDS;
+        let user = "S-1-5-21-1-2-3-1001";
+        assert!(other_writer(&s(user, Some(vec![])), WRITE_RIGHTS, admins).is_some());
+        assert!(other_writer(&s("S-1-5-18", None), WRITE_RIGHTS, admins).is_some());
+        let creator_below = vec![entry("S-1-3-0", 0x1f01ff, INHERIT_ONLY_ACE | 0x3)];
+        assert!(
+            other_writer(&s(ADMIN_SIDS[2], Some(creator_below)), WRITE_RIGHTS, admins).is_none()
+        );
+        let owner_rights = vec![entry(user, 0x8_0000, 0)];
+        assert!(
+            other_writer(
+                &s("S-1-5-32-544", Some(owner_rights)),
+                REPLACE_RIGHTS,
+                admins
+            )
+            .is_some()
+        );
+        let add_folder = vec![entry("S-1-5-11", 0x4, 0)];
+        assert!(
+            other_writer(
+                &s("S-1-5-32-544", Some(add_folder.clone())),
+                REPLACE_RIGHTS,
+                admins
+            )
+            .is_none()
+        );
+        assert!(other_writer(&s("S-1-5-32-544", Some(add_folder)), WRITE_RIGHTS, admins).is_some());
     }
 
     #[test]
