@@ -602,10 +602,7 @@ impl<T: Default> ActiveCache<T> {
         active.stamp = now;
         match result {
             Ok(data) => active.data = Arc::new(data),
-            Err(e) => eprintln!(
-                "{}: {e}; the data loaded before stays in use",
-                self.label
-            ),
+            Err(e) => eprintln!("{}: {e}; the data loaded before stays in use", self.label),
         }
     }
 }

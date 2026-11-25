@@ -159,7 +159,10 @@ fn an_unknown_scan_id_is_named_and_a_bad_format_comes_first() {
         assert_eq!(code, 1, "{args:?}");
         // `segmentation check` reads its zone file first; the others reach the scan.
         if args[0] != "segmentation" {
-            assert!(err.contains("No scan with ID 99; see \"history\""), "{args:?}: {err}");
+            assert!(
+                err.contains("No scan with ID 99; see \"history\""),
+                "{args:?}: {err}"
+            );
         }
         assert!(!err.contains("Query returned no rows"), "{args:?}: {err}");
     }

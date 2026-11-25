@@ -271,10 +271,18 @@ fn an_import_never_writes_over_a_file_it_could_not_load() {
         r#"{"version":0,"imported_at":1,"sboms":[{"shape":"of version 0"}]}"#,
     ] {
         std::fs::write(&cache, old).unwrap();
-        assert!(Library::load(&cache).unwrap_err().contains("import the SBOMs again"));
+        assert!(
+            Library::load(&cache)
+                .unwrap_err()
+                .contains("import the SBOMs again")
+        );
         import().unwrap();
         let library = Library::load(&cache).unwrap();
-        assert_eq!((library.version, library.sboms.len()), (CACHE_VERSION, 1), "{old}");
+        assert_eq!(
+            (library.version, library.sboms.len()),
+            (CACHE_VERSION, 1),
+            "{old}"
+        );
     }
     // A cache this version could not load again is not written.
     assert!(check_size(MAX_CACHE_BYTES as usize, &cache).is_ok());

@@ -887,12 +887,8 @@ pub fn status(library: &Library, path: &Path) -> Value {
     })
 }
 
-static ACTIVE: crate::feeds::ActiveCache<Library> = crate::feeds::ActiveCache::new(
-    "VEX",
-    "no statements are used",
-    default_path,
-    Library::load,
-);
+static ACTIVE: crate::feeds::ActiveCache<Library> =
+    crate::feeds::ActiveCache::new("VEX", "no statements are used", default_path, Library::load);
 
 /// Makes the cache at `explicit` (`--vex FILE`) the active statements.
 pub fn load_active(explicit: &Path) -> Result<(), String> {

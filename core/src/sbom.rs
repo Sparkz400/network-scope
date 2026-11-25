@@ -735,12 +735,8 @@ pub fn status(library: &Library, path: &Path) -> Value {
 
 // ---- Active SBOMs --------------------------------------------------------------------------
 
-static ACTIVE: crate::feeds::ActiveCache<Library> = crate::feeds::ActiveCache::new(
-    "SBOM",
-    "no SBOMs are used",
-    default_path,
-    Library::load,
-);
+static ACTIVE: crate::feeds::ActiveCache<Library> =
+    crate::feeds::ActiveCache::new("SBOM", "no SBOMs are used", default_path, Library::load);
 
 /// Makes the cache at `explicit` (`--sboms FILE`) the active SBOMs; an error when it is missing
 /// or unreadable.

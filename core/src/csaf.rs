@@ -1191,12 +1191,8 @@ pub fn status(csaf: &Csaf, path: &Path) -> Value {
 
 // ---- Active advisories ---------------------------------------------------------------------
 
-static ACTIVE: crate::feeds::ActiveCache<Csaf> = crate::feeds::ActiveCache::new(
-    "CSAF",
-    "advisories are not used",
-    default_path,
-    Csaf::load,
-);
+static ACTIVE: crate::feeds::ActiveCache<Csaf> =
+    crate::feeds::ActiveCache::new("CSAF", "advisories are not used", default_path, Csaf::load);
 
 /// Makes the cache at `explicit` (`--csaf FILE`) the active advisories; an error when it is
 /// missing or unreadable.

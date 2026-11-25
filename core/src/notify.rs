@@ -1166,7 +1166,10 @@ pub(crate) mod tests {
         let mut outbox = Outbox::restore(&db, scope, &sinks);
         assert!(!db.exists(), "nothing to keep: nothing is written");
         let w = outbox.deliver(&sinks, &[alert("new-device", "one")], t);
-        assert!(w.len() == 1 && w[0].contains("kept for the next cycle"), "{w:?}");
+        assert!(
+            w.len() == 1 && w[0].contains("kept for the next cycle"),
+            "{w:?}"
+        );
         let kept = stored(scope);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].1.message, "one");
@@ -1197,7 +1200,8 @@ pub(crate) mod tests {
     #[test]
     fn an_outbox_that_cannot_be_saved_keeps_its_alerts_in_memory() {
         // A file where the inventory's folder should be: every write of the queue fails.
-        let blocker = std::env::temp_dir().join(format!("ns-outbox-blocked-{}", std::process::id()));
+        let blocker =
+            std::env::temp_dir().join(format!("ns-outbox-blocked-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&blocker);
         let _ = std::fs::remove_file(&blocker);
         std::fs::write(&blocker, b"").unwrap();

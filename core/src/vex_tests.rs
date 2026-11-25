@@ -299,7 +299,11 @@ fn an_import_never_writes_over_a_file_it_could_not_load() {
         r#"{"version":1,"imported_at":1,"statements":[{"shape":"of version 1"}]}"#,
     ] {
         std::fs::write(&cache, old).unwrap();
-        assert!(Library::load(&cache).unwrap_err().contains("import the VEX files again"));
+        assert!(
+            Library::load(&cache)
+                .unwrap_err()
+                .contains("import the VEX files again")
+        );
         let report = import(std::slice::from_ref(&input), &cache, 5).unwrap();
         let library = Library::load(&cache).unwrap();
         assert_eq!(library.version, CACHE_VERSION);

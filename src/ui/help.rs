@@ -471,7 +471,10 @@ mod tests {
         assert!(!command("history").unwrap().contains("Safe Mode"));
         // --dry-run does something else for these two, and their help says what.
         for (name, does) in [
-            ("history", "history prune: say how many scans would be deleted"),
+            (
+                "history",
+                "history prune: say how many scans would be deleted",
+            ),
             ("service", "service install: print the service command line"),
         ] {
             assert!(command(name).unwrap().contains(does), "{name}");
