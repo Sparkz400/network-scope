@@ -47,9 +47,16 @@ fn install(ctx: &mut Ctx) -> Result<(), String> {
         return Err("A service runs until it is stopped; --cycles does not apply".into());
     }
     // The service's command line is stored in the service configuration, readable by every
-    // local administrator: a community string typed here would be saved in clear text.
+    // local user (`sc qc`, the registry): a secret typed here would be saved in clear text.
     if ctx.opts.contains_key("snmp-community") {
         return Err("--snmp-community would store the community string in the service's command line; use --snmp-community-env NAME (the variable must be set for the service) or --snmp-v3".into());
+    }
+    // Chat webhooks (Slack, Teams, Discord) carry their secret in the path or the query.
+    let webhooks = ctx.opts.get("webhook").map_or("", String::as_str);
+    for url in webhooks.split(',').map(str::trim).filter(|u| !u.is_empty()) {
+        if crate::notify::Sink::webhook(url)?.has_secret_path() {
+            return Err("--webhook with a path or query would store the URL (for chat webhooks, their secret) in the service's command line; use --webhook-env NAME (the variable must be set for the service)".into());
+        }
     }
     let targets: Vec<String> = ctx.pos.iter().skip(1).cloned().collect();
     // The same checks `monitor` makes at start-up, so a bad option fails here and not in a
@@ -576,6 +583,23 @@ mod tests {
                 "{own} is not a monitor option: {printed}"
             );
         }
+        // A webhook without a path (a receiver on the LAN) may stay on the command line.
+        run(&args(&[
+            "service",
+            "install",
+            "10.0.0.0/24",
+            "--webhook",
+            "http://10.0.0.9:9000/",
+            "--dry-run",
+            "--output",
+            out_arg,
+        ]))
+        .unwrap();
+        assert!(
+            std::fs::read_to_string(&out)
+                .unwrap()
+                .contains("http://10.0.0.9:9000/")
+        );
         for (bad, message) in [
             (
                 vec![
@@ -587,6 +611,28 @@ mod tests {
                     "--dry-run",
                 ],
                 "--snmp-community-env",
+            ),
+            (
+                vec![
+                    "service",
+                    "install",
+                    "10.0.0.0/24",
+                    "--webhook",
+                    "http://10.0.0.9:9000/,https://hooks.example.com/services/T0/B0/s3cret",
+                    "--dry-run",
+                ],
+                "--webhook-env",
+            ),
+            (
+                vec![
+                    "service",
+                    "install",
+                    "10.0.0.0/24",
+                    "--webhook",
+                    "https://hooks.example.com/?token=s3cret",
+                    "--dry-run",
+                ],
+                "--webhook-env",
             ),
             (
                 vec![
