@@ -921,6 +921,95 @@ mod unix {
             }
         }
     }
+
+    /// The start of `struct ifaddrs`, which Linux and the BSDs (macOS) lay out alike; the
+    /// fields after `addr` are not read.
+    #[repr(C)]
+    struct IfAddrs {
+        next: *mut IfAddrs,
+        name: *const std::ffi::c_char,
+        _flags: std::ffi::c_uint,
+        addr: *const u8,
+    }
+    unsafe extern "C" {
+        fn getifaddrs(list: *mut *mut IfAddrs) -> std::ffi::c_int;
+        fn freeifaddrs(list: *mut IfAddrs);
+    }
+
+    /// The MAC address and the first IPv4 address of the interface `name`, from `getifaddrs`;
+    /// `None` when the system has no interface of that name.
+    pub fn interface_addresses(name: &str) -> Option<(String, String)> {
+        let linux = cfg!(any(target_os = "linux", target_os = "android"));
+        let mut list: *mut IfAddrs = std::ptr::null_mut();
+        // SAFETY: `list` is a valid place for the result, which is freed below.
+        if unsafe { getifaddrs(&mut list) } != 0 {
+            return None;
+        }
+        let (mut found, mut mac, mut ipv4) = (false, String::new(), String::new());
+        let mut current = list;
+        while !current.is_null() {
+            // SAFETY: an entry of the list the system returned, alive until `freeifaddrs`.
+            let entry = unsafe { &*current };
+            current = entry.next;
+            // SAFETY: the name is a NUL-terminated string of the same list.
+            if entry.name.is_null()
+                || unsafe { std::ffi::CStr::from_ptr(entry.name) }.to_bytes() != name.as_bytes()
+            {
+                continue;
+            }
+            found = true;
+            if entry.addr.is_null() {
+                continue;
+            }
+            // SAFETY: a socket address starts with two bytes: its family (Linux), or its
+            // length and its family (BSD, macOS).
+            let head = unsafe { std::slice::from_raw_parts(entry.addr, 2) };
+            let family = if linux {
+                u16::from_ne_bytes([head[0], head[1]])
+            } else {
+                u16::from(head[1])
+            };
+            if family == 2 && ipv4.is_empty() {
+                // SAFETY: AF_INET: a `sockaddr_in` of 16 bytes, the address in bytes 4 to 7.
+                let sa = unsafe { std::slice::from_raw_parts(entry.addr, 8) };
+                ipv4 = std::net::Ipv4Addr::new(sa[4], sa[5], sa[6], sa[7]).to_string();
+            } else if linux && family == 17 && mac.is_empty() {
+                // SAFETY: AF_PACKET: a `sockaddr_ll` of 20 bytes.
+                let sa = unsafe { std::slice::from_raw_parts(entry.addr, 20) };
+                mac = sockaddr_ll_mac(sa).unwrap_or_default();
+            } else if !linux && family == 18 && mac.is_empty() {
+                // SAFETY: AF_LINK: a `sockaddr_dl`, as long as its first byte says.
+                let sa = unsafe { std::slice::from_raw_parts(entry.addr, usize::from(head[0])) };
+                mac = sockaddr_dl_mac(sa).unwrap_or_default();
+            }
+        }
+        // SAFETY: the list `getifaddrs` returned, freed once; nothing points into it any more.
+        unsafe { freeifaddrs(list) };
+        found.then_some((mac, ipv4))
+    }
+}
+
+/// A six-byte hardware address as text; `None` for any other length and for all zeroes (the
+/// loopback interface).
+#[cfg_attr(windows, allow(dead_code))]
+fn hardware_mac(bytes: &[u8]) -> Option<String> {
+    let mac: [u8; 6] = bytes.try_into().ok()?;
+    (mac != [0; 6]).then(|| crate::arp::format_mac(mac))
+}
+/// The MAC address in a Linux `sockaddr_ll` (the `AF_PACKET` address of an interface): byte 11
+/// is its length, and it starts at byte 12.
+#[cfg_attr(windows, allow(dead_code))]
+fn sockaddr_ll_mac(sa: &[u8]) -> Option<String> {
+    let len = usize::from(*sa.get(11)?);
+    hardware_mac(sa.get(12..12 + len)?)
+}
+/// The MAC address in a BSD or macOS `sockaddr_dl` (the `AF_LINK` address of an interface):
+/// byte 5 is the length of the interface name and byte 6 that of the address, which follows
+/// the name from byte 8 on.
+#[cfg_attr(windows, allow(dead_code))]
+fn sockaddr_dl_mac(sa: &[u8]) -> Option<String> {
+    let (name, len) = (usize::from(*sa.get(5)?), usize::from(*sa.get(6)?));
+    hardware_mac(sa.get(8 + name..8 + name + len)?)
 }
 
 /// 32-byte-payload ICMP/ICMPv6 echo request. ICMPv6 checksums are filled in by the kernel.
@@ -1545,9 +1634,9 @@ pub fn ipv4_of(index: u32) -> Option<std::net::Ipv4Addr> {
 
 /// The MAC address and the first IPv4 address of a capture interface (as
 /// `capture::interfaces` names it), for filling in what SYN scans and DCP need. Either part is
-/// empty when the interface has none.
-// shortcut: Windows only (Npcap device names carry the adapter GUID); on Linux and macOS the
-// two fields stay to be typed until someone reads them from `ip`/`ifconfig` here.
+/// empty when the interface has none. `None`: the system has no such interface (pcap's `any`).
+/// Windows finds the adapter by the GUID in the Npcap device name; on Linux and macOS libpcap
+/// uses the system's interface names, so `getifaddrs` is asked for that name.
 pub fn interface_addresses(name: &str) -> Option<(String, String)> {
     #[cfg(windows)]
     {
@@ -1559,8 +1648,7 @@ pub fn interface_addresses(name: &str) -> Option<(String, String)> {
     }
     #[cfg(not(windows))]
     {
-        let _ = name;
-        None
+        unix::interface_addresses(name)
     }
 }
 
@@ -1679,6 +1767,50 @@ pub const NEIGHBOR_WATCH: bool = cfg!(target_os = "linux");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mac_address_is_read_from_a_link_layer_socket_address() {
+        // Linux, eth0: AF_PACKET, interface 2, ARPHRD_ETHER, six address bytes.
+        let ll = [
+            17, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 6, 0xaa, 0xbb, 0xcc, 0x0d, 0x0e, 0x0f, 0, 0,
+        ];
+        assert_eq!(sockaddr_ll_mac(&ll).as_deref(), Some("AA:BB:CC:0D:0E:0F"));
+        // lo has six zero bytes, a tunnel no address at all; a cut-off address is none either.
+        let (mut lo, mut tunnel) = (ll, ll);
+        lo[12..18].fill(0);
+        tunnel[11] = 0;
+        for none in [&lo[..], &tunnel, &ll[..15], &[]] {
+            assert_eq!(sockaddr_ll_mac(none), None, "{none:?}");
+        }
+        // macOS, en0: 20 bytes, AF_LINK, interface 4, IFT_ETHER, a 3-byte name, 6 address bytes.
+        let dl = [
+            20, 18, 4, 0, 6, 3, 6, 0, b'e', b'n', b'0', 0xaa, 0xbb, 0xcc, 0x0d, 0x0e, 0x0f, 0, 0, 0,
+        ];
+        assert_eq!(sockaddr_dl_mac(&dl).as_deref(), Some("AA:BB:CC:0D:0E:0F"));
+        // lo0 has a name and no address.
+        let lo0 = [
+            20, 18, 1, 0, 24, 3, 0, 0, b'l', b'o', b'0', 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        for none in [&lo0[..], &dl[..14], &[]] {
+            assert_eq!(sockaddr_dl_mac(none), None, "{none:?}");
+        }
+    }
+
+    /// The real lookup where every machine has the answer: the loopback interface.
+    #[cfg(unix)]
+    #[test]
+    fn the_loopback_interface_has_its_ipv4_address_and_no_mac() {
+        let name = if cfg!(any(target_os = "linux", target_os = "android")) {
+            "lo"
+        } else {
+            "lo0"
+        };
+        assert_eq!(
+            interface_addresses(name),
+            Some((String::new(), "127.0.0.1".to_string()))
+        );
+        assert_eq!(interface_addresses("no-such-interface"), None);
+    }
 
     #[test]
     fn checksum_of_known_packet() {
