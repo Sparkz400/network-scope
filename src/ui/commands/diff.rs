@@ -16,8 +16,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         None
     };
     let report = store::diff_report(
-        &store::load(&ctx.db, ctx.id(0)?)?,
-        &store::load(&ctx.db, ctx.id(1)?)?,
+        &ctx.scan(0)?,
+        &ctx.scan(1)?,
         &ignore,
     )?;
     output(&store::render_diff(&report, format)?, opts)?;

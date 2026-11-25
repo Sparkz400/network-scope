@@ -60,6 +60,10 @@ impl Ctx {
             .parse()
             .map_err(|_| "Invalid scan ID".into())
     }
+    /// The saved scan whose ID is positional argument `i`.
+    pub fn scan(&self, i: usize) -> Result<store::Snapshot, String> {
+        load_scan(&self.db, self.id(i)?)
+    }
     /// `--fail-on-findings` was given (only valid for `findings` and `diff`).
     pub fn fail_on_findings(&self) -> bool {
         self.opts.contains_key("fail-on-findings")
@@ -123,6 +127,33 @@ fn findings_exit(fail_on_findings: bool, matching: usize) -> ExitCode {
         ExitCode::Findings
     } else {
         ExitCode::Success
+    }
+}
+/// The error of loading scan `id`, in the user's words when the scan does not exist (SQLite
+/// says "Query returned no rows").
+fn scan_error(id: i64, error: String) -> String {
+    if store::is_missing_scan(&error) {
+        format!("No scan with ID {id}; see \"history\"")
+    } else {
+        error
+    }
+}
+/// A saved scan by an ID the user gave.
+fn load_scan(db: &std::path::Path, id: i64) -> Result<store::Snapshot, String> {
+    store::load(db, id).map_err(|e| scan_error(id, e))
+}
+/// Whether a command only reads the inventory: with `--db FILE` the file then has to exist.
+/// Commands that save (scan, monitor, import, listen, ...) create it, and `research schema` and
+/// `fingerprints favicon` do not open it.
+fn reads_inventory(command: &str, pos: &[String]) -> bool {
+    let sub = pos.first().map_or("", String::as_str);
+    match command {
+        "history" | "changes" | "alerts" | "diff" | "export" | "report" | "findings"
+        | "devices" | "topology" | "ot-assets" | "search" | "segmentation" => true,
+        "baseline" => sub == "show",
+        "research" => sub != "schema",
+        "fingerprints" => sub != "favicon",
+        _ => false,
     }
 }
 fn unknown(command: &str) -> String {
@@ -227,6 +258,11 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         .get("db")
         .map(PathBuf::from)
         .unwrap_or_else(store::default_path);
+    // A mistyped --db must not read as an empty inventory. Only for a file the user named: the
+    // default one is missing on a first run.
+    if opts.contains_key("db") && !db.exists() && reads_inventory(command, &pos) {
+        return Err(format!("{}: no such inventory", db.display()));
+    }
     if let Some(file) = opts.get("cves") {
         risk::load_cves(Some(std::path::Path::new(file)))?;
     }

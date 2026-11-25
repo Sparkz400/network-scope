@@ -26,7 +26,7 @@ fn check(ctx: &mut Ctx) -> Result<(), String> {
         None => store::latest_complete_id(db)?
             .ok_or("No completed scan in the database; run a scan from the zone to test first")?,
     };
-    let snapshot = store::load(db, id)?;
+    let snapshot = crate::ui::load_scan(db, id)?;
     // The scan does not record where it ran, except for the source address of a SYN or ARP scan.
     let vantage = match opts.get("from") {
         Some(zone) => zone.clone(),

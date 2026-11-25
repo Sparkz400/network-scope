@@ -480,6 +480,11 @@ fn delete_scans(c: &mut Connection, ids: &[i64]) -> Result<(), String> {
 pub fn load(path: &Path, id: i64) -> Result<Snapshot, String> {
     load_on(&open_read(path)?, id)
 }
+/// Whether an error of [`load`] says that the scan does not exist, and not that the inventory
+/// is locked or damaged. The callers word it; the error itself stays SQLite's text.
+pub fn is_missing_scan(error: &str) -> bool {
+    error == rusqlite::Error::QueryReturnedNoRows.to_string()
+}
 /// [`load`] on an open connection, for callers that read many scans.
 pub(crate) fn load_on(c: &Connection, id: i64) -> Result<Snapshot, String> {
     let data: String = c
@@ -722,8 +727,10 @@ fn alert_from_row(r: &rusqlite::Row) -> rusqlite::Result<crate::monitor::Alert> 
         message: r.get(4)?,
     })
 }
+/// The newest `limit` stored alerts, newest first. Reading never creates or upgrades the
+/// inventory (see [`open_read`]).
 pub fn list_alerts(path: &Path, limit: usize) -> Result<Vec<crate::monitor::Alert>, String> {
-    let c = open(path)?;
+    let c = open_read(path)?;
     let mut s = c
         .prepare(
             "SELECT timestamp,severity,kind,subject,message FROM alerts ORDER BY id DESC LIMIT ?1",

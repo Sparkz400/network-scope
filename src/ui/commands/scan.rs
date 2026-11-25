@@ -29,7 +29,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     if replay_of.is_none() && opts.contains_key("fail-on-findings") {
         return Err("--fail-on-findings applies to scan only together with --replay-check".into());
     }
-    let original = replay_of.map(|id| store::load(db, id)).transpose()?;
+    let original = replay_of
+        .map(|id| crate::ui::load_scan(db, id))
+        .transpose()?;
     let (targets, s) = match &original {
         Some(o) => {
             if !pos.is_empty() || opts.contains_key("targets-file") {
