@@ -947,9 +947,9 @@ mod unix {
         }
         let (mut found, mut mac, mut ipv4) = (false, String::new(), String::new());
         let mut current = list;
-        while !current.is_null() {
-            // SAFETY: an entry of the list the system returned, alive until `freeifaddrs`.
-            let entry = unsafe { &*current };
+        // SAFETY: null (the end) or an entry of the list the system returned, which is alive
+        // until `freeifaddrs`.
+        while let Some(entry) = unsafe { current.as_ref() } {
             current = entry.next;
             // SAFETY: the name is a NUL-terminated string of the same list.
             if entry.name.is_null()
