@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Bounded async scheduling shared by the desktop, CLI and TUI.
 use crate::{
     backoff::{HostGovernor, Outcome},

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! IPv6 Neighbor Discovery (RFC 4861) seen on the wire: Neighbor Solicitation and Advertisement,
 //! Router Solicitation and Advertisement. Every address a host announces comes with its link-layer
 //! address, so this is how IPv6 neighbours are found without sending anything.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The NTLM CHALLENGE inside an SMB2 SESSION_SETUP response.
 use crate::service::Fields;
 

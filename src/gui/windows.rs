@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use super::{Job, Scanner, a11y, home, i18n::tr, tables};
 use crate::{capture, devices, passive, risk, scan, store};
 use eframe::egui::{self, RichText};

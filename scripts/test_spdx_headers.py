@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Unit tests of scripts/spdx_headers.py (standard library only).
 
   python -I -m unittest discover -s scripts -p "test_*.py"

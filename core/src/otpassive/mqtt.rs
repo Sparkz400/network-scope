@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! MQTT (TCP 1883): control packets, the CONNECT of a client (protocol level, user name,
 //! will) and the broker's CONNACK. MQTT has no write function in the sense of the other
 //! protocols here (a PUBLISH is as often telemetry as it is a command), so nothing is flagged as

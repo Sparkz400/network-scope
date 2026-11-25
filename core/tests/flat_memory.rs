@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Memory stays flat for a /8 (ROADMAP B15): the target generator, the planner behind
 //! `--dry-run` and the scope check handle 10.0.0.0/8 (16,777,214 addresses) without ever holding
 //! the addresses. A counting global allocator measures the peak number of live bytes; this file

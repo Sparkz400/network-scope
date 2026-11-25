@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `listen` and `dcp` (passive capture of an interface, saved as a scan; `dcp` also sends one
 //! read-only DCP Identify request) and `interfaces` (the capture interfaces).
 use crate::{

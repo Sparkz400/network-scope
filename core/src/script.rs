@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! User scripts (Rhai) that post-process every scanned host: add custom fields and findings or
 //! policy checks. Scripts run in a
 //! sandbox: no file, network, process or module access, an operation budget and a wall-clock limit.

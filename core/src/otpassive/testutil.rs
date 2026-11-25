@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Frame builders shared by the tests of the decoders.
 use super::Tracker;
 use crate::passive::Observation;

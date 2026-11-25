@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! A small Parquet writer for the research tables (`research export parquet`).
 //!
 //! No library is used: the files are uncompressed, every column is PLAIN encoded in one data

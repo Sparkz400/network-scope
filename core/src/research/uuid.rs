@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SHA-1 and name-based UUIDs (RFC 4122 version 5), for the deterministic STIX identifiers.
 //!
 //! SHA-1 is used only to derive identifiers, as STIX 2.1 prescribes for observable objects; it

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! One SNMP session with an agent: sends allow-listed requests through the rate gate, matches the
 //! replies and, for SNMPv3, discovers the engine and keeps the time in step.
 use super::{

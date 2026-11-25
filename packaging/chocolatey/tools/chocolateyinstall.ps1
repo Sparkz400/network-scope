@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 $ErrorActionPreference = 'Stop'
 
 # The official installer from the GitHub release, checked against its SHA-256 from SHA256SUMS.

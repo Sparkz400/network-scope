@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Checks the research exports with independent implementations (ROADMAP L67).
 
 Run `network-scope-cli research export ...` into one directory first:

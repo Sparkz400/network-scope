@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Search across all saved scans: "where did 10.0.5.17 last appear?".
 //!
 //! [`search`] looks for an IP address, a MAC address (or a vendor prefix of one), a host name

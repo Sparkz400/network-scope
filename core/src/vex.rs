@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! VEX: what a vendor says about a CVE for its product (`feeds import vex`).
 //!
 //! Version-based findings are hints: a CVE is reported because a product version lies in an

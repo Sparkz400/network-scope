@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! MD5 (RFC 1321) and HMAC-MD5 (RFC 2104) for SNMPv3 `usmHMACMD5AuthProtocol` (RFC 3414).
 //!
 //! `ring` has no MD5, so it is written out here from the RFC. MD5 is broken as a general hash

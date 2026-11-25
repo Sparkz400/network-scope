@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Benchmark of Network Scope against the test plant (ROADMAP L74). Standard library only.
 
 Starts the plant of lab/plant.py (four fake devices on 127.0.20.1-4, weaknesses planted and written

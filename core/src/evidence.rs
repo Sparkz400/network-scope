@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The reasons behind a conclusion, with a confidence score (ROADMAP A9: explain every
 //! conclusion). Device types, OS guesses and findings each carry an [`Evidence`]; the CLI host
 //! details, the reports, the JSON exports and the GUI show it.

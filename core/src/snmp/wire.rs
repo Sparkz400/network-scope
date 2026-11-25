@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SNMP message encoding (v1, v2c, v3 with USM) and decoding of the replies. The replies come
 //! from devices on the network: every length and count is bounded and nothing panics.
 use super::{

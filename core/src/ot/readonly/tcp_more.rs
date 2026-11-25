@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! More allow-listed OT requests, all over TCP (ROADMAP C23): Omron FINS/TCP, Mitsubishi MELSEC
 //! MC protocol (3E frame, binary) and DNP3. Same rules as the rest of [`super`]: closed enums, no
 //! public fields, sealed [`ReadOnlyRequest`], sent only through [`OtStream`](super::OtStream).

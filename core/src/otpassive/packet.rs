@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Ethernet/IPv4 frame parsing shared by the OT decoders.
 use std::net::{IpAddr, Ipv4Addr};
 

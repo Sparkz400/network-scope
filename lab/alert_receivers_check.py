@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Checks alert delivery to REAL receivers (issue 12): what rsyslog parsed from the syslog
 messages and what nginx received as webhook bodies, against the alerts `monitor` wrote to
 `--alerts FILE`. Run by lab/alert_receivers.sh after a two-cycle `monitor` run:

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use std::net::IpAddr;
 
 #[derive(Debug, Default, Clone, PartialEq)]

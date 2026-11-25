@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The OT decoders on real captures: public pcaps from ITI/ICS-Security-Tools under
 //! `tests/fixtures/ics/` (see `PROVENANCE.md` there), read through `read_pcap_file`, the same
 //! function `ot-listen --pcap` uses. Expected values were read from the decoded output of the

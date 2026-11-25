@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `ot-listen` (passive OT capture from an interface or a pcap file, saved as a scan) and
 //! `ot-assets ID` (the OT asset inventory of a saved capture).
 use crate::{

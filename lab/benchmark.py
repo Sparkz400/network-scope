@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Ground-truth accuracy benchmark for Network Scope. Python standard library only.
 
 Starts the lab simulators on loopback addresses, scans them with the CLI and compares the JSON

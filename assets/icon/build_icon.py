@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Renders the application icon: icon.svg / icon-small.svg -> network-scope.ico (Windows),
 network-scope.icns (the macOS app bundle, packaging/macos/), icon-256.png and icon-48.png.
 

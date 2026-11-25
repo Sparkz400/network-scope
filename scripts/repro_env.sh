@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 # Prints the environment of a reproducible release build as KEY=VALUE lines.
 #
 #   scripts/repro_env.sh <source-dir> >> "$GITHUB_ENV"                                   (workflow)

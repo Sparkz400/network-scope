@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Fast repeat scans (ROADMAP B14): `scan --incremental` and `monitor --incremental`.
 //!
 //! A repeat scan of the same targets does not have to look at everything again. With the previous

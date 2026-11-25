@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Writing a very large scan to the inventory in batches (ROADMAP B15).
 //!
 //! [`crate::store::save`] serialises a whole [`Snapshot`] into one row, which needs the whole

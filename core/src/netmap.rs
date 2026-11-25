@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Layout of the network map (ROADMAP F37): positions for the nodes of a [`topology::Graph`],
 //! computed in plain Rust with no drawing code, so the desktop map and any other front end can
 //! use it.

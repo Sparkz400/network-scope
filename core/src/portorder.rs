@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The order in which one host's TCP ports are probed (ROADMAP B13), and the optional early stop.
 //!
 //! The scan only ever **reorders the ports the user asked for**; this module never adds a port, so

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 import importlib.util
 import os
 import re

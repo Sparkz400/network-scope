@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Coverage gate: fail if a parser or risk-rule file is below its line-coverage threshold.
 
 Reads the JSON summary of cargo-llvm-cov and the targets in scripts/coverage_targets.json.

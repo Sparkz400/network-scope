@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Round-trip-time estimation shared by the adaptive timing of the SYN engine
 //! (`--adaptive-syn`) and of the TCP connect scan (`--adaptive-tcp`).
 use std::{sync::Mutex, time::Duration};

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! More allow-listed OT requests (ROADMAP C23): Omron FINS, Niagara Fox, MQTT and KNXnet/IP. Same
 //! rules as the rest of [`super`]: closed enums, no public fields, sealed [`ReadOnlyRequest`],
 //! sent only through [`OtStream`](super::OtStream) and [`OtUdp`](super::OtUdp).

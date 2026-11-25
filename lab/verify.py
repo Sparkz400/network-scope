@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """End-to-end check: start the simulators on loopback, scan them with the built binary and
 assert that the expected identities and findings come out. Exit code 0 means all passed.
 

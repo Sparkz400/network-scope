@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `scan TARGETS [options]`: an active scan, saved to the inventory and printed in the chosen
 //! format; with `--tui` the live terminal view (`ui::tui`) runs while it works.
 use crate::{

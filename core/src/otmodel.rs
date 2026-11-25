@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Learn what normal industrial traffic looks like, then report what is new (ROADMAP L69).
 //!
 //! `ot-learn` reads a capture (a pcap file or a live, receive-only capture) and records, for every

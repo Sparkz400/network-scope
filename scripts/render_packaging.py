@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Fills the package-manager templates in packaging/ (winget, Scoop, Chocolatey, Homebrew, AUR)
 with a release's version and SHA-256 hashes, ready to submit (roadmap I56). release.yml runs it
 and attaches the result as network-scope-<version>-packaging.tar.gz.

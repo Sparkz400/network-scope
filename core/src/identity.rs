@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Stable device identity: a key for a device that survives address changes and randomised MAC
 //! addresses.
 //!

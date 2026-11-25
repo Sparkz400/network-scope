@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The vendor, product and firmware of an industrial device, read from the identity fields an OT
 //! identification stored (`S7.*`, `EtherNet/IP.*`, `Modbus.*`, `OPC UA.*`).
 //!

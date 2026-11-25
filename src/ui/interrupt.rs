@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Ctrl+C for the commands that can stop and keep what they have (`scan`, `listen`, `dcp`,
 //! `monitor`): the first one sets a flag the command polls, so it cancels its run and saves the
 //! result as partial; a second one ends the process the usual way. A command that never asks

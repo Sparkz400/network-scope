@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! RDP: the standard-security request that tells whether NLA is required.
 use super::{Gate, PacketKind, negotiate_once};
 use std::{net::IpAddr, time::Duration};

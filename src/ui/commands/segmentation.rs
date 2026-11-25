@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `segmentation check --zones FILE --from ZONE [SCAN_ID]` (ROADMAP L71): compares what a stored
 //! scan could reach with the declared IEC 62443 zones and conduits and lists every path the model
 //! does not allow. It reads the database and the zones file only and sends nothing.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! One record per device. Active scan results and passive observations are merged on the MAC
 //! address (or on the IP address when no MAC is known), then enriched with the manufacturer
 //! from the embedded IEEE registry and a scored device-type guess.

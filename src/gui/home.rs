@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The "what changed" overview (ROADMAP E31): the first view when the app opens. It shows the
 //! new, gone and changed devices and the new and resolved risks since the last scan, the last 24
 //! hours or the last 7 days, the network risk score with the five things to fix first, and the

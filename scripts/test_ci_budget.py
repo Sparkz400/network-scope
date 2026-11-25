@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Unit tests of scripts/ci_budget.py (the time budgets of the ci workflow).
 
 Run: python -I -m unittest discover -s scripts -p "test_*.py"

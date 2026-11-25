@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-FileCopyrightText: Copyright (c) 2020, Salesforce.com, Inc.
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
 //! JARM active TLS server fingerprint (opt-in, never in Safe Mode).
 //!
 //! JARM (Salesforce, <https://github.com/salesforce/jarm>; this module is a transcription of its

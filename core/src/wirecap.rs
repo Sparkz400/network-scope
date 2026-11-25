@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Recording the real wire traffic of a scan (ROADMAP L72: `scan --record FILE --record-wire`).
 //!
 //! The scanner's sockets never see the Ethernet, IP and TCP headers they send, so

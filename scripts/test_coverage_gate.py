@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Tests for coverage_gate.py, with a tiny llvm-cov summary as fixture.
 
   python -I -m unittest discover -s scripts -p "test_*.py"

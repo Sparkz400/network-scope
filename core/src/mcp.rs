@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! A Model Context Protocol (MCP) server over stdio: `network-scope mcp` lets an AI assistant
 //! query the local inventory and, optionally, run a small Safe Mode scan. JSON-RPC 2.0 messages
 //! arrive one per line on the input and replies leave one per line on the output. There is no

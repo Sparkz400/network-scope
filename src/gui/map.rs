@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The interactive network map (ROADMAP F37): the path map of `topology::build` (traceroute data;
 //! later also LLDP and SNMP links, which appear here without changes because only the node and
 //! edge lists are read) drawn as a graph you can pan (drag) and zoom (scroll or pinch). Nodes are

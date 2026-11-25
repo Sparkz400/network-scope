@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Compare Network Scope with nmap on the loopback lab. Python standard library only.
 
 Starts the lab simulators (lab/ground_truth.json, loopback only), scans every lab address with

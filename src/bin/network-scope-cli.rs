@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Console-subsystem build of Network Scope for scripting.
 //!
 //! The default `network-scope` binary is a Windows GUI-subsystem program in release

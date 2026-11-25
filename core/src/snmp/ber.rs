@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! A minimal BER encoder and decoder for SNMP (ITU-T X.690 definite lengths, the types SNMP
 //! uses). Everything decoded here comes from a device on the network: lengths, nesting and the
 //! number of items are bounded, and nothing panics on malformed input.

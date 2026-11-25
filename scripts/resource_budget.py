@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Resource budgets of the CLI (ROADMAP B17). Python standard library only.
 
   python -I scripts/resource_budget.py --cli /abs/path/to/network-scope-cli --check

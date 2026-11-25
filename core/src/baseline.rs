@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! An approved baseline: which devices are expected on the network, who owns them, how critical
 //! they are and how they are tagged. Once a baseline exists, the monitor raises an
 //! `unknown-device` alert for every device that is not on the expected list.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! What a scan reads over SNMP: the system group, `ifTable` and `ifName` (`ifXTable`),
 //! `ipAddrTable` and the IPv6-capable `ipAddressTable`, the LLDP remote-systems table, and the
 //! installed software (`hrSWInstalledName`, HOST-RESOURCES-MIB) last, within hard limits, and how

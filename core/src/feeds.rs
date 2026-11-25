@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Offline exploitation intelligence: the CISA Known Exploited Vulnerabilities (KEV) catalog and
 //! the FIRST EPSS scores, imported from files the user downloaded, kept in a small local cache
 //! and used to enrich and rank findings that carry CVE ids.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The live terminal view of `scan --tui`: host list, detail view, sort, pause and stop keys.
 use super::commands::scan::{Collected, accept, collect};
 use crate::{evidence::Evidence, risk, scan};

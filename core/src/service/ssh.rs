@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SSH key exchange: KEXINIT parsing, algorithm assessment and HASSH fields.
 use super::{Fields, read_some};
 use std::time::Duration;

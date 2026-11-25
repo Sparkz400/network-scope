@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Software bills of materials of device firmware, imported from files (`feeds import sbom`).
 //!
 //! A network scan sees what a device announces (vendor, product, firmware version), never the

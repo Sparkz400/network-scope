@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Criterion benchmarks of the hot paths (ROADMAP B18): pcap parsing, passive frame decode, risk
 //! analysis over a 1,000-host snapshot, the diff of two such snapshots, target expansion and probe
 //! matching. Nothing here touches a network. CI compares them with the base branch

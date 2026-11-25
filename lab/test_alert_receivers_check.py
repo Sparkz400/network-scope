@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Unit tests of lab/alert_receivers_check.py with recorded receiver output (no servers)."""
 
 import json

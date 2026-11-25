@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! KNXnet/IP (UDP 3671): the frame header and service type, the device information of search and
 //! description responses (name, individual address, serial number, MAC) and the cEMI telegrams
 //! inside tunnelling requests and routing indications. A group value write, an individual

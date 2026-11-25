@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! LDIF (RFC 2849) export of Active Directory computer objects (`ldifde -f out.ldf`,
 //! `ldapsearch -LLL`), read offline: no directory is contacted and nothing is fetched (`attr:<
 //! URL` values are ignored). Only computer objects become devices; disabled accounts

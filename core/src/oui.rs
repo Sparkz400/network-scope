@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Embedded IEEE OUI registries (MA-L, MA-M, MA-S) and the ODVA/CIP vendor list.
 use std::{collections::HashMap, sync::OnceLock};
 

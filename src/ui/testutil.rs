@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Helpers shared by the tests of the `ui` modules.
 use crate::{passive, scan};
 use std::collections::BTreeMap;

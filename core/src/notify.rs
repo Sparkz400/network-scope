@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Opt-in delivery of monitor alerts to destinations the user configured: an HTTP webhook (one
 //! JSON POST per alert) and syslog (RFC 5424, over UDP or over TCP with RFC 6587 octet-counting
 //! framing). Nothing is sent unless a destination is configured. Every network operation has a

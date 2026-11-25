@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Unit tests of lab/check_cpe.py with small synthetic dictionaries (no network).
 
   python -I -m unittest discover -s lab -p "test_*.py"

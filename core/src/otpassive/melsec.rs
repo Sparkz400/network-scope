@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Mitsubishi MELSEC: the MC protocol (3E and 4E binary frames, TCP/UDP 5006 and 5007) and the
 //! MELSOFT direct connection of GX Works (UDP 5560 and 5561). The MC protocol decoder names the
 //! command of each request and flags the ones that write device memory or change the CPU state.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Opt-in update check (roadmap I59). It asks GitHub which release is the latest and says whether
 //! that is newer than the running version. **It only notifies.** It never downloads a file, never
 //! replaces the program and never runs anything it read; the user gets the release page and the

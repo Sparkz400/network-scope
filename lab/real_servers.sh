@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 # Network Scope against REAL servers (roadmap A6): Samba, OpenSSH, OpenSSL s_server and nginx on
 # loopback, then lab/real_servers_check.py compares the scan with what the servers were told to do.
 # Run by the CI job `real-servers` on ubuntu-latest:

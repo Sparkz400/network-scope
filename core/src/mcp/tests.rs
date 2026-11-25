@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The MCP server driven with scripted JSON-RPC lines, in process: no process, no sockets (the
 //! `scan` tool is only ever pointed at the loopback address).
 use super::*;

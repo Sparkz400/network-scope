@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Import of known devices from files: a CSV list, DHCP lease files, Active Directory and NetBox
 //! exports. The files are read offline (the tool never contacts a directory or an API to import,
 //! so it holds no credentials), and what they describe is merged into the inventory and the

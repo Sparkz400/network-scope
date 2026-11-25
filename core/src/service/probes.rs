@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The data-driven probe database: `data/probes.json` plus an optional user file, the
 //! rule matching that turns a reply into a [`Service`], and the UDP probe list `udp.rs` sends.
 use super::{Service, is_ot_udp_port};

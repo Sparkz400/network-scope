@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SMB2 NEGOTIATE response parsing (dialect, GUID, capabilities, 3.1.1 contexts) and the
 //! `smb.*` identity fields built from it.
 use crate::service::Fields;

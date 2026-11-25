@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! How the desktop window fits into the operating system: its taskbar identity on Windows (the
 //! AppUserModelID, which the installer's shortcuts carry too), one window per user session on
 //! Windows (a second start brings the first window to the front), and the window size, position

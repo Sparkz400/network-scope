@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! "Record the scan's traffic" in the desktop app: the same recording as `scan --record FILE
 //! --record-wire` on the command line. A wire capture of the targets runs while the scan runs when
 //! the capture driver allows it (Npcap/libpcap, at most `wirecap::MAX_FILTER_HOSTS` targets);

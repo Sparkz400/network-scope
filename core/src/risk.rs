@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Findings derived from what a scan observed: weak TLS/SSH configuration, risky exposed
 //! services, and version-based CVE hints. Version hints are NOT confirmed vulnerabilities:
 //! distributions backport fixes without changing the version string.

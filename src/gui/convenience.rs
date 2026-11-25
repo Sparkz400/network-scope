@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Everyday conveniences (ROADMAP F38): the host context menu with openers (browser, SSH, remote
 //! desktop, ping in a terminal), favorites (stars) and Wake-on-LAN.
 //!

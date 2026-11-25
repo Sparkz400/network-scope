@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Automatic back-off for one host during a scan (ROADMAP H52): per-device-type limits and a
 //! reaction when the host starts to fail.
 //!

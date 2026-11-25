@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Active identification of Omron FINS (UDP 9600), Niagara Fox (TCP 1911), MQTT (TCP 1883) and
 //! KNXnet/IP (UDP 3671), and the parsers of their replies (the passive decoders use them too).
 //! Requests are built only from the allow-lists in `readonly::more`; this file holds no raw

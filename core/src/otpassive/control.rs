@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Findings from observed control traffic (writes, stop, download, restart).
 use crate::{passive::Observation, risk::Severity};
 use std::net::IpAddr;

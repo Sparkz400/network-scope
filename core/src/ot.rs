@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Explicit read-only identification requests. No write, control or program services.
 //!
 //! Requests are built and sent only through [`readonly`]: its allow-listed request types are

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The JSON the built CLI prints, validated against the schema files in `docs/schema`
 //! (see `network_scope_core::schema` for the compatibility promise). The database is built with
 //! `import` from two small nmap XML files, so no network traffic happens.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Check or add the SPDX copyright and license header of every source file.
 
 OpenSSF Best Practices (gold) asks for a copyright and a license statement in each source file.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Deliberately weak service simulators for testing Network Scope. Standard library only.
 
 These emulate only what a scanner can observe (banners and a few protocol replies). They are not

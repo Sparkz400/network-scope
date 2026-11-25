@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! JA3S test vectors (included by the tests of `fingerprint`).
 //!
 //! Each row is a ServerHello body (the message after its 4-byte handshake header), the JA3S

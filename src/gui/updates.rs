@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The opt-in update check of the desktop app (setting "Check for updates on start", off by
 //! default). Notify only: one request to GitHub on a background thread when the program starts,
 //! then a line in the status bar and a window with the release page and the verification

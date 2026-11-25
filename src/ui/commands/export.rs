@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `export ID --format ...` and `report ID`: a saved scan as JSON, CSV, HTML, nmap XML,
 //! Markdown, JSON lines, a CycloneDX device and firmware inventory (`cyclonedx`) or a compliance
 //! inventory (`compliance-iec62443|nis2|cis[-csv]`), optionally

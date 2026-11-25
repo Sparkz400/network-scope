@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! DHCP lease files: ISC `dhcpd.leases`, dnsmasq's lease file and the XML written by the Windows
 //! `Export-DhcpServer` cmdlet. (The CSV of `Get-DhcpServerv4Lease | Export-Csv` goes through
 //! `csv.rs`.) Leases name a MAC address, which identifies the device; the host name is what the

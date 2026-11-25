@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Small line icons for the sidebar pages, painted as shapes in the text colour (no icon font,
 //! so they are sharp at every scale, follow the theme and never become part of a widget's
 //! accessible name), the app logo as a texture, and the sidebar's page button.

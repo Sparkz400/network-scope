@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The banners of services that nothing identified, taken from stored scans, for people who want
 //! to contribute a probe rule (roadmap K65, `fingerprints export-unknown`).
 //!

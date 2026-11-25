@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Exit status of the built CLI binaries against a fixture database. The database is built with
 //! `import` from two small nmap XML files (no network traffic): scan 1 has only SSH on
 //! 10.0.0.1, scan 2 adds Telnet (a high-severity finding), scan 3 is scan 1 again.

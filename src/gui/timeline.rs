@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The device timeline, a panel under the page opened from the host details: when a device was first seen, when
 //! its address, MAC or name changed, which ports opened or closed and which findings appeared or
 //! were resolved, newest first. The data is `store::device_history`, the same function behind

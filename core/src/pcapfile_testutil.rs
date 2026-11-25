@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Test helpers: writers for small pcap and pcapng files. Compiled only into tests: by
 //! `pcapfile.rs` for this crate's tests and by the root crate's `src/lib.rs` (`#[path]`) for the
 //! GUI tests, so neither crate needs a feature for them.

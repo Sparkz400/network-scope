@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `scan --stream`: live events on stdout, validated against `docs/schema/scan-event.v1.schema.json`.
 use network_scope_core::schema;
 use serde_json::Value;

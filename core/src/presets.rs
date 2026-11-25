@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Scan presets: named bundles of [`Settings`] that the CLI (`--preset quick|office|plant|full`)
 //! and the desktop app (the preset picker) share, so both mean exactly the same thing.
 //!

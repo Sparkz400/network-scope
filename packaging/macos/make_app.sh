@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 # Assembles "Network Scope.app" around the GUI binary, so that Finder, the Dock and Launchpad
 # show the application icon (assets/icon/network-scope.icns) and name:
 #

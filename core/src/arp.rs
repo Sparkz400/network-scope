@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! ARP sweep through the capture handle (opt-in `arp_sweep`).
 //!
 //! One I/O thread owns a capture handle opened with the kernel filter `arp`. Host

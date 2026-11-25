@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use super::*;
 impl Scanner {
     /// The host details, docked on the right of the main window while a host is selected.

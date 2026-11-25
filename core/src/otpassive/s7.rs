@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! S7comm (TPKT/COTP) request decoding.
 
 fn s7_function(f: u8) -> Option<(&'static str, bool)> {

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Passive decoding of frames the capture sees anyway: ARP, IPv6 Neighbor Discovery, LLDP (with
 //! LLDP-MED), CDP, Profinet DCP replies, mDNS, NetBIOS name service and browser announcements,
 //! SSDP/UPnP, WS-Discovery, DHCP and DHCPv6. [`decode`] never transmits; the only

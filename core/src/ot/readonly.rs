@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Type-level read-only guarantee for active OT traffic (ROADMAP H51).
 //!
 //! Every byte the OT code sends is built here, from a closed allow-list of read-only

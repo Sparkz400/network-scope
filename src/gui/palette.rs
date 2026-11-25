@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The command palette (ROADMAP F39): `Ctrl+K` (`Cmd+K` on macOS) opens a box where you type a
 //! few letters of an action ("new scan", "settings", "export", "map") or an address, MAC, host
 //! name, vendor or finding id. Actions are matched fuzzily; the text is also searched in all saved

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Favicon fetch (opt-in `--favicon`, ROADMAP L70): one `GET /favicon.ico` per web port, hashed
 //! with the Shodan-compatible MurmurHash3 ([`crate::pivot::favicon_hash`]) into
 //! `http.<port>.favicon_mmh3`.

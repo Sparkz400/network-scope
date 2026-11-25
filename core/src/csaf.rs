@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Offline vulnerability intelligence for industrial devices (ROADMAP L68): CISA ICS advisories
 //! in CSAF 2.0 format, matched against the vendor, product and firmware an OT identification
 //! found (`S7.*`, `EtherNet/IP.*`, `Modbus.*`, `OPC UA.*`, see [`crate::otdevice`]).

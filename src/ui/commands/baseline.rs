@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `baseline approve [SCAN_ID]`, `baseline set DEVICE [--owner ..] [--tag ..] [--untag ..]
 //! [--criticality ..] [--expected yes|no]`, `baseline show [--format text|json]`,
 //! `baseline remove DEVICE` and `baseline clear`: the approved baseline of expected devices. Once

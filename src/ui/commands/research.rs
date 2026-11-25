@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `research query SQL`, `research schema`, `research rebuild` and `research export ...`
 //! (ROADMAP L67): the research tables of the inventory database. None of
 //! them sends a packet.

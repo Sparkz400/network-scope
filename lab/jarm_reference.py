@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Reference vectors for core/src/jarm.rs, produced by the reference implementation.
 
 JARM is only comparable with public JARM databases if our ClientHellos, our reading of the

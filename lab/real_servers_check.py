@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Checks a Network Scope scan of REAL servers (Samba, OpenSSH, OpenSSL s_server, nginx) against
 what those servers were configured to do. Python standard library only. Used by
 lab/real_servers.sh (CI job `real-servers`); see docs/src/lab-and-testing.md.

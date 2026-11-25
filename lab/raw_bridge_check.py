@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """The capture-driver features on Linux (libpcap), on a real link: the runner's Docker bridge.
 
 Run as root (raw frames need it). Everything stays on the runner: the bridge, its containers

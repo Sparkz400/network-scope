@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `wol MAC [--broadcast IP] [--dry-run]`: Wake-on-LAN, one UDP broadcast "magic packet" (port 9).
 //! It is a send, so it takes its token from the rate gate with the packet kind `wake-on-lan`,
 //! `--dry-run` lists it, and the scope guard checks a directed broadcast address (the limited

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! False-alarm budget for the risk rules (ROADMAP A8): every rule id in `risk.rs` has a table
 //! entry with a host that must trigger it and a near-miss host that must not. The inventory
 //! test reads the rule ids out of the `risk.rs` source, so a new rule without both cases fails

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! LLDP-MED (ANSI/TIA-1057): LLDP organisationally specific TLVs (type 127) with the TIA OUI
 //! `00-12-BB`. Read here: capabilities and device class, network policies, and the inventory
 //! strings. Location and extended power TLVs are not read. Passive decoding only; nothing here

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Linux check of the unused-address skip on a real link: the runner's Docker bridge.
 
 Run as an unprivileged user, so no ICMP: every address that answers no port is a candidate.

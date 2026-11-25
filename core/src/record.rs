@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! A record of what a scan sent and received, as pcapng (ROADMAP L72: `scan --record FILE.pcapng`).
 //!
 //! **This is an application-level record, not a wire capture.** The scanner opens ordinary

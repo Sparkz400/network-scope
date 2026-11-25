@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Export of a saved scan to other systems, and an opt-in push to some of them: NetBox, Snipe-IT,
 //! Splunk (HTTP Event Collector), Elastic and a ServiceNow-ready CSV. Each export is one record
 //! per device (active scan and passive observations merged, see [`crate::devices`]) with its

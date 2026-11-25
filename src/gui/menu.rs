@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The menu bar and the keyboard shortcuts. Every action is a [`Cmd`], the list the command
 //! palette runs: the menus, the shortcuts and the palette are built from it, so a menu entry, its
 //! shortcut and its palette entry run the same code and are enabled under the same conditions.

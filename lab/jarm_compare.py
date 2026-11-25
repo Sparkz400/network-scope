@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Compares the JARM fingerprints of Network Scope with the reference implementation, against
 live TLS servers on loopback. Exit code 0: every server gave the same fingerprint in both.
 

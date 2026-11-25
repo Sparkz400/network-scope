@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! A workbench for unknown devices (ROADMAP L73): group the responses that nothing identified,
 //! compare them across firmware versions and turn a group into a draft rule for
 //! `data/probes.json` that passes `probes lint`.

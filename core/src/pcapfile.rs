@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Offline capture files: classic pcap (all four magic variants) and pcapng. Ethernet frames are
 //! returned as recorded; Linux cooked captures (SLL, SLL2), BSD loopback (Npcap's loopback adapter,
 //! `lo0`) and raw IPv4/IPv6 are translated into Ethernet-style frames (synthesised 14-byte

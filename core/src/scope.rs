@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Scope guard (ROADMAP H54): confirmation before the scanner touches public addresses or
 //! anything outside the scope the user declared.
 //!

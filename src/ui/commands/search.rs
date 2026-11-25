@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `search QUERY [--top N] [--format text|json]`: where an IP address, MAC address (or vendor
 //! prefix), host name, vendor, device type or finding id appeared in the saved scans, newest
 //! scan first. Read-only; it only reads the inventory (`core::search`).

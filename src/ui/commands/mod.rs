@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The commands, one file per command or small family of related commands. `ui::run` looks the
 //! command word up in [`COMMANDS`] and calls its handler; see the module docs of `ui` for how to
 //! add one.

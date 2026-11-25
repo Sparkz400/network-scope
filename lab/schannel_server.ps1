@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 <#
   A TLS server that is served by Windows Schannel (.NET SslStream), for the test
   `tls::tests::windows_schannel_server_is_inspected` (core/src/tls.rs) and for manual checks.

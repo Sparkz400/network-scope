@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `update check`: asks GitHub whether a newer release exists and prints the release page and the
 //! commands that verify a download. It never downloads or installs anything; see the module
 //! documentation of `network_scope_core::update` for exactly what is sent. Nothing contacts

@@ -378,6 +378,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -I docs/check_finding_pages.py
+      - name: SPDX copyright and license header in every source file
+        run: python -I scripts/spdx_headers.py
   # Line coverage of the parsers and risk rules (cargo-llvm-cov). scripts/coverage_gate.py fails
   # the job when one of those files drops below its threshold in scripts/coverage_targets.json
   # (80%, or the measured floor of a file that is not there yet; none is below 80% at the moment).

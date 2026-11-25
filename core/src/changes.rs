@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! "What changed": the new, gone and changed devices and the new and resolved risks between the
 //! newest completed scan and an earlier one (the scan before it, or the state at a point in
 //! time). One call returns everything a home screen or a report needs:

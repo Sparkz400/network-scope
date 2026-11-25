@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Network Scope as a library: the desktop GUI (`gui`), the CLI and TUI (`ui`) on top of the engine
 //! crate `network-scope-core` (`core/`). The two binaries (`src/main.rs` and
 //! `src/bin/network-scope-cli.rs`) call [`run`]; the fuzz targets in `fuzz/` call the entry points

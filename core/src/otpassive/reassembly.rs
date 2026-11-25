@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! TCP reassembly-lite for the framed OT protocols (bounded memory, in order only).
 use super::packet::{be16, le16};
 use std::{collections::HashMap, net::IpAddr};

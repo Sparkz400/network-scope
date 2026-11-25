@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Fails when a criterion benchmark got slower than the baseline by more than a threshold (B18).
 
   python -I scripts/bench_compare.py CRITERION_HOME [--threshold 15]

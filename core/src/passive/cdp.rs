@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Cisco Discovery Protocol (CDP) frames: IEEE 802.3 with an LLC/SNAP header (`AA AA 03`, OUI
 //! `00 00 0C`, protocol id `0x2000`) to the multicast address `01:00:0C:CC:CC:CC`. Passive
 //! decoding only; nothing here transmits.

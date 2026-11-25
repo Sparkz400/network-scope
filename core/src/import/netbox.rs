@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! NetBox JSON exports, read offline from files saved from the REST API: `/api/dcim/devices/`
 //! (devices with name, status, role, tenant, tags and primary addresses) and
 //! `/api/ipam/ip-addresses/` (addresses with the device they are assigned to). The file is either

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! CSV import: a small bounded RFC 4180 reader and the column mappings for a generic device list,
 //! `Get-ADComputer | Export-Csv` and `Get-DhcpServerv4Lease | Export-Csv`. Columns are found by
 //! their header names (case, spaces and underscores do not matter), so the order and any extra

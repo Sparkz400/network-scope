@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `fingerprints export-unknown [SCAN_ID] [--output FILE]`: writes the banners of services that
 //! nothing identified, taken from the local store, as JSON for a contribution (see
 //! docs/src/contributing-fingerprints.md). Without a scan ID every stored scan is used. It reads

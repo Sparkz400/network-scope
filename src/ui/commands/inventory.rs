@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Commands on the saved inventory: `history`, `alerts` and `import` (an nmap XML scan, or
 //! `import KIND FILE...` for lists of known devices).
 use crate::{

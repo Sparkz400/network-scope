@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `diff OLD_ID NEW_ID [--format lines|json|text] [--ignore KEY,KEY] [--fail-on-findings]`.
 use crate::{
     risk, store,

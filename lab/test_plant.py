@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Tests of the plant scripts (standard library only): python -I -m unittest discover -s lab -p "test_*.py"
 
 They check the ground truth, the traffic generator and the plant devices (on loopback, with a real

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SMB 1 and SMB 2/3: NEGOTIATE requests, the SMB1/SMB2 probing flow and its Outcome. The
 //! SMB2 reply details live in `smb2`, the NTLM challenge in `ntlm`.
 use super::{Fields, Outcome, Service, connect, negotiate_once};

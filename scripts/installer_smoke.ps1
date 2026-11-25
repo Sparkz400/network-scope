@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 # Smoke test of the Windows installer (roadmap I58), used by ci.yml and release.yml:
 # installs it silently per user (no administrator rights) into a temporary folder with the
 # "add to PATH" task, installs it a second time over the first (an upgrade in place), checks that

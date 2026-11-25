@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! DNP3 (IEEE 1815, TCP 20000): data link frames, application function codes, the data link
 //! addresses of master and outstation and the internal indications (IIN) of responses.
 //!
