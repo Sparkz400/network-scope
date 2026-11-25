@@ -620,10 +620,7 @@ mod tests {
 
     #[tokio::test]
     async fn closed_port_yields_no_outcome() {
-        let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
+        let (port, _reserved) = crate::probes::refused_port();
         let out = detect(
             "127.0.0.1".parse().unwrap(),
             port,

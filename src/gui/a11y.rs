@@ -144,7 +144,8 @@ pub(super) mod tests {
     #[test]
     fn the_table_filters_and_the_schedule_section_have_named_controls() {
         let mut view = super::super::tables::View::default();
-        let nodes = tree(|ui| view.controls_with(ui, "findings_severity", "Any risk", true));
+        let nodes =
+            tree(|ui| view.controls_with(ui, "findings_severity", "Any risk", true, |_| {}));
         assert_all_named(&nodes, "table filters");
         let names = names(&nodes, &["TextInput", "ComboBox"]);
         assert!(names.contains(&"Filter…".to_string()), "{names:?}");

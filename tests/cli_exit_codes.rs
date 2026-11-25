@@ -141,6 +141,90 @@ fn errors_exit_1() {
 }
 
 #[test]
+fn an_unknown_scan_id_is_named_and_a_bad_format_comes_first() {
+    let fixture = Fixture::new("unknown-id");
+    for args in [
+        &["findings", "99"][..],
+        &["export", "99"],
+        &["report", "99"],
+        &["devices", "99"],
+        &["topology", "99"],
+        &["ot-assets", "99"],
+        &["diff", "1", "99"],
+        &["export", "1", "--baseline", "99", "--format", "md"],
+        &["baseline", "approve", "99"],
+        &["research", "export", "stix", "99"],
+        &["fingerprints", "groups", "99"],
+        &["scan", "--replay-check", "99"],
+    ] {
+        let (code, _, err) = fixture.run(args);
+        assert_eq!(code, 1, "{args:?}");
+        assert!(
+            err.contains("No scan with ID 99; see \"history\""),
+            "{args:?}: {err}"
+        );
+    }
+    // The format is checked before the scan is looked up.
+    let (code, _, err) = fixture.run(&["export", "99", "--format", "xyz"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("Choose json, csv"), "{err}");
+}
+
+#[test]
+fn a_mistyped_db_is_an_error_for_commands_that_only_read() {
+    let fixture = Fixture::new("typo");
+    // A folder that does not exist, as in the report: nothing may be created on the way.
+    let missing = fixture.dir.join("no-such-folder").join("typo.sqlite");
+    for args in [
+        &["history"][..],
+        &["changes"],
+        &["alerts"],
+        &["findings", "1"],
+        &["export", "1"],
+        &["search", "10.0.0.1"],
+        &["baseline", "show"],
+    ] {
+        let (code, out, err) = run_bin(
+            env!("CARGO_BIN_EXE_network-scope-cli"),
+            args,
+            missing.to_str(),
+        );
+        assert_eq!((code, out.as_str()), (1, ""), "{args:?}: {err}");
+        assert!(
+            err.contains("typo.sqlite: no such inventory"),
+            "{args:?}: {err}"
+        );
+        assert!(!missing.parent().unwrap().exists(), "{args:?}");
+    }
+    // Without --db a first run has no inventory yet: that reads as empty, and stays missing.
+    // LOCALAPPDATA points into the fixture, so the real profile is not touched.
+    for (args, expected) in [
+        (&["history"][..], "\"scans\": []"),
+        (&["alerts"], "\"alerts\": []"),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_network-scope-cli"))
+            .args(args)
+            .env("LOCALAPPDATA", &fixture.dir)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(expected), "{args:?}: {text}");
+    }
+    assert!(!fixture.dir.join("NetworkScope").exists());
+    // A command that saves still creates the inventory it is given.
+    let new = fixture.dir.join("new").join("inventory.sqlite");
+    let xml = fixture.dir.join("old.xml");
+    let (code, _, err) = run_bin(
+        env!("CARGO_BIN_EXE_network-scope-cli"),
+        &["import", xml.to_str().unwrap(), "--quiet"],
+        new.to_str(),
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(new.exists());
+}
+
+#[test]
 fn history_prune_deletes_old_scans_and_refuses_what_it_cannot_do() {
     let fixture = Fixture::new("prune");
     let scans = |f: &Fixture| -> usize {

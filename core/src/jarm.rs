@@ -979,9 +979,7 @@ mod tests {
                 .contains(&(PacketKind::TlsClientHello, DETAIL.to_string()))
         );
         // A port that refuses the connection: all probes empty, 62 zeros.
-        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let cport = closed.local_addr().unwrap().port();
-        drop(closed);
+        let (cport, _reserved) = crate::probes::refused_port();
         let none = fingerprint(ip, cport, Duration::from_millis(300), &gate)
             .await
             .unwrap();

@@ -92,6 +92,26 @@ fn no_syn_retransmissions(socket: &tokio::net::TcpSocket, timeout: Duration) {
     }
 }
 
+/// A loopback port that refuses connections, for tests, with the socket that keeps it that way
+/// (hold it until the test has connected). The socket is bound and never listens: Linux and
+/// Windows answer a SYN to it with a reset, and no listener of a test running at the same time
+/// can be given the port, which happened to ports that were bound and released again.
+/// Elsewhere the port is released as before (`None`): macOS drops such a SYN instead of
+/// refusing it (seen in CI, 2026-11-25), so there a port that is bound and released is the
+/// only refused one, and another test may still be given it.
+#[cfg(test)]
+pub(crate) fn refused_port() -> (u16, Option<socket2::Socket>) {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+    (
+        port,
+        cfg!(any(windows, target_os = "linux")).then_some(socket),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,10 +125,9 @@ mod tests {
             connect(localhost, open, Duration::from_secs(2)).await,
             PortState::Open
         );
-        drop(listener);
-        // The port was just released: nothing listens there any more.
+        let (closed, _reserved) = refused_port();
         assert_eq!(
-            connect(localhost, open, Duration::from_secs(3)).await,
+            connect(localhost, closed, Duration::from_secs(3)).await,
             PortState::Closed
         );
     }
@@ -118,9 +137,7 @@ mod tests {
     /// port was reported as unanswered.
     #[tokio::test]
     async fn a_refused_port_is_closed_well_within_the_default_timeout() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let (port, _reserved) = refused_port();
         let started = std::time::Instant::now();
         let state = connect("127.0.0.1".parse().unwrap(), port, Duration::from_secs(2)).await;
         assert_eq!(state, PortState::Closed);

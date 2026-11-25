@@ -86,7 +86,7 @@ Peak memory on Linux is GNU time's figure (`/usr/bin/time -f %M`, installed by t
 | --- | --- |
 | Machine | Windows 11 Pro (10.0.26300), AMD Ryzen 7 9800X3D (8 cores, 16 logical processors), 64 GB RAM |
 | Date | 2026-11-20 |
-| Build | Network Scope 0.5.1, release build (shipped profile, `--no-default-features --bin network-scope-cli`) of commit `a439126` |
+| Build | Network Scope 0.5.1, release build (shipped profile, `--no-default-features --bin network-scope-cli`) of commit `3a4d54f` |
 | Python | 3.14 |
 
 WSL and Docker are not available on this machine and neither nmap nor RustScan is installed, so only Network Scope ran. Without nmap the ports are Network Scope's own `top:100` list, not nmap's, and the top-1000 cells were not run.

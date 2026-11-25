@@ -4,7 +4,7 @@
 use super::{Job, Scanner, a11y, i18n::tr};
 use crate::{capture, otpassive, passive, store};
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
+use egui_extras::TableBuilder;
 use std::{
     path::PathBuf,
     sync::{
@@ -516,37 +516,48 @@ impl Scanner {
                 "control traffic seen (writes, program changes, stop/start)"
             ));
         });
-        asset_table(ui, &self.ot.assets);
+        asset_table(ui, &self.ot.assets, &mut self.saved.column_widths);
     }
 }
 
 const CONTROL: egui::Color32 = egui::Color32::from_rgb(190, 60, 20);
 
-fn asset_table(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
+/// The columns of the asset table: the name each width is remembered under and its default.
+const ASSET_WIDTHS: [(&str, f32); 10] = [
+    ("ot.address", 110.0),
+    ("ot.vendor", 120.0),
+    ("ot.product", 120.0),
+    ("ot.firmware", 80.0),
+    ("ot.serial", 80.0),
+    ("ot.protocols", 120.0),
+    ("ot.roles", 80.0),
+    ("ot.first", 130.0),
+    ("ot.last", 130.0),
+    ("ot.control", 240.0),
+];
+fn asset_table(ui: &mut egui::Ui, assets: &[otpassive::Asset], widths: &mut super::tables::Widths) {
     // Ten columns are wider than the window: scroll sideways instead of squeezing the last one.
     egui::ScrollArea::horizontal()
         .id_salt("ot_assets_h")
-        .show(ui, |ui| asset_rows(ui, assets));
+        .show(ui, |ui| asset_rows(ui, assets, widths));
 }
-fn asset_rows(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
-    TableBuilder::new(ui)
+fn asset_rows(ui: &mut egui::Ui, assets: &[otpassive::Asset], widths: &mut super::tables::Widths) {
+    let mut table = TableBuilder::new(ui)
         .id_salt("ot_assets")
         .striped(true)
         .resizable(true)
         .max_scroll_height(240.0)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::initial(110.0).clip(true))
-        .column(Column::initial(120.0).clip(true))
-        .column(Column::initial(120.0).clip(true))
-        .column(Column::initial(80.0).clip(true))
-        .column(Column::initial(80.0).clip(true))
-        .column(Column::initial(120.0).clip(true))
-        .column(Column::initial(80.0).clip(true))
-        .column(Column::initial(130.0).clip(true))
-        .column(Column::initial(130.0).clip(true))
-        .column(Column::initial(240.0).at_least(120.0).clip(true))
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+    for column in ASSET_WIDTHS {
+        table = table.column(
+            super::tables::sized(widths, column)
+                .at_least(if column.0 == "ot.control" { 120.0 } else { 0.0 })
+                .clip(true),
+        );
+    }
+    table
         .header(22.0, |mut row| {
-            for h in [
+            let names = [
                 tr!("Address"),
                 tr!("Vendor"),
                 tr!("Product"),
@@ -557,8 +568,10 @@ fn asset_rows(ui: &mut egui::Ui, assets: &[otpassive::Asset]) {
                 tr!("First seen"),
                 tr!("Last seen"),
                 tr!("Control traffic"),
-            ] {
+            ];
+            for (h, column) in names.into_iter().zip(ASSET_WIDTHS) {
                 row.col(|ui| {
+                    super::tables::keep(widths, column, ui);
                     ui.strong(h);
                 });
             }

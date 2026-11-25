@@ -102,6 +102,8 @@ Below the presets, two adjustments change the current settings instead of replac
 
 ### Settings and controls
 
+- **Column widths**: a column dragged to another width keeps it for the next start, in every table (not the column that takes the rest of the width).
+- **Several rows**: Ctrl+click and Shift+click mark rows in the hosts table, the Findings table and Hosts by device (keyboard: Shift with the arrow keys in the hosts table; Ctrl or Shift with Enter on a row's address in the other two). The menu of a marked row then offers **Copy N addresses** and **Copy N rows** first.
 - **The Addresses field and the sort of the hosts table** are remembered for the next start (an imported list of more than 2,000 characters is not).
 - **A message** under the controls (an export that failed, a file that could not be read) stays until the next scan starts or its **✕** is clicked.
 - **Closing the window while a scan or capture runs** asks first: **Stop and quit** saves what was found as a partial scan, **Keep running** goes on. When a scan you started ends while the window is not in front, its taskbar button flashes.
@@ -158,7 +160,7 @@ With imported feeds (`feeds import`, see [Findings and CVE hints](findings-and-c
 
 ## Passive discovery / OT
 
-Select an Ethernet interface and a capture duration (needs Npcap/libpcap). The interfaces are listed when the page is first shown (**Refresh interfaces** reads them again). On Windows, choosing an interface fills in its MAC and IPv4 address (what DCP and SYN scans need) when the two fields are empty; **Use the interface's addresses** replaces what is there. On Linux and macOS they are typed. Passive capture sends no discovery packets and decodes mDNS, SSDP/UPnP, LLDP (with LLDP-MED), CDP, NetBIOS (name service and browser announcements), WS-Discovery, DHCP, DHCPv6, ARP and IPv6 Neighbor Discovery. The separate **DCP Identify** button sends one read-only Profinet multicast request; it never assigns IPs or changes a device. MAC-keyed observations retain devices that advertise no IP.
+Select an Ethernet interface and a capture duration (needs Npcap/libpcap). The interfaces are listed when the page is first shown (**Refresh interfaces** reads them again). On Windows, choosing an interface fills in its MAC and IPv4 address (what DCP and SYN scans need) when the two fields are empty; **Use the interface's addresses** replaces what is there. Linux and macOS fill them in the same way (read with `getifaddrs`; exercised by CI only). Passive capture sends no discovery packets and decodes mDNS, SSDP/UPnP, LLDP (with LLDP-MED), CDP, NetBIOS (name service and browser announcements), WS-Discovery, DHCP, DHCPv6, ARP and IPv6 Neighbor Discovery. The separate **DCP Identify** button sends one read-only Profinet multicast request; it never assigns IPs or changes a device. MAC-keyed observations retain devices that advertise no IP.
 
 Capture visibility depends on the network interface, multicast delivery and switch mirroring; it does not expose all traffic on a switched LAN. Observations are bounded to 10,000; a full capture queue or the cap marks the capture partial and collection continues with what still fits.
 

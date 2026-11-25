@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::Arc,
 };
 
 /// Largest SBOM file read.
@@ -297,10 +297,13 @@ fn parse_spdx(doc: &Value) -> Sbom {
             described.push(text(r, "relatedSpdxElement"));
         }
     }
-    let subject = described
-        .iter()
-        .find_map(|id| packages.iter().find(|p| text(p, "SPDXID") == *id))
-        .copied();
+    // By id, the first package of each: neither list is bounded, and a search of the packages
+    // per described id took hours on a crafted file.
+    let mut by_id: std::collections::HashMap<String, &Value> = Default::default();
+    for p in &packages {
+        by_id.entry(text(p, "SPDXID")).or_insert(*p);
+    }
+    let subject = described.iter().find_map(|id| by_id.get(id)).copied();
     let external = |p: &Value, kinds: &[&str]| -> String {
         p.get("externalRefs")
             .and_then(Value::as_array)
@@ -477,6 +480,27 @@ impl Library {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path)?.map_err(|version| {
+            format!(
+                "{}: cache version {version} is not supported (expected {CACHE_VERSION}); import the SBOMs again",
+                path.display()
+            )
+        })
+    }
+
+    /// [`Self::load`], with a cache that an older version of the program wrote told apart as
+    /// `Ok(Err(its version))`: that one is expected after an upgrade, and an import starts
+    /// over. Every other file that does not load is an error, and is never written over.
+    fn read(path: &Path) -> Result<Result<Self, u32>, String> {
+        /// What a cache of any version has. The version alone does not make a file a cache: a
+        /// vendor's CycloneDX document has a top-level `version` too.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Header {
+            version: u32,
+            imported_at: u64,
+            sboms: Vec<serde::de::IgnoredAny>,
+        }
         let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
@@ -484,16 +508,20 @@ impl Library {
             return Err(format!("{}: file is too large", path.display()));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let cache: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("{}: not an SBOM cache: {e}", path.display()))?;
-        if cache.version != CACHE_VERSION {
-            return Err(format!(
-                "{}: cache version {} is not supported (expected {CACHE_VERSION}); import the SBOMs again",
+        match serde_json::from_slice::<Self>(&bytes) {
+            Ok(cache) if cache.version == CACHE_VERSION => Ok(Ok(cache)),
+            Ok(cache) if cache.version < CACHE_VERSION => Ok(Err(cache.version)),
+            Ok(cache) => Err(format!(
+                "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
                 cache.version
-            ));
+            )),
+            // An older version may have stored its entries in another shape.
+            Err(e) => match serde_json::from_slice::<Header>(&bytes) {
+                Ok(header) if header.version < CACHE_VERSION => Ok(Err(header.version)),
+                _ => Err(format!("{}: not an SBOM cache: {e}", path.display())),
+            },
         }
-        Ok(cache)
     }
 
     /// Writes the cache through a temporary file, so an interrupted import keeps the old one.
@@ -502,6 +530,7 @@ impl Library {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        check_size(bytes.len(), path)?;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -511,6 +540,19 @@ impl Library {
             format!("{}: {e}", path.display())
         })
     }
+}
+
+/// A cache that [`Library::load`] would refuse for its size is not written: the next import
+/// could not read it back.
+fn check_size(bytes: usize, path: &Path) -> Result<(), String> {
+    if bytes as u64 > MAX_CACHE_BYTES {
+        return Err(format!(
+            "{}: the cache would be larger than {} MB and could not be read again; nothing was written",
+            path.display(),
+            MAX_CACHE_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(())
 }
 
 /// `sboms.json` next to `feeds.json`.
@@ -603,7 +645,12 @@ pub fn import(
         ));
     }
     let mut library = if cache.exists() {
-        Library::load(cache).unwrap_or_default()
+        // A cache of an older version starts over (its files are imported again). A file that
+        // does not load for any other reason stays as it is: it may be no cache at all (the
+        // cache option naming a vendor's document), and saving would write over it.
+        Library::read(cache)
+            .map_err(|e| format!("{e}; nothing was imported and the file is unchanged"))?
+            .unwrap_or_default()
     } else {
         Library::default()
     };
@@ -691,49 +738,30 @@ pub fn status(library: &Library, path: &Path) -> Value {
 
 // ---- Active SBOMs --------------------------------------------------------------------------
 
-fn slot() -> &'static RwLock<Option<Arc<Library>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<Library>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
-}
+static ACTIVE: crate::feeds::ActiveCache<Library> =
+    crate::feeds::ActiveCache::new("SBOM", "no SBOMs are used", default_path, Library::load);
 
 /// Makes the cache at `explicit` (`--sboms FILE`) the active SBOMs; an error when it is missing
 /// or unreadable.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
-    let library = Library::load(explicit)?;
-    if let Ok(mut s) = slot().write() {
-        *s = Some(Arc::new(library));
-    }
-    Ok(())
+    ACTIVE.set(explicit)
 }
 
 /// Forgets the loaded SBOMs, so the next [`active`] reads the cache again (the desktop after an
 /// import).
 pub fn reload() {
-    if let Ok(mut s) = slot().write() {
-        *s = None;
-    }
+    ACTIVE.clear()
 }
 
 /// The active SBOMs: the explicit cache, else the default cache when it exists, else none.
 /// Tests never read the developer's own cache.
 pub fn active() -> Arc<Library> {
-    if let Some(l) = slot().read().ok().and_then(|s| s.clone()) {
-        return l;
-    }
-    #[cfg(test)]
-    let library = Arc::new(Library::default());
-    #[cfg(not(test))]
-    let library = Arc::new(match default_path().filter(|p| p.exists()) {
-        Some(p) => Library::load(&p).unwrap_or_else(|e| {
-            eprintln!("SBOM: {e}; no SBOMs are used");
-            Library::default()
-        }),
-        None => Library::default(),
-    });
-    if let Ok(mut s) = slot().write() {
-        *s = Some(library.clone());
-    }
-    library
+    ACTIVE.get()
+}
+
+/// Reads the cache again when its file changed since it was loaded (see `feeds::refresh`).
+pub fn refresh() {
+    ACTIVE.refresh()
 }
 
 /// A firmware a host reported, with the imported SBOM that describes it (the desktop's host

@@ -188,4 +188,4 @@ source <(network-scope completions zsh)     # after compinit
 network-scope completions fish | source
 ```
 
-The scripts cover both binary names. The zsh and fish scripts are generated from the same tables as the other two and checked by tests on their text; they have not been run in a real zsh or fish yet.
+The scripts cover both binary names. The zsh and fish scripts are generated from the same tables as the other two; CI loads each in its shell and asks it for a command and an option.

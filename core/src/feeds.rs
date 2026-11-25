@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, RwLock},
 };
 
 /// Size limits checked before a file is read (the catalog is about 1.5 MB, the plain EPSS CSV
@@ -339,6 +339,28 @@ impl Feeds {
 
     /// Reads a cache file, bounded and version-checked.
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path)?.map_err(|version| {
+            format!(
+                "{}: cache version {version} is not supported (expected {CACHE_VERSION}); import the feeds again",
+                path.display()
+            )
+        })
+    }
+
+    /// [`Self::load`], with a cache that an older version of the program wrote told apart as
+    /// `Ok(Err(its version))`: that one is expected after an upgrade, and an import starts
+    /// over. Every other file that does not load is an error, and is never written over.
+    fn read(path: &Path) -> Result<Result<Self, u32>, String> {
+        /// What a feeds cache of any version has. The version alone does not make a file one:
+        /// the caches next to it (`nvd.json`, `csaf.json`) and a CycloneDX document have one
+        /// too, and every other field of [`Feeds`] may be missing.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Header {
+            version: u32,
+            kev: serde::de::IgnoredAny,
+            epss: serde::de::IgnoredAny,
+        }
         let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
@@ -346,16 +368,20 @@ impl Feeds {
             return Err(format!("{}: file is too large", path.display()));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let feeds: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("{}: not a feeds cache: {e}", path.display()))?;
-        if feeds.version != CACHE_VERSION {
-            return Err(format!(
-                "{}: cache version {} is not supported (expected {CACHE_VERSION}); import the feeds again",
+        let not_a_cache =
+            |e: serde_json::Error| format!("{}: not a feeds cache: {e}", path.display());
+        let header: Header = serde_json::from_slice(&bytes).map_err(not_a_cache)?;
+        match header.version.cmp(&CACHE_VERSION) {
+            std::cmp::Ordering::Less => Ok(Err(header.version)),
+            std::cmp::Ordering::Equal => {
+                serde_json::from_slice(&bytes).map(Ok).map_err(not_a_cache)
+            }
+            std::cmp::Ordering::Greater => Err(format!(
+                "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
-                feeds.version
-            ));
+                header.version
+            )),
         }
-        Ok(feeds)
     }
 
     /// Writes the cache through a temporary file, so an interrupted import keeps the old one.
@@ -364,6 +390,7 @@ impl Feeds {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        check_size(bytes.len(), MAX_CACHE_BYTES, path)?;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -373,6 +400,19 @@ impl Feeds {
             format!("{}: {e}", path.display())
         })
     }
+}
+
+/// A cache that `load` would refuse for its size (`limit`) is not written: the next import
+/// could not read it back.
+pub(crate) fn check_size(bytes: usize, limit: u64, path: &Path) -> Result<(), String> {
+    if bytes as u64 > limit {
+        return Err(format!(
+            "{}: the cache would be larger than {} MB and could not be read again; nothing was written",
+            path.display(),
+            limit / (1024 * 1024)
+        ));
+    }
+    Ok(())
 }
 
 /// `feeds.json` in the per-user configuration folder (see `appdir`), next to the user
@@ -389,15 +429,10 @@ pub struct ImportReport {
     pub kev_skipped: usize,
     pub epss_rows: Option<usize>,
     pub epss_skipped: usize,
-    /// An existing cache could not be read and was replaced.
-    pub replaced_unreadable: Option<String>,
 }
 impl ImportReport {
     pub fn lines(&self) -> Vec<String> {
         let mut out = vec![];
-        if let Some(e) = &self.replaced_unreadable {
-            out.push(format!("Replaced an unreadable cache ({e})"));
-        }
         if let Some(n) = self.kev_entries {
             out.push(format!(
                 "KEV: {n} known exploited CVEs ({} entries skipped)",
@@ -429,7 +464,8 @@ fn read_limited(path: &Path, limit: u64, what: &str) -> Result<Vec<u8>, String> 
 }
 
 /// Imports a KEV file and/or an EPSS file into the cache at `cache`. A part that is not given
-/// keeps its previous content. Nothing is written when a file is rejected.
+/// keeps its previous content. Nothing is written when a file is rejected, or when what stands
+/// at `cache` cannot be loaded (a cache of an older version starts over).
 pub fn import(
     kev: Option<&Path>,
     epss: Option<&Path>,
@@ -443,20 +479,22 @@ pub fn import(
         path: cache.to_path_buf(),
         ..Default::default()
     };
+    // Before the feed files are read: the part that is not given comes from this cache, so a
+    // file that does not load (damaged, a newer version, the cache option naming another
+    // file) stays as it is.
+    let mut feeds = if cache.exists() {
+        Feeds::read(cache)
+            .map_err(|e| format!("{e}; nothing was imported and the file is unchanged"))?
+            .unwrap_or_default()
+    } else {
+        Feeds::default()
+    };
     let kev = kev
         .map(|p| parse_kev(&read_limited(p, MAX_KEV_BYTES, "KEV")?))
         .transpose()?;
     let epss = epss
         .map(|p| parse_epss(&read_limited(p, MAX_EPSS_BYTES, "EPSS")?))
         .transpose()?;
-    let mut feeds = if cache.exists() {
-        Feeds::load(cache).unwrap_or_else(|e| {
-            report.replaced_unreadable = Some(e);
-            Feeds::default()
-        })
-    } else {
-        Feeds::default()
-    };
     if let Some(p) = kev {
         report.kev_entries = Some(p.data.entries.len());
         report.kev_skipped = p.skipped;
@@ -494,45 +532,143 @@ pub fn status(feeds: &Feeds, path: &Path) -> serde_json::Value {
 
 // ---- Active feeds -------------------------------------------------------------------------
 
-fn slot() -> &'static RwLock<Option<Arc<Feeds>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<Feeds>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
+/// The process-wide copy of one cache file (`feeds.json`, `nvd.json`, `csaf.json`, `vex.json`,
+/// `sboms.json`): loaded on first use, and again by [`ActiveCache::refresh`] when the file has
+/// changed, so a monitor that runs for weeks uses what was imported in the meantime.
+pub(crate) struct ActiveCache<T> {
+    /// The name in messages ("Feeds", "NVD").
+    label: &'static str,
+    /// What it means that the default cache could not be loaded ("findings are not enriched").
+    without: &'static str,
+    default_path: fn() -> Option<PathBuf>,
+    load: fn(&Path) -> Result<T, String>,
+    slot: RwLock<Option<Loaded<T>>>,
 }
+struct Loaded<T> {
+    data: Arc<T>,
+    /// The file `data` is from; `None` when there is none to look at again (tests, no
+    /// configuration folder).
+    path: Option<PathBuf>,
+    stamp: Stamp,
+}
+/// Modification time and length of a file, `None` while it does not exist: tells a rewritten
+/// cache from the loaded one without reading it.
+pub(crate) type Stamp = Option<(std::time::SystemTime, u64)>;
+pub(crate) fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+impl<T: Default> ActiveCache<T> {
+    pub(crate) const fn new(
+        label: &'static str,
+        without: &'static str,
+        default_path: fn() -> Option<PathBuf>,
+        load: fn(&Path) -> Result<T, String>,
+    ) -> Self {
+        Self {
+            label,
+            without,
+            default_path,
+            load,
+            slot: RwLock::new(None),
+        }
+    }
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Option<Loaded<T>>> {
+        self.slot.write().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Makes the cache at `path` the active one; an error when it is missing or unreadable, and
+    /// the previous one then stays.
+    pub(crate) fn set(&self, path: &Path) -> Result<(), String> {
+        // Taken before the read: a file replaced in between counts as changed afterwards.
+        let stamp = stamp(path);
+        let data = Arc::new((self.load)(path)?);
+        *self.write() = Some(Loaded {
+            data,
+            path: Some(path.to_path_buf()),
+            stamp,
+        });
+        Ok(())
+    }
+    /// Forgets the loaded data: the next [`Self::get`] reads the default cache again.
+    pub(crate) fn clear(&self) {
+        *self.write() = None;
+    }
+    /// The active data: what [`Self::set`] loaded, else the default cache when it exists, else
+    /// nothing. An unreadable default cache is reported on stderr.
+    pub(crate) fn get(&self) -> Arc<T> {
+        if let Some(loaded) = &*self.slot.read().unwrap_or_else(|e| e.into_inner()) {
+            return loaded.data.clone();
+        }
+        // Tests never read the developer's own cache.
+        let path = (self.default_path)().filter(|_| !cfg!(test));
+        let stamp = path.as_deref().and_then(stamp);
+        let data = match &path {
+            Some(p) if stamp.is_some() => (self.load)(p).unwrap_or_else(|e| {
+                eprintln!("{}: {e}; {}", self.label, self.without);
+                T::default()
+            }),
+            _ => T::default(),
+        };
+        let loaded = Loaded {
+            data: Arc::new(data),
+            path,
+            stamp,
+        };
+        self.write().get_or_insert(loaded).data.clone()
+    }
+    /// Loads the file again when it changed (or appeared) since it was loaded. A file that is
+    /// gone or cannot be loaded now (half written, damaged, another version) keeps the loaded
+    /// data in use; that is said once, and the file is read again only after its next change.
+    pub(crate) fn refresh(&self) {
+        let (path, loaded) = match self.write().as_ref() {
+            Some(Loaded {
+                path: Some(path),
+                stamp,
+                ..
+            }) => (path.clone(), *stamp),
+            _ => return,
+        };
+        let now = stamp(&path);
+        if now.is_none() || now == loaded {
+            return;
+        }
+        let result = (self.load)(&path);
+        let mut slot = self.write();
+        let Some(active) = slot.as_mut().filter(|a| a.path.as_ref() == Some(&path)) else {
+            return;
+        };
+        active.stamp = now;
+        match result {
+            Ok(data) => active.data = Arc::new(data),
+            Err(e) => eprintln!("{}: {e}; the data loaded before stays in use", self.label),
+        }
+    }
+}
+
+static ACTIVE: ActiveCache<Feeds> = ActiveCache::new(
+    "Feeds",
+    "findings are not enriched",
+    default_path,
+    Feeds::load,
+);
 
 /// Makes the cache at `explicit` (`--feeds FILE`) the active feeds; an error when it is missing
 /// or unreadable. The previous feeds stay in place on error.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
-    let feeds = Feeds::load(explicit)?;
-    if let Ok(mut s) = slot().write() {
-        *s = Some(Arc::new(feeds));
-    }
-    Ok(())
+    ACTIVE.set(explicit)
 }
 
 /// The active feeds: the explicit cache, else the default cache when it exists, else nothing.
 /// An unreadable default cache is reported once on stderr. Tests never read the developer's
 /// own cache.
 pub fn active() -> Arc<Feeds> {
-    if let Some(f) = slot().read().ok().and_then(|s| s.clone()) {
-        return f;
-    }
-    #[cfg(test)]
-    let feeds = Arc::new(Feeds::default());
-    #[cfg(not(test))]
-    let feeds = Arc::new(match default_path().filter(|p| p.exists()) {
-        Some(p) => Feeds::load(&p).unwrap_or_else(|e| {
-            eprintln!("Feeds: {e}; findings are not enriched");
-            Feeds::default()
-        }),
-        None => Feeds::default(),
-    });
-    if let Ok(mut s) = slot().write() {
-        if let Some(existing) = s.as_ref() {
-            return existing.clone();
-        }
-        *s = Some(feeds.clone());
-    }
-    feeds
+    ACTIVE.get()
+}
+
+/// Reads the cache again when its file changed since it was loaded (an import while a monitor
+/// runs). Never an error: a file that cannot be read keeps the loaded feeds in use.
+pub fn refresh() {
+    ACTIVE.refresh()
 }
 
 /// Enriches the findings from the active feeds and ranks them. A no-op without feeds: the
@@ -634,6 +770,55 @@ mod tests {
     }
     fn ids(list: &[Finding]) -> Vec<&str> {
         list.iter().map(|f| f.id.as_str()).collect()
+    }
+
+    /// What a monitor relies on between two cycles: a cache that was imported again is read
+    /// again, and one that cannot be read right now changes nothing.
+    #[test]
+    fn an_active_cache_follows_its_file_and_keeps_its_data_when_the_file_is_broken() {
+        let dir = std::env::temp_dir().join(format!("ns-active-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cache.txt");
+        let cache = ActiveCache::<String>::new(
+            "Test",
+            "nothing is used",
+            || None,
+            |path| match std::fs::read_to_string(path) {
+                Ok(text) if text.starts_with("cache") => Ok(text),
+                Ok(_) => Err("not a cache".into()),
+                Err(e) => Err(e.to_string()),
+            },
+        );
+        // Nothing is loaded yet, and a file that is not there is not made active.
+        cache.refresh();
+        assert!(cache.set(&file).is_err());
+        std::fs::write(&file, "cache 1").unwrap();
+        cache.set(&file).unwrap();
+        let first = cache.get();
+        assert_eq!(*first, "cache 1");
+        // Unchanged: not read again.
+        cache.refresh();
+        assert!(Arc::ptr_eq(&first, &cache.get()));
+        // Imported again (the length differs, so the test does not depend on the clock).
+        std::fs::write(&file, "cache of the second import").unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache of the second import");
+        // Half written, then gone: the loaded data stays in use.
+        std::fs::write(&file, "{").unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache of the second import");
+        std::fs::remove_file(&file).unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache of the second import");
+        // Complete again.
+        std::fs::write(&file, "cache, third").unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache, third");
+        // Forgotten: tests have no default cache, so nothing is active.
+        cache.clear();
+        assert_eq!(*cache.get(), "");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -905,12 +1090,59 @@ mod tests {
         assert!(import(Some(&bad), None, &cache, 30).is_err());
         assert_eq!(Feeds::load(&cache).unwrap().imported_at, 20);
         assert!(!cache.with_extension("json.tmp").exists());
-        // A missing file and an unreadable existing cache.
+        // A missing file.
         assert!(import(Some(&dir.join("none")), None, &cache, 1).is_err());
-        std::fs::write(&cache, "garbage").unwrap();
         let r = import(Some(&kev), None, &cache, 40).unwrap();
-        assert!(r.replaced_unreadable.is_some());
         assert!(r.lines().iter().any(|l| l.starts_with("KEV: 4")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What stands at the cache path decides what an import may do with it: only a cache of
+    /// this version is added to (an import of one feed keeps the other from it), one of an
+    /// older version starts over, and anything else is left alone.
+    #[test]
+    fn an_import_never_writes_over_a_file_it_could_not_load() {
+        let dir = temp("guard");
+        let (kev, cache) = (dir.join("kev.json"), dir.join("feeds.json"));
+        std::fs::write(&kev, KEV).unwrap();
+        let newer = format!(
+            r#"{{"version":{},"imported_at":1,"kev":null,"epss":null}}"#,
+            CACHE_VERSION + 1
+        );
+        // Another cache where this one should be (`--feeds csaf.json`), the feed itself, a
+        // damaged file and a cache from a newer version of the program.
+        for (case, content) in [
+            (
+                "another cache",
+                r#"{"version":1,"imported_at":1,"sources":[],"entries":[]}"#,
+            ),
+            ("the KEV file", KEV),
+            ("any JSON object", "{}"),
+            ("damaged", r#"{"version":1,"imported_at":1,"kev":{"entr"#),
+            ("empty", ""),
+            ("newer", newer.as_str()),
+        ] {
+            std::fs::write(&cache, content).unwrap();
+            let e = import(Some(&kev), None, &cache, 5).unwrap_err();
+            assert!(e.contains("the file is unchanged"), "{case}: {e}");
+            assert_eq!(std::fs::read_to_string(&cache).unwrap(), content, "{case}");
+        }
+        // A cache an older version wrote, with a part this version cannot read: the import
+        // starts over.
+        let old = r#"{"version":0,"imported_at":1,"kev":{"shape":"of version 0"},"epss":null}"#;
+        std::fs::write(&cache, old).unwrap();
+        assert!(
+            Feeds::load(&cache)
+                .unwrap_err()
+                .contains("import the feeds again")
+        );
+        import(Some(&kev), None, &cache, 5).unwrap();
+        let feeds = Feeds::load(&cache).unwrap();
+        assert!(feeds.version == CACHE_VERSION && feeds.kev.is_some() && feeds.epss.is_none());
+        // A cache this version could not load again is not written.
+        assert!(check_size(MAX_CACHE_BYTES as usize, MAX_CACHE_BYTES, &cache).is_ok());
+        let e = check_size(MAX_CACHE_BYTES as usize + 1, MAX_CACHE_BYTES, &cache).unwrap_err();
+        assert!(e.contains("nothing was written"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
     fn feeds_with(at: u64) -> Feeds {
@@ -924,7 +1156,7 @@ mod tests {
     fn cache_version_and_size_are_checked() {
         let dir = temp("cache");
         let path = dir.join("feeds.json");
-        std::fs::write(&path, r#"{"version": 99}"#).unwrap();
+        std::fs::write(&path, r#"{"version": 99, "kev": null, "epss": null}"#).unwrap();
         assert!(Feeds::load(&path).unwrap_err().contains("version"));
         std::fs::write(&path, "\"text\"").unwrap();
         assert!(Feeds::load(&path).is_err());

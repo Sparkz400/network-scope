@@ -529,6 +529,7 @@ impl SynEngine {
             .recv_timeout(Duration::from_secs(10))
             .map_err(|_| "Capture driver did not start".to_string())??;
         let (neighbor_link, route_link) = (link.clone(), link.clone());
+        let neighbors = crate::ipv6::NeighborTable::default();
         Ok(Self::with_parts(
             tx,
             gate,
@@ -539,7 +540,7 @@ impl SynEngine {
             ),
             Arc::new(move |ip| match ip {
                 IpAddr::V4(_) => crate::platform::mac(ip),
-                IpAddr::V6(v6) => crate::platform::neighbor6(v6, &neighbor_link),
+                IpAddr::V6(v6) => crate::platform::neighbor6(v6, &neighbor_link, &neighbors),
             }),
         ))
     }

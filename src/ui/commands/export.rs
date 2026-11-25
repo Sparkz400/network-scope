@@ -7,14 +7,29 @@
 use crate::{
     nmap, store,
     sync::{self, Target},
-    ui::{Ctx, output, progress},
+    ui::{Ctx, load_scan, output, progress},
 };
 use std::{collections::BTreeMap, time::Duration};
 
 pub(super) fn export(ctx: &mut Ctx) -> Result<(), String> {
     let (opts, db) = (&ctx.opts, &ctx.db);
-    let snapshot = store::load(db, ctx.id(0)?)?;
     let format = opts.get("format").map(String::as_str).unwrap_or("json");
+    if Target::parse(format).is_none() {
+        // A bad format is named before the database is opened.
+        // shortcut: asks `export_at` with an empty scan, so the two cannot disagree; a list of
+        // the formats once exporting nothing costs time.
+        let empty = store::Snapshot {
+            targets: String::new(),
+            complete: true,
+            settings: crate::scan::Settings::default(),
+            hosts: vec![],
+            observations: vec![],
+            notes: BTreeMap::new(),
+            sent: vec![],
+        };
+        store::export_at(&empty, format, 0)?;
+    }
+    let snapshot = ctx.scan(0)?;
     let stamp = store::timestamp(db, ctx.id(0)?)?;
     if let Some(target) = Target::parse(format) {
         return sync_export(ctx, target, &snapshot, stamp);
@@ -130,7 +145,7 @@ fn sync_export(
 
 pub(super) fn report(ctx: &mut Ctx) -> Result<(), String> {
     let (opts, db) = (&ctx.opts, &ctx.db);
-    let snapshot = store::load(db, ctx.id(0)?)?;
+    let snapshot = ctx.scan(0)?;
     let stamp = store::timestamp(db, ctx.id(0)?)?;
     output(&report_html(db, &snapshot, stamp, opts)?, opts)
 }
@@ -143,7 +158,7 @@ fn baseline(
     match opts.get("baseline") {
         Some(b) => {
             let b: i64 = b.parse().map_err(|_| "Invalid --baseline".to_string())?;
-            Ok(Some((store::load(db, b)?, store::timestamp(db, b)?)))
+            Ok(Some((load_scan(db, b)?, store::timestamp(db, b)?)))
         }
         None => Ok(None),
     }

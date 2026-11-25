@@ -79,6 +79,8 @@ struct Saved {
     targets: String,
     /// Sort column and direction (reversed) of the hosts table.
     host_sort: (usize, bool),
+    /// The widths of table columns that were dragged to another width.
+    column_widths: tables::Widths,
 }
 /// The longest Addresses text that is remembered across starts.
 const MAX_SAVED_TARGETS: usize = 2000;
@@ -355,11 +357,11 @@ fn run_job(job: Job) -> Done {
                 .map_or(0, |d| d.as_secs());
             let result = match kind {
                 FeedKind::Sbom => crate::sbom::default_path()
-                    .ok_or_else(|| "No location for the SBOM cache".to_string())
+                    .ok_or_else(|| tr!("No location for the SBOM cache").to_string())
                     .and_then(|cache| crate::sbom::import(&files, &Default::default(), &cache, now))
                     .map(|r| r.lines()),
                 FeedKind::Vex => crate::vex::default_path()
-                    .ok_or_else(|| "No location for the VEX cache".to_string())
+                    .ok_or_else(|| tr!("No location for the VEX cache").to_string())
                     .and_then(|cache| crate::vex::import(&files, &cache, now))
                     .map(|r| r.lines()),
             };
@@ -581,6 +583,8 @@ struct Scanner {
     settings_open: bool,
     about_open: bool,
     selected: Option<IpAddr>,
+    /// The hosts marked with Ctrl or Shift, to copy several rows.
+    marked: tables::Marks<IpAddr>,
     screenshot: Option<PathBuf>,
     frames: usize,
     screenshot_requested: bool,
@@ -709,6 +713,9 @@ struct Scanner {
     firmware_sboms: Cached<FirmwareSboms>,
     /// Findings of a large scan being worked out on a thread of their own (see `nav.rs`).
     background_findings: Option<nav::BackgroundFindings>,
+    /// A page that shows findings was drawn with findings that are out of date for a large
+    /// scan: the other thread works them out, also while a scan runs.
+    findings_wanted: bool,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -755,6 +762,7 @@ impl Scanner {
             settings_open: false,
             about_open: false,
             selected: None,
+            marked: Default::default(),
             screenshot,
             frames: 0,
             screenshot_requested: false,
@@ -837,6 +845,7 @@ impl Scanner {
             risk_map: Default::default(),
             firmware_sboms: Default::default(),
             background_findings: None,
+            findings_wanted: false,
         };
         i18n::set(i18n::detect(&app.saved.language));
         apply_theme(&cc.egui_ctx, app.saved.dark);
@@ -1092,6 +1101,7 @@ impl Scanner {
         self.scan_complete = snapshot.complete;
         self.scan_sent = snapshot.sent;
         self.selected = None;
+        self.marked.clear();
         self.script_test = None;
         self.previous.clear();
         self.haystacks.clear();
@@ -1123,6 +1133,7 @@ impl Scanner {
         self.reset_observations();
         self.haystacks.clear();
         self.selected = None;
+        self.marked.clear();
         self.script_test = None;
         self.scan_scope.clear();
         self.scan_sent.clear();
@@ -1202,6 +1213,7 @@ impl Scanner {
                 self.haystacks.clear();
                 self.live.clear();
                 self.selected = None;
+                self.marked.clear();
                 self.script_test = None;
                 self.scan_complete = true;
                 self.scan_scope = self.targets.clone();
@@ -1242,8 +1254,9 @@ impl Scanner {
             // An unreadable scope file blocks the scan until the user confirms once.
             Err(_) if consent.out_of_scope => None,
             Err(e) => {
-                return Some(format!(
-                    "The scope file is invalid ({e}), so nothing is known to be in scope."
+                return Some(tr!(
+                    "The scope file is invalid ({}), so nothing is known to be in scope.",
+                    e
                 ));
             }
         };
@@ -1676,8 +1689,8 @@ impl Scanner {
             return;
         }
         let title = match kind {
-            FeedKind::Sbom => "SBOM (CycloneDX or SPDX JSON)",
-            FeedKind::Vex => "VEX (CSAF or CycloneDX JSON)",
+            FeedKind::Sbom => tr!("SBOM (CycloneDX or SPDX JSON)"),
+            FeedKind::Vex => tr!("VEX (CSAF or CycloneDX JSON)"),
         };
         if let Some(files) = rfd::FileDialog::new()
             .add_filter(title, &["json"])
@@ -1877,16 +1890,33 @@ impl eframe::App for Scanner {
             }
             let risk_fresh = self.risk_map.generation == Some(self.generation);
             // The optional columns in display order: sort index (None: not sortable), title.
-            let extra: Vec<(Option<usize>, &'static str)> = [
-                (columns.vendor, Some(5), tr!("Manufacturer")),
-                (columns.kind, Some(6), tr!("Type")),
-                (columns.os, Some(7), tr!("OS guess")),
-                (columns.risk, Some(RISK_COLUMN), tr!("Risk")),
+            // Then the name and the default width its width is remembered under.
+            type HostColumn = (Option<usize>, &'static str, (&'static str, f32));
+            let extra: Vec<HostColumn> = [
+                (columns.vendor, Some(5), tr!("Manufacturer"), "hosts.vendor"),
+                (columns.kind, Some(6), tr!("Type"), "hosts.kind"),
+                (columns.os, Some(7), tr!("OS guess"), "hosts.os"),
+                (columns.risk, Some(RISK_COLUMN), tr!("Risk"), "hosts.risk"),
             ]
             .into_iter()
-            .filter(|(on, _, _)| *on)
-            .map(|(_, sort, name)| (sort, name))
+            .filter(|(on, ..)| *on)
+            .map(|(_, sort, name, key)| (sort, name, (key, 120.0)))
             .collect();
+            // Whichever of the host name and the ports takes the rest of the width has no
+            // width of its own (see `hostname_column`).
+            let (name_width, ports_width) = if extra.is_empty() {
+                (("hosts.hostname", 140.0), ("", 0.0))
+            } else {
+                (("", 0.0), ("hosts.ports", 140.0))
+            };
+            let base: [HostColumn; 4] = [
+                (Some(0), tr!("IP address"), ("hosts.ip", 120.0)),
+                (Some(1), tr!("Status"), ("hosts.status", 110.0)),
+                (Some(2), tr!("Ping"), ("hosts.ping", 65.0)),
+                (Some(3), tr!("Hostname"), name_width),
+            ];
+            let last: [HostColumn; 1] = [(Some(4), tr!("Open TCP ports"), ports_width)];
+            let mut widths = std::mem::take(&mut self.saved.column_widths);
             let visible = std::mem::take(&mut self.rows);
             let mut sort = None;
             let scroll_row = self.scroll_to.take().and_then(|ip| {
@@ -1912,48 +1942,61 @@ impl eframe::App for Scanner {
                         // for the host menu.
                         .sense(egui::Sense::click())
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(120.0).at_least(80.0))
-                        .column(Column::initial(110.0))
-                        .column(Column::initial(65.0))
-                        .column(hostname_column(!extra.is_empty()));
-                    for _ in &extra {
-                        table = table.column(Column::initial(120.0).at_least(50.0).clip(true));
+                        .column(tables::sized(&widths, base[0].2).at_least(80.0))
+                        .column(tables::sized(&widths, base[1].2))
+                        .column(tables::sized(&widths, base[2].2))
+                        .column(hostname_column(!extra.is_empty(), &widths));
+                    for (.., width) in &extra {
+                        table =
+                            table.column(tables::sized(&widths, *width).at_least(50.0).clip(true));
                     }
                     table
-                        .column(ports_column(!extra.is_empty()))
+                        .column(ports_column(!extra.is_empty(), &widths))
                         .header(26.0, |mut row| {
-                            let base = [
-                                (Some(0), tr!("IP address")),
-                                (Some(1), tr!("Status")),
-                                (Some(2), tr!("Ping")),
-                                (Some(3), tr!("Hostname")),
-                            ];
-                            let last = [(Some(4), tr!("Open TCP ports"))];
-                            for (i, name) in base.iter().chain(&extra).chain(&last) {
-                                row.col(|ui| match i {
-                                    Some(i) => {
-                                        if ui
-                                            .selectable_label(self.sort_column == *i, *name)
-                                            .clicked()
-                                        {
-                                            sort = Some(*i);
+                            for (i, name, width) in base.iter().chain(&extra).chain(&last) {
+                                row.col(|ui| {
+                                    tables::keep(&mut widths, *width, ui);
+                                    match i {
+                                        Some(i) => {
+                                            if ui
+                                                .selectable_label(self.sort_column == *i, *name)
+                                                .clicked()
+                                            {
+                                                sort = Some(*i);
+                                            }
                                         }
-                                    }
-                                    None => {
-                                        ui.strong(*name);
+                                        None => {
+                                            ui.strong(*name);
+                                        }
                                     }
                                 });
                             }
                         })
                         .body(|body| {
                             body.rows(26.0, visible.len(), |mut row| {
-                                let index = visible[row.index()];
+                                let at = row.index();
+                                let index = visible[at];
                                 let host = &self.results[index];
                                 let starred = self
                                     .saved
                                     .starred
                                     .contains(&convenience::favorite_key(host));
-                                row.set_selected(self.selected == Some(host.ip));
+                                row.set_selected(
+                                    self.selected == Some(host.ip) || self.marked.has(&host.ip),
+                                );
+                                // With several hosts marked, their menu copies all of them.
+                                let many = |ui: &mut egui::Ui| {
+                                    let items = self.marked.copies(
+                                        at,
+                                        visible.len(),
+                                        |i| self.results[visible[i]].ip,
+                                        |i| host_copy(&self.results[visible[i]]),
+                                    );
+                                    if !items.is_empty() {
+                                        tables::copy_buttons(ui, items);
+                                        ui.separator();
+                                    }
+                                };
                                 let mut chosen = false;
                                 row.col(|ui| {
                                     // A named, focusable control: the keyboard and screen-reader way to
@@ -1967,6 +2010,7 @@ impl eframe::App for Scanner {
                                         ui.selectable_label(self.selected == Some(host.ip), shown);
                                     chosen = response.clicked();
                                     response.context_menu(|ui| {
+                                        many(ui);
                                         menu = Some((
                                             index,
                                             convenience::host_menu(ui, host, starred),
@@ -1984,7 +2028,7 @@ impl eframe::App for Scanner {
                                         &host.hostname
                                     });
                                 });
-                                for (sort, _) in &extra {
+                                for (sort, ..) in &extra {
                                     row.col(|ui| match sort {
                                         Some(i) if *i != RISK_COLUMN => {
                                             let key = HOST_COLUMN_KEYS[i - 5];
@@ -2013,19 +2057,29 @@ impl eframe::App for Scanner {
                                     });
                                 });
                                 let response = row.response();
-                                if chosen || response.clicked() {
+                                // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
+                                response.context_menu(|ui| {
+                                    many(ui);
+                                    menu = Some((index, convenience::host_menu(ui, host, starred)));
+                                });
+                                // Ctrl or Shift marks rows; a plain click selects (the details).
+                                if (chosen || response.clicked())
+                                    && !self.marked.click(
+                                        tables::click_keys(&response.ctx),
+                                        at,
+                                        visible.len(),
+                                        |i| self.results[visible[i]].ip,
+                                    )
+                                {
                                     if self.selected != Some(host.ip) {
                                         self.script_test = None;
                                     }
                                     self.selected = Some(host.ip);
                                 }
-                                // Right click (or the menu key): open, ping, favorite, Wake-on-LAN.
-                                response.context_menu(|ui| {
-                                    menu = Some((index, convenience::host_menu(ui, host, starred)));
-                                });
                             });
                         });
                 });
+            self.saved.column_widths = widths;
             let empty = visible.is_empty();
             self.rows = visible;
             if let Some(column) = sort {
@@ -2383,20 +2437,34 @@ fn badge_color(safe: bool, dark: bool) -> Color32 {
 /// The hosts table's host name column. Without optional columns it is wide enough for most
 /// names and the ports take the rest of the width (no gap opens between them); with optional
 /// columns the host name gives way instead, so the ports stay on screen.
-fn hostname_column(extra: bool) -> Column {
+fn hostname_column(extra: bool, widths: &tables::Widths) -> Column {
     if extra {
         Column::remainder().at_least(80.0).clip(true)
     } else {
-        Column::initial(140.0).at_least(80.0).clip(true)
+        tables::sized(widths, ("hosts.hostname", 140.0))
+            .at_least(80.0)
+            .clip(true)
     }
 }
 /// The hosts table's last column (open ports); see [`hostname_column`].
-fn ports_column(extra: bool) -> Column {
+fn ports_column(extra: bool, widths: &tables::Widths) -> Column {
     if extra {
-        Column::initial(140.0)
+        tables::sized(widths, ("hosts.ports", 140.0))
     } else {
         Column::remainder().at_least(110.0)
     }
+}
+/// What copying a host copies: its address, and its row (tab-separated).
+fn host_copy(host: &scan::Host) -> (String, String) {
+    let ip = host.ip.to_string();
+    let row = [
+        ip.as_str(),
+        &host.hostname,
+        &host.mac,
+        &ports_text(&host.open),
+    ]
+    .join("\t");
+    (ip, row)
 }
 
 /// The status of a host in the table: a coloured dot and the status in words (the words carry
@@ -3036,8 +3104,8 @@ mod tests {
                         .column(Column::initial(120.0).at_least(80.0))
                         .column(Column::initial(110.0))
                         .column(Column::initial(65.0))
-                        .column(hostname_column(false))
-                        .column(ports_column(false))
+                        .column(hostname_column(false, &Default::default()))
+                        .column(ports_column(false, &Default::default()))
                         .header(26.0, |mut row| {
                             for name in
                                 ["IP address", "Status", "Ping", "Hostname", "Open TCP ports"]

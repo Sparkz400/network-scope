@@ -521,6 +521,8 @@ impl Scanner {
         if self.view != MainView::Hosts || self.rows.is_empty() {
             return;
         }
+        // Shift with an arrow marks the rows it passes (consume_key ignores an extra Shift).
+        let shift = ctx.input(|i| i.modifiers.shift_only());
         let down = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown));
         let up = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp));
         if !down && !up {
@@ -540,6 +542,13 @@ impl Scanner {
             if self.selected != Some(host.ip) {
                 self.script_test = None;
             }
+            let held = if shift {
+                Modifiers::SHIFT
+            } else {
+                Modifiers::NONE
+            };
+            let (rows, hosts) = (&self.rows, &self.results);
+            (self.marked).click(held, next, rows.len(), |i| hosts[rows[i]].ip);
             self.selected = Some(host.ip);
             self.scroll_to = Some(host.ip);
         }

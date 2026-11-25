@@ -101,7 +101,7 @@ fn export(ctx: &mut Ctx) -> Result<(), String> {
                     store::latest_complete_id(db)?.ok_or("No completed scan in the database")?
                 }
             };
-            let snapshot = store::load(db, id)?;
+            let snapshot = crate::ui::load_scan(db, id)?;
             let time = store::timestamp(db, id)?;
             let findings = crate::risk::analyze_snapshot(&snapshot);
             let text = if format == "stix" {

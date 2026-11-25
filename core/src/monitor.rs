@@ -301,8 +301,66 @@ pub fn evaluate_with(
     ctx: &Context,
     now: i64,
 ) -> Vec<Alert> {
+    // Only the comparison of two complete scans looks at the findings.
+    let compared = prev.is_some_and(|p| p.complete) && cur.complete;
+    let derive = |s: &Snapshot| {
+        let findings = compared.then(|| risk::analyze_snapshot(s));
+        (
+            devices::merge(&s.hosts, &s.observations),
+            findings.unwrap_or_default(),
+        )
+    };
+    let (before, after) = (prev.map(&derive), derive(cur));
+    evaluate_derived(
+        prev.zip(before.as_ref())
+            .map(|(snapshot, (devices, findings))| Derived {
+                snapshot,
+                devices,
+                findings,
+            }),
+        Derived {
+            snapshot: cur,
+            devices: &after.0,
+            findings: &after.1,
+        },
+        known,
+        policy,
+        ctx,
+        now,
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    // The heavy steps done on this thread, counted for the test that a cycle does each of them
+    // once: `devices::merge`, `risk::analyze_snapshot`, and stored snapshots parsed.
+    pub(crate) static MERGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static ANALYSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static SNAPSHOTS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A scan with what a cycle derives from it. The device merge and the risk analysis are the
+/// heaviest work between the end of a scan and its alerts, so [`run`] does each once per scan
+/// and hands the result to everything that needs it.
+#[derive(Clone, Copy)]
+struct Derived<'a> {
+    snapshot: &'a Snapshot,
+    /// `devices::merge` of the snapshot.
+    devices: &'a [devices::Device],
+    /// `risk::analyze_snapshot` of it; only read when both scans are complete.
+    findings: &'a [risk::Finding],
+}
+
+fn evaluate_derived(
+    previous: Option<Derived>,
+    current: Derived,
+    known: &HashMap<String, (i64, i64)>,
+    policy: &Policy,
+    ctx: &Context,
+    now: i64,
+) -> Vec<Alert> {
     let mut out = vec![];
-    let cur_devices = devices::merge(&cur.hosts, &cur.observations);
+    let (cur, cur_devices) = (current.snapshot, current.devices);
     let learning = policy.learn || known.is_empty();
     let key_of = |d: &devices::Device| -> String {
         ctx.keys.get(&d.id).cloned().unwrap_or_else(|| d.id.clone())
@@ -329,7 +387,7 @@ pub fn evaluate_with(
     // the alert keeps its identity (and its de-duplication) when the device changes address.
     if let Some(baseline) = ctx.baseline.as_ref().filter(|b| b.exists()) {
         let keys: Vec<String> = cur_devices.iter().map(key_of).collect();
-        let expected = baseline.expects(&cur_devices, &keys);
+        let expected = baseline.expects(cur_devices, &keys);
         for ((d, key), expected) in cur_devices.iter().zip(&keys).zip(expected) {
             if !expected {
                 out.push(alert(
@@ -344,7 +402,7 @@ pub fn evaluate_with(
     }
 
     if !learning {
-        for d in &cur_devices {
+        for d in cur_devices {
             if known.contains_key(&key_of(d)) {
                 continue;
             }
@@ -362,7 +420,8 @@ pub fn evaluate_with(
         }
     }
 
-    if let Some(prev) = prev.filter(|p| p.complete && cur.complete) {
+    if let Some(previous) = previous.filter(|p| p.snapshot.complete && cur.complete) {
+        let prev = previous.snapshot;
         let old: HashMap<IpAddr, &Host> = prev
             .hosts
             .iter()
@@ -452,7 +511,7 @@ pub fn evaluate_with(
                 ));
             }
         }
-        for f in new_findings(&risk::analyze_snapshot(prev), risk::analyze_snapshot(cur)) {
+        for f in new_findings(previous.findings, current.findings.to_vec()) {
             out.push(alert(
                 now,
                 f.severity,
@@ -465,11 +524,10 @@ pub fn evaluate_with(
                 format!("{} - {}", f.title, f.evidence),
             ));
         }
-        let prev_devices = devices::merge(&prev.hosts, &prev.observations);
         let now_by_id: HashMap<&str, &devices::Device> =
             cur_devices.iter().map(|d| (d.id.as_str(), d)).collect();
         let now_keys: HashSet<String> = cur_devices.iter().map(key_of).collect();
-        for d in &prev_devices {
+        for d in previous.devices {
             match now_by_id.get(d.id.as_str()) {
                 Some(n)
                     if !d.mac.is_empty()
@@ -676,6 +734,45 @@ fn restore_dedup(dedup: &mut Dedup, db: &Path, targets_text: &str, now: i64) -> 
     Ok(())
 }
 
+/// The newest complete scan of the targets with what a cycle derived from it, kept for the
+/// next cycle: reading the scan back from the inventory (15 to 20 MB of JSON for a /16),
+/// merging its devices and analysing it again was most of the time between the end of a scan
+/// and its alerts. The snapshot is the one that was saved, not one read back: they differ only
+/// in the settings that are never stored, which no comparison looks at.
+struct Last {
+    id: i64,
+    /// When it was saved (Unix seconds).
+    saved: i64,
+    snapshot: Snapshot,
+    devices: Vec<devices::Device>,
+    /// The findings and what they were analysed with; `None` until a comparison needs them.
+    findings: Option<(Vec<risk::Finding>, risk::Inputs)>,
+}
+
+/// Makes `last` the newest complete scan of the targets in the inventory. What was kept from
+/// the last cycle stays while it still is that scan, which the inventory is asked: another
+/// program may have saved or deleted one. Otherwise the scan is read.
+fn sync_last(db: &Path, targets: &str, last: &mut Option<Last>) -> Result<(), String> {
+    if let Some(kept) = last.as_ref() {
+        let newest = store::earlier_complete(db, targets, i64::MAX, store::Earlier::Any, 1)?;
+        // By id and time: the id of a deleted newest scan is given to the next one saved.
+        if newest
+            .first()
+            .is_some_and(|e| (e.id, e.timestamp) == (kept.id, kept.saved))
+        {
+            return Ok(());
+        }
+    }
+    *last = store::latest_complete(db, targets, i64::MAX)?.map(|(id, saved, snapshot)| Last {
+        id,
+        saved,
+        devices: devices::merge(&snapshot.hosts, &snapshot.observations),
+        snapshot,
+        findings: None,
+    });
+    Ok(())
+}
+
 pub fn run(
     targets_text: &str,
     settings: scan::Settings,
@@ -696,14 +793,25 @@ pub fn run(
             eprintln!("Alert history not read ({e}); persisting alerts may repeat once");
         }
     }
-    let mut outbox = crate::notify::Outbox::default();
+    // What the last run could not deliver goes out with the first cycle.
+    let mut outbox = crate::notify::Outbox::restore(db, targets_text, &notify.sinks);
     let mut cycle = 0;
     let (mut failed, mut last_error) = (0, None);
+    let mut last: Option<Last> = None;
     loop {
         if cfg.stopped() {
             return Ok(());
         }
         cycle += 1;
+        // What was imported (or edited: the user's `cves.json`) since the last cycle is used
+        // from this one on. Not part of the cycle's result: a file that cannot be read keeps
+        // the loaded data, and the cycle runs.
+        risk::refresh_cves();
+        crate::feeds::refresh();
+        crate::nvd::refresh();
+        crate::csaf::refresh();
+        crate::vex::refresh();
+        crate::sbom::refresh();
         let result = (|| -> Result<(), String> {
             let mut observations = vec![];
             let mut notices = vec![];
@@ -728,7 +836,11 @@ pub fn run(
             let total = targets.count() as usize;
             let full_cycle = cfg.full_every != 0 && (cycle - 1) % cfg.full_every == 0;
             let previous = if cfg.incremental && !full_cycle {
-                match crate::incremental::load_base(db, targets_text, &settings)? {
+                sync_last(db, targets_text, &mut last)?;
+                let newest = last
+                    .as_ref()
+                    .map(|l| (l.id, &l.snapshot.settings, l.snapshot.hosts.clone()));
+                match crate::incremental::base_of(newest, &settings) {
                     Ok(base) => Some(base),
                     Err(why) => {
                         if !cfg.quiet {
@@ -848,7 +960,7 @@ pub fn run(
             // Everything that can fail is read before the scan is saved. A scan that is saved but
             // never compared becomes the "previous" one of the next cycle, and what changed up to
             // it would never be reported.
-            let prev = store::latest_complete(db, targets_text, i64::MAX)?.map(|(_, _, s)| s);
+            sync_last(db, targets_text, &mut last)?;
             let known = store::known_devices(db)?;
             let t = now();
             // Match the devices of both scans against the inventory, so a device that changed its
@@ -862,15 +974,39 @@ pub fn run(
                 // Read every cycle, so an approval made while the monitor runs applies at once.
                 baseline: Some(crate::baseline::load(db)?),
             };
-            if let Some(p) = &prev {
-                let prev_devices = devices::merge(&p.hosts, &p.observations);
-                let prev_matches = crate::identity::resolve(&registry, &prev_devices);
-                for (id, key) in crate::identity::key_map(&prev_devices, &prev_matches) {
+            if let Some(p) = &last {
+                let prev_matches = crate::identity::resolve(&registry, &p.devices);
+                for (id, key) in crate::identity::key_map(&p.devices, &prev_matches) {
                     ctx.keys.entry(id).or_insert(key);
                 }
             }
-            let id = store::save(db, &snapshot)?;
-            let mut alerts = evaluate_with(prev.as_ref(), &snapshot, &known, &cfg.policy, &ctx, t);
+            // Analysed once, for the rows saved with the scan and for the comparison. What it
+            // read is noted first: rules replaced while it runs then count as changed.
+            let inputs = risk::Inputs::current();
+            let findings = risk::analyze_snapshot(&snapshot);
+            let saved = store::now();
+            let id = store::save_analysed(db, &snapshot, &findings, saved)?;
+            // The comparison is between two analyses with the same rules and feeds, on the same
+            // day: what an import or the calendar changed in the findings of an unchanged host
+            // is not a new finding. So the kept findings of the previous scan are used only
+            // while nothing they depend on changed; otherwise (and for a scan that was read
+            // from the inventory) the previous scan is analysed now.
+            if let Some(p) = last.as_mut().filter(|_| complete)
+                && !p.findings.as_ref().is_some_and(|(_, of)| of.same(&inputs))
+            {
+                p.findings = Some((risk::analyze_snapshot(&p.snapshot), inputs.clone()));
+            }
+            let previous = last.as_ref().map(|p| Derived {
+                snapshot: &p.snapshot,
+                devices: &p.devices,
+                findings: p.findings.as_ref().map_or(&[], |(f, _)| f),
+            });
+            let current = Derived {
+                snapshot: &snapshot,
+                devices: &cur_devices,
+                findings: &findings,
+            };
+            let mut alerts = evaluate_derived(previous, current, &known, &cfg.policy, &ctx, t);
             alerts.extend(notices);
             let mut suppressed = 0;
             if notify.dedup {
@@ -912,6 +1048,16 @@ pub fn run(
                 if let Err(e) = store::prune(db, &rule) {
                     eprintln!("Cycle {cycle}: older scans not deleted: {e}");
                 }
+            }
+            if complete {
+                // The scan the next cycle compares with (see `sync_last`).
+                last = Some(Last {
+                    id,
+                    saved,
+                    snapshot,
+                    devices: cur_devices,
+                    findings: Some((findings, inputs)),
+                });
             }
             Ok(())
         })();
@@ -2046,6 +2192,80 @@ mod tests {
         run("127.0.0.1", loopback(), &db, &cfg, &mut |_| {}).unwrap();
         let ids: Vec<i64> = store::list(&db).unwrap().iter().map(|e| e.id).collect();
         assert_eq!(ids, [4, 3]);
+        remove_db(&db);
+    }
+
+    /// The device merges, risk analyses and stored snapshots read on this thread so far.
+    fn work() -> [usize; 3] {
+        [MERGES.get(), ANALYSES.get(), SNAPSHOTS_READ.get()]
+    }
+
+    /// A cycle merges the devices of its scan once and analyses it once, and the next cycle
+    /// compares with what was kept: per cycle it used to be four merges, three analyses and,
+    /// for an incremental scan, the previous scan read from the inventory twice.
+    #[test]
+    fn a_cycle_derives_everything_from_its_scan_once() {
+        let db = temp_db("once");
+        let idle = Arc::new(AtomicBool::new(false));
+        let cfg = RunConfig {
+            cycles: 4,
+            incremental: true,
+            ..stop_config(&idle, Duration::from_millis(1))
+        };
+        let before = work();
+        run("127.0.0.1", loopback(), &db, &cfg, &mut |_| {}).unwrap();
+        let after = work();
+        let [merges, analyses, read] = [0, 1, 2].map(|i| after[i] - before[i]);
+        assert_eq!((merges, read), (4, 0));
+        // One more when the day changes during the run: the kept findings are of yesterday.
+        assert!((4..=5).contains(&analyses), "{analyses} analyses");
+        assert_eq!(store::list(&db).unwrap().len(), 4);
+        remove_db(&db);
+    }
+
+    /// What was kept from the last cycle is only used while the inventory would return the same
+    /// scan: another program can save a scan of the same targets, or delete one.
+    #[test]
+    fn the_kept_scan_is_used_while_it_is_the_newest_complete_one_in_the_inventory() {
+        let db = temp_db("kept");
+        let scan = |targets: &str, complete: bool, open: &[u16]| Snapshot {
+            targets: targets.into(),
+            complete,
+            ..snap(
+                vec![host("10.0.0.1", "AA:BB:CC:00:00:01", open, &[])],
+                vec![],
+            )
+        };
+        let mut last = None;
+        let sync = |last: &mut Option<Last>| {
+            let read = SNAPSHOTS_READ.get();
+            sync_last(&db, "lab", last).unwrap();
+            let kept = last
+                .as_ref()
+                .map(|l| (l.id, l.snapshot.hosts[0].open.clone()));
+            (kept, SNAPSHOTS_READ.get() - read)
+        };
+        assert_eq!(sync(&mut last), (None, 0));
+        let first = store::save(&db, &scan("lab", true, &[22])).unwrap();
+        assert_eq!(sync(&mut last), (Some((first, vec![22])), 1));
+        assert_eq!(last.as_ref().unwrap().devices.len(), 1);
+        // Still the newest: kept, also after scans that are not its successor.
+        store::save(&db, &scan("elsewhere", true, &[1])).unwrap();
+        store::save(&db, &scan("lab", false, &[2])).unwrap();
+        assert_eq!(sync(&mut last), (Some((first, vec![22])), 0));
+        // Another program saved a scan of these targets.
+        let second = store::save(&db, &scan("lab", true, &[22, 80])).unwrap();
+        assert_eq!(sync(&mut last), (Some((second, vec![22, 80])), 1));
+        // It deleted it and saved another: that one gets the same id, and is not the same scan.
+        store::delete(&db, second).unwrap();
+        let later = store::now() + 60;
+        let third = store::save_at(&db, &scan("lab", true, &[443]), later).unwrap();
+        assert_eq!(third, second);
+        assert_eq!(sync(&mut last), (Some((third, vec![443])), 1));
+        store::delete(&db, third).unwrap();
+        assert_eq!(sync(&mut last), (Some((first, vec![22])), 1));
+        store::delete(&db, first).unwrap();
+        assert_eq!(sync(&mut last), (None, 0));
         remove_db(&db);
     }
 

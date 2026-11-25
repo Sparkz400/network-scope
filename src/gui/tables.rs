@@ -3,7 +3,11 @@
 use super::i18n::tr;
 use crate::{devices::Device, risk};
 use eframe::egui;
-use std::{cmp::Ordering, collections::HashMap, net::IpAddr};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    net::IpAddr,
+};
 
 /// Data generation, sort column, direction, minimum severity, lowercase query, "known exploited
 /// only", the minimum EPSS in percent and the one finding rule shown.
@@ -35,6 +39,8 @@ pub(super) struct View {
     /// Give the filter box the keyboard focus on the next frame (Ctrl+F).
     pub focus_query: bool,
     pub rows: Vec<usize>,
+    /// The marked rows, as indexes into the data like `rows`.
+    pub marks: Marks<usize>,
     key: Option<ViewKey>,
 }
 /// The EPSS limits the filter offers, in percent.
@@ -56,6 +62,8 @@ impl View {
             return false;
         }
         self.key = Some(key);
+        // The indexes name other rows now.
+        self.marks.clear();
         true
     }
     /// A header was clicked: same column flips the direction.
@@ -69,11 +77,19 @@ impl View {
     }
     /// Severity selector and text box above a table.
     pub fn controls(&mut self, ui: &mut egui::Ui, id: &str, any: &str) {
-        self.controls_with(ui, id, any, false);
+        self.controls_with(ui, id, any, false, |_| {});
     }
     /// The same, plus (for findings) the filters on the feed data: known exploited (KEV) only
     /// and a minimum EPSS.
-    pub fn controls_with(&mut self, ui: &mut egui::Ui, id: &str, any: &str, exploit: bool) {
+    /// `more` adds what else belongs in that row: a line of its own costs the table a row.
+    pub fn controls_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &str,
+        any: &str,
+        exploit: bool,
+        more: impl FnOnce(&mut egui::Ui),
+    ) {
         ui.horizontal_wrapped(|ui| {
             let severity = egui::ComboBox::from_id_salt(id)
                 .selected_text(
@@ -137,6 +153,7 @@ impl View {
                         "EPSS: the estimated probability that the vulnerability is exploited in the next 30 days."
                     ));
             }
+            more(ui);
         });
     }
 }
@@ -160,14 +177,136 @@ pub(super) fn row_link(ui: &mut egui::Ui, text: &str) -> egui::Response {
 /// A context menu that copies text: (menu entry, text) pairs from `items`, which is only asked
 /// while the menu is open.
 pub(super) fn copy_menu(response: &egui::Response, items: impl FnOnce() -> Vec<(String, String)>) {
-    response.context_menu(|ui| {
-        for (label, text) in items() {
-            if ui.button(label).clicked() {
-                ui.ctx().copy_text(text);
-                ui.close();
-            }
+    response.context_menu(|ui| copy_buttons(ui, items()));
+}
+/// The entries of [`copy_menu`], for a menu that has more in it.
+pub(super) fn copy_buttons(ui: &mut egui::Ui, items: Vec<(String, String)>) {
+    for (label, text) in items {
+        if ui.button(label).clicked() {
+            ui.ctx().copy_text(text);
+            ui.close();
         }
-    });
+    }
+}
+/// The modifier keys of the click that just happened: those the mouse button was released
+/// with (a quick click, or one from a remote-control tool, lets go of Ctrl or Shift within the
+/// same frame), else the keys held now (Enter on a row's address).
+pub(super) fn click_keys(ctx: &egui::Context) -> egui::Modifiers {
+    ctx.input(|i| {
+        (i.events.iter().rev())
+            .find_map(|e| match e {
+                egui::Event::PointerButton {
+                    pressed: false,
+                    modifiers,
+                    ..
+                } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or(i.modifiers)
+    })
+}
+/// The address and the whole row out of a row's copy entries (the first and the last one).
+pub(super) fn ends(mut items: Vec<(String, String)>) -> (String, String) {
+    let row = items.pop().map(|i| i.1).unwrap_or_default();
+    (items.into_iter().next().map_or(row.clone(), |i| i.1), row)
+}
+
+/// The rows marked with Ctrl+click or Shift+click (with the keyboard: Ctrl or Shift with
+/// Enter on a row's address), to copy several at once. A plain click marks only its row.
+pub(super) struct Marks<K> {
+    set: BTreeSet<K>,
+    /// Where a Shift range starts: the row chosen last without Shift.
+    anchor: Option<K>,
+}
+impl<K> Default for Marks<K> {
+    fn default() -> Self {
+        Self {
+            set: BTreeSet::new(),
+            anchor: None,
+        }
+    }
+}
+impl<K: Ord + Clone> Marks<K> {
+    pub fn clear(&mut self) {
+        self.set.clear();
+        self.anchor = None;
+    }
+    /// True for a row that is one of several marked ones.
+    pub fn has(&self, key: &K) -> bool {
+        self.set.len() > 1 && self.set.contains(key)
+    }
+    /// Row `at` of the `len` rows on screen was chosen; `key` names a row. True when Ctrl or
+    /// Shift was held: only the marks changed, and the row's own action is left out.
+    pub fn click(
+        &mut self,
+        held: egui::Modifiers,
+        at: usize,
+        len: usize,
+        key: impl Fn(usize) -> K,
+    ) -> bool {
+        let chosen = key(at);
+        if held.shift {
+            let from = (self.anchor.as_ref())
+                .and_then(|a| (0..len).find(|&i| key(i) == *a))
+                .unwrap_or(at);
+            if !held.command {
+                self.set.clear();
+            }
+            self.set.extend((from.min(at)..=from.max(at)).map(&key));
+            self.anchor.get_or_insert(chosen);
+            return true;
+        }
+        if !held.command {
+            self.set.clear();
+        }
+        if !self.set.remove(&chosen) {
+            self.set.insert(chosen.clone());
+        }
+        self.anchor = Some(chosen);
+        held.command
+    }
+    /// The menu entries that copy every marked row, when row `at` is one of them: `text` gives
+    /// the address and the whole row of a row on screen. Rows a filter hides are left out.
+    // shortcut: the text is built on every frame the menu is open, slow only with tens of
+    // thousands of marked rows; build it on the click if that shows.
+    pub fn copies(
+        &self,
+        at: usize,
+        len: usize,
+        key: impl Fn(usize) -> K,
+        text: impl Fn(usize) -> (String, String),
+    ) -> Vec<(String, String)> {
+        if !self.has(&key(at)) {
+            return vec![];
+        }
+        let (addresses, rows): (Vec<_>, Vec<_>) = (0..len)
+            .filter(|&i| self.set.contains(&key(i)))
+            .map(text)
+            .unzip();
+        vec![
+            (tr!("Copy {} addresses", rows.len()), addresses.join("\n")),
+            (tr!("Copy {} rows", rows.len()), rows.join("\n")),
+        ]
+    }
+}
+
+/// Column widths the user set, by `table.column`. Names and not positions: an optional column
+/// that is switched off must not shift the widths of the others.
+pub(super) type Widths = BTreeMap<String, f32>;
+/// A column of a fixed width (name, default width) that starts at the remembered width.
+pub(super) fn sized(widths: &Widths, (key, default): (&str, f32)) -> egui_extras::Column {
+    egui_extras::Column::initial(widths.get(key).map_or(default, |w| w.clamp(30.0, 1500.0)))
+}
+/// For a header cell: remembers the width of its column when it is not the default one. A
+/// column without a name (the one that takes the rest of the width) is not remembered.
+pub(super) fn keep(widths: &mut Widths, (key, default): (&str, f32), ui: &egui::Ui) {
+    let width = ui.max_rect().width().round();
+    if key.is_empty() {
+    } else if width == default {
+        widths.remove(key);
+    } else if widths.get(key) != Some(&width) {
+        widths.insert(key.to_string(), width);
+    }
 }
 
 /// What the context menu of a finding's row copies.
@@ -572,6 +711,71 @@ mod tests {
         let mut clicked = table_frame(&ctx, vec![egui::Event::PointerMoved(pos)], plain).0;
         clicked = clicked.or(table_frame(&ctx, vec![button(true)], plain).0);
         clicked.or(table_frame(&ctx, vec![button(false)], plain).0)
+    }
+
+    #[test]
+    fn ctrl_and_shift_mark_rows_and_a_plain_click_starts_over() {
+        use egui::Modifiers;
+        // The table shows the rows 10, 11, ... 19 of some data.
+        let key = |i: usize| i + 10;
+        let mut m = Marks::default();
+        assert!(
+            !m.click(Modifiers::NONE, 2, 10, key),
+            "a plain click is the row's own"
+        );
+        assert!(!m.has(&12), "one row is not a selection of several");
+        assert!(m.click(Modifiers::COMMAND, 5, 10, key));
+        assert!(m.has(&12) && m.has(&15) && !m.has(&13));
+        // Shift takes the range from the row chosen last, in the order on screen.
+        assert!(m.click(Modifiers::SHIFT, 3, 10, key));
+        assert!(m.has(&13) && m.has(&14) && m.has(&15) && !m.has(&12));
+        // Ctrl again takes a row out.
+        assert!(m.click(Modifiers::COMMAND, 4, 10, key));
+        assert!(!m.has(&14) && m.has(&13));
+        let text = |i: usize| (format!("a{i}"), format!("row{i}"));
+        let copies = m.copies(3, 10, key, text);
+        assert_eq!(copies[0].1, "a3\na5");
+        assert_eq!(copies[1].1, "row3\nrow5");
+        assert!(m.copies(0, 10, key, text).is_empty(), "row 0 is not marked");
+        // Rows a filter hides are not copied.
+        assert_eq!(m.copies(3, 4, key, text)[0].1, "a3");
+        assert!(!m.click(Modifiers::NONE, 7, 10, key));
+        assert!(!m.has(&13) && !m.has(&17));
+        // A view that sorts or filters anew drops the marks: they are indexes.
+        let mut v = View::default();
+        v.stale(Some(1));
+        v.marks.click(Modifiers::NONE, 0, 3, |i| i);
+        v.marks.click(Modifiers::COMMAND, 1, 3, |i| i);
+        assert!(v.marks.has(&0));
+        v.query = "x".into();
+        v.stale(Some(1));
+        assert!(!v.marks.has(&0));
+    }
+
+    #[test]
+    fn a_column_width_is_remembered_only_when_it_is_not_the_default() {
+        let mut w = Widths::new();
+        let ctx = egui::Context::default();
+        let at = |w: &mut Widths, width: f32, column: (&str, f32)| {
+            ctx.run_ui(Default::default(), |ui| {
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 20.0),
+                    )),
+                    |ui| keep(w, column, ui),
+                );
+            })
+            .drop_without_applying_deltas();
+        };
+        at(&mut w, 120.0, ("t.a", 120.0));
+        assert!(w.is_empty());
+        at(&mut w, 180.4, ("t.a", 120.0));
+        assert_eq!(w.get("t.a"), Some(&180.0));
+        at(&mut w, 300.0, ("", 120.0));
+        assert_eq!(w.len(), 1, "the column that takes the rest has no name");
+        at(&mut w, 120.0, ("t.a", 120.0));
+        assert!(w.is_empty(), "dragged back to the default");
     }
 
     #[test]

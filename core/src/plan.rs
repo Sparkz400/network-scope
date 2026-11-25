@@ -1326,10 +1326,7 @@ mod tests",
                 let _ = stream.write_all(b"SSH-2.0-test\r\n");
             }
         });
-        let closed = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
+        let (closed, _reserved) = crate::probes::refused_port();
         // a port the user names for the MELSEC MC protocol: the CPU model request goes there (and
         // the connection is dropped without an answer)
         let mc = {

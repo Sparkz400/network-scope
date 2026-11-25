@@ -938,10 +938,7 @@ mod tests {
     }
     #[test]
     fn closed_port_is_reported_closed() {
-        let closed = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap()
-        };
+        let (closed, _reserved) = crate::probes::refused_port();
         let s = Settings {
             tcp_only: true,
             safe: false,
@@ -949,7 +946,7 @@ mod tests {
             port_timeout: 5000,
             ..Settings::default()
         };
-        let run = start(vec![closed.ip()], vec![closed.port()], s);
+        let run = start(vec!["127.0.0.1".parse().unwrap()], vec![closed], s);
         let Event::Host(h) = run.receiver.recv_timeout(Duration::from_secs(10)).unwrap() else {
             panic!("missing host")
         };

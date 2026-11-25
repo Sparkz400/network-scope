@@ -206,6 +206,46 @@ fn hostile_and_broken_input_is_rejected_or_bounded() {
     assert!(!s.product.contains('\n') && s.product.chars().count() <= MAX_TEXT);
 }
 
+/// A crafted SPDX file at the component cap: as many DESCRIBES relationships as packages, all
+/// but the last naming a package that is not there. Searching the packages once per
+/// relationship took minutes for this file (and hours for a larger one); by id it is one pass.
+#[test]
+fn an_spdx_file_with_as_many_describes_relationships_as_packages_is_read_in_one_pass() {
+    let n = MAX_COMPONENTS;
+    let mut packages: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"SPDXID":"SPDXRef-p{i}","name":"c{i}","versionInfo":"1.{i}"}}"#))
+        .collect();
+    // An id that is used twice names its first package.
+    packages.push(format!(
+        r#"{{"SPDXID":"SPDXRef-p{}","name":"twice","versionInfo":"2"}}"#,
+        n - 1
+    ));
+    let relationships: Vec<String> = (0..n)
+        .map(|i| {
+            let to = if i + 1 == n { "p" } else { "absent" };
+            format!(
+                r#"{{"spdxElementId":"SPDXRef-DOCUMENT","relationshipType":"DESCRIBES","relatedSpdxElement":"SPDXRef-{to}{i}"}}"#
+            )
+        })
+        .collect();
+    let doc = format!(
+        r#"{{"spdxVersion":"SPDX-2.3","packages":[{}],"relationships":[{}]}}"#,
+        packages.join(","),
+        relationships.join(",")
+    );
+    let started = std::time::Instant::now();
+    let s = parse(doc.as_bytes(), &Subject::default()).unwrap().sbom;
+    let last = n - 1;
+    assert_eq!(
+        (s.product, s.version),
+        (format!("c{last}"), format!("1.{last}"))
+    );
+    assert_eq!(s.components.len(), n - 1, "every package but the subject");
+    // Well under a second; the bound only has to tell one pass from 400 million comparisons.
+    let elapsed = started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(20), "{elapsed:?}");
+}
+
 #[test]
 fn import_writes_the_cache_and_skips_files_that_are_not_sboms() {
     let dir = std::env::temp_dir().join(format!("ns-sbom-{}", std::process::id()));
@@ -232,6 +272,62 @@ fn import_writes_the_cache_and_skips_files_that_are_not_sboms() {
     )
     .unwrap_err();
     assert!(e.contains("one by one"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What stands at the cache path decides what an import may do with it: only a cache of this
+/// version is added to, one of an older version starts over, and anything else is left alone.
+#[test]
+fn an_import_never_writes_over_a_file_it_could_not_load() {
+    let dir = std::env::temp_dir().join(format!("ns-sbom-guard-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (input, cache) = (dir.join("in").join("plc.cdx.json"), dir.join("sboms.json"));
+    std::fs::create_dir_all(input.parent().unwrap()).unwrap();
+    std::fs::write(&input, CYCLONEDX).unwrap();
+    let import = || import(std::slice::from_ref(&input), &Subject::default(), &cache, 7);
+    let newer = format!(
+        r#"{{"version":{},"imported_at":1,"sboms":[]}}"#,
+        CACHE_VERSION + 1
+    );
+    // A vendor's SBOM where the cache should be (`--sboms vendor.json`), a damaged file and a
+    // cache from a newer version of the program.
+    for (case, content) in [
+        ("CycloneDX", CYCLONEDX),
+        ("SPDX", SPDX),
+        ("damaged", r#"{"version":1,"imported_at":1,"sbo"#),
+        ("empty", ""),
+        ("newer", newer.as_str()),
+    ] {
+        std::fs::write(&cache, content).unwrap();
+        let e = import().unwrap_err();
+        assert!(e.contains("the file is unchanged"), "{case}: {e}");
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), content, "{case}");
+    }
+    // A cache an older version wrote, also one with entries this version cannot read: the
+    // import starts over.
+    for old in [
+        r#"{"version":0,"imported_at":1,"sboms":[]}"#,
+        r#"{"version":0,"imported_at":1,"sboms":[{"shape":"of version 0"}]}"#,
+    ] {
+        std::fs::write(&cache, old).unwrap();
+        assert!(
+            Library::load(&cache)
+                .unwrap_err()
+                .contains("import the SBOMs again")
+        );
+        import().unwrap();
+        let library = Library::load(&cache).unwrap();
+        assert_eq!(
+            (library.version, library.sboms.len()),
+            (CACHE_VERSION, 1),
+            "{old}"
+        );
+    }
+    // A cache this version could not load again is not written.
+    assert!(check_size(MAX_CACHE_BYTES as usize, &cache).is_ok());
+    let e = check_size(MAX_CACHE_BYTES as usize + 1, &cache).unwrap_err();
+    assert!(e.contains("nothing was written"), "{e}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

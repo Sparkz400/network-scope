@@ -588,6 +588,8 @@ fn norm_mac(mac: &str) -> String {
 }
 
 pub fn merge(hosts: &[Host], observations: &[Observation]) -> Vec<Device> {
+    #[cfg(test)]
+    crate::monitor::MERGES.with(|n| n.set(n.get() + 1));
     let mut accs: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_ip: HashMap<IpAddr, String> = HashMap::new();
     // device key -> IP -> other MACs claiming the same IP (IP reassignment, address conflicts,

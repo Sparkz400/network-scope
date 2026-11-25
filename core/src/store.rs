@@ -51,6 +51,7 @@ const MIGRATIONS: &[Migration] = &[
     (4, migrate_baseline),
     (5, crate::research::migrate),
     (6, migrate_scan_hosts),
+    (7, migrate_alert_outbox),
 ];
 type Migration = (i64, fn(&Connection) -> rusqlite::Result<()>);
 /// Schema version of a database this program has fully upgraded.
@@ -97,9 +98,22 @@ fn migrate_scan_hosts(c: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// Migration 7: the alerts a monitor has not delivered yet (`notify::Outbox`), so that a restart
+/// does not lose them. A row belongs to a monitor (`scope`, its targets text) and one of its
+/// sinks (`sink`, a hash: a webhook URL can carry a token), not to a scan. [`prune`] and
+/// [`delete`] therefore leave the table alone; the monitor removes a row when the alert is
+/// delivered or its sink is no longer configured.
+fn migrate_alert_outbox(c: &Connection) -> rusqlite::Result<()> {
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS alert_outbox(id INTEGER PRIMARY KEY, scope TEXT NOT NULL, sink TEXT NOT NULL, alert TEXT NOT NULL);",
+    )
+}
+
 /// Parses a stored snapshot and puts back the hosts a [`crate::store_stream::ScanWriter`] wrote
 /// to `scan_hosts` (none for a scan saved the usual way).
 fn snapshot_of(c: &Connection, id: i64, data: &str) -> Result<Snapshot, String> {
+    #[cfg(test)]
+    crate::monitor::SNAPSHOTS_READ.with(|n| n.set(n.get() + 1));
     let mut snapshot: Snapshot = serde_json::from_str(data).map_err(|e| e.to_string())?;
     let mut s = c
         .prepare_cached("SELECT host FROM scan_hosts WHERE scan_id=?1 ORDER BY seq")
@@ -203,6 +217,11 @@ pub(crate) fn open_read(path: &Path) -> Result<Connection, String> {
             "device_key TEXT PRIMARY KEY, label TEXT NOT NULL, owner TEXT NOT NULL, criticality TEXT NOT NULL, tags TEXT NOT NULL, expected INTEGER NOT NULL, source TEXT NOT NULL, approved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL",
         ),
         ("baseline_meta", "key TEXT PRIMARY KEY, value TEXT NOT NULL"),
+        // What `load_outbox` selects from.
+        (
+            "alert_outbox",
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL, sink TEXT NOT NULL, alert TEXT NOT NULL",
+        ),
     ] {
         let present: bool = c
             .query_row(
@@ -265,10 +284,20 @@ pub fn save(path: &Path, snapshot: &Snapshot) -> Result<i64, String> {
 /// [`save`] with the scan time given (Unix seconds): for imports that know when the data was
 /// taken, and for tests of anything that depends on the age of a scan.
 pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, String> {
-    let mut c = open(path)?;
     // The research rows (L67) are derived before the transaction opens: the analysis may read
     // feed caches, which must not happen while the write lock is held.
     let findings = crate::risk::analyze_snapshot(snapshot);
+    save_analysed(path, snapshot, &findings, timestamp)
+}
+/// [`save_at`] for a caller that analysed the snapshot already: `findings` are those of
+/// `risk::analyze_snapshot`.
+pub(crate) fn save_analysed(
+    path: &Path,
+    snapshot: &Snapshot,
+    findings: &[crate::risk::Finding],
+    timestamp: i64,
+) -> Result<i64, String> {
+    let mut c = open(path)?;
     let tx = c
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -287,7 +316,7 @@ pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, 
     let id = tx.last_insert_rowid();
     // Same transaction as the snapshot, so the tables and the scans never disagree; a failure
     // of the research rows alone never loses the scan (`research rebuild` repairs them).
-    crate::research::insert_scan_guarded(&tx, id, timestamp, snapshot, &findings);
+    crate::research::insert_scan_guarded(&tx, id, timestamp, snapshot, findings);
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
@@ -479,6 +508,11 @@ fn delete_scans(c: &mut Connection, ids: &[i64]) -> Result<(), String> {
 }
 pub fn load(path: &Path, id: i64) -> Result<Snapshot, String> {
     load_on(&open_read(path)?, id)
+}
+/// Whether an error of [`load`] says that the scan does not exist, and not that the inventory
+/// is locked or damaged. The callers word it; the error itself stays SQLite's text.
+pub fn is_missing_scan(error: &str) -> bool {
+    error == rusqlite::Error::QueryReturnedNoRows.to_string()
 }
 /// [`load`] on an open connection, for callers that read many scans.
 pub(crate) fn load_on(c: &Connection, id: i64) -> Result<Snapshot, String> {
@@ -722,8 +756,10 @@ fn alert_from_row(r: &rusqlite::Row) -> rusqlite::Result<crate::monitor::Alert> 
         message: r.get(4)?,
     })
 }
+/// The newest `limit` stored alerts, newest first. Reading never creates or upgrades the
+/// inventory (see [`open_read`]).
 pub fn list_alerts(path: &Path, limit: usize) -> Result<Vec<crate::monitor::Alert>, String> {
-    let c = open(path)?;
+    let c = open_read(path)?;
     let mut s = c
         .prepare(
             "SELECT timestamp,severity,kind,subject,message FROM alerts ORDER BY id DESC LIMIT ?1",
@@ -781,6 +817,59 @@ pub fn list_alerts_since(
         .query_map(params![since, scope], alert_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+/// The alerts the monitor of `scope` (its targets text) has not delivered yet, oldest first,
+/// each with the key of its sink. Read without writing (see [`open_read`]). An entry that
+/// cannot be read as an alert is left out.
+pub(crate) fn load_outbox(
+    path: &Path,
+    scope: &str,
+) -> Result<Vec<(String, crate::monitor::Alert)>, String> {
+    let c = open_read(path)?;
+    let mut s = c
+        .prepare("SELECT sink,alert FROM alert_outbox WHERE scope=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = s
+        .query_map([scope], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut entries = vec![];
+    for row in rows {
+        let (sink, alert) = row.map_err(|e| e.to_string())?;
+        if let Ok(alert) = serde_json::from_str(&alert) {
+            entries.push((sink, alert));
+        }
+    }
+    Ok(entries)
+}
+/// Replaces what [`load_outbox`] returns for `scope` with `queues`: per sink key, its alerts
+/// in order.
+pub(crate) fn save_outbox(
+    path: &Path,
+    scope: &str,
+    queues: &[(String, &[crate::monitor::Alert])],
+) -> Result<(), String> {
+    let mut c = open(path)?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM alert_outbox WHERE scope=?1", [scope])
+        .map_err(|e| e.to_string())?;
+    for (sink, alerts) in queues {
+        for alert in *alerts {
+            tx.execute(
+                "INSERT INTO alert_outbox(scope,sink,alert) VALUES(?1,?2,?3)",
+                params![
+                    scope,
+                    sink,
+                    serde_json::to_string(alert).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 /// Identity keys whose values change on every scan without anything changing on the device
 /// (matched by suffix). Certificate expiry is still reported through `tls.<port>.expired`, which

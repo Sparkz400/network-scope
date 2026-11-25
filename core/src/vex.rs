@@ -32,7 +32,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::Arc,
 };
 
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -464,38 +464,14 @@ impl Library {
         names: &[String],
         version: &str,
     ) -> Option<&Statement> {
-        let version = norm_version(version);
-        let mut open: Option<&Statement> = None;
-        let mut clearing: Option<&Statement> = None;
-        for s in &self.statements {
-            if !s.cve.eq_ignore_ascii_case(cve) {
-                continue;
-            }
-            if !s.vendor.is_empty() && !vendor.is_empty() && !vendor_matches(&s.vendor, vendor) {
-                continue;
-            }
-            let all = s.range == "*";
-            if !all && (version.is_empty() || !range_holds(&s.range, version)) {
-                continue;
-            }
-            if s.state.resolves() {
-                let exact = !all
-                    && !s.vendor.is_empty()
-                    && !vendor.is_empty()
-                    && if s.specific.is_empty() {
-                        names_cover(names, &s.products)
-                    } else {
-                        covers_all(names, &s.specific)
-                    };
-                if exact && clearing.is_none() {
-                    clearing = Some(s);
-                }
-            } else if names_match(names, &s.products) && open.is_none_or(|b| b.range == "*" && !all)
-            {
-                open = Some(s);
-            }
-        }
-        open.or(clearing)
+        // shortcut: walks every statement (as `lookup_purl` does), fine for a single lookup;
+        // the CycloneDX export asks per SBOM component, so hand it the `by_cve` index that
+        // `apply` uses once exports with a large VEX cache are slow.
+        let about = self
+            .statements
+            .iter()
+            .filter(|s| s.cve.eq_ignore_ascii_case(cve));
+        covering(about, vendor, names, version)
     }
 
     /// The statement that covers `cve` for the package with this package URL (an SBOM
@@ -552,6 +528,27 @@ impl Library {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path)?.map_err(|version| {
+            format!(
+                "{}: cache version {version} is not supported (expected {CACHE_VERSION}); import the VEX files again",
+                path.display()
+            )
+        })
+    }
+
+    /// [`Self::load`], with a cache that an older version of the program wrote told apart as
+    /// `Ok(Err(its version))`: that one is expected after an upgrade, and an import starts
+    /// over. Every other file that does not load is an error, and is never written over.
+    fn read(path: &Path) -> Result<Result<Self, u32>, String> {
+        /// What a cache of any version has. The version alone does not make a file a cache: a
+        /// vendor's CycloneDX document has a top-level `version` too.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Header {
+            version: u32,
+            imported_at: u64,
+            statements: Vec<serde::de::IgnoredAny>,
+        }
         let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
@@ -559,16 +556,20 @@ impl Library {
             return Err(format!("{}: file is too large", path.display()));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let cache: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("{}: not a VEX cache: {e}", path.display()))?;
-        if cache.version != CACHE_VERSION {
-            return Err(format!(
-                "{}: cache version {} is not supported (expected {CACHE_VERSION}); import the VEX files again",
+        match serde_json::from_slice::<Self>(&bytes) {
+            Ok(cache) if cache.version == CACHE_VERSION => Ok(Ok(cache)),
+            Ok(cache) if cache.version < CACHE_VERSION => Ok(Err(cache.version)),
+            Ok(cache) => Err(format!(
+                "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
                 cache.version
-            ));
+            )),
+            // An older version may have stored its entries in another shape.
+            Err(e) => match serde_json::from_slice::<Header>(&bytes) {
+                Ok(header) if header.version < CACHE_VERSION => Ok(Err(header.version)),
+                _ => Err(format!("{}: not a VEX cache: {e}", path.display())),
+            },
         }
-        Ok(cache)
     }
 
     /// Writes the cache through a temporary file, so an interrupted import keeps the old one.
@@ -577,6 +578,7 @@ impl Library {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        check_size(bytes.len(), path)?;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -586,6 +588,43 @@ impl Library {
             format!("{}: {e}", path.display())
         })
     }
+}
+
+/// [`Library::lookup`] among the statements about one CVE, in the order of the library.
+fn covering<'a>(
+    about: impl Iterator<Item = &'a Statement>,
+    vendor: &str,
+    names: &[String],
+    version: &str,
+) -> Option<&'a Statement> {
+    let version = norm_version(version);
+    let mut open: Option<&Statement> = None;
+    let mut clearing: Option<&Statement> = None;
+    for s in about {
+        if !s.vendor.is_empty() && !vendor.is_empty() && !vendor_matches(&s.vendor, vendor) {
+            continue;
+        }
+        let all = s.range == "*";
+        if !all && (version.is_empty() || !range_holds(&s.range, version)) {
+            continue;
+        }
+        if s.state.resolves() {
+            let exact = !all
+                && !s.vendor.is_empty()
+                && !vendor.is_empty()
+                && if s.specific.is_empty() {
+                    names_cover(names, &s.products)
+                } else {
+                    covers_all(names, &s.specific)
+                };
+            if exact && clearing.is_none() {
+                clearing = Some(s);
+            }
+        } else if names_match(names, &s.products) && open.is_none_or(|b| b.range == "*" && !all) {
+            open = Some(s);
+        }
+    }
+    open.or(clearing)
 }
 
 /// Whether a statement's product name is one the device reports, or a more general one it
@@ -682,10 +721,30 @@ fn contexts(host: &Host, port: Option<u16>) -> Vec<Context> {
 
 /// Marks the findings a statement covers (the first CVE of a finding that one covers).
 pub fn apply(findings: &mut [Finding], hosts: &[Host]) {
-    apply_with(&active(), findings, hosts);
+    let active = ACTIVE.get();
+    apply_indexed(&active.library, &active.by_cve, findings, hosts);
 }
 
 pub fn apply_with(library: &Library, findings: &mut [Finding], hosts: &[Host]) {
+    apply_indexed(library, &by_cve(library), findings, hosts);
+}
+
+/// The positions of a library's statements by upper-case CVE id: a lookup per finding must not
+/// walk all of them (a cache holds up to a million).
+fn by_cve(library: &Library) -> HashMap<String, Vec<usize>> {
+    let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, s) in library.statements.iter().enumerate() {
+        index.entry(s.cve.to_ascii_uppercase()).or_default().push(i);
+    }
+    index
+}
+
+fn apply_indexed(
+    library: &Library,
+    by_cve: &HashMap<String, Vec<usize>>,
+    findings: &mut [Finding],
+    hosts: &[Host],
+) {
     if library.is_empty() {
         return;
     }
@@ -696,11 +755,28 @@ pub fn apply_with(library: &Library, findings: &mut [Finding], hosts: &[Host]) {
         };
         let ctx = contexts(host, f.port);
         f.vex = f.cve.iter().find_map(|cve| {
+            let about = by_cve.get(&cve.to_ascii_uppercase())?;
             ctx.iter()
-                .find_map(|(vendor, names, version)| library.lookup(cve, vendor, names, version))
+                .find_map(|(vendor, names, version)| {
+                    let about = about.iter().map(|i| &library.statements[*i]);
+                    covering(about, vendor, names, version)
+                })
                 .map(Applied::from)
         });
     }
+}
+
+/// A cache that [`Library::load`] would refuse for its size is not written: the next import
+/// could not read it back.
+fn check_size(bytes: usize, path: &Path) -> Result<(), String> {
+    if bytes as u64 > MAX_CACHE_BYTES {
+        return Err(format!(
+            "{}: the cache would be larger than {} MB and could not be read again; nothing was written",
+            path.display(),
+            MAX_CACHE_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(())
 }
 
 /// `vex.json` next to `feeds.json`.
@@ -779,7 +855,12 @@ pub fn import(paths: &[PathBuf], cache: &Path, now: u64) -> Result<ImportReport,
         files.extend(expand(p)?);
     }
     let mut library = if cache.exists() {
-        Library::load(cache).unwrap_or_default()
+        // A cache of an older version starts over (its files are imported again). A file that
+        // does not load for any other reason stays as it is: it may be no cache at all (the
+        // cache option naming a vendor's document), and saving would write over it.
+        Library::read(cache)
+            .map_err(|e| format!("{e}; nothing was imported and the file is unchanged"))?
+            .unwrap_or_default()
     } else {
         Library::default()
     };
@@ -843,48 +924,43 @@ pub fn status(library: &Library, path: &Path) -> Value {
     })
 }
 
-fn slot() -> &'static RwLock<Option<Arc<Library>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<Library>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
+/// The active statements with their index ([`by_cve`]), built once when the cache is loaded.
+#[derive(Default)]
+struct Indexed {
+    library: Arc<Library>,
+    by_cve: HashMap<String, Vec<usize>>,
 }
+fn load_indexed(path: &Path) -> Result<Indexed, String> {
+    let library = Arc::new(Library::load(path)?);
+    Ok(Indexed {
+        by_cve: by_cve(&library),
+        library,
+    })
+}
+
+static ACTIVE: crate::feeds::ActiveCache<Indexed> =
+    crate::feeds::ActiveCache::new("VEX", "no statements are used", default_path, load_indexed);
 
 /// Makes the cache at `explicit` (`--vex FILE`) the active statements.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
-    let library = Library::load(explicit)?;
-    if let Ok(mut s) = slot().write() {
-        *s = Some(Arc::new(library));
-    }
-    Ok(())
+    ACTIVE.set(explicit)
 }
 
 /// Forgets the loaded statements, so the next [`active`] reads the cache again (the desktop after
 /// an import).
 pub fn reload() {
-    if let Ok(mut s) = slot().write() {
-        *s = None;
-    }
+    ACTIVE.clear()
 }
 
 /// The active statements: the explicit cache, else the default cache when it exists, else none.
 /// Tests never read the developer's own cache.
 pub fn active() -> Arc<Library> {
-    if let Some(l) = slot().read().ok().and_then(|s| s.clone()) {
-        return l;
-    }
-    #[cfg(test)]
-    let library = Arc::new(Library::default());
-    #[cfg(not(test))]
-    let library = Arc::new(match default_path().filter(|p| p.exists()) {
-        Some(p) => Library::load(&p).unwrap_or_else(|e| {
-            eprintln!("VEX: {e}; no statements are used");
-            Library::default()
-        }),
-        None => Library::default(),
-    });
-    if let Ok(mut s) = slot().write() {
-        *s = Some(library.clone());
-    }
-    library
+    ACTIVE.get().library.clone()
+}
+
+/// Reads the cache again when its file changed since it was loaded (see `feeds::refresh`).
+pub fn refresh() {
+    ACTIVE.refresh()
 }
 
 #[cfg(test)]

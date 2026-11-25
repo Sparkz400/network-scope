@@ -7,7 +7,7 @@ use crate::{
 use std::collections::BTreeMap;
 
 pub(super) fn assets(ctx: &mut Ctx) -> Result<(), String> {
-    ot_assets_output(&store::load(&ctx.db, ctx.id(0)?)?, &ctx.opts)
+    ot_assets_output(&ctx.scan(0)?, &ctx.opts)
 }
 
 /// The model file `--model FILE` names, or `ot-model.json` next to the inventory database.

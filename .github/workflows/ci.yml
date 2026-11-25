@@ -55,6 +55,29 @@ jobs:
       # for every package (no dev-dependency of the two default members turns one on), so the
       # library and both binaries the tests built are the ones the lab steps below run.
       - run: cargo build --release --locked
+      # The zsh and fish scripts in the shells they are written for (the unit tests only read
+      # their text): each loads, and offers `scan` as the command and `--dry-run` after it.
+      # In this job and not the CLI-only one: that one has little room in its time budget.
+      - name: zsh and fish completions in real shells (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y zsh fish
+          export PATH="$PWD/target/release:$PATH"
+          network-scope-cli completions zsh > "$RUNNER_TEMP/ns.zsh"
+          zsh -f <<'ZSH'
+          autoload -Uz compinit && compinit -u
+          source "$RUNNER_TEMP/ns.zsh"
+          [[ ${_comps[network-scope-cli]} == _network_scope ]] || { print "not registered"; exit 1 }
+          # Outside the line editor the function is asked directly, with a compadd that prints.
+          compadd() { [[ $1 == -- ]] && shift; print -l -- "$@" }
+          words=(network-scope-cli sc); CURRENT=2
+          _network_scope | grep -qx scan || { print "scan is not offered"; exit 1 }
+          words=(network-scope-cli scan --dry); CURRENT=3
+          _network_scope | grep -qx -- --dry-run || { print "--dry-run is not offered"; exit 1 }
+          ZSH
+          fish -c 'network-scope-cli completions fish | source; complete -C "network-scope-cli sc"' | grep '^scan'
+          fish -c 'network-scope-cli completions fish | source; complete -C "network-scope-cli scan --dry"' | grep -e '^--dry-run'
       # `export --format cyclonedx` against the official CycloneDX 1.6 schema (cyclonedx-cli,
       # pinned by SHA-256): the unit-test sample (firmware from S7 and LLDP-MED, a service with a
       # CPE, CVEs on a service, a firmware and a device) and a real export of an imported scan.

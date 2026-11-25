@@ -800,10 +800,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(m, "HTTP 500");
         server.join().unwrap();
-        let port = {
-            let l = TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
+        let (port, _reserved) = crate::probes::refused_port();
         assert!(
             push(
                 Target::Elastic,

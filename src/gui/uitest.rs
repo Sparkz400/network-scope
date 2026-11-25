@@ -24,6 +24,8 @@ struct Harness {
     events: Vec<egui::Event>,
     widgets: Vec<Widget>,
     size: egui::Vec2,
+    /// The modifier keys that are held down (see `hold`).
+    held: egui::Modifiers,
 }
 
 impl Harness {
@@ -34,10 +36,15 @@ impl Harness {
 
     /// The same in a window of another size.
     fn sized(state: &str, size: egui::Vec2) -> Self {
+        Self::start(state, size, Saved::default())
+    }
+
+    /// The same with the preferences of an earlier start.
+    fn start(state: &str, size: egui::Vec2, saved: Saved) -> Self {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let cc = eframe::CreationContext::_new_kittest(ctx.clone());
-        let mut app = Scanner::new(&cc, Some(PathBuf::from("unused.png")), Saved::default());
+        let mut app = Scanner::new(&cc, Some(PathBuf::from("unused.png")), saved);
         app.seed_demo(state);
         i18n::set(i18n::Lang::English);
         let mut h = Self {
@@ -47,6 +54,7 @@ impl Harness {
             events: vec![],
             widgets: vec![],
             size,
+            held: Default::default(),
         };
         // Layout settles over a couple of frames (sizes of panels and tables).
         for _ in 0..3 {
@@ -120,6 +128,12 @@ impl Harness {
         found
     }
 
+    /// Holds these modifier keys down from the next frame on (none: lets them go).
+    fn hold(&mut self, keys: egui::Modifiers) {
+        self.held = keys;
+        self.events.push(egui::Event::ModifiersChanged(keys));
+    }
+
     fn has(&self, name: &str) -> bool {
         !self.find(name).is_empty()
     }
@@ -149,7 +163,7 @@ impl Harness {
                 pos,
                 button,
                 pressed,
-                modifiers: Default::default(),
+                modifiers: self.held,
             });
             self.step();
         }
@@ -424,6 +438,121 @@ fn a_device_seen_only_in_passive_traffic_has_details() {
     assert_eq!(h.app.selected, "10.20.0.60".parse().ok());
     h.step();
     assert_eq!(h.app.selected_device, None);
+}
+
+#[test]
+fn shift_marks_hosts_and_the_menu_of_one_copies_them_all() {
+    let mut h = Harness::new("main");
+    let ip = |h: &Harness, row: usize| h.app.results[h.app.rows[row]].ip;
+    // A starred host shows a star before its address.
+    let name = |h: &Harness, row: usize| {
+        let ip = ip(h, row).to_string();
+        if h.has(&ip) { ip } else { format!("★ {ip}") }
+    };
+    let (first, third) = (name(&h, 0), name(&h, 2));
+    h.click(&first);
+    assert_eq!(h.app.selected, Some(ip(&h, 0)));
+    h.hold(egui::Modifiers::SHIFT);
+    h.click(&third);
+    h.hold(Default::default());
+    assert_eq!(
+        h.app.selected,
+        Some(ip(&h, 0)),
+        "the details stay where they were"
+    );
+    for row in 0..3 {
+        assert!(h.app.marked.has(&ip(&h, row)), "row {row}");
+    }
+    assert!(!h.app.marked.has(&ip(&h, 3)));
+    // A click that lets go of Shift in the frame of the release (a remote-control tool, a
+    // very quick hand) still counts as a Shift+click.
+    let fourth = h.one(&name(&h, 3)).center();
+    h.events.push(egui::Event::PointerMoved(fourth));
+    h.step();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: fourth,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::SHIFT,
+    };
+    let quick = [
+        egui::Event::ModifiersChanged(egui::Modifiers::SHIFT),
+        button(true),
+        button(false),
+        egui::Event::ModifiersChanged(Default::default()),
+    ];
+    h.events.extend(quick);
+    h.step();
+    h.step();
+    assert!(
+        h.app.marked.has(&ip(&h, 3)),
+        "the fourth row joined the range"
+    );
+    h.right_click(&third);
+    assert!(h.has("Copy 4 addresses") && h.has("Copy 4 rows"));
+    // The keyboard: Shift with an arrow key marks the rows it passes.
+    let mut h = Harness::new("main");
+    h.click(&name(&h, 1));
+    let down = |modifiers| egui::Event::Key {
+        key: egui::Key::ArrowDown,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    h.hold(egui::Modifiers::SHIFT);
+    for _ in 0..2 {
+        h.events.push(down(egui::Modifiers::SHIFT));
+        h.step();
+    }
+    h.hold(Default::default());
+    assert_eq!(
+        h.app.selected,
+        Some(ip(&h, 3)),
+        "the details follow the arrows"
+    );
+    assert!((1..=3).all(|row| h.app.marked.has(&ip(&h, row))) && !h.app.marked.has(&ip(&h, 0)));
+    h.events.push(down(Default::default()));
+    h.step();
+    assert!(
+        !h.app.marked.has(&ip(&h, 3)),
+        "an arrow without Shift starts over"
+    );
+    assert!(h.has("Copy IP address"), "the host's own menu follows");
+    // The findings and the devices mark the same way.
+    let mut h = Harness::new("findings");
+    h.click("10.20.0.5:23");
+    h.hold(egui::Modifiers::COMMAND);
+    let address = "10.20.0.55:502";
+    let other = (h.app.findings.value.iter())
+        .position(|f| tables::host_port(f) == address)
+        .unwrap();
+    h.click(address);
+    h.hold(Default::default());
+    assert!(h.app.findings_view.marks.has(&other));
+    h.right_click(address);
+    assert!(h.has("Copy 2 rows") && h.has("Copy finding"));
+}
+
+#[test]
+fn a_dragged_column_width_is_used_again_and_the_default_ones_are_not_kept() {
+    for state in ["main", "findings", "devices", "ot"] {
+        let h = Harness::new(state);
+        // Only a column that grows to fit its text is wider than its default by itself.
+        let kept = &h.app.saved.column_widths;
+        assert!(
+            kept.keys().all(|k| k == "findings.severity"),
+            "{state}: {kept:?}"
+        );
+    }
+    let mut saved = Saved::default();
+    saved.column_widths.insert("findings.host".into(), 222.0);
+    saved.column_widths.insert("hosts.ping".into(), 91.0);
+    // The table reports the width it has: a width that was not applied would be gone here.
+    let h = Harness::start("findings", SIZE, saved.clone());
+    assert_eq!(h.app.saved.column_widths.get("findings.host"), Some(&222.0));
+    let h = Harness::start("main", SIZE, saved);
+    assert_eq!(h.app.saved.column_widths.get("hosts.ping"), Some(&91.0));
 }
 
 #[test]
