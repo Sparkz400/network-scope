@@ -485,26 +485,30 @@ fn security(path: &Path) -> Result<Security, String> {
         ));
     }
     let _free = Local(descriptor);
-    let allowed = if dacl.is_null() {
-        None
-    } else {
-        let count = unsafe { (*dacl.cast::<AclHeader>()).count };
-        let mut entries = vec![];
-        for i in 0..u32::from(count) {
-            let mut ace = std::ptr::null_mut();
-            if unsafe { GetAce(dacl, i, &mut ace) } == 0 {
-                return Err(describe("Reading an access entry", last_error()));
+    // A null DACL (no list at all) gives everyone every right.
+    let allowed = match unsafe { dacl.cast::<AclHeader>().as_ref() } {
+        None => None,
+        Some(acl) => {
+            let count = acl.count;
+            let mut entries = vec![];
+            for i in 0..u32::from(count) {
+                let mut ace = std::ptr::null_mut();
+                if unsafe { GetAce(dacl, i, &mut ace) } == 0 {
+                    return Err(describe("Reading an access entry", last_error()));
+                }
+                let Some(head) = (unsafe { ace.cast::<AceHeader>().as_ref() }) else {
+                    return Err(describe("Reading an access entry", last_error()));
+                };
+                if head.kind == ACCESS_ALLOWED_ACE_TYPE {
+                    let sid = unsafe { ace.cast::<u8>().add(8) }.cast();
+                    entries.push((sid_text(sid)?, head.mask, head.flags));
+                } else if !DENY_ACE_TYPES.contains(&head.kind) {
+                    // Not parsed (callback, object, ...): counted as every right for anyone.
+                    entries.push((format!("{UNKNOWN_ACE}{}", head.kind), u32::MAX, head.flags));
+                }
             }
-            let head = unsafe { &*ace.cast::<AceHeader>() };
-            if head.kind == ACCESS_ALLOWED_ACE_TYPE {
-                let sid = unsafe { ace.cast::<u8>().add(8) }.cast();
-                entries.push((sid_text(sid)?, head.mask, head.flags));
-            } else if !DENY_ACE_TYPES.contains(&head.kind) {
-                // Not parsed (callback, object, ...): counted as every right for anyone.
-                entries.push((format!("{UNKNOWN_ACE}{}", head.kind), u32::MAX, head.flags));
-            }
+            Some(entries)
         }
-        Some(entries)
     };
     Ok(Security {
         owner: sid_text(owner)?,

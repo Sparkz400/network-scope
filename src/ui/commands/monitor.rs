@@ -280,9 +280,10 @@ mod tests {
             ("1X", "name of an environment variable"),
             ("", "name of an environment variable"),
         ] {
+            // The messages name the expectation, never `name` or `err`: one case is the secret.
             let err = webhook_env(name, env).unwrap_err();
-            assert!(err.contains(message), "{name}: {err}");
-            assert!(!err.contains("s3cret"), "the value is never shown: {err}");
+            assert!(err.contains(message), "expected {message:?}");
+            assert!(!err.contains("s3cret"), "the value is never shown");
         }
         // Through the option: an unset variable is a start-up error.
         let err = monitor_policy(&opts(&[(
