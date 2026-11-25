@@ -983,7 +983,11 @@ mod tests {
     }
 
     fn temp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ns-svc-acl-{tag}-{}", std::process::id()));
+        // The long name: CI runners give %TEMP% as an 8.3 short name (RUNNER~1), which the
+        // program-file check rightly refuses.
+        let tmp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let tmp = PathBuf::from(tmp.to_str().unwrap().trim_start_matches(r"\\?\"));
+        let d = tmp.join(format!("ns-svc-acl-{tag}-{}", std::process::id()));
         if d.exists() {
             let _ = set_dacl(&d, "D:(A;OICI;FA;;;WD)");
             let _ = std::fs::remove_dir_all(&d);
