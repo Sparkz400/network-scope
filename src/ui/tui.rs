@@ -727,6 +727,84 @@ mod tests {
     }
 
     #[test]
+    fn list_paging_detail_toggle_and_silent_hosts() {
+        use crossterm::event::KeyCode;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut hosts: Vec<scan::Host> = (1..=25)
+            .map(|i| tui_host(&format!("10.0.0.{i}"), vec![]))
+            .collect();
+        hosts[0].responding = false;
+        hosts[0]
+            .identity
+            .insert("modbus.firmware".into(), "2.7".into());
+        let mut v = TuiView::default();
+        v.key(KeyCode::Char('s'), &hosts);
+        // Paging moves ten rows and stops at the ends; other keys change nothing.
+        v.key(KeyCode::PageDown, &hosts);
+        assert_eq!(
+            v.position(&hosts),
+            Some(0),
+            "the first key selects the first row"
+        );
+        v.key(KeyCode::PageDown, &hosts);
+        assert_eq!(v.position(&hosts), Some(10));
+        v.key(KeyCode::PageDown, &hosts);
+        v.key(KeyCode::PageDown, &hosts);
+        assert_eq!(v.position(&hosts), Some(24));
+        v.key(KeyCode::PageUp, &hosts);
+        assert_eq!(v.position(&hosts), Some(14));
+        assert_eq!(v.key(KeyCode::Char('x'), &hosts), TuiAction::None);
+        assert_eq!(v.position(&hosts), Some(14));
+        // Enter opens the selected row, and Enter again goes back to the list.
+        v.key(KeyCode::Enter, &hosts);
+        assert_eq!(v.detail_host(&hosts).unwrap().ip, hosts[14].ip);
+        v.key(KeyCode::Enter, &hosts);
+        assert!(!v.detail);
+        assert_eq!(v.key(KeyCode::Enter, &[]), TuiAction::None);
+        // The list names the sort order and shows silent hosts and their firmware.
+        v.key(KeyCode::Home, &hosts);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let screen = |t: &Terminal<TestBackend>| {
+            let b = t.backend().buffer();
+            b.content().iter().map(|c| c.symbol()).collect::<String>()
+        };
+        t.draw(|f| draw_tui(f, &v, &hosts, "25/25")).unwrap();
+        let text = screen(&t);
+        assert!(text.contains("sort: address"), "{text}");
+        assert!(text.contains("No reply"), "{text}");
+        assert!(text.contains("modbus.firmware: 2.7"), "{text}");
+        v.key(KeyCode::Char('s'), &hosts);
+        t.draw(|f| draw_tui(f, &v, &hosts, "25/25")).unwrap();
+        assert!(screen(&t).contains("sort: open ports"));
+    }
+
+    #[test]
+    fn details_of_a_silent_host_list_udp_ports_and_errors() {
+        let mut h = tui_host("10.0.0.2", vec![]);
+        h.responding = false;
+        h.ping = None;
+        h.hostname = "plc-7".into();
+        h.mac = "00:11:22:33:44:55".into();
+        h.udp_open = vec![161, 47808];
+        h.identity.insert("udp.161".into(), "snmp".into());
+        h.errors = vec!["connection reset".into()];
+        let lines = detail_lines(&h);
+        assert_eq!(lines[0], "Status: no reply");
+        assert_eq!(lines[1], "Hostname: plc-7");
+        assert_eq!(lines[2], "MAC: 00:11:22:33:44:55");
+        let udp = lines
+            .iter()
+            .position(|l| l == "Open UDP ports (2)")
+            .unwrap();
+        assert_eq!(lines[udp + 1], "    161/udp  snmp");
+        assert_eq!(lines[udp + 2].trim_end(), "  47808/udp");
+        assert_eq!(lines.last().unwrap(), "Error: connection reset");
+        // Without UDP ports there is no UDP section at all.
+        h.udp_open.clear();
+        assert!(!detail_lines(&h).iter().any(|l| l.contains("UDP")));
+    }
+
+    #[test]
     fn tui_details_show_conclusions_with_reasons_and_confidence() {
         let mut h = tui_host("10.0.0.2", vec![23]);
         let text = detail_lines(&h).join("\n");
