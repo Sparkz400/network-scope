@@ -87,7 +87,7 @@ fn install(ctx: &mut Ctx) -> Result<(), String> {
     if let Err(refusal) = guard::check(&service_opts, &hosts, None)? {
         return Err(refusal.to_string());
     }
-    scm_install(&name, &db, &command_line)?;
+    scm_install(&name, &db, !ctx.opts.contains_key("db"), &command_line)?;
     crate::ui::progress(
         &ctx.opts,
         format_args!(
@@ -132,10 +132,12 @@ use super::service_scm::Body;
 type Body =
     Box<dyn FnOnce(std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<(), String> + Send>;
 
+/// `default_db`: the inventory is the default one under `%ProgramData%`, whose folder this
+/// program owns and may lock down (see `service_scm::prepare_data_dir`).
 #[cfg(windows)]
-fn scm_install(name: &str, db: &Path, command_line: &str) -> Result<(), String> {
+fn scm_install(name: &str, db: &Path, default_db: bool, command_line: &str) -> Result<(), String> {
     if let Some(dir) = db.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        super::service_scm::prepare_data_dir(dir, default_db)?;
     }
     super::service_scm::install(name, command_line)
 }
@@ -148,7 +150,7 @@ fn scm_run(name: &str, log: PathBuf, body: Body) -> Result<(), String> {
     super::service_scm::run(name, log, body)
 }
 #[cfg(not(windows))]
-fn scm_install(_: &str, _: &Path, _: &str) -> Result<(), String> {
+fn scm_install(_: &str, _: &Path, _: bool, _: &str) -> Result<(), String> {
     Err(NOT_WINDOWS.into())
 }
 #[cfg(not(windows))]

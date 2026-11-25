@@ -9,7 +9,8 @@
 //! - `append_file(name, text)` and `write_file(name, text)` write a file in one configured
 //!   directory. `name` is a plain file name: no path separators, no `..`, no drive or stream
 //!   syntax (`:`), no Windows device names, at most 64 characters. A call writes at most 64 KB,
-//!   a file grows to at most 1 MB, a run makes at most 16 writes.
+//!   a file grows to at most 1 MB, a run makes at most 16 writes. Neither the file nor the
+//!   directory itself may be a link.
 //!
 //! There is no network, process, module or other file access, and `eval` is disabled. A run is
 //! limited by an operation budget and a wall-clock limit; a script that fails or runs away
@@ -99,7 +100,24 @@ fn write_file(dir: &Path, name: &str, text: &str, append: bool) -> Result<(), St
         return Err(format!("a write is limited to {MAX_WRITE_BYTES} bytes"));
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(name);
+    let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let real = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // The folder itself must not be a link (a junction another user put in its place would let
+    // the script write wherever the monitor may): resolved, it is still its own name in its
+    // resolved parent. Links above it (macOS /var, a mapped folder) are fine. The name compares
+    // without case, as Windows and macOS file names do.
+    if let (Some(parent), Some(own)) = (dir.parent(), dir.file_name()) {
+        let parent =
+            std::fs::canonicalize(parent).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let same_name = real.file_name().is_some_and(|n| {
+            n.to_string_lossy()
+                .eq_ignore_ascii_case(&own.to_string_lossy())
+        });
+        if !same_name || real.parent() != Some(parent.as_path()) {
+            return Err("refusing to write: the script folder is a link".into());
+        }
+    }
+    let path = real.join(name);
     let existing = match std::fs::symlink_metadata(&path) {
         Ok(m) if m.file_type().is_symlink() => {
             return Err("refusing to write through a link".into());
@@ -480,6 +498,55 @@ mod tests {
                 .contains("b.rhai")
         );
         assert!(AlertScript::load("no-such-file.rhai", &d).is_err());
+    }
+
+    /// A directory link: a junction on Windows (needs no privilege), a symlink elsewhere.
+    #[cfg(windows)]
+    fn dir_link(target: &Path, link: &Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+    #[cfg(unix)]
+    fn dir_link(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    /// A link put in place of the script folder (`alert-scripts` next to a service's inventory)
+    /// must not send the writes elsewhere.
+    #[test]
+    fn a_script_folder_that_is_a_link_is_refused() {
+        let d = dir("dirlink");
+        let elsewhere = d.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let link = d.join("alert-scripts");
+        if !dir_link(&elsewhere, &link) {
+            eprintln!("skipped: no directory link could be created here");
+            return;
+        }
+        let s = script(r#"fn on_alert(a) { write_file("x.txt", "x"); }"#, &link);
+        let err = s.run(&alert("x")).unwrap_err();
+        assert!(err.contains("link"), "{err}");
+        assert!(!elsewhere.join("x.txt").exists());
+        // A real folder, named in another case than on disk, still works.
+        let real = d.join("Real");
+        std::fs::create_dir_all(&real).unwrap();
+        let other_case = if cfg!(any(windows, target_os = "macos")) {
+            d.join("REAL")
+        } else {
+            real.clone()
+        };
+        script(
+            r#"fn on_alert(a) { write_file("x.txt", "x"); }"#,
+            &other_case,
+        )
+        .run(&alert("x"))
+        .unwrap();
+        assert!(real.join("x.txt").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[cfg(unix)]
