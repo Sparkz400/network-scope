@@ -47,9 +47,16 @@ fn install(ctx: &mut Ctx) -> Result<(), String> {
         return Err("A service runs until it is stopped; --cycles does not apply".into());
     }
     // The service's command line is stored in the service configuration, readable by every
-    // local administrator: a community string typed here would be saved in clear text.
+    // local user (`sc qc`, the registry): a secret typed here would be saved in clear text.
     if ctx.opts.contains_key("snmp-community") {
         return Err("--snmp-community would store the community string in the service's command line; use --snmp-community-env NAME (the variable must be set for the service) or --snmp-v3".into());
+    }
+    // Chat webhooks (Slack, Teams, Discord) carry their secret in the path or the query.
+    let webhooks = ctx.opts.get("webhook").map_or("", String::as_str);
+    for url in webhooks.split(',').map(str::trim).filter(|u| !u.is_empty()) {
+        if crate::notify::Sink::webhook(url)?.has_secret_path() {
+            return Err("--webhook with a path or query would store the URL (for chat webhooks, their secret) in the service's command line; use --webhook-env NAME (the variable must be set for the service)".into());
+        }
     }
     let targets: Vec<String> = ctx.pos.iter().skip(1).cloned().collect();
     // The same checks `monitor` makes at start-up, so a bad option fails here and not in a
@@ -87,7 +94,22 @@ fn install(ctx: &mut Ctx) -> Result<(), String> {
     if let Err(refusal) = guard::check(&service_opts, &hosts, None)? {
         return Err(refusal.to_string());
     }
-    scm_install(&name, &db, &command_line)?;
+    // What the service runs or obeys as SYSTEM: no other user may be able to replace it.
+    let mut files = vec![PathBuf::from(exe)];
+    files.extend(
+        ["script", "on-alert", "probes", "scope-file"]
+            .iter()
+            .filter_map(|key| service_opts.get(*key))
+            .filter(|v| *v != "library" && !v.starts_with("library:"))
+            .map(|v| PathBuf::from(absolute_value(v))),
+    );
+    scm_install(
+        &name,
+        &db,
+        !ctx.opts.contains_key("db"),
+        &command_line,
+        &files,
+    )?;
     crate::ui::progress(
         &ctx.opts,
         format_args!(
@@ -132,10 +154,20 @@ use super::service_scm::Body;
 type Body =
     Box<dyn FnOnce(std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<(), String> + Send>;
 
+/// `default_db`: the inventory is the default one under `%ProgramData%`, whose folder this
+/// program owns and may lock down (see `service_scm::prepare_data_dir`). `files`: what the
+/// service runs or obeys (see `service_scm::check_not_writable`).
 #[cfg(windows)]
-fn scm_install(name: &str, db: &Path, command_line: &str) -> Result<(), String> {
+fn scm_install(
+    name: &str,
+    db: &Path,
+    default_db: bool,
+    command_line: &str,
+    files: &[PathBuf],
+) -> Result<(), String> {
+    super::service_scm::check_not_writable(files)?;
     if let Some(dir) = db.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        super::service_scm::prepare_data_dir(dir, default_db)?;
     }
     super::service_scm::install(name, command_line)
 }
@@ -148,7 +180,7 @@ fn scm_run(name: &str, log: PathBuf, body: Body) -> Result<(), String> {
     super::service_scm::run(name, log, body)
 }
 #[cfg(not(windows))]
-fn scm_install(_: &str, _: &Path, _: &str) -> Result<(), String> {
+fn scm_install(_: &str, _: &Path, _: bool, _: &str, _: &[PathBuf]) -> Result<(), String> {
     Err(NOT_WINDOWS.into())
 }
 #[cfg(not(windows))]
@@ -551,6 +583,23 @@ mod tests {
                 "{own} is not a monitor option: {printed}"
             );
         }
+        // A webhook without a path (a receiver on the LAN) may stay on the command line.
+        run(&args(&[
+            "service",
+            "install",
+            "10.0.0.0/24",
+            "--webhook",
+            "http://10.0.0.9:9000/",
+            "--dry-run",
+            "--output",
+            out_arg,
+        ]))
+        .unwrap();
+        assert!(
+            std::fs::read_to_string(&out)
+                .unwrap()
+                .contains("http://10.0.0.9:9000/")
+        );
         for (bad, message) in [
             (
                 vec![
@@ -562,6 +611,28 @@ mod tests {
                     "--dry-run",
                 ],
                 "--snmp-community-env",
+            ),
+            (
+                vec![
+                    "service",
+                    "install",
+                    "10.0.0.0/24",
+                    "--webhook",
+                    "http://10.0.0.9:9000/,https://hooks.example.com/services/T0/B0/s3cret",
+                    "--dry-run",
+                ],
+                "--webhook-env",
+            ),
+            (
+                vec![
+                    "service",
+                    "install",
+                    "10.0.0.0/24",
+                    "--webhook",
+                    "https://hooks.example.com/?token=s3cret",
+                    "--dry-run",
+                ],
+                "--webhook-env",
             ),
             (
                 vec![

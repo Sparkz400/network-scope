@@ -47,6 +47,7 @@ network-scope monitor TARGETS [scan options] --interval 300 [--cycles N] [--lear
         [--dhcp-allow IP,IP] [--dhcp-discover] [--report-missing] [--min-severity low]
         [--interface ID --listen-seconds 30] [--alerts FILE]   Repeat scans and alert on changes
         [--webhook http(s)://URL,...] [--syslog [udp://|tcp://]HOST[:PORT],...]
+        [--webhook-env NAME (webhook URL from that environment variable)]
         [--alert-timeout 5] [--no-dedup] [--renotify-hours 24]
         [--on-alert SCRIPT.rhai|library:NAME [--on-alert-dir DIR]]   Run a script for every alert
 network-scope alerts [--db FILE]               Alerts raised by monitor runs
