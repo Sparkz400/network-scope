@@ -12,7 +12,7 @@
 //! because a service has no console.
 //!
 //! The service runs as LocalSystem, so `service install` first makes sure that other users cannot
-//! steer what it writes: see `prepare_data_dir`.
+//! steer what it runs or writes: see `check_not_writable` and `prepare_data_dir`.
 use std::{
     ffi::c_void,
     os::windows::{ffi::OsStrExt, fs::MetadataExt},
@@ -569,6 +569,23 @@ pub(super) fn prepare_data_dir(dir: &Path, protect: bool) -> Result<(), String> 
     prepare_dir(dir, protect, &TRUSTED_OWNERS)
 }
 
+/// Refuses files the service runs or obeys (the program, scripts, probes, the scope file) when
+/// every user may change them or the folder they are in (and so replace them, or put a DLL next
+/// to the program): the service would run what they put there as SYSTEM.
+pub(super) fn check_not_writable(paths: &[PathBuf]) -> Result<(), String> {
+    for path in paths {
+        for p in [Some(path.as_path()), path.parent()].into_iter().flatten() {
+            if open_to_users(&security(p)?) {
+                return Err(format!(
+                    "{}: every local user may change this, and the service would run as SYSTEM what is there. Copy the program (and the files the service reads) to a folder only administrators can write to, such as C:\\Program Files\\Network Scope, and install the service from there",
+                    p.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn prepare_dir(dir: &Path, protect: bool, owners: &[&str]) -> Result<(), String> {
     if std::fs::symlink_metadata(dir).is_err() {
         if let Some(parent) = dir.parent() {
@@ -917,6 +934,30 @@ mod tests {
             let result = prepare_dir(&base, false, &[me.as_str()]);
             assert_eq!(result.is_err(), open, "{sddl}: {result:?}");
         }
+        remove(&base);
+    }
+
+    /// The program and the files a service obeys: refused when every user may change the file or
+    /// its folder (`%TEMP%` itself is the test user's alone, so the folder check passes there).
+    #[test]
+    fn program_files_other_users_may_change_are_refused() {
+        let base = temp("files");
+        let me = security(&base).unwrap().owner;
+        let file = base.join("policy.rhai");
+        std::fs::write(&file, "fn on_host(h) { }").unwrap();
+        check_not_writable(std::slice::from_ref(&file)).unwrap();
+        // The folder: anyone may add files (a DLL next to the program, a replaced script).
+        set_dacl(&base, &format!("D:P(A;OICI;FA;;;{me})(A;CI;0x116;;;BU)")).unwrap();
+        let err = check_not_writable(std::slice::from_ref(&file)).unwrap_err();
+        assert!(err.contains("Program Files"), "{err}");
+        // The file itself.
+        set_dacl(&base, &format!("D:P(A;OICI;FA;;;{me})")).unwrap();
+        check_not_writable(std::slice::from_ref(&file)).unwrap();
+        set_dacl(&file, &format!("D:P(A;;FA;;;{me})(A;;0x6;;;AU)")).unwrap();
+        let err = check_not_writable(std::slice::from_ref(&file)).unwrap_err();
+        assert!(err.contains("policy.rhai"), "{err}");
+        // A missing file fails the check instead of passing it.
+        assert!(check_not_writable(&[base.join("missing.rhai")]).is_err());
         remove(&base);
     }
 

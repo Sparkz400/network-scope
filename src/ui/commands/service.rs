@@ -87,7 +87,22 @@ fn install(ctx: &mut Ctx) -> Result<(), String> {
     if let Err(refusal) = guard::check(&service_opts, &hosts, None)? {
         return Err(refusal.to_string());
     }
-    scm_install(&name, &db, !ctx.opts.contains_key("db"), &command_line)?;
+    // What the service runs or obeys as SYSTEM: no other user may be able to replace it.
+    let mut files = vec![PathBuf::from(exe)];
+    files.extend(
+        ["script", "on-alert", "probes", "scope-file"]
+            .iter()
+            .filter_map(|key| service_opts.get(*key))
+            .filter(|v| *v != "library" && !v.starts_with("library:"))
+            .map(|v| PathBuf::from(absolute_value(v))),
+    );
+    scm_install(
+        &name,
+        &db,
+        !ctx.opts.contains_key("db"),
+        &command_line,
+        &files,
+    )?;
     crate::ui::progress(
         &ctx.opts,
         format_args!(
@@ -133,9 +148,17 @@ type Body =
     Box<dyn FnOnce(std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<(), String> + Send>;
 
 /// `default_db`: the inventory is the default one under `%ProgramData%`, whose folder this
-/// program owns and may lock down (see `service_scm::prepare_data_dir`).
+/// program owns and may lock down (see `service_scm::prepare_data_dir`). `files`: what the
+/// service runs or obeys (see `service_scm::check_not_writable`).
 #[cfg(windows)]
-fn scm_install(name: &str, db: &Path, default_db: bool, command_line: &str) -> Result<(), String> {
+fn scm_install(
+    name: &str,
+    db: &Path,
+    default_db: bool,
+    command_line: &str,
+    files: &[PathBuf],
+) -> Result<(), String> {
+    super::service_scm::check_not_writable(files)?;
     if let Some(dir) = db.parent() {
         super::service_scm::prepare_data_dir(dir, default_db)?;
     }
@@ -150,7 +173,7 @@ fn scm_run(name: &str, log: PathBuf, body: Body) -> Result<(), String> {
     super::service_scm::run(name, log, body)
 }
 #[cfg(not(windows))]
-fn scm_install(_: &str, _: &Path, _: bool, _: &str) -> Result<(), String> {
+fn scm_install(_: &str, _: &Path, _: bool, _: &str, _: &[PathBuf]) -> Result<(), String> {
     Err(NOT_WINDOWS.into())
 }
 #[cfg(not(windows))]
