@@ -28,6 +28,10 @@ struct Harness {
     size: egui::Vec2,
     /// The modifier keys that are held down (see `hold`).
     held: egui::Modifiers,
+    /// What the app gave its background worker: nothing runs, nothing reads the inventory.
+    jobs: mpsc::Receiver<Job>,
+    /// Answers in the worker's place (see `answer`).
+    done: mpsc::Sender<Done>,
 }
 
 impl Harness {
@@ -49,6 +53,14 @@ impl Harness {
         let mut app = Scanner::new(&cc, Some(PathBuf::from("unused.png")), saved);
         app.seed_demo(state);
         i18n::set(i18n::Lang::English);
+        // The test holds both ends of the worker's channels.
+        let (job_tx, jobs) = mpsc::channel();
+        let (done, done_rx) = mpsc::channel();
+        app.worker = Worker {
+            jobs: Some(job_tx),
+            done: done_rx,
+            thread: None,
+        };
         let mut h = Self {
             ctx,
             app,
@@ -57,6 +69,8 @@ impl Harness {
             widgets: vec![],
             size,
             held: Default::default(),
+            jobs,
+            done,
         };
         // Layout settles over a couple of frames (sizes of panels and tables).
         for _ in 0..3 {
@@ -140,6 +154,11 @@ impl Harness {
         !self.find(name).is_empty()
     }
 
+    /// Whether any text on screen contains this (a status line, a progress bar).
+    fn shows(&self, part: &str) -> bool {
+        self.widgets.iter().any(|w| w.name.contains(part))
+    }
+
     /// The one widget with this name; fails with the names on screen when there is none or
     /// more than one.
     fn one(&self, name: &str) -> egui::Rect {
@@ -218,6 +237,68 @@ impl Harness {
         self.step();
         self.step();
     }
+
+    /// Presses and releases a key (to whatever has the focus).
+    fn key(&mut self, key: egui::Key) {
+        for pressed in [true, false] {
+            self.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Default::default(),
+            });
+            self.step();
+        }
+    }
+
+    /// Clicks into the one text field with this name and types the text at its end.
+    fn type_into(&mut self, name: &str, text: &str) {
+        self.click(name);
+        self.key(egui::Key::End);
+        self.events.push(egui::Event::Text(text.into()));
+        self.step();
+        self.step();
+    }
+
+    /// The next job the app gave its worker.
+    fn job(&mut self) -> Option<Job> {
+        self.jobs.try_recv().ok()
+    }
+
+    /// The worker's answer, as it arrives in the next frame.
+    fn answer(&mut self, done: Done) {
+        self.done.send(done).unwrap();
+        self.step();
+        self.step();
+    }
+}
+
+/// A complete scan of 10.20.0.0/24 as the inventory hands it back.
+fn saved_scan(hosts: Vec<scan::Host>) -> store::Snapshot {
+    store::Snapshot {
+        sent: vec![],
+        targets: "10.20.0.0/24".into(),
+        complete: true,
+        settings: Default::default(),
+        hosts,
+        observations: vec![],
+        notes: Default::default(),
+    }
+}
+
+/// A scan the test runs by hand: it sends nothing, the test sends its events.
+fn fake_scan(total: usize) -> (scan::Running, mpsc::Sender<scan::Event>) {
+    let (tx, receiver) = mpsc::channel();
+    let run = scan::Running {
+        receiver,
+        cancel: Default::default(),
+        pause: Default::default(),
+        total,
+        started: Instant::now(),
+        sent: Default::default(),
+    };
+    (run, tx)
 }
 
 fn ip(s: &str) -> Option<IpAddr> {
@@ -769,15 +850,581 @@ fn the_host_details_list_the_packages_of_a_matching_firmware_sbom() {
     assert!(h.has("openssl 3.0.13"));
     assert!(h.has("1 single files not listed"));
 }
+
+#[test]
+fn a_running_scan_lists_hosts_as_they_answer_and_is_saved_when_done() {
+    let mut h = Harness::new("hosts-empty");
+    assert!(h.app.results.is_empty());
+    h.app.scan_settings.ipv6_discover = false;
+    let (run, events) = fake_scan(3);
+    h.app.run = Some(run);
+    h.step();
+    assert!(h.shows("Scanning · 0 / 3"), "the progress bar");
+    assert!(!h.app.cmd_enabled(palette::Cmd::StartScan));
+    // A host that answered shows at once, and its final result takes its row.
+    let early = demo::demo_host("10.20.0.5", &[], &[]);
+    events.send(scan::Event::Partial(early)).unwrap();
+    h.step();
+    assert_eq!(h.app.results.len(), 1);
+    assert!(h.has("10.20.0.5"));
+    let mut done = demo::demo_host("10.20.0.5", &[502], &[]);
+    done.hostname = "plc-line-1".into();
+    events.send(scan::Event::Host(done)).unwrap();
+    events
+        .send(scan::Event::Host(demo::demo_host("10.20.0.6", &[], &[])))
+        .unwrap();
+    events
+        .send(scan::Event::Error("10.20.0.7: no route".into()))
+        .unwrap();
+    h.step();
+    assert_eq!(h.app.results.len(), 2, "replaced, not added");
+    assert!(h.has("plc-line-1"));
+    assert_eq!((h.app.responding, h.app.with_open), (2, 1));
+    assert!(h.shows("2 responding · 1 with open ports"));
+    assert_eq!(h.app.error, "10.20.0.7: no route");
+    // Pause and Stop work on the running scan.
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::PauseScan);
+    h.step();
+    assert!(h.shows("Paused · 2 / 3"));
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::StopScan);
+    h.step();
+    assert!(h.shows("Stopping…"));
+    assert!(!h.app.cmd_enabled(palette::Cmd::StopScan), "stopped once");
+    events.send(scan::Event::Done).unwrap();
+    h.step();
+    assert!(h.app.run.is_none());
+    assert!(
+        h.app.status.starts_with("Stopped · 2 of 3 addresses"),
+        "{}",
+        h.app.status
+    );
+    assert!(!h.app.scan_complete, "a stopped scan is partial");
+    // The result goes to the inventory, and the saved number is shown.
+    match h.job() {
+        Some(Job::Save(snapshot, "scan")) => {
+            assert_eq!(snapshot.hosts.len(), 2);
+            assert!(!snapshot.complete);
+        }
+        _ => panic!("the scan is saved"),
+    }
+    assert!(h.shows("Saving to inventory…"));
+    h.answer(Done::Saved("scan", 0, Ok(12)));
+    assert_eq!(h.app.loaded_scan, Some(12));
+    assert!(h.app.status.ends_with("saved #12"), "{}", h.app.status);
+    assert!(!h.shows("Saving to inventory…"));
+}
+
+#[test]
+fn a_scan_that_ends_by_itself_is_complete_and_a_lost_scan_is_not() {
+    let mut h = Harness::new("hosts-empty");
+    h.app.scan_settings.ipv6_discover = false;
+    let (run, events) = fake_scan(1);
+    h.app.run = Some(run);
+    events
+        .send(scan::Event::Host(demo::demo_host("10.0.0.1", &[22], &[])))
+        .unwrap();
+    events.send(scan::Event::Done).unwrap();
+    h.step();
+    assert!(
+        h.app.status.starts_with("Complete · 1 of 1"),
+        "{}",
+        h.app.status
+    );
+    assert!(h.app.scan_complete);
+    assert!(matches!(h.job(), Some(Job::Save(s, _)) if s.complete));
+    // The scan thread went away without a word: what came is kept, but it is not complete.
+    let (run, events) = fake_scan(5);
+    h.app.run = Some(run);
+    drop(events);
+    h.step();
+    assert!(h.app.run.is_none());
+    assert!(!h.app.scan_complete);
+    assert!(matches!(h.job(), Some(Job::Save(s, _)) if !s.complete));
+}
+
+#[test]
+fn closing_the_window_during_a_scan_asks_first() {
+    let mut h = Harness::new("main");
+    let (run, _events) = fake_scan(4);
+    h.app.run = Some(run);
+    h.app.quit_ask = true;
+    h.step();
+    h.step();
+    assert!(h.has("Quit while a scan is running?"));
+    h.click("Keep running");
+    assert!(!h.app.quit_ask && !h.app.quit_ok);
+    assert!(h.app.run.is_some(), "the scan goes on");
+    h.app.quit_ask = true;
+    h.step();
+    h.step();
+    h.key(egui::Key::Escape);
+    h.step();
+    assert!(!h.app.quit_ask, "Escape is Keep running");
+    h.app.quit_ask = true;
+    h.step();
+    h.step();
+    h.click("Stop and quit");
+    assert!(h.app.quit_ok);
+    // Settings wait for the scan to end.
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::Settings);
+    h.step();
+    h.step();
+    assert!(h.has("Settings can be changed after this scan finishes."));
+    // A question left open when the scan ended goes away by itself.
+    h.app.run = None;
+    h.app.quit_ask = true;
+    h.step();
+    assert!(!h.app.quit_ask);
+}
+
+#[test]
+fn the_answers_of_the_background_worker_reach_the_window() {
+    let mut h = Harness::new("main");
+    h.answer(Done::Saved("capture", 5, Ok(3)));
+    assert_eq!(h.app.status, "5 observations · saved capture #3");
+    h.answer(Done::Saved("ot", 2, Ok(4)));
+    assert_eq!(
+        h.app.status,
+        "OT passive: 2 observations · saved capture #4"
+    );
+    h.answer(Done::Saved("scan", 0, Err("disk full".into())));
+    assert_eq!(h.app.error, "Inventory could not be saved: disk full");
+    let entry = |id| store::Entry {
+        id,
+        timestamp: 1_790_000_000,
+        targets: "10.20.0.0/24".into(),
+        complete: true,
+        hosts: 12,
+    };
+    h.answer(Done::Listed(Ok(vec![entry(8), entry(9)])));
+    assert_eq!(h.app.history.len(), 2);
+    h.answer(Done::Listed(Err("locked".into())));
+    assert_eq!(h.app.error, "locked");
+    // A deleted scan is picked nowhere any more.
+    (h.app.compare_a, h.app.compare_b, h.app.loaded_scan) = (Some(8), Some(9), Some(8));
+    h.answer(Done::Deleted(8, Ok(vec![entry(9)])));
+    assert_eq!(h.app.status, "Deleted scan #8");
+    assert_eq!(
+        (h.app.compare_a, h.app.compare_b, h.app.loaded_scan),
+        (None, Some(9), None)
+    );
+    h.answer(Done::Deleted(9, Err("busy".into())));
+    assert_eq!(h.app.error, "Scan #9 was not deleted: busy");
+    assert_eq!(h.app.history.len(), 1);
+    h.answer(Done::Diffed(Ok(vec![])));
+    assert_eq!(h.app.changes, ["No observed changes."]);
+    h.answer(Done::Diffed(Ok(vec!["10.20.0.9 is new".into()])));
+    assert_eq!(h.app.changes, ["10.20.0.9 is new"]);
+    h.answer(Done::Diffed(Err("scan #3 is gone".into())));
+    assert_eq!(h.app.error, "scan #3 is gone");
+    h.answer(Done::Loaded(3, Err("scan #3 is gone".into())));
+    assert!(!h.app.busy.loading);
+    // An address list fills the Addresses field; an empty one says so.
+    h.answer(Done::Read(Ok("# plant\n10.9.0.1\n10.9.0.2\n".into())));
+    assert_eq!(h.app.targets, "10.9.0.1 10.9.0.2");
+    h.answer(Done::Read(Ok("# nothing here\n".into())));
+    assert_eq!(h.app.error, "The list has no addresses.");
+    assert_eq!(h.app.targets, "10.9.0.1 10.9.0.2");
+    h.answer(Done::Read(Err("list.txt: not found".into())));
+    assert_eq!(h.app.error, "list.txt: not found");
+    h.answer(Done::PrefsWritten(Err("read-only".into())));
+    assert_eq!(h.app.error, "Preferences could not be saved: read-only");
+    h.answer(Done::Exported("report.html".into(), Ok(())));
+    assert_eq!(h.app.status, "Saved report.html");
+    h.answer(Done::Exported("report.html".into(), Err("denied".into())));
+    assert_eq!(h.app.error, "Export failed: denied");
+    h.answer(Done::FeedImported(FeedKind::Vex, Err("not CSAF".into())));
+    assert_eq!(h.app.error, "not CSAF");
+    h.answer(Done::DraftWritten(Ok((
+        "probes.json".into(),
+        "list".into(),
+    ))));
+    assert_eq!(h.app.status, "Saved probes.json");
+    assert!(h.app.workbench.written.is_some());
+    // The error line on screen is the last one.
+    assert!(h.shows("Export failed: denied") || h.shows("not CSAF"));
+}
+
+#[test]
+fn an_address_list_is_ignored_while_a_scan_runs() {
+    let mut h = Harness::new("main");
+    let (run, _events) = fake_scan(4);
+    h.app.run = Some(run);
+    let before = h.app.targets.clone();
+    h.answer(Done::Read(Ok("10.9.0.1".into())));
+    assert_eq!(h.app.targets, before);
+    assert_eq!(h.app.error, "Address list ignored: a scan is running.");
+    // A saved scan is not opened over the running one either.
+    h.answer(Done::Loaded(7, Ok(Box::new(saved_scan(vec![])))));
+    assert!(
+        h.app.error.contains("Inventory #7 was not opened"),
+        "{}",
+        h.app.error
+    );
+}
+
+#[test]
+fn a_search_hit_shows_the_host_and_one_from_another_scan_opens_that_scan() {
+    let mut h = Harness::new("palette");
+    h.app.loaded_scan = Some(9);
+    let hits = match &h.app.palette.results {
+        Some(Ok(r)) => r.hits.clone(),
+        _ => panic!("sample hits"),
+    };
+    assert!(h.has("Seen in the saved scans (newest first)"));
+    // The scan on screen: the host is shown straight away.
+    h.click(&palette::hit_text(&hits[0]));
+    assert!(!h.app.palette.open);
+    assert_eq!(h.app.view, MainView::Hosts);
+    assert_eq!(h.app.selected, ip("10.20.0.5"));
+    assert!(h.job().is_none(), "nothing to load");
+    // Another scan is opened first, then the host is shown.
+    h.app.palette.open = true;
+    h.step();
+    h.step();
+    h.click(&palette::hit_text(&hits[1]));
+    assert!(matches!(h.job(), Some(Job::Load(7))));
+    assert!(h.shows("Opening inventory…"));
+    let snapshot = saved_scan(vec![
+        demo::demo_host("10.20.0.5", &[23], &[]),
+        demo::demo_host("10.20.0.6", &[], &[]),
+    ]);
+    h.app.selected = None;
+    h.answer(Done::Loaded(7, Ok(Box::new(snapshot))));
+    assert_eq!(h.app.status, "Loaded inventory #7");
+    assert_eq!(h.app.loaded_scan, Some(7));
+    assert_eq!(h.app.results.len(), 2);
+    assert_eq!(h.app.selected, ip("10.20.0.5"), "the host of the hit");
+    // While a scan runs, a hit of another scan is not opened.
+    let (run, _events) = fake_scan(1);
+    h.app.run = Some(run);
+    h.app.palette.open = true;
+    h.step();
+    h.step();
+    h.click(&palette::hit_text(&hits[2]));
+    assert!(h.job().is_none());
+    assert_eq!(
+        h.app.error,
+        "The scan cannot be opened while a scan or capture is running."
+    );
+}
+
+#[test]
+fn the_palette_is_used_with_the_keyboard() {
+    let mut h = Harness::new("main");
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::Palette);
+    h.step();
+    h.step();
+    assert!(h.app.palette.open);
+    assert!(h.has("Up/Down choose · Enter runs · Esc closes"));
+    // The box has the focus: typing filters the actions.
+    h.events.push(egui::Event::Text("network map".into()));
+    h.step();
+    h.step();
+    assert_eq!(h.app.palette.query, "network map");
+    assert!(h.has("Open the network map"));
+    h.key(egui::Key::ArrowDown);
+    h.key(egui::Key::ArrowUp);
+    assert_eq!(h.app.palette.selected, 0);
+    h.key(egui::Key::Enter);
+    h.step();
+    assert!(!h.app.palette.open);
+    assert_eq!(h.app.view, MainView::Map);
+    // Nothing matches: it says so. Escape closes; the shortcut toggles.
+    h.app.open_palette();
+    h.app.palette.query = "qqqqqq".into();
+    h.step();
+    assert!(h.has("Nothing matches."));
+    h.key(egui::Key::Escape);
+    assert!(!h.app.palette.open);
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::Palette);
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::Palette);
+    assert!(!h.app.palette.open, "the second press closes it");
+}
+
+#[test]
+fn palette_commands_open_pages_windows_and_change_the_settings() {
+    let mut h = Harness::new("main");
+    let ctx = h.ctx.clone();
+    for (cmd, view) in [
+        (palette::Cmd::Overview, MainView::Home),
+        (palette::Cmd::Findings, MainView::Findings),
+        (palette::Cmd::Devices, MainView::Devices),
+        (palette::Cmd::Passive, MainView::Passive),
+        (palette::Cmd::Map, MainView::Map),
+        (palette::Cmd::Inventory, MainView::Inventory),
+        (palette::Cmd::Hosts, MainView::Hosts),
+    ] {
+        h.app.run_command(&ctx, cmd);
+        h.step();
+        assert_eq!(h.app.view, view, "{cmd:?}");
+    }
+    assert!(h.job().is_none(), "screenshot runs read no inventory");
+    // Ctrl+F on the hosts page: its search box.
+    h.app.run_command(&ctx, palette::Cmd::Search);
+    assert!(h.app.focus_search);
+    for (cmd, open) in [
+        (palette::Cmd::About, "About Network Scope"),
+        (palette::Cmd::Shortcuts, "Keyboard shortcuts"),
+        (palette::Cmd::Schedule, "Settings"),
+    ] {
+        h.app.run_command(&ctx, cmd);
+        h.step();
+        h.step();
+        assert!(h.has(open), "{cmd:?}");
+    }
+    assert!(h.has("Network Scope") && h.shows(env!("CARGO_PKG_VERSION")));
+    assert!(h.has("Scheduled scans"), "the schedule section is shown");
+    h.app.run_command(&ctx, palette::Cmd::DarkTheme);
+    assert!(h.app.saved.dark && ctx.global_style().visuals.dark_mode);
+    h.app.run_command(&ctx, palette::Cmd::LightTheme);
+    assert!(!h.app.saved.dark && !ctx.global_style().visuals.dark_mode);
+    h.app
+        .run_command(&ctx, palette::Cmd::Language(i18n::Lang::German));
+    assert_eq!(h.app.saved.language, "de");
+    assert_eq!(tr!("Settings"), "Einstellungen");
+    h.app
+        .run_command(&ctx, palette::Cmd::Language(i18n::Lang::English));
+    assert_eq!(tr!("Settings"), "Settings");
+    // More thorough keeps Safe Mode; Faster asks first.
+    h.app.run_command(&ctx, palette::Cmd::Thorough);
+    let s = &h.app.saved.settings;
+    assert!(s.safe && s.scan_nonresponders && s.probes == 3);
+    assert_eq!(h.app.status, "More thorough settings applied");
+    h.app.run_command(&ctx, palette::Cmd::Faster);
+    h.step();
+    h.step();
+    assert!(h.has("Faster turns Safe Mode off."));
+    h.key(egui::Key::Escape);
+    assert!(h.app.unsafe_confirm.is_none());
+    assert!(h.app.saved.settings.safe, "Escape keeps Safe Mode on");
+    h.app.run_command(&ctx, palette::Cmd::Faster);
+    h.step();
+    h.step();
+    h.click("Turn Safe Mode off");
+    let s = &h.app.saved.settings;
+    assert!(!s.safe && s.workers == 1024 && s.tcp_only);
+    // Without Safe Mode, Faster needs no question.
+    h.app.saved.settings.workers = 8;
+    h.app.run_command(&ctx, palette::Cmd::Faster);
+    assert!(h.app.unsafe_confirm.is_none());
+    assert_eq!(h.app.saved.settings.workers, 1024);
+    // Clear empties the window, not the inventory.
+    h.app.run_command(&ctx, palette::Cmd::ClearResults);
+    h.step();
+    assert!(h.app.results.is_empty());
+    assert_eq!(h.app.status, "Ready to scan");
+    assert!(h.app.rows.is_empty());
+    assert!(h.job().is_none());
+}
+
+#[test]
+fn settings_cannot_change_while_a_scan_runs() {
+    let mut h = Harness::new("main");
+    let (run, _events) = fake_scan(4);
+    h.app.run = Some(run);
+    let ctx = h.ctx.clone();
+    let before = h.app.saved.settings.clone();
+    // The commands are greyed out; called anyway they refuse.
+    assert!(!h.app.cmd_enabled(palette::Cmd::Thorough));
+    h.app.apply_thorough();
+    assert_eq!(
+        h.app.error,
+        "Settings can be changed after this scan finishes."
+    );
+    h.app.saved.settings.safe = false;
+    h.app.run_command(&ctx, palette::Cmd::Faster);
+    h.app.choose_faster();
+    assert_eq!(h.app.saved.settings.workers, before.workers);
+}
+
+#[test]
+fn a_start_that_cannot_scan_says_why_and_sends_nothing() {
+    let mut h = Harness::new("main");
+    // The passive preset points to the listener.
+    h.app.saved.preset = preset_ui::PLANT.into();
+    h.app.start();
+    assert!(h.app.run.is_none());
+    assert!(
+        h.app.error.contains("Plant preset is passive"),
+        "{}",
+        h.app.error
+    );
+    assert_eq!(h.app.view, MainView::Passive);
+    h.app.saved.preset.clear();
+    // Addresses that are not addresses.
+    h.app.targets = "the plant".into();
+    h.app.start();
+    assert!(h.app.run.is_none());
+    assert!(!h.app.error.is_empty());
+    // A scan being opened from the inventory.
+    h.app.targets = "10.20.0.0/24".into();
+    h.app.busy.loading = true;
+    h.app.start();
+    assert_eq!(
+        h.app.error,
+        "Wait until the inventory scan has been opened."
+    );
+    assert!(h.app.run.is_none());
+}
+
+#[test]
+fn the_scope_question_does_not_apply_to_edited_targets_and_cancel_sends_nothing() {
+    let mut h = Harness::new("main");
+    h.app.scope_confirm = Some(("8.8.8.0/24".into(), "8.8.8.0/24 is public.".into()));
+    h.step();
+    h.step();
+    assert!(h.has("Confirm scan targets") && h.has("8.8.8.0/24 is public."));
+    h.click("Cancel");
+    assert!(h.app.scope_confirm.is_none());
+    assert!(h.app.run.is_none());
+    // The Addresses field shows other targets now than the question was about.
+    h.app.scope_confirm = Some(("8.8.8.0/24".into(), "8.8.8.0/24 is public.".into()));
+    h.step();
+    h.step();
+    h.click("Scan anyway");
+    assert!(h.app.scope_confirm.is_none());
+    assert!(h.app.run.is_none());
+    assert_eq!(h.app.status, "Targets changed; press Start again");
+}
+
+#[test]
+fn an_available_update_is_shown_until_dismissed() {
+    let release = update::parse_latest(br#"{"tag_name":"v99.0.0"}"#).unwrap();
+    let outcome = update::compare(env!("CARGO_PKG_VERSION"), release).unwrap();
+    let mut h = Harness::new("main");
+    let (tx, rx) = mpsc::channel();
+    h.app.update_check = Some(rx);
+    h.step();
+    assert!(h.app.update_check.is_some(), "no answer yet");
+    tx.send(Ok(outcome)).unwrap();
+    h.step();
+    h.step();
+    assert!(h.app.update_check.is_none());
+    assert!(h.has("Version 99.0.0 is available"));
+    h.click("How to verify…");
+    assert!(h.has("Update available"));
+    assert!(h.shows("Network Scope never downloads or installs updates."));
+    h.click("Copy text");
+    assert!(h.has("Update available"), "copying keeps the window");
+    // The tall window can cover the status bar; the keyboard reaches the button anyway.
+    h.focus_and_press("Dismiss", egui::Key::Enter);
+    assert!(h.app.update_notice.is_none() && !h.app.update_open);
+    assert!(!h.has("Update available") && !h.has("Version 99.0.0 is available"));
+    // A failed check is one line in the status bar; a lost check is forgotten.
+    let (tx, rx) = mpsc::channel();
+    h.app.update_check = Some(rx);
+    tx.send(Err("offline".into())).unwrap();
+    h.step();
+    assert_eq!(h.app.status, "Update check failed: offline");
+    let (tx, rx) = mpsc::channel::<Result<update::Outcome, String>>();
+    h.app.update_check = Some(rx);
+    drop(tx);
+    h.step();
+    assert!(h.app.update_check.is_none());
+}
+
+#[test]
+fn scan_my_network_asks_before_large_networks_and_cancel_scans_nothing() {
+    let mut h = Harness::new("quick");
+    assert!(h.has("Scan my network"));
+    assert!(
+        h.shows("192.168.178.0/24 · Ethernet"),
+        "a network it would scan"
+    );
+    assert!(h.shows("is large"), "the /16 needs a yes");
+    h.click("Scan the large networks too (this takes a long time)");
+    assert!(h.app.quick.include_large);
+    h.click("Left out");
+    assert!(h.shows("loopback"), "with the reason");
+    h.click("Cancel");
+    assert!(!h.app.quick.dialog);
+    assert!(h.app.run.is_none() && h.job().is_none(), "nothing scanned");
+}
+
+#[test]
+fn scan_my_network_looks_for_the_networks_first() {
+    let mut h = Harness::new("main");
+    let net = |ip: &str, prefix| crate::localnets::LocalNet {
+        interface: "Ethernet".into(),
+        ip: ip.parse().unwrap(),
+        prefix,
+    };
+    h.app
+        .run_command(&h.ctx.clone(), palette::Cmd::ScanMyNetwork);
+    assert!(matches!(h.job(), Some(Job::Networks)));
+    assert!(h.app.quick.pending);
+    assert_eq!(h.app.status, "Looking for your networks…");
+    h.step();
+    assert!(h.shows("Looking for your networks…"));
+    // A second press while it looks does nothing more.
+    h.app.scan_my_network();
+    assert!(h.job().is_none());
+    // Only a large network: the user decides.
+    h.answer(Done::Networks(Ok(vec![net("10.20.0.31", 16)])));
+    assert!(h.app.quick.dialog && !h.app.quick.pending);
+    assert!(h.app.run.is_none());
+    assert!(h.shows("10.20.0.0/16 on Ethernet is large"));
+    h.click("Cancel");
+    // No private network at all.
+    h.app.scan_my_network();
+    assert!(matches!(h.job(), Some(Job::Networks)));
+    h.answer(Done::Networks(Ok(vec![net("8.8.4.4", 24)])));
+    assert_eq!(
+        h.app.error,
+        "No private network was found on this computer."
+    );
+    assert!(h.has("No private network was found on this computer."));
+    h.click("Cancel");
+    // The detection failed.
+    h.app.scan_my_network();
+    assert!(matches!(h.job(), Some(Job::Networks)));
+    h.answer(Done::Networks(Err("no adapters".into())));
+    assert_eq!(h.app.error, "no adapters");
+    assert!(!h.app.quick.pending);
+    // An answer nobody waits for only updates the list.
+    h.answer(Done::Networks(Ok(vec![net("192.168.1.5", 24)])));
+    assert!(!h.app.quick.dialog && h.app.run.is_none());
+    assert_eq!(h.app.local_nets.len(), 1);
+    // Not while a scan runs.
+    let (run, _events) = fake_scan(1);
+    h.app.run = Some(run);
+    h.app.scan_my_network();
+    assert_eq!(h.app.error, "Stop the running scan or capture first.");
+    assert!(h.job().is_none());
+}
 /// Every screenshot state of the documentation renders in each variant (small window, Safe Mode
 /// off, dark theme, German) without a panic, and shows the page it is about.
 #[test]
 fn every_screenshot_state_renders_in_every_variant() {
     const STATES: [&str; 27] = [
-        "main", "findings", "devices", "ot", "script", "timeline", "scan-details", "workbench",
-        "workbench-compare", "workbench-draft", "settings", "schedule", "shortcuts", "safe-off",
-        "findings-grouped", "columns", "home", "home-empty", "hosts-empty", "map", "map-large",
-        "quick", "palette", "palette-actions", "appearance", "wake", "main-small-fast-dark-de",
+        "main",
+        "findings",
+        "devices",
+        "ot",
+        "script",
+        "timeline",
+        "scan-details",
+        "workbench",
+        "workbench-compare",
+        "workbench-draft",
+        "settings",
+        "schedule",
+        "shortcuts",
+        "safe-off",
+        "findings-grouped",
+        "columns",
+        "home",
+        "home-empty",
+        "hosts-empty",
+        "map",
+        "map-large",
+        "quick",
+        "palette",
+        "palette-actions",
+        "appearance",
+        "wake",
+        "main-small-fast-dark-de",
     ];
     for state in STATES {
         for variant in ["", "-small", "-fast", "-dark", "-de"] {
