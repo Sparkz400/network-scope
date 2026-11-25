@@ -363,6 +363,11 @@ fn list(items: &[String]) -> String {
 }
 
 impl Scanner {
+    /// Reads a capture file for OT assets, as **Open pcap…** does.
+    pub(super) fn open_capture_file(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.ot.begin(Source::Pcap(path), ctx.clone());
+    }
+
     pub(super) fn poll_ot(&mut self) {
         let Some((label, observations, complete)) = self.ot.poll() else {
             return;

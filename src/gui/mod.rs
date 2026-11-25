@@ -74,7 +74,14 @@ struct Saved {
     host_columns: HostColumns,
     /// The Findings page shows one row per rule instead of one per host.
     group_findings: bool,
+    /// The Addresses field when the window was last open (empty: the example range). An
+    /// imported list longer than [`MAX_SAVED_TARGETS`] is not kept.
+    targets: String,
+    /// Sort column and direction (reversed) of the hosts table.
+    host_sort: (usize, bool),
 }
+/// The longest Addresses text that is remembered across starts.
+const MAX_SAVED_TARGETS: usize = 2000;
 
 /// The optional columns of the hosts table (all off by default). They show what the Devices
 /// page shows, for the scanned hosts.
@@ -261,6 +268,8 @@ fn filter_rows(
 enum Job {
     Save(Box<store::Snapshot>, &'static str),
     List,
+    /// Deletes a saved scan and lists what is left.
+    Delete(i64),
     Diff(i64, i64),
     Load(i64),
     ReadFile(PathBuf),
@@ -298,6 +307,7 @@ pub(super) enum FeedKind {
 enum Done {
     Saved(&'static str, usize, Result<i64, String>),
     Listed(Result<Vec<store::Entry>, String>),
+    Deleted(i64, Result<Vec<store::Entry>, String>),
     Diffed(Result<Vec<String>, String>),
     Loaded(i64, Result<Box<store::Snapshot>, String>),
     Read(Result<String, String>),
@@ -327,6 +337,10 @@ fn run_job(job: Job) -> Done {
             store::save(&path, &snapshot),
         ),
         Job::List => Done::Listed(store::list(&path)),
+        Job::Delete(id) => Done::Deleted(
+            id,
+            store::delete(&path, id).and_then(|()| store::list(&path)),
+        ),
         Job::Diff(a, b) => Done::Diffed(
             store::load(&path, a)
                 .and_then(|a| store::load(&path, b).and_then(|b| store::diff(&a, &b))),
@@ -577,9 +591,25 @@ struct Scanner {
     screenshot_image: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<egui::ColorImage>>>>,
     sort_column: usize,
     sort_reverse: bool,
+    /// The scan on screen was started by the user, not by the schedule: its end is announced.
+    attended: bool,
+    /// A scan the user started has ended: the taskbar button flashes if the window is not in
+    /// front (set by `finish_scan`, sent with the next frame).
+    attention: bool,
+    /// The window was asked to close while a scan or capture runs: the question is open.
+    quit_ask: bool,
+    /// The answer was to quit anyway.
+    quit_ok: bool,
     history: Vec<store::Entry>,
     compare_a: Option<i64>,
     compare_b: Option<i64>,
+    /// The saved scan the Delete question is open for.
+    delete_ask: Option<i64>,
+    /// The capture interfaces were listed once for the Passive / OT page.
+    interfaces_tried: bool,
+    /// A device of the Hosts page (by device) that is not among the scanned hosts, by its id:
+    /// its details are shown in place of a host's (see `details::device_details`).
+    selected_device: Option<String>,
     changes: Vec<String>,
     observations: Vec<passive::Observation>,
     observation_index: crate::observations::ObservationIndex,
@@ -703,9 +733,14 @@ impl Scanner {
         let prefs_written = saved.to_disk();
         saved.migrate();
         i18n::set(i18n::detect(&saved.language));
+        let targets = match saved.targets.trim() {
+            "" => "192.168.1.1-254".to_string(),
+            remembered => remembered.to_string(),
+        };
+        let (sort_column, sort_reverse) = (saved.host_sort.0.min(RISK_COLUMN), saved.host_sort.1);
         let mut app = Self {
             saved,
-            targets: "192.168.1.1-254".into(),
+            targets,
             results: vec![],
             previous: BTreeMap::new(),
             run: None,
@@ -725,11 +760,18 @@ impl Scanner {
             screenshot_requested: false,
             screenshot_image: Default::default(),
             window_origin: egui::pos2(16.0, 16.0),
-            sort_column: 0,
-            sort_reverse: false,
+            sort_column,
+            sort_reverse,
+            attended: false,
+            attention: false,
+            quit_ask: false,
+            quit_ok: false,
             history: vec![],
             compare_a: None,
             compare_b: None,
+            delete_ask: None,
+            interfaces_tried: false,
+            selected_device: None,
             changes: vec![],
             observations: vec![],
             observation_index: Default::default(),
@@ -813,7 +855,7 @@ impl Scanner {
                 if !app.cves_error.is_empty() {
                     // Keep the default rules active and tell the user why the file is unused.
                     let _ = risk::init_cves();
-                    app.error = format!(
+                    app.error = tr!(
                         "CVE rules file: {}; using the default rules instead",
                         app.cves_error
                     );
@@ -843,7 +885,7 @@ impl Scanner {
     fn submit(&mut self, job: Job) {
         match &job {
             Job::Save(..) => self.busy.saving += 1,
-            Job::List => self.busy.listing = true,
+            Job::List | Job::Delete(_) => self.busy.listing = true,
             Job::Diff(..) => self.busy.comparing = true,
             Job::Load(_) => self.busy.loading = true,
             Job::ReadFile(_) | Job::ImportFeed(..) => self.busy.importing = true,
@@ -865,7 +907,7 @@ impl Scanner {
             .is_some_and(|tx| tx.send(job).is_ok());
         if !sent {
             self.busy = Busy::default();
-            self.error = "Background worker stopped; restart the program.".into();
+            self.error = tr!("Background worker stopped; restart the program.").into();
         }
     }
     fn poll_jobs(&mut self) {
@@ -876,7 +918,7 @@ impl Scanner {
                     match result {
                         Ok(id) if kind == "capture" => {
                             self.status =
-                                format!("{observations} observations · saved capture #{id}")
+                                tr!("{} observations · saved capture #{}", observations, id)
                         }
                         Ok(id) if kind == "ot" => {
                             self.status = tr!(
@@ -894,6 +936,10 @@ impl Scanner {
                                 }
                                 self.refresh_home();
                             }
+                            // The list on screen shows the new scan at once.
+                            if self.view == MainView::Inventory {
+                                self.refresh_history();
+                            }
                         }
                         Err(e) => self.error = tr!("Inventory could not be saved: {}", e),
                     }
@@ -905,11 +951,27 @@ impl Scanner {
                         Err(e) => self.error = e,
                     }
                 }
+                Done::Deleted(id, result) => {
+                    self.busy.listing = false;
+                    match result {
+                        Ok(h) => {
+                            self.history = h;
+                            self.status = tr!("Deleted scan #{}", id);
+                            // Nothing may point at the scan any more.
+                            for pick in [&mut self.compare_a, &mut self.compare_b] {
+                                pick.take_if(|p| *p == id);
+                            }
+                            self.loaded_scan.take_if(|l| *l == id);
+                            self.refresh_home();
+                        }
+                        Err(e) => self.error = tr!("Scan #{} was not deleted: {}", id, e),
+                    }
+                }
                 Done::Diffed(result) => {
                     self.busy.comparing = false;
                     match result {
                         Ok(changes) if changes.is_empty() => {
-                            self.changes = vec!["No observed changes.".into()]
+                            self.changes = vec![tr!("No observed changes.").into()]
                         }
                         Ok(changes) => self.changes = changes,
                         Err(e) => self.error = e,
@@ -919,8 +981,9 @@ impl Scanner {
                     self.busy.loading = false;
                     match result {
                         Ok(_) if self.live() => {
-                            self.error = format!(
-                                "Inventory #{id} was not opened: a scan or capture is running."
+                            self.error = tr!(
+                                "Inventory #{} was not opened: a scan or capture is running.",
+                                id
                             )
                         }
                         Ok(snapshot) => self.open_snapshot(id, *snapshot),
@@ -963,14 +1026,14 @@ impl Scanner {
                 Done::PrefsWritten(result) => {
                     self.busy.prefs = false;
                     if let Err(e) = result {
-                        self.error = format!("Preferences could not be saved: {e}");
+                        self.error = tr!("Preferences could not be saved: {}", e);
                     }
                 }
                 Done::Exported(path, result) => {
                     self.busy.exporting = self.busy.exporting.saturating_sub(1);
                     match result {
-                        Ok(()) => self.status = format!("Saved {}", path.display()),
-                        Err(e) => self.error = format!("Export failed: {e}"),
+                        Ok(()) => self.status = tr!("Saved {}", path.display()),
+                        Err(e) => self.error = tr!("Export failed: {}", e),
                     }
                 }
                 Done::History(token, result) => {
@@ -1032,7 +1095,7 @@ impl Scanner {
         self.script_test = None;
         self.previous.clear();
         self.haystacks.clear();
-        self.status = format!("Loaded inventory #{id}");
+        self.status = tr!("Loaded inventory #{}", id);
         self.opened_stamp = self
             .history
             .iter()
@@ -1084,7 +1147,7 @@ impl Scanner {
     }
     fn start_checked(&mut self, unattended: bool) {
         if self.listening.is_some() || self.ot.capturing() {
-            self.error = "Stop passive capture before starting an active scan.".into();
+            self.error = tr!("Stop passive capture before starting an active scan.").into();
             return;
         }
         if self.busy.loading {
@@ -1118,7 +1181,7 @@ impl Scanner {
                 // addresses need a yes in the confirmation dialog first.
                 if let Some(text) = self.scope_check(&hosts, consent) {
                     if unattended {
-                        self.error = format!("Scheduled scan not started. {text}");
+                        self.error = tr!("Scheduled scan not started. {}", text);
                         return;
                     }
                     // The dialog remembers the targets it was shown for.
@@ -1132,6 +1195,7 @@ impl Scanner {
                 if !unattended {
                     self.view = MainView::Hosts;
                 }
+                self.attended = !unattended;
                 self.loaded_scan = None;
                 // Passive observations stay: the Devices window merges them with this scan.
                 self.previous = self.results.drain(..).map(|h| (h.ip, h)).collect();
@@ -1193,6 +1257,7 @@ impl Scanner {
     fn finish_scan(&mut self) {
         self.live.clear();
         self.run = None;
+        self.attention = self.attended;
         self.data_changed();
         let snapshot = self.scan_snapshot();
         self.submit(Job::Save(Box::new(snapshot), "scan"));
@@ -1223,7 +1288,7 @@ impl Scanner {
             Err(mpsc::TryRecvError::Empty) => true,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.ipv6_job = None;
-                self.status = format!("{} · IPv6 discovery failed", self.status);
+                self.status = tr!("{} · IPv6 discovery failed", self.status);
                 self.finish_scan();
                 false
             }
@@ -1288,16 +1353,16 @@ impl Scanner {
             }
             if done {
                 self.scan_sent = run.sent.snapshot();
-                self.status = format!(
-                    "{} · {} of {} addresses · {:.1}s · {} packets sent",
+                self.status = tr!(
+                    "{} · {} of {} addresses · {} s · {} packets sent",
                     if run.cancel.load(Ordering::Relaxed) {
-                        "Stopped"
+                        tr!("Stopped")
                     } else {
-                        "Complete"
+                        tr!("Complete")
                     },
                     self.results.len(),
                     run.total,
-                    run.started.elapsed().as_secs_f32(),
+                    format!("{:.1}", run.started.elapsed().as_secs_f32()),
                     crate::sendlog::total(&self.scan_sent)
                 );
                 // The recording ends with the scan; its result follows the scan summary.
@@ -1340,7 +1405,7 @@ impl Scanner {
                     let _ = tx.send((hosts, outcome));
                 });
                 self.ipv6_job = Some(rx);
-                self.status = format!("{} · IPv6 discovery…", self.status);
+                self.status = tr!("{} · IPv6 discovery…", self.status);
             } else {
                 self.finish_scan();
             }
@@ -1446,7 +1511,7 @@ impl Scanner {
     fn export(&mut self, extension: &str) {
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(format!("network-scan.{extension}"))
-            .add_filter("Scan results", &[extension])
+            .add_filter(tr!("Scan results"), &[extension])
             .save_file()
         else {
             return;
@@ -1456,7 +1521,7 @@ impl Scanner {
         snapshot.hosts = self.rows.iter().map(|&i| self.results[i].clone()).collect();
         let stamp = self.opened_stamp.unwrap_or_else(unix_now);
         // Formatting and writing happen on the worker; the dialog stays on this thread.
-        self.status = format!("Writing {}…", path.display());
+        self.status = tr!("Writing {}…", path.display());
         self.submit(Job::Export(
             Box::new(snapshot),
             extension.to_string(),
@@ -1469,14 +1534,14 @@ impl Scanner {
     fn export_all(&mut self, format: &str, extension: &str) {
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(format!("network-scan.{extension}"))
-            .add_filter("CycloneDX JSON", &["json"])
+            .add_filter(tr!("CycloneDX JSON"), &["json"])
             .save_file()
         else {
             return;
         };
         let snapshot = self.snapshot();
         let stamp = self.opened_stamp.unwrap_or_else(unix_now);
-        self.status = format!("Writing {}…", path.display());
+        self.status = tr!("Writing {}…", path.display());
         self.submit(Job::Export(
             Box::new(snapshot),
             format.to_string(),
@@ -1487,18 +1552,24 @@ impl Scanner {
     /// Selects a host of the active results (first of `ips` that is one), makes its row visible
     /// in the main table and opens its details.
     fn focus_host(&mut self, ips: &[IpAddr]) {
+        if !self.try_focus_host(ips) {
+            self.status = tr!(
+                "{} is not in the active scan results (seen passively only)",
+                ips.first()
+                    .map_or(tr!("This device").to_string(), |ip| ip.to_string())
+            );
+        }
+    }
+    /// [`Scanner::focus_host`]; false when none of `ips` is a scanned host.
+    fn try_focus_host(&mut self, ips: &[IpAddr]) -> bool {
         let Some(ip) = ips
             .iter()
             .copied()
             .find(|ip| self.results.iter().any(|h| h.ip == *ip))
         else {
-            self.status = format!(
-                "{} is not in the active scan results (seen passively only)",
-                ips.first()
-                    .map_or("This device".to_string(), |ip| ip.to_string())
-            );
-            return;
+            return false;
         };
+        self.selected_device = None;
         if self.selected != Some(ip) {
             self.script_test = None;
         }
@@ -1512,8 +1583,17 @@ impl Scanner {
             self.search.clear();
         }
         self.scroll_to = Some(ip);
+        true
     }
     /// Saves preferences in the background shortly after the user stops interacting.
+    /// Copies what the window shows and the preferences remember (the Addresses field, the
+    /// sort of the hosts table) into `saved`, before it is written.
+    fn remember_view(&mut self) {
+        if self.targets.len() <= MAX_SAVED_TARGETS {
+            self.saved.targets.clone_from(&self.targets);
+        }
+        self.saved.host_sort = (self.sort_column, self.sort_reverse);
+    }
     fn save_prefs_debounced(&mut self, ctx: &egui::Context) {
         if self.screenshot.is_some() {
             return;
@@ -1530,6 +1610,7 @@ impl Scanner {
             return;
         }
         self.prefs_dirty = None;
+        self.remember_view();
         let bytes = self.saved.to_disk();
         if bytes != self.prefs_written {
             self.prefs_written = bytes.clone();
@@ -1607,12 +1688,42 @@ impl Scanner {
         }
     }
     /// The file picker for an address list (read in the background; `#` comments allowed).
+    /// A file dropped on the window: an address list fills the Addresses field (a scan is
+    /// never started by it), a capture is read for OT assets. Anything else is named.
+    fn open_dropped(&mut self, path: PathBuf, ctx: &egui::Context) {
+        let extension = (path.extension().and_then(|e| e.to_str()))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match extension.as_str() {
+            "txt" | "csv" | "lst" => {
+                if self.run.is_some() || self.busy.importing {
+                    self.error = tr!("Address list ignored: a scan is running.").into();
+                } else {
+                    self.submit(Job::ReadFile(path));
+                }
+            }
+            "pcap" | "pcapng" | "cap" => {
+                if self.ot.running() {
+                    self.error = tr!("A capture is already being read.").into();
+                } else {
+                    self.view = MainView::Passive;
+                    self.open_capture_file(path, ctx);
+                }
+            }
+            _ => {
+                self.error = tr!(
+                    "{} was not opened: drop an address list (.txt, .csv, .lst) or a capture (.pcap, .pcapng) here.",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+            }
+        }
+    }
     fn import_address_list(&mut self) {
         if self.run.is_some() || self.busy.importing {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Address list", &["txt", "csv", "lst"])
+            .add_filter(tr!("Address list"), &["txt", "csv", "lst"])
             .pick_file()
         {
             // Read in the background; large lists must not freeze the window.
@@ -1631,6 +1742,16 @@ impl eframe::App for Scanner {
         self.poll_ot();
         self.poll_schedule(ctx);
         self.background_findings(ctx);
+        // A scan the user started has ended while the window was not in front: flash its
+        // taskbar button (a long Safe Mode scan otherwise ends unnoticed).
+        if std::mem::take(&mut self.attention)
+            && self.screenshot.is_none()
+            && !ctx.input(|i| i.viewport().focused.unwrap_or(true))
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
         if self.live() || self.ot.running() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
@@ -1642,6 +1763,26 @@ impl eframe::App for Scanner {
             let zoom = ctx.zoom_factor();
             let window = &mut self.saved.window;
             ctx.input(|i| window.observe(i.viewport(), i.content_rect().size(), zoom));
+        }
+        if self.screenshot.is_none() {
+            // Closing the window while a scan or capture runs asks first (the partial result
+            // is saved either way, but a scan that ran for minutes is not ended by a slip).
+            if ctx.input(|i| i.viewport().close_requested())
+                && !self.quit_ok
+                && (self.live() || self.ot.running())
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.quit_ask = true;
+            }
+            let dropped: Vec<PathBuf> = ctx.input(|i| {
+                (i.raw.dropped_files.iter())
+                    .map(|f| f.path().to_path_buf())
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect()
+            });
+            for path in dropped {
+                self.open_dropped(path, ctx);
+            }
         }
         // A link from the last frame that could not be opened.
         if let Some(e) = convenience::take_link_error() {
@@ -1723,6 +1864,7 @@ impl eframe::App for Scanner {
         // Floating windows (Settings, the workbench, ...) open next to the sidebar.
         self.window_origin = ui.available_rect_before_wrap().min + egui::vec2(16.0, 16.0);
         self.details(ui);
+        self.device_details(ui);
         self.timeline_panel(ui);
         egui::CentralPanel::default().show(ui, |ui| {
             if self.page_ui(ui) {
@@ -1946,6 +2088,8 @@ impl eframe::App for Scanner {
         self.workbench_window(ctx);
         self.scope_dialog(ctx);
         self.unsafe_dialog(ctx);
+        self.quit_dialog(ctx);
+        self.delete_dialog(ctx);
         self.shortcuts_window(ctx);
         self.quick_dialog(ctx);
         self.wake_dialog(ctx);
@@ -2038,6 +2182,7 @@ impl eframe::App for Scanner {
                 eprintln!("Could not save interrupted OT capture: {e}");
             }
         }
+        self.remember_view();
         if let Err(e) = write_prefs(&self.saved.to_disk()) {
             eprintln!("Could not save preferences: {e}");
         }

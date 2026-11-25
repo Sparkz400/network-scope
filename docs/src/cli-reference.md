@@ -1,11 +1,12 @@
 # CLI reference
 
-On Windows use `network-scope-cli` (console subsystem: shells wait and see the exit code). `network-scope` behaves the same on Linux and macOS. `network-scope-cli --help` prints the built-in summary.
+On Windows use `network-scope-cli` (console subsystem: shells wait and see the exit code). `network-scope` behaves the same on Linux and macOS. `network-scope-cli --help` prints the built-in summary; `network-scope-cli COMMAND --help` (or `-h`, or `help COMMAND`) prints the usage, the options and a few examples of one command.
 
 General rules:
 
 - Exit status: see [Exit codes](#exit-codes). `scan`, `listen` and `dcp` save what was collected when an error occurs or the run is stopped early (marked partial) and exit with status 2; errors with nothing collected fail with status 1 without saving. Ctrl+C on `scan`, `listen` and `dcp` is such an early stop: the run is cancelled, what was found is saved as partial and the status is 2; a second Ctrl+C ends the process at once. A forced process kill cannot save in-memory work.
 - `--quiet` (before or after the command, any command) suppresses progress lines on stderr, including monitor's per-cycle lines; errors still print and the exit status is unchanged.
+- A plain `scan` on a terminal reports while it works: one line with the number of addresses and ports and whether Safe Mode is on, then a line that is rewritten about every 2 seconds (`37/254 hosts done, 4 responded, 1:12 elapsed`). It is written to stderr and only when stderr is a terminal, so redirected output and scripts see nothing new; `--quiet`, `--stream` and `--tui` turn it off.
 - `--db FILE` selects the inventory database (default `%LOCALAPPDATA%\NetworkScope\inventory.sqlite` on Windows).
 - `--cves FILE` merges extra CVE/CPE rules for any command; see [Findings and CVE hints](findings-and-cves.md).
 - `--csaf FILE` selects the CSAF advisory cache (default `csaf.json` next to `feeds.json`); see [CISA ICS advisories](findings-and-cves.md#cisa-ics-advisories-for-ot-devices-csaf-offline).
@@ -96,8 +97,9 @@ network-scope-cli diff 2 3 --format json --fail-on-findings --min-severity mediu
 | `research export stix\|ocsf [SCAN_ID] [--output FILE]` | STIX 2.1 bundle or OCSF events of one scan |
 | `fingerprints export-unknown [SCAN_ID] [--output FILE]` | Banners of unidentified services from the local store as JSON, without host addresses, to review and redact before sharing; sends nothing. See [Contributing fingerprints](contributing-fingerprints.md) |
 | `update check` | Ask GitHub whether a newer release exists; prints the release page and the verification commands. Notify only: it never downloads or installs anything. See [Checking for updates](installation.md#checking-for-updates) |
-| `completions powershell\|bash` | Print a shell completion script |
+| `completions powershell\|bash\|zsh\|fish` | Print a shell completion script (commands, options, file names after the options that take a file, the `--format` values). zsh: `source <(network-scope completions zsh)` after `compinit`; fish: `network-scope completions fish \| source` |
 | `help`, `--help`, `-h` | Print the help text |
+| `help COMMAND`, `COMMAND --help`, `COMMAND -h` | Print the help of one command: its usage lines, the options that apply to it and examples. An unknown command is an error (status 1) |
 | `--version`, `-V` | Print the program version |
 
 ## Targets

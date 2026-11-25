@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:network-scope:changes:v1",
   "title": "Changes between two scans",
-  "description": "Output of changes --format json: the new, gone and changed devices and the new and resolved risks between the newest completed scan and the previous one (or the state at the start of a window).",
+  "description": "Output of changes --format json and of the MCP tool changes: the new, gone and changed devices and the new and resolved risks between the newest completed scan and the previous one (or the state at the start of a window).",
   "$defs": {
     "severity": {
       "enum": [
@@ -533,6 +533,10 @@
         "null"
       ],
       "description": "Devices of the current scan that are not on the approved baseline; null while there is no baseline"
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "Only from the MCP server: true when one of the lists was cut at 200 entries (the summary keeps the full counts)"
     }
   }
 }
