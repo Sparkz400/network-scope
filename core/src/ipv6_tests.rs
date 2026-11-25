@@ -1272,17 +1272,22 @@ fn only_one_function_transmits() {
 fn the_gate_follows_safe_mode_and_the_rate() {
     let take = |g: &Gate| g.try_take_for(PacketKind::Ipv6Echo, DETAIL).is_ok();
     let log = Arc::new(crate::sendlog::SentLog::new());
-    let safe = gate(&Settings::default(), log.clone());
+    // Windows of a minute and a second: a stalled test thread does not refill them.
+    let slow = Settings {
+        delay: 60_000,
+        ..Settings::default()
+    };
+    let safe = gate(&slow, log.clone());
     assert!(safe.is_safe());
     assert!(take(&safe) && !take(&safe), "one echo, then a wait");
     let rated = Settings {
         safe: false,
-        max_rate: 10,
+        max_rate: 1,
         ..Settings::default()
     };
     let g = gate(&rated, log.clone());
     assert!(!g.is_safe());
-    assert!(take(&g) && !take(&g), "a burst of one at 10 per second");
+    assert!(take(&g) && !take(&g), "a burst of one at 1 per second");
     let free = Settings {
         safe: false,
         max_rate: 0,
