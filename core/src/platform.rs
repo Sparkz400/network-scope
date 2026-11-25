@@ -382,7 +382,6 @@ mod win {
     }
 
     /// The first IPv4 address of the interface `index` (tests: the engine's source address).
-    #[cfg(test)]
     pub fn ipv4_of(index: u32) -> Option<std::net::Ipv4Addr> {
         addr_rows()
             .into_iter()
@@ -390,16 +389,37 @@ mod win {
             .map(|r| std::net::Ipv4Addr::from(r.addr.to_ne_bytes()))
     }
 
-    #[cfg(test)]
     #[link(name = "iphlpapi")]
     unsafe extern "system" {
         fn ConvertInterfaceGuidToLuid(guid: *const [u8; 16], luid: *mut u64) -> u32;
         fn ConvertInterfaceLuidToIndex(luid: *const u64, index: *mut u32) -> u32;
     }
 
-    /// The OS interface index of an Npcap device (`\Device\NPF_{GUID}`), from its adapter GUID
-    /// (tests only: the engine finds its interface by the source IPv4).
-    #[cfg(test)]
+    /// The MAC address of the interface `index` (GetIfEntry), `AA:BB:CC:DD:EE:FF`; `None` for
+    /// an interface without a six-byte address (loopback, tunnels).
+    pub fn mac_of(index: u32) -> Option<String> {
+        // MIB_IFROW: wszName[256] (512 bytes), dwIndex at 512, dwPhysAddrLen at 528,
+        // bPhysAddr[8] at 532; 860 bytes in all.
+        let mut entry = [0u32; 256];
+        entry[128] = index;
+        // SAFETY: the buffer is local, aligned and larger than MIB_IFROW.
+        if unsafe { GetIfEntry(entry.as_mut_ptr().cast()) } != 0 || entry[132] != 6 {
+            return None;
+        }
+        let bytes: Vec<u8> = entry[133..135]
+            .iter()
+            .flat_map(|w| w.to_ne_bytes())
+            .collect();
+        Some(
+            bytes[..6]
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(":"),
+        )
+    }
+
+    /// The OS interface index of an Npcap device (`\Device\NPF_{GUID}`), from its adapter GUID.
     pub fn device_index(name: &str) -> Option<u32> {
         let guid = super::parse_guid(name)?;
         let (mut luid, mut index) = (0u64, 0u32);
@@ -1523,6 +1543,27 @@ pub fn ipv4_of(index: u32) -> Option<std::net::Ipv4Addr> {
     win::ipv4_of(index)
 }
 
+/// The MAC address and the first IPv4 address of a capture interface (as
+/// `capture::interfaces` names it), for filling in what SYN scans and DCP need. Either part is
+/// empty when the interface has none.
+// shortcut: Windows only (Npcap device names carry the adapter GUID); on Linux and macOS the
+// two fields stay to be typed until someone reads them from `ip`/`ifconfig` here.
+pub fn interface_addresses(name: &str) -> Option<(String, String)> {
+    #[cfg(windows)]
+    {
+        let index = win::device_index(name)?;
+        Some((
+            win::mac_of(index).unwrap_or_default(),
+            win::ipv4_of(index).map_or(String::new(), |ip| ip.to_string()),
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        None
+    }
+}
+
 /// Windows `ResolveIpNetEntry2` (one Neighbor Solicitation); `None` elsewhere.
 fn resolve6(ip: std::net::Ipv6Addr, index: u32) -> Option<String> {
     #[cfg(windows)]
@@ -1563,7 +1604,7 @@ pub fn neighbor6(ip: std::net::Ipv6Addr, link: &crate::ipv6::Link) -> Option<Str
 
 /// The adapter GUID of an Npcap device name (`\Device\NPF_{6B29FC40-CA47-1067-B31D-00DD010662DA}`)
 /// in the in-memory layout of a Windows GUID (the first three fields little-endian).
-#[cfg_attr(not(all(windows, test)), allow(dead_code))]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn parse_guid(name: &str) -> Option<[u8; 16]> {
     let inner = name.split_once('{')?.1.split_once('}')?.0;
     let parts: Vec<&str> = inner.split('-').collect();

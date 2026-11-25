@@ -234,6 +234,20 @@ pub(super) fn fits(placed: &[[f32; 4]], r: [f32; 4]) -> bool {
         .all(|p| r[2] < p[0] || r[0] > p[2] || r[3] < p[1] || r[1] > p[3])
 }
 
+/// Where the label of a node at `at` (text size `size`) may go, best first: to the right of
+/// the node, to its left, below it, above it. Each as `[min_x, min_y, max_x, max_y]`, clear of
+/// the node's own dot.
+pub(super) fn label_places(at: [f32; 2], size: [f32; 2]) -> [[f32; 4]; 4] {
+    let ([x, y], [w, h]) = (at, size);
+    [
+        [x + 10.0, y - h / 2.0],
+        [x - 10.0 - w, y - h / 2.0],
+        [x - w / 2.0, y + 9.0],
+        [x - w / 2.0, y - 9.0 - h],
+    ]
+    .map(|[min_x, min_y]| [min_x - 2.0, min_y - 1.0, min_x + w + 2.0, min_y + h + 1.0])
+}
+
 /// The nodes to label: the selected one first, then the scanner, routers and nodes with a bad
 /// finding, then the rest in order, at most `limit` of the `visible` ones.
 pub(super) fn label_order(
@@ -521,17 +535,23 @@ fn draw_graph(
         order.retain(|&i| i != h);
         order.insert(0, h);
     }
-    let mut placed: Vec<[f32; 4]> = vec![];
+    // The dots of the nodes are taken too: a label never covers another node.
+    let mut placed: Vec<[f32; 4]> = (screen.iter())
+        .map(|&(_, [x, y])| [x - 5.0, y - 5.0, x + 5.0, y + 5.0])
+        .collect();
     for i in order {
         let label: String = graph.nodes[i].label.chars().take(30).collect();
         let galley = painter.layout_no_wrap(label, font.clone(), text_color);
-        let top_left = at(i) + egui::vec2(10.0, -galley.size().y / 2.0);
-        let r = egui::Rect::from_min_size(top_left, galley.size()).expand2(egui::vec2(2.0, 1.0));
-        let key = [r.min.x, r.min.y, r.max.x, r.max.y];
-        // The hovered and the selected node are always labelled.
-        if hovered == Some(i) || *selected == Some(i) || fits(&placed, key) {
+        let places = label_places([at(i).x, at(i).y], [galley.size().x, galley.size().y]);
+        // The first place that is free; the hovered and the selected node are always
+        // labelled (to the right, whatever is there).
+        let always = hovered == Some(i) || *selected == Some(i);
+        let free = places.iter().find(|p| fits(&placed, **p));
+        if let Some(key) = free.or(always.then_some(&places[0])).copied() {
+            let r =
+                egui::Rect::from_min_max(egui::pos2(key[0], key[1]), egui::pos2(key[2], key[3]));
             painter.rect_filled(r, 2.0, back);
-            painter.galley(top_left, galley, text_color);
+            painter.galley(r.min + egui::vec2(2.0, 1.0), galley, text_color);
             placed.push(key);
         }
     }
@@ -701,6 +721,20 @@ mod tests {
             nearest(&[(3, [0.0, 5.0]), (2, [0.0, -5.0])], [0.0, 0.0], 10.0),
             Some(2)
         );
+    }
+
+    #[test]
+    fn a_label_moves_to_a_free_side_of_its_node() {
+        let places = label_places([100.0, 50.0], [40.0, 12.0]);
+        // Right, left, below, above: none touches the node's own dot.
+        let dot = [95.0, 45.0, 105.0, 55.0];
+        assert!(places.iter().all(|p| fits(&[dot], *p)), "{places:?}");
+        assert!(places[0][0] > 105.0 && places[1][2] < 95.0);
+        assert!(places[2][1] > 55.0 && places[3][3] < 45.0);
+        // Something to the right: the left side is the first free one.
+        let neighbour = [112.0, 40.0, 160.0, 60.0];
+        let free = places.iter().position(|p| fits(&[dot, neighbour], *p));
+        assert_eq!(free, Some(1));
     }
 
     #[test]

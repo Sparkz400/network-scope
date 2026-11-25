@@ -4,6 +4,7 @@
 //! otherwise, or when the capture saw nothing, the application-level record of the scan (the
 //! payloads the scan sent and received, labelled as such) is written instead. The file goes to
 //! `NetworkScope/recordings/scan-<unix time>.pcapng` next to the preferences.
+use super::i18n::tr;
 use network_scope_core::{record::Recorder, wirecap};
 use std::{
     net::IpAddr,
@@ -70,7 +71,7 @@ impl Recording {
                     &captured.frames,
                 ) {
                     Ok(()) => {
-                        return format!(
+                        return tr!(
                             "Wire capture: {} frames recorded to {}",
                             captured.frames.len(),
                             self.path.display()
@@ -82,13 +83,14 @@ impl Recording {
         }
         let why = why.unwrap_or_default();
         match recorder.map(|r| r.write_pcapng(&self.path)) {
-            Some(Ok(written)) => format!(
-                "No wire capture ({why}); application-level record of {} payloads written to {} (not a wire capture)",
+            Some(Ok(written)) => tr!(
+                "No wire capture ({}); application-level record of {} payloads written to {} (not a wire capture)",
+                why,
                 written.records,
                 self.path.display()
             ),
-            Some(Err(e)) => format!("Recording failed: {e}"),
-            None => format!("No wire capture ({why}) and no application-level record"),
+            Some(Err(e)) => tr!("Recording failed: {}", e),
+            None => tr!("No wire capture ({}) and no application-level record", why),
         }
     }
 }

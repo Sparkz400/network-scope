@@ -117,6 +117,10 @@ impl Baseline {
 pub fn load(path: &Path) -> Result<Baseline, String> {
     load_from(&store::open(path)?)
 }
+/// [`load`] for a caller that must not write: the inventory is neither created nor upgraded.
+pub fn load_read(path: &Path) -> Result<Baseline, String> {
+    load_from(&store::open_read(path)?)
+}
 
 fn load_from(c: &Connection) -> Result<Baseline, String> {
     let approved_at = c

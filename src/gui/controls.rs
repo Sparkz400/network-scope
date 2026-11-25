@@ -66,10 +66,20 @@ impl Scanner {
                 });
             });
             if !self.error.is_empty() {
-                ui.colored_label(
-                    home::severity_color(risk::Severity::Critical, ui.visuals().dark_mode),
-                    &self.error,
-                );
+                let mut dismissed = false;
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        home::severity_color(risk::Severity::Critical, ui.visuals().dark_mode),
+                        &self.error,
+                    );
+                    // The message stays until the next scan otherwise, long after its cause.
+                    dismissed = a11y::named(ui.small_button("✕"), tr!("Dismiss the message"))
+                        .on_hover_text(tr!("Dismiss the message"))
+                        .clicked();
+                });
+                if dismissed {
+                    self.error.clear();
+                }
             }
             ui.add_space(3.0);
         });

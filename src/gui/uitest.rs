@@ -362,6 +362,87 @@ fn a_rule_in_the_grouped_findings_lists_its_hosts() {
 }
 
 #[test]
+fn a_message_can_be_dismissed_and_ctrl_f_filters_the_findings() {
+    let mut h = Harness::new("findings");
+    h.app.error = "Export failed: disk full".into();
+    h.step();
+    h.click("Dismiss the message");
+    assert!(h.app.error.is_empty());
+    // Ctrl+F stays on the page and takes its filter box.
+    h.app.run_command(&h.ctx.clone(), palette::Cmd::Search);
+    assert_eq!(h.app.view, MainView::Findings);
+    assert!(h.app.findings_view.focus_query);
+    // A dropped file the app cannot read is named, and nothing else happens.
+    h.app.open_dropped("notes.docx".into(), &h.ctx.clone());
+    assert!(h.app.error.contains("notes.docx"), "{}", h.app.error);
+    assert_eq!(h.app.view, MainView::Findings);
+}
+
+#[test]
+fn the_addresses_and_the_sort_are_remembered_but_not_a_huge_list() {
+    let mut h = Harness::new("main");
+    h.app.targets = "10.9.0.0/24".into();
+    (h.app.sort_column, h.app.sort_reverse) = (4, true);
+    h.app.remember_view();
+    assert_eq!(h.app.saved.targets, "10.9.0.0/24");
+    assert_eq!(h.app.saved.host_sort, (4, true));
+    // An imported list of thousands of addresses is not written into the preferences.
+    h.app.targets = "10.0.0.1 ".repeat(MAX_SAVED_TARGETS);
+    h.app.remember_view();
+    assert_eq!(h.app.saved.targets, "10.9.0.0/24");
+}
+
+#[test]
+fn a_finding_and_a_device_are_reached_with_the_keyboard() {
+    let mut h = Harness::new("findings");
+    // The address of a finding's row is a control: Tab reaches it, Enter opens the host.
+    h.focus_and_press("10.20.0.5:23", egui::Key::Enter);
+    assert_eq!(h.app.selected, "10.20.0.5".parse().ok());
+    let mut h = Harness::new("devices");
+    h.focus_and_press("10.20.0.60", egui::Key::Enter);
+    assert_eq!(h.app.selected, "10.20.0.60".parse().ok());
+}
+
+#[test]
+fn a_device_seen_only_in_passive_traffic_has_details() {
+    let mut h = Harness::new("devices");
+    h.app.observations.push(passive::Observation {
+        protocol: "mDNS".into(),
+        mac: "02:AA:BB:00:00:99".into(),
+        ip: "10.20.0.200".parse().ok(),
+        fields: [("name".to_string(), "tablet-lobby".to_string())].into(),
+    });
+    h.app.data_changed();
+    h.step();
+    h.click("10.20.0.200");
+    assert_eq!(h.app.selected, None, "no scanned host to show");
+    assert!(h.app.selected_device.is_some());
+    assert!(h.has("Device details ·"), "the panel is open");
+    assert!(h.has("MAC: 02:AA:BB:00:00:99"));
+    // A scanned host chosen afterwards takes the panel.
+    h.click("10.20.0.60");
+    assert_eq!(h.app.selected, "10.20.0.60".parse().ok());
+    h.step();
+    assert_eq!(h.app.selected_device, None);
+}
+
+#[test]
+fn a_saved_scan_is_deleted_only_after_the_question() {
+    let mut h = Harness::new("scan-details");
+    assert_eq!(h.app.view, MainView::Inventory);
+    // Two pickers for the comparison, and every row names its scan.
+    assert!(h.has("Older scan (A)") && h.has("Newer scan (B)"));
+    assert!(h.has("Open scan #9"));
+    h.click("Delete scan #8");
+    assert_eq!(h.app.delete_ask, Some(8));
+    h.click("Keep");
+    assert_eq!(h.app.delete_ask, None);
+    h.click("Delete scan #8");
+    h.click("Delete");
+    assert_eq!(h.app.delete_ask, None, "answered");
+}
+
+#[test]
 fn ticking_a_column_adds_it_and_keeps_the_menu_open() {
     let mut h = Harness::new("main");
     h.click("Hosts");

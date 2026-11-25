@@ -12,14 +12,14 @@ Every JSON document the program prints names its format in a top-level `schema` 
 | `device-history` | `devices --history MAC\|IP --format json` | The timeline of one device |
 | `findings` | `findings ID` | `findings` |
 | `scans` | `history` | `scans`: the saved scans |
-| `alerts` | `alerts` | `alerts`: the stored alerts |
+| `alerts` | `alerts`; the MCP tool `list_alerts` (adds `total` and `truncated`) | `alerts`: the stored alerts |
 | `alert` | `monitor` on stdout and in `--alerts FILE` (one line per alert), the webhook body | One alert; every line carries `schema` |
 | `ot-assets` | `ot-assets ID --format json`, the GUI export | `assets` |
 | `feeds-status` | `feeds status` | What the KEV/EPSS cache holds |
 | `interfaces` | `interfaces` | `interfaces`: `[id, description]` pairs |
-| `changes` | `changes --format json` | `since`, `summary`, the new, gone and changed devices, `new_risks`, `resolved_risks`, `unconfirmed_risks` |
+| `changes` | `changes --format json`; the MCP tool `changes` (lists cut at 200 entries, adds `truncated`) | `since`, `summary`, the new, gone and changed devices, `new_risks`, `resolved_risks`, `unconfirmed_risks` |
 | `baseline` | `baseline show --format json` | `approved_at` and the `entries` (expected devices) |
-| `risk-score` | `findings ID --top N --format json` | `network`, `hosts` (scores 0 to 100) and `top_fixes` |
+| `risk-score` | `findings ID --top N --format json`; the MCP tool `top_risks` (adds `scan_id` and `truncated`) | `network`, `hosts` (scores 0 to 100) and `top_fixes` |
 | `unknown-banners` | `fingerprints export-unknown` | The unidentified banners for a [fingerprint contribution](contributing-fingerprints.md); keeps its own `format` and `version` members |
 | `import-summary` | `import KIND FILE --format json` | `kind`, `merged`, `skipped`, `notes` |
 | `dry-run` | `scan`, `monitor`, `trace` and `dcp` with `--dry-run --format json`; the MCP `scan` tool with `dry_run` | `command`, `packets_sent` (always 0), `groups` or `packets`, `scope` |
