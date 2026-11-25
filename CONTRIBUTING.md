@@ -6,7 +6,7 @@ Thanks for your interest. Bug reports, protocol samples, documentation fixes and
 - **Security issues** go through private reporting; see [SECURITY.md](SECURITY.md).
 - Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-For larger changes, open an issue or discussion first so we can agree on the approach.
+For larger changes, open an issue or discussion first so we can agree on the approach. Looking for a small first task? Issues labelled [good first issue](https://github.com/Sparkz400/network-scope/labels/good%20first%20issue) are scoped for new contributors and say where to start.
 
 ## Project layout
 
@@ -84,6 +84,23 @@ These rules are mandatory for every pull request. Reviews check them, and a pull
 - **Parsers of untrusted input** also get truncated and oversized test input and a fuzz target (see [Fuzzing](#fuzzing)).
 - **Coverage must not drop.** The `coverage` job fails when a gated file falls below its threshold in `scripts/coverage_targets.json`. The target for the workspace as a whole is at least 80% line coverage (86% in November 2026); the job's report shows the total.
 - **All tests run in CI** on Windows, Linux and macOS on every push and pull request. A red CI blocks the merge.
+
+## Code review
+
+Every change to `main` goes through a pull request; the branch rules require one and the passing checks. A maintainer (or a reviewer listed in [GOVERNANCE.md](GOVERNANCE.md)) reviews each pull request by reading the full diff and the code it touches, not only the changed lines.
+
+The reviewer checks:
+
+1. **Purpose.** The change is worthwhile, in scope (see [ROADMAP.md](ROADMAP.md)) and does one logical thing.
+2. **Correctness.** The logic is right, including edge cases, errors and the platforms it compiles for.
+3. **Security.** Untrusted input (network replies, imported files, configs) is bounded and validated; no panics on bad data; no secrets, credentials or real network data in code, tests or fixtures.
+4. **Safety rules.** A change that sends traffic follows [Safety rules for new probes and features](#safety-rules-for-new-probes-and-features).
+5. **Tests.** The [testing policy](#testing-policy) is met: tests for new behaviour, a regression test for a fix, fuzzing for new parsers.
+6. **Dependencies.** A new dependency is necessary, maintained, license-compatible and passes `cargo deny`.
+7. **Documentation.** User-visible changes are documented in `docs/src` and `CHANGELOG.md`.
+8. **Provenance.** Every commit is signed off ([Developer Certificate of Origin](#developer-certificate-of-origin)).
+
+A pull request is acceptable when all required CI checks pass, the branch is up to date with `main`, every point above is met or its exception is explained in the pull request, and the reviewer's comments are resolved. The reviewer merges it; contributors do not merge their own pull requests once there is a second maintainer or reviewer.
 
 The project's governance, roles and decision-making are described in [GOVERNANCE.md](GOVERNANCE.md).
 
