@@ -705,8 +705,10 @@ pub fn run(
             return Ok(());
         }
         cycle += 1;
-        // What was imported since the last cycle is used from this one on. Not part of the
-        // cycle's result: a cache that cannot be read keeps the loaded data, and the cycle runs.
+        // What was imported (or edited: the user's `cves.json`) since the last cycle is used
+        // from this one on. Not part of the cycle's result: a file that cannot be read keeps
+        // the loaded data, and the cycle runs.
+        risk::refresh_cves();
         crate::feeds::refresh();
         crate::nvd::refresh();
         crate::csaf::refresh();

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     net::IpAddr,
-    path::Path,
-    sync::{Arc, OnceLock, RwLock},
+    path::{Path, PathBuf},
+    sync::{Arc, RwLock},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
@@ -529,56 +529,119 @@ impl CveDb {
     }
 }
 
-fn cve_slot() -> &'static RwLock<Option<Arc<CveDb>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<CveDb>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
+/// A user rules file and its modification time and length when it was read (see `feeds::stamp`).
+type UserFile = (PathBuf, crate::feeds::Stamp);
+
+/// The rules every analysis uses, with the user file they are merged from, so that
+/// [`refresh_cves`] sees when it changed. Rules that were set directly ([`set_cves`]) have no
+/// file. Not a `feeds::ActiveCache`: these are merged over the built-in rules, can be set
+/// without a file, and a broken file at start is the caller's message to show.
+struct ActiveRules(RwLock<Option<(Arc<CveDb>, Option<UserFile>)>>);
+static CVES: ActiveRules = ActiveRules(RwLock::new(None));
+
+/// The user file [`CveDb::load`] reads (also when it does not exist yet), as it is now.
+fn user_file(explicit: Option<&Path>) -> Option<UserFile> {
+    let path = explicit
+        .map(Path::to_path_buf)
+        .or_else(|| crate::appdir::file("cves.json"))?;
+    let stamp = crate::feeds::stamp(&path);
+    Some((path, stamp))
+}
+
+impl ActiveRules {
+    fn set(&self, db: CveDb, file: Option<UserFile>) {
+        if let Ok(mut slot) = self.0.write() {
+            *slot = Some((Arc::new(db), file));
+        }
+    }
+    fn load(&self, explicit: Option<&Path>) -> Result<(), String> {
+        // Looked at before the read: a file replaced in between counts as changed afterwards.
+        let file = user_file(explicit);
+        self.set(CveDb::load(explicit)?, file);
+        Ok(())
+    }
+    /// Reads the user file again when it changed (or appeared) since the rules were loaded. A
+    /// file that is gone or broken now keeps the rules in use; that is said once, and the file
+    /// is read again only after its next change.
+    fn refresh(&self) {
+        let watched = |slot: &Option<(Arc<CveDb>, Option<UserFile>)>| slot.as_ref()?.1.clone();
+        let Some((path, loaded)) = self.0.read().ok().and_then(|slot| watched(&slot)) else {
+            return;
+        };
+        let now = crate::feeds::stamp(&path);
+        if now.is_none() || now == loaded {
+            return;
+        }
+        let result = CveDb::with_user_file(&path);
+        let Ok(mut slot) = self.0.write() else { return };
+        // Other rules were made active meanwhile: this file is no longer theirs.
+        let Some((db, Some((file, stamp)))) = slot.as_mut() else {
+            return;
+        };
+        if *file != path {
+            return;
+        }
+        *stamp = now;
+        match result {
+            Ok(rules) => *db = Arc::new(rules),
+            Err(e) => eprintln!("CVE rules: {e}; the rules loaded before stay in use"),
+        }
+    }
 }
 
 /// Loads the CVE/CPE rules (explicit file, else the default user file, else built-in) and makes
 /// them the rules every later analysis uses. Called for `--cves FILE`; on error the previously
 /// active rules stay in place.
 pub fn load_cves(explicit: Option<&Path>) -> Result<(), String> {
-    set_cves(CveDb::load(explicit)?);
-    Ok(())
+    CVES.load(explicit)
 }
 
 /// Makes `db` the rules every later analysis uses.
 pub fn set_cves(db: CveDb) {
-    if let Ok(mut slot) = cve_slot().write() {
-        *slot = Some(Arc::new(db));
-    }
+    CVES.set(db, None);
+}
+
+/// Reads the user rules again when their file changed since they were loaded (an edit while a
+/// monitor runs). Never an error: a file that is missing or broken now keeps the rules in use.
+pub fn refresh_cves() {
+    CVES.refresh();
 }
 
 /// Start-up load of the default rules (user file `NetworkScope/cves.json` under LOCALAPPDATA or
 /// XDG_CONFIG_HOME, else built-in). A broken user file is returned as an error message for the
 /// caller to show, and the built-in rules are used.
 pub fn init_cves() -> Option<String> {
-    let error = load_cves(None).err()?;
-    if let Ok(mut slot) = cve_slot().write() {
-        *slot = Some(Arc::new(CveDb::builtin()));
-    }
+    let file = user_file(None);
+    let error = CVES.load(None).err()?;
+    // The broken file is still looked at: once it is repaired, a running monitor uses it.
+    CVES.set(CveDb::builtin(), file);
     Some(format!("CVE rules: {error}; using the built-in rules"))
 }
 
 /// The active rules. Until `load_cves` ran: the default user file when it is valid, else the
 /// built-in rules (an invalid user file is reported once on stderr).
 pub fn cve_db() -> Arc<CveDb> {
-    if let Some(db) = cve_slot().read().ok().and_then(|s| s.clone()) {
+    let active = |slot: &Option<(Arc<CveDb>, Option<UserFile>)>| Some(slot.as_ref()?.0.clone());
+    if let Some(db) = CVES.0.read().ok().and_then(|slot| active(&slot)) {
         return db;
     }
     // Tests never read the developer's own override file.
     #[cfg(test)]
-    let db = Arc::new(CveDb::builtin());
+    let (file, db) = (None, CveDb::builtin());
     #[cfg(not(test))]
-    let db = Arc::new(CveDb::load(None).unwrap_or_else(|e| {
-        eprintln!("CVE rules: {e}; using the built-in rules");
-        CveDb::builtin()
-    }));
-    if let Ok(mut slot) = cve_slot().write() {
-        if let Some(existing) = slot.as_ref() {
-            return existing.clone();
+    let (file, db) = (
+        user_file(None),
+        CveDb::load(None).unwrap_or_else(|e| {
+            eprintln!("CVE rules: {e}; using the built-in rules");
+            CveDb::builtin()
+        }),
+    );
+    let db = Arc::new(db);
+    if let Ok(mut slot) = CVES.0.write() {
+        if let Some(existing) = active(&slot) {
+            return existing;
         }
-        *slot = Some(db.clone());
+        *slot = Some((db.clone(), file));
     }
     db
 }
@@ -1920,6 +1983,67 @@ mod tests {
         );
         let _ = std::fs::remove_file(&path);
         assert!(CveDb::load(Some(&path)).is_err());
+    }
+
+    /// What a monitor relies on between two cycles: a user rules file that was edited is read
+    /// again, and one that is missing or broken right now changes nothing. On rules of its
+    /// own, so no other test sees them.
+    #[test]
+    fn the_user_rules_follow_their_file_and_stay_when_it_is_broken() {
+        let path = std::env::temp_dir().join(format!("ns-cves-live-{}.json", std::process::id()));
+        let rule = |id: &str| {
+            format!(
+                r#"{{"rules":[{{"id":"{id}","product":"labd","max":"2.0","severity":"low","cve":["CVE-2099-0001"],"title":"Lab daemon"}}]}}"#
+            )
+        };
+        let rules = ActiveRules(RwLock::new(None));
+        let has = |id: &str| {
+            let slot = rules.0.read().unwrap();
+            let (db, _) = slot.as_ref().unwrap();
+            db.rules.iter().any(|r| r.id == id)
+        };
+        // Nothing loaded: nothing to look at. A file that is not there is not made active.
+        rules.refresh();
+        assert!(rules.load(Some(&path)).is_err());
+        assert!(rules.0.read().unwrap().is_none());
+        std::fs::write(&path, rule("lab-1")).unwrap();
+        rules.load(Some(&path)).unwrap();
+        assert!(has("lab-1") && has("openssh-user-enum"), "user and built-in");
+        // Unchanged: not read again.
+        let before = rules.0.read().unwrap().as_ref().unwrap().0.clone();
+        rules.refresh();
+        assert!(Arc::ptr_eq(
+            &before,
+            &rules.0.read().unwrap().as_ref().unwrap().0
+        ));
+        // Edited (the length differs, so the test does not depend on the clock).
+        std::fs::write(&path, rule("lab-22")).unwrap();
+        rules.refresh();
+        assert!(has("lab-22") && !has("lab-1"));
+        // Half written, then gone: the rules stay in use.
+        std::fs::write(&path, "{").unwrap();
+        rules.refresh();
+        assert!(has("lab-22"));
+        std::fs::remove_file(&path).unwrap();
+        rules.refresh();
+        assert!(has("lab-22"));
+        // Complete again.
+        std::fs::write(&path, rule("lab-333")).unwrap();
+        rules.refresh();
+        assert!(has("lab-333") && !has("lab-22"));
+        // Rules that were set directly have no file to follow.
+        rules.set(CveDb::builtin(), None);
+        std::fs::write(&path, rule("lab-4444")).unwrap();
+        rules.refresh();
+        assert!(!has("lab-4444"));
+        // A file that was broken at start (the built-in rules are in use) is used once repaired.
+        std::fs::write(&path, "{").unwrap();
+        let broken = user_file(Some(&path));
+        rules.set(CveDb::builtin(), broken);
+        std::fs::write(&path, rule("lab-55555")).unwrap();
+        rules.refresh();
+        assert!(has("lab-55555"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
