@@ -241,6 +241,26 @@ jobs:
           test "$status" -eq 2
           "$bin" scan 127.0.0.1 --ports 1 --timeout 500 --db "$RUNNER_TEMP/cli-only.sqlite" --quiet
           ! ldd "$bin" | grep -Ei 'libX11|libxcb|libwayland|libxkbcommon|libGL'
+      # The zsh and fish scripts in the shells they are written for (the unit tests only read
+      # their text): each loads, and offers `scan` as the command and `--dry-run` after it.
+      - name: zsh and fish completions in real shells
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh fish
+          export PATH="$PWD/target/release:$PATH"
+          network-scope-cli completions zsh > "$RUNNER_TEMP/ns.zsh"
+          zsh -f <<'ZSH'
+          autoload -Uz compinit && compinit -u
+          source "$RUNNER_TEMP/ns.zsh"
+          [[ ${_comps[network-scope-cli]} == _network_scope ]] || { print "not registered"; exit 1 }
+          # Outside the line editor the function is asked directly, with a compadd that prints.
+          compadd() { [[ $1 == -- ]] && shift; print -l -- "$@" }
+          words=(network-scope-cli sc); CURRENT=2
+          _network_scope | grep -qx scan || { print "scan is not offered"; exit 1 }
+          words=(network-scope-cli scan --dry); CURRENT=3
+          _network_scope | grep -qx -- --dry-run || { print "--dry-run is not offered"; exit 1 }
+          ZSH
+          fish -c 'network-scope-cli completions fish | source; complete -C "network-scope-cli sc"' | grep '^scan'
+          fish -c 'network-scope-cli completions fish | source; complete -C "network-scope-cli scan --dry"' | grep -e '^--dry-run'
       # Unused on-link addresses on Linux (platform::neighbor_unresolved), on the runner's own
       # Docker bridge: unused, live, ICMP host-prohibited and just-stopped containers.
       - name: Unused addresses on a real link (Docker bridge)
