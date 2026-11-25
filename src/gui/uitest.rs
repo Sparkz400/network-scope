@@ -1076,7 +1076,7 @@ fn the_answers_of_the_background_worker_reach_the_window() {
     assert_eq!(h.app.status, "Saved probes.json");
     assert!(h.app.workbench.written.is_some());
     // The error line on screen is the last one.
-    assert!(h.shows("Export failed: denied") || h.shows("not CSAF"));
+    assert!(h.shows("not CSAF") && !h.shows("Export failed: denied"));
 }
 
 #[test]
