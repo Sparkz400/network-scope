@@ -698,8 +698,8 @@ fn send_partial(ctx: &Ctx, host: Host) {
 
 /// Open ports of one host that are announced one by one and get service identification. A host
 /// with more (a captive portal, proxy or tarpit that completes every handshake) keeps its full
-/// list of open ports, but with all 65,535 ports "open" a provisional host per port, each with
-/// every port so far, is gigabytes, and a banner wait per port is days.
+/// list of open ports. Without the limit, 65,535 open ports are as many provisional hosts,
+/// each carrying every port so far (gigabytes), and as many banner waits (days).
 const MANY_OPEN_PORTS: usize = 100;
 
 /// A port was found open: tell the consumer now, with every port found open so far. Beyond

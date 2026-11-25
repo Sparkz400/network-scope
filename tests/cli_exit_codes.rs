@@ -153,18 +153,16 @@ fn an_unknown_scan_id_is_named_and_a_bad_format_comes_first() {
         &["diff", "1", "99"],
         &["export", "1", "--baseline", "99", "--format", "md"],
         &["baseline", "approve", "99"],
-        &["segmentation", "check", "99", "--zones", "none.json"],
+        &["research", "export", "stix", "99"],
+        &["fingerprints", "groups", "99"],
+        &["scan", "--replay-check", "99"],
     ] {
         let (code, _, err) = fixture.run(args);
         assert_eq!(code, 1, "{args:?}");
-        // `segmentation check` reads its zone file first; the others reach the scan.
-        if args[0] != "segmentation" {
-            assert!(
-                err.contains("No scan with ID 99; see \"history\""),
-                "{args:?}: {err}"
-            );
-        }
-        assert!(!err.contains("Query returned no rows"), "{args:?}: {err}");
+        assert!(
+            err.contains("No scan with ID 99; see \"history\""),
+            "{args:?}: {err}"
+        );
     }
     // The format is checked before the scan is looked up.
     let (code, _, err) = fixture.run(&["export", "99", "--format", "xyz"]);
