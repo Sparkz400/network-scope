@@ -408,7 +408,7 @@ impl Scanner {
                                         let name = names.get(&f.ip);
                                         let cell = tables::row_link(ui, &address);
                                         chosen = cell.clicked();
-                                        tables::copy_menu(&cell, &copies);
+                                        tables::copy_menu(&cell, copies);
                                         if let Some(name) = name {
                                             cell.on_hover_text(format!("{address} · {name}"));
                                             ui.weak(name);
@@ -436,7 +436,7 @@ impl Scanner {
                                         short_links(ui, f);
                                     });
                                     let whole = row.response();
-                                    tables::copy_menu(&whole, &copies);
+                                    tables::copy_menu(&whole, copies);
                                     // Ctrl or Shift marks rows; a plain click shows the host.
                                     if (whole.clicked() || chosen)
                                         && !view.marks.click(
@@ -573,7 +573,7 @@ impl Scanner {
                                             .join(", "),
                                     );
                                     chosen = cell.clicked();
-                                    tables::copy_menu(&cell, &copies);
+                                    tables::copy_menu(&cell, copies);
                                 });
                                 row.col(|ui| {
                                     ui.label(if d.randomized_mac {
@@ -610,7 +610,7 @@ impl Scanner {
                                     }
                                 });
                                 let whole = row.response();
-                                tables::copy_menu(&whole, &copies);
+                                tables::copy_menu(&whole, copies);
                                 if (whole.clicked() || chosen)
                                     && !view.marks.click(
                                         tables::click_keys(&whole.ctx),

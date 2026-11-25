@@ -355,11 +355,11 @@ fn own_clauses(block: &[&str], command: &str) -> String {
         let end = (starts.iter().copied())
             .find(|&s| s > start)
             .unwrap_or(block.len());
-        for i in start..end {
+        for (i, line) in block.iter().enumerate().take(end).skip(start) {
             lines.push(if lines.is_empty() {
                 format!("{option}{}", text(i))
             } else {
-                block[i].to_string()
+                line.to_string()
             });
         }
     }
