@@ -1221,10 +1221,10 @@ mod tests {
         }
         // A missing file fails the check instead of passing it.
         assert!(check(&dir.join("missing.rhai")).is_err());
-        // With the real list, a file in the test user's profile is refused (the user owns
-        // it), one in Program Files passes.
-        let err = check_not_writable(std::slice::from_ref(&file)).unwrap_err();
-        assert!(err.contains("owner") || err.contains(&me), "{err}");
+        // With the real list, a file in the test user's profile is refused (which account
+        // trips it first depends on the machine: the user as owner here, the profile's own
+        // administrator account on a CI runner), one in Program Files passes.
+        assert!(check_not_writable(std::slice::from_ref(&file)).is_err());
         let common = Path::new(r"C:\Program Files\Common Files");
         if common.is_dir() {
             check_not_writable(&[common.to_path_buf()]).unwrap();
