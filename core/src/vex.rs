@@ -32,7 +32,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::Arc,
 };
 
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -843,48 +843,33 @@ pub fn status(library: &Library, path: &Path) -> Value {
     })
 }
 
-fn slot() -> &'static RwLock<Option<Arc<Library>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<Library>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
-}
+static ACTIVE: crate::feeds::ActiveCache<Library> = crate::feeds::ActiveCache::new(
+    "VEX",
+    "no statements are used",
+    default_path,
+    Library::load,
+);
 
 /// Makes the cache at `explicit` (`--vex FILE`) the active statements.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
-    let library = Library::load(explicit)?;
-    if let Ok(mut s) = slot().write() {
-        *s = Some(Arc::new(library));
-    }
-    Ok(())
+    ACTIVE.set(explicit)
 }
 
 /// Forgets the loaded statements, so the next [`active`] reads the cache again (the desktop after
 /// an import).
 pub fn reload() {
-    if let Ok(mut s) = slot().write() {
-        *s = None;
-    }
+    ACTIVE.clear()
 }
 
 /// The active statements: the explicit cache, else the default cache when it exists, else none.
 /// Tests never read the developer's own cache.
 pub fn active() -> Arc<Library> {
-    if let Some(l) = slot().read().ok().and_then(|s| s.clone()) {
-        return l;
-    }
-    #[cfg(test)]
-    let library = Arc::new(Library::default());
-    #[cfg(not(test))]
-    let library = Arc::new(match default_path().filter(|p| p.exists()) {
-        Some(p) => Library::load(&p).unwrap_or_else(|e| {
-            eprintln!("VEX: {e}; no statements are used");
-            Library::default()
-        }),
-        None => Library::default(),
-    });
-    if let Ok(mut s) = slot().write() {
-        *s = Some(library.clone());
-    }
-    library
+    ACTIVE.get()
+}
+
+/// Reads the cache again when its file changed since it was loaded (see `feeds::refresh`).
+pub fn refresh() {
+    ACTIVE.refresh()
 }
 
 #[cfg(test)]

@@ -704,6 +704,13 @@ pub fn run(
             return Ok(());
         }
         cycle += 1;
+        // What was imported since the last cycle is used from this one on. Not part of the
+        // cycle's result: a cache that cannot be read keeps the loaded data, and the cycle runs.
+        crate::feeds::refresh();
+        crate::nvd::refresh();
+        crate::csaf::refresh();
+        crate::vex::refresh();
+        crate::sbom::refresh();
         let result = (|| -> Result<(), String> {
             let mut observations = vec![];
             let mut notices = vec![];

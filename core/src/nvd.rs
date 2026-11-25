@@ -25,7 +25,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::Arc,
 };
 
 /// Largest feed file accepted (a year file is at most a few hundred MB uncompressed).
@@ -830,45 +830,29 @@ pub fn status(nvd: &Nvd, path: &Path) -> serde_json::Value {
 
 // ---- the active cache ----------------------------------------------------------------------
 
-fn slot() -> &'static RwLock<Option<Arc<Nvd>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<Nvd>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
-}
+static ACTIVE: crate::feeds::ActiveCache<Nvd> = crate::feeds::ActiveCache::new(
+    "NVD",
+    "only the built-in CVE rules are used",
+    default_path,
+    Nvd::load,
+);
 
 /// Makes the cache at `explicit` (`--nvd FILE`) the active one; an error when it is missing or
 /// unreadable. The previous cache stays in place on error.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
-    let nvd = Nvd::load(explicit)?;
-    if let Ok(mut s) = slot().write() {
-        *s = Some(Arc::new(nvd));
-    }
-    Ok(())
+    ACTIVE.set(explicit)
 }
 
 /// The active NVD data: the explicit cache, else the default cache when it exists, else
-/// nothing. Loaded once; an unreadable default cache is reported once on stderr. Tests never
-/// read the developer's own cache.
+/// nothing. An unreadable default cache is reported once on stderr. Tests never read the
+/// developer's own cache.
 pub fn active() -> Arc<Nvd> {
-    if let Some(n) = slot().read().ok().and_then(|s| s.clone()) {
-        return n;
-    }
-    #[cfg(test)]
-    let nvd = Arc::new(Nvd::default());
-    #[cfg(not(test))]
-    let nvd = Arc::new(match default_path().filter(|p| p.exists()) {
-        Some(p) => Nvd::load(&p).unwrap_or_else(|e| {
-            eprintln!("NVD: {e}; only the built-in CVE rules are used");
-            Nvd::default()
-        }),
-        None => Nvd::default(),
-    });
-    if let Ok(mut s) = slot().write() {
-        if let Some(existing) = s.as_ref() {
-            return existing.clone();
-        }
-        *s = Some(nvd.clone());
-    }
-    nvd
+    ACTIVE.get()
+}
+
+/// Reads the cache again when its file changed since it was loaded (see `feeds::refresh`).
+pub fn refresh() {
+    ACTIVE.refresh()
 }
 
 #[cfg(test)]
