@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Several network interfaces in one scan (ROADMAP B16).
 //!
 //! The raw features (the SYN scan, the ARP sweep, TCP traceroute) send through one capture

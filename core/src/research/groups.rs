@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Groups of devices that share a fingerprint (ROADMAP L70): the same certificate key, the same
 //! TLS or SSH stack (JARM, JA3S, HASSH), the same web
 //! interface (favicon hash) or the same industrial firmware, across scans and sites.

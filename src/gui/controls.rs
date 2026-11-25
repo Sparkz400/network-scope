@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use super::*;
 impl Scanner {
     pub(super) fn controls(&mut self, ui: &mut egui::Ui) {

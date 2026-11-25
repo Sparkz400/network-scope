@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Check network segmentation against a declared zone and conduit model (ROADMAP L71).
 //!
 //! IEC 62443 divides a plant into *zones* (groups of assets with the same security needs) joined

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Omron FINS: FINS/TCP (a `FINS` header with a length and a command, port 9600) and FINS/UDP
 //! (the bare FINS frame). Names the command of each request, flags the ones that write or change
 //! the controller's state, and reads the controller model and version from a Controller Data

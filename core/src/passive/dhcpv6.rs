@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! DHCPv6 client messages (RFC 8415, UDP 546 to 547): the DUID (option 1), the option request
 //! list (option 6), the vendor class (option 16, RFC 8415 21.16) and the client FQDN (option 39,
 //! RFC 4704). Server and relay messages are ignored: their sender is not the client. Passive

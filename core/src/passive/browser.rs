@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! NetBIOS browser announcements: the Computer Browser service's Host, Local Master and Domain
 //! Announcements (MS-BRWS 2.2.1, 2.2.6, 2.2.12), carried in an SMB Transaction to the mailslot
 //! `\MAILSLOT\BROWSE` inside a NetBIOS datagram (RFC 1002 4.4.1, UDP 138). Windows hosts and

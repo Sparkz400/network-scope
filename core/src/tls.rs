@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! TLS inspection. A rustls handshake that validates nothing collects the certificate and the
 //! negotiated TLS 1.2/1.3 parameters; a hand-built ClientHello then asks which protocol
 //! versions (SSLv3 to TLS 1.2) and cipher suites the server accepts, including legacy and

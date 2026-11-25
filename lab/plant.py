@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """A small test plant with planted weaknesses (ROADMAP L74). Python standard library only.
 
 Four fake devices on loopback addresses (127.0.20.1-4), served by the handlers of simulators.py plus

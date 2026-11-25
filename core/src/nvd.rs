@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Offline NVD CVE feed: imports the NVD "CVE JSON 2.0" files (`nvdcve-2.0-<year>.json`, or an
 //! API 2.0 response saved to a file), keeps for every CVE the CPE ranges that name a vulnerable
 //! application or operating system, and matches the CPE names the scanner derives

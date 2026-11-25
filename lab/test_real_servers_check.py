@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Unit tests of lab/real_servers_check.py: no servers needed (fake in-process peers, synthetic scan
 results). The real servers are only available in CI (job `real-servers`).
 

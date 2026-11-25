@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `export ID --format cyclonedx`: a saved scan as a CycloneDX 1.6 JSON document.
 //!
 //! What it is: an inventory of the **devices** on the network, the **firmware** they reported and

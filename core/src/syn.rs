@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SYN scan engine: one capture handle owned by one I/O thread.
 //!
 //! libpcap handles are not safe for concurrent use, so a single thread both

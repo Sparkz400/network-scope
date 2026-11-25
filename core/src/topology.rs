@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Network path map built from traceroute data: scanner -> routers -> hosts.
 use crate::scan::Host;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

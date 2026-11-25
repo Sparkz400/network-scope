@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Scheduled scans: the tick that starts them and the "Scheduled scans" section of the settings.
 //! The rules (interval limits, due time, postponing while busy) are in `core::schedule`.
 use super::*;

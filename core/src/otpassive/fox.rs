@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Niagara Fox (TCP 1911): the text messages `fox a <id> -1 <service> <command>` with a
 //! `{ key=type:value ... };;` body. A hello from a station names the device (host name,
 //! application, VM and OS versions, station name); a hello from a client names the tool. Fox

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `--dry-run` (ROADMAP H53): print what a command would send, per host, and send nothing.
 //!
 //! The plan comes from the engine (`plan::scan`, `plan::trace`, `plan::dcp`), which is built from

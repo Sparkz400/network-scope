@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Where a scan result came from (ROADMAP L72): the version of the tool and a SHA-256 of every
 //! rules file and feed that shaped it, stamped into the scan (`settings.provenance`, so also in
 //! every export), so a finding can be cited and the scan re-run (`scan --replay-check`).

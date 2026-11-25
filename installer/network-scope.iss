@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: Copyright the Network Scope contributors
+; SPDX-License-Identifier: MIT
 ; Inno Setup script. Build: iscc /DAppVersion=0.6.0 /DExePath=..\target\release\network-scope.exe /DCliExePath=..\target\release\network-scope-cli.exe network-scope.iss
 #ifndef AppVersion
   #define AppVersion "0.6.0"

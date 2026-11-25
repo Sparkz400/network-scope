@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The `--help` text. A new command gets a line here (the test in `ui/mod.rs` checks that every
 //! registered command is mentioned). The help of one command ([`command`]: `CMD --help`,
 //! `help CMD`) is cut out of the same text, so only the [`EXAMPLES`] are written separately.

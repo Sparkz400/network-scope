@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! HTTP request, response parsing and the `http.*` fields.
 use super::{Outcome, Service, read_some};
 use std::{net::IpAddr, time::Duration};

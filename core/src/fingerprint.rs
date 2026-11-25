@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Passive fingerprints computed from what service detection already received: HASSHServer
 //! (SSH KEXINIT) and JA3S (TLS ServerHello), plus the two hash functions used here and elsewhere
 //! (MD5, which HASSH and JA3S are defined over, and SHA-256). Nothing here touches the network.

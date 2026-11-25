@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! BACnet/IP: BVLC/NPDU/APDU parsing, I-Am and service names.
 use super::{Proto, Tracker};
 use std::net::IpAddr;

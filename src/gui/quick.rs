@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! "Scan my network" in one click (ROADMAP F36): finds the networks this computer is connected
 //! to, picks the private on-link ones (`core::localnets` explains the rules: no loopback,
 //! link-local, VPN-looking /32, public or virtual networks; anything larger than a /22 only after

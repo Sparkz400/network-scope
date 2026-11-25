@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Windows resources of both binaries (`network-scope` and `network-scope-cli`): the application
 //! icon shown by Explorer, the taskbar and shortcuts, the version block of the file properties
 //! and Task Manager, and the application manifest (assets/windows.manifest). Nothing is done

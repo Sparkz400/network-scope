@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,

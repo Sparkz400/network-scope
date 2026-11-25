@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! WS-Discovery (UDP 3702, multicast 239.255.255.250 / ff02::c): SOAP-over-UDP announcements.
 //! Only messages that describe the *sender* are used: Hello, ProbeMatches and ResolveMatches.
 //! A Probe or Resolve lists what the sender is looking for, and Bye carries no identity, so

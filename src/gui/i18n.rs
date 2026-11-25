@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! A minimal translation layer for the desktop app: no crates, no code generation.
 //!
 //! Text in the code is English and is wrapped in [`tr!`]. The macro looks the English text up in

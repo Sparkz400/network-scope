@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The per-user configuration folder that holds `cves.json`, `probes.json`, `scope.txt` and the
 //! feed caches: `%LOCALAPPDATA%/NetworkScope` on Windows, else `$XDG_CONFIG_HOME/NetworkScope`,
 //! else `~/.config/NetworkScope` (most Linux desktops and macOS do not set `XDG_CONFIG_HOME`).

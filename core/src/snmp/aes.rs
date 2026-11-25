@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! AES-128 (encryption direction only) and CFB128 mode for SNMPv3 `usmAesCfb128Protocol`
 //! (RFC 3826).
 //!

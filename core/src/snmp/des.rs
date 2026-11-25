@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! DES (FIPS 46-3) in CBC mode for SNMPv3 `usmDESPrivProtocol` (RFC 3414 section 8).
 //!
 //! DES has a 56-bit key and is broken by exhaustive search; SNMPv3 offered it first and some old

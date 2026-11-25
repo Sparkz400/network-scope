@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `mcp [--db FILE] [--no-scan]`: the Model Context Protocol server (`core::mcp`) on stdin and
 //! stdout. Only protocol messages are written to stdout; everything else goes to stderr.
 //!

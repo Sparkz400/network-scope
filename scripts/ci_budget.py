@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """CI time budgets: fail when a job of the `ci` workflow got slower over many runs on main.
 
 Reads the recent successful `ci` runs that a push to main started (GitHub API) and compares, per

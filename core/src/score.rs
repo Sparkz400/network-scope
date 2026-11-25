@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Risk scores per host and per network, and the "fix these things first" list (ROADMAP D26).
 //!
 //! The formula is deliberately simple so that it can be explained and checked by hand:

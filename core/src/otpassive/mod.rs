@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Strictly passive OT asset discovery. This module only ever reads: frames come from a live
 //! capture handle that exposes no transmit call (`PassiveCapture`) or from a capture file. It
 //! recognises Modbus/TCP, S7comm, IEC 61850 MMS (told from S7comm on port 102 by what the connection

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Removes the Authenticode signature from a Windows PE file (.exe), to compare a rebuild with a
 signed release binary (docs/src/supply-chain.md#code-signing).
 

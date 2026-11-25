@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use super::*;
 
 /// A vendor SBOM of a PLC firmware, CycloneDX 1.5, with a nested component.

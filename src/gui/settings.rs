@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use super::*;
 /// The CVE rules for a rules file path from the settings, loaded like `--cves FILE` (built-in
 /// rules plus the file). An empty path means the default rules. A file that cannot be read or

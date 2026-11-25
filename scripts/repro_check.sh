@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 # Builds network-scope-cli (and the GUI binary network-scope) twice from two exports of HEAD in
 # different directories, each with a clean target folder, and compares the SHA-256 of the
 # binaries: the check of the `reproducible` workflow, for a local machine (Linux, macOS, or Git

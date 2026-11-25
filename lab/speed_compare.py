@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Speed comparison of Network Scope with nmap and RustScan (roadmap B10). Python standard library only.
 
   python -I lab/speed_compare.py --cli /abs/path/to/network-scope-cli [--rustscan rustscan] \

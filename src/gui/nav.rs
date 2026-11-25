@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The sidebar: the pages of the main window, each with a small count (hosts that answered,
 //! findings in the colour of the worst one, passive observations, saved scans). The pages are
 //! the same as in the View menu and on `Ctrl+1` to `Ctrl+7` (`Ctrl+3` is the device mode of the

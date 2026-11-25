@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """An SNMP agent made with pysnmp, an independent implementation of SNMPv1/v2c/v3 (USM), for
 checking Network Scope's SNMPv3 message layer against code it does not share.
 

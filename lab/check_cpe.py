@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Checks the CPE names Network Scope derives (the `cpe` table of data/cves.json, which produces
 the `svc.<port>.cpe` identity values) against the official NVD CPE dictionary. Python standard
 library only.

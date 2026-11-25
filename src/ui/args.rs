@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Command-line parsing shared by all commands: the table of known options, the `--key value`
 //! parser and the helpers that turn options into engine settings.
 //!

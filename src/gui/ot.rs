@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Passive OT asset discovery in the GUI. A pcap file, or a live capture through
 //! `capture::PassiveCapture` (which has no transmit call), is fed to `otpassive::Tracker` on a
 //! thread of its own: a long capture must not hold up the inventory worker or the window.

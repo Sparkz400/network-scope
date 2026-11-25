@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Entry points for the cargo-fuzz targets in `fuzz/` (one per parser of untrusted bytes).
 //!
 //! Each function feeds arbitrary bytes to the real parser, the same way the scanner or the

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Traceroute: all TTLs are probed in parallel (one blocking ICMP probe each), then assembled.
 use crate::sendlog::PacketKind;
 use crate::{core::Gate, platform::HopReply};

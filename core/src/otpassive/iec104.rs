@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! IEC 60870-5-104 ASDU types.
 
 pub(super) fn iec104_type(t: u8) -> (String, bool) {

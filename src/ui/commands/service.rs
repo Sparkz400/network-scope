@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `service install|uninstall|run`: `monitor` as a Windows service.
 //!
 //! `service install TARGETS [monitor options]` registers the service with the Service Control

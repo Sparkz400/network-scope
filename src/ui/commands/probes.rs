@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `probes [--probes FILE]` lists the TCP and UDP service probe database; `probes validate FILE`
 //! loads a probe file the way a scan would and lints it; `probes lint [FILE]` runs only the safety
 //! linter (on `data/probes.json` when no file is given). Nothing is sent to the network.

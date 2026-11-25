@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Merging of passive observations: one entry per MAC, protocol and IP, fields merged, capped at
 //! [`MAX_OBSERVATIONS`]. Used by the passive capture commands, `monitor`, the OT listener and the GUI.
 use crate::passive;

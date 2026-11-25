@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! What a scan sends, as a plan (ROADMAP H53): the dry run lists it and sends nothing.
 //!
 //! The plan is not a second list kept next to the scanner. The conditions that decide *whether*

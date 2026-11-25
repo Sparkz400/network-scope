@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Tests of .githooks/pre-push: which checks a push starts, from the files it changes.
 
 Each test builds a small repository, pushes one change through the hook with `cargo` replaced by

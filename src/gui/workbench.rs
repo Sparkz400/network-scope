@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The unknown-device workbench window (ROADMAP L73), the desktop counterpart of
 //! `fingerprints groups|compare|draft`: it lists the groups of similar banners that no rule
 //! identified, shows one group's variants (or two groups side by side), and turns a group into a

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Scripts that run when a monitor alert fires (`monitor --on-alert SCRIPT.rhai`).
 //!
 //! The script defines `on_alert(a)`. It receives the alert (`a.kind`, `a.severity`, `a.host`,

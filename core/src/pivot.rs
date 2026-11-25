@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Fingerprints that can be pivoted on across scans and sites (ROADMAP L70): the Shodan-compatible
 //! favicon hash, with the MurmurHash3 it needs.
 //!

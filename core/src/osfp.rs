@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Heuristic OS guess from IP TTL, the target's SYN-ACK TCP parameters and service evidence.
 //! This is a scored rule set, not a signature database: expect "family" level answers.
 use serde::{Deserialize, Serialize};

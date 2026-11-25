@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! A small SNMP agent for the tests: a loopback UDP server with a fixed MIB that answers
 //! v1/v2c requests (community) and v3 requests (USM discovery, HMAC-MD5/SHA, DES-CBC and
 //! AES-CFB). Test code only.

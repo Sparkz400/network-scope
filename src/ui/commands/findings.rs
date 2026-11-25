@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]` and
 //! `findings ID --top N [--format text|json]` (risk scores and the "fix these first" list).
 use crate::{

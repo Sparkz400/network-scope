@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! EtherNet/IP and CIP: encapsulation, services, nested requests, List Identity.
 use super::packet::le16;
 use super::{Proto, Tracker};

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Compliance exports (ROADMAP D30): the asset inventory of a scan with its findings mapped to
 //! the controls of IEC 62443 (foundational requirements, with a zone and a criticality per
 //! asset), the NIS2 Directive (Article 21(2) measures) and the CIS Controls v8 (safeguards), as

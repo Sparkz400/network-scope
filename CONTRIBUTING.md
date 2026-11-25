@@ -154,6 +154,8 @@ Network Scope is used on industrial networks. Every change that sends traffic mu
 
 By contributing you agree that your contributions are licensed under the [MIT license](LICENSE.txt).
 
+Every source file (`.rs`, `.py`, `.sh`, `.ps1`, `.iss`) starts with an SPDX copyright and license header, after a shebang if there is one. `python -I scripts/spdx_headers.py --fix` adds it to new files; CI fails without it. Code taken from another project keeps its own copyright holder and license next to ours (see `EXTRA` in that script).
+
 ### Developer Certificate of Origin
 
 Every commit in a pull request must carry a `Signed-off-by: Your Name <email>` line, which `git commit -s` adds. With it you certify the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change, or otherwise have the right to submit it under the project's license. Use your real name or a consistent pseudonym you are known by. Forgot it? `git commit --amend -s` fixes the last commit, `git rebase --signoff main` all commits of the branch.

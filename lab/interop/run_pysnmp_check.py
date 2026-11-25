@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Runs Network Scope's SNMP client against the pysnmp agent (an independent implementation) and
 prints what the agent received.
 

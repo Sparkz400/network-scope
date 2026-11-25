@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The IPv4 networks this machine is connected to, and which of them "Scan my network" scans.
 //!
 //! [`detect`] reads the addresses and prefix lengths of the local interfaces from the operating

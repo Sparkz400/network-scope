@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Check that every finding rule id in core/src/risk.rs has a documentation page.
 
 Run from anywhere (the paths are derived from this file):

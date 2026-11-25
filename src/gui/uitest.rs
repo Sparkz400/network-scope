@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Tests that use the whole window the way a person does: they render real frames of the app
 //! with the screenshot sample data, find a widget by its accessible name (what a screen reader
 //! reads) and click it with pointer events. Nothing is scanned, saved or read from disk.

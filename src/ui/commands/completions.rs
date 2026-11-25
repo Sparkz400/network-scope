@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `completions powershell|bash|zsh|fish`: prints a shell completion script generated from the
 //! option and command tables, so new commands and options are completed without touching this
 //! file. Every script offers the commands as the first word and the options after it, file

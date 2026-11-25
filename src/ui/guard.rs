@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The scope guard for CLI commands (ROADMAP H54): reads `--scope`, `--scope-file`, the default
 //! scope file and the consent flags (`--yes-public`, `--allow-out-of-scope`) and calls the one
 //! check in the engine, [`scope::enforce`]. A terminal user is asked; everything else

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Tests of the import parsers and of merging an import into the inventory.
 use super::*;
 use crate::{

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The research data layer (ROADMAP L67): hosts, services, certificates, fingerprints, findings
 //! and observations as queryable SQLite tables next to the per-scan `snapshot` text.
 //!

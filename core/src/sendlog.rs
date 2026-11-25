@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The list of packet kinds the scanner can transmit, and the per-scan log of what it did send
 //! (ROADMAP H53).
 //!

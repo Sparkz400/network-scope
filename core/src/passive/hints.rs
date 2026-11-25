@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Device-type hints derived from passive observations.
 //!
 //! Every decoder in `passive` can attach hints to the observation it produces. A hint is stored

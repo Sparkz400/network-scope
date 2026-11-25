@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The Network Scope engine: scanning, parsers, risk analysis and the inventory store, without any
 //! GUI. The desktop app, the CLI and the TUI of the `network-scope` package are built on it, and
 //! so can other tools.

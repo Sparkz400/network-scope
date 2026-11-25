@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Recurring scans for the desktop GUI: the settings and the decision of what to do on each tick.
 //! A scheduled scan is an ordinary scan with the user's current settings (Safe Mode included),
 //! started while the program is open; for monitoring that survives a closed window or a reboot

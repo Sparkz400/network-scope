@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The preset picker (ROADMAP F40): Quick, Office, Plant (passive) and Full audit. The bundles
 //! themselves are `core::presets`, shared with the CLI's `--preset`. Choosing an active preset
 //! replaces the scan options (and keeps the machine settings: interface, source addresses,

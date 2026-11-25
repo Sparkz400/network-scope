@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Safety linter for probe files (roadmap K65): `probes lint` and `probes validate` in the CLI,
 //! and a CI step on `data/probes.json`. A pull request that adds a probe is reviewed by a person;
 //! this catches the mistakes a review should not have to find by eye.

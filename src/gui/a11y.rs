@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Names for screen readers. egui publishes the widget tree through AccessKit (UI Automation on
 //! Windows). A widget is named by its own text (buttons, checkboxes), by `labelled_by` a visible
 //! label, or by this module. Two things are not names in egui: the hint text of a text box (it is

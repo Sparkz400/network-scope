@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `monitor TARGETS --interval N ...`: repeated scans that alert on changes (JSON lines on stdout,
 //! optionally appended to `--alerts FILE`, and to the opt-in webhook and syslog sinks).
 use crate::{

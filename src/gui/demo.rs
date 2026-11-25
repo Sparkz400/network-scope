@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Sample data for `--screenshot` runs, chosen with NETWORK_SCOPE_SCREENSHOT_STATE
 //! (main, findings, devices, settings, ot, script, timeline, scan-details, workbench, home, home-empty, hosts-empty, map, map-large,
 //! quick, palette, palette-actions, appearance, schedule, shortcuts, safe-off, findings-grouped,

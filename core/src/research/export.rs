@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Exports of the research data: CSV and NDJSON per table (a layout DuckDB and pandas read
 //! directly), and a STIX 2.1 bundle or OCSF events for one scan.
 //!

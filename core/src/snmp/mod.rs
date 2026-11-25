@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SNMP, read-only, with credentials the user supplies (ROADMAP C20): SNMPv1, v2c and v3 (USM)
 //! requests that read the system group, the interface and address tables and the LLDP
 //! neighbour table of a device, so a scan can name the device and build a real topology.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """Unit tests of lab/speed_compare.py's parsers and regression gate (no network, no tools).
 
   python -I -m unittest discover -s lab -p "test_*.py"

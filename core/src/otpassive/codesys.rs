@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! CODESYS runtime and gateway traffic: UDP 1740-1743 (name service of V3) and TCP 1200, 1217,
 //! 2455 and 11740-11743 (V2 and V3 gateway and runtime).
 //!

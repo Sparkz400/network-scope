@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `feeds import [--kev FILE] [--epss FILE]`, `feeds import nvd FILE...`, `feeds import csaf
 //! FILE|DIR...`, `feeds import sbom FILE|DIR... [--sbom-vendor V] [--sbom-product P]
 //! [--sbom-version X]` and `feeds status`; `--feeds FILE` picks the KEV/EPSS cache, `--nvd FILE`

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 # Alert delivery to REAL receivers (issue 12): rsyslog receives the syslog alerts over UDP and TCP
 # (RFC 6587 octet counting) and nginx the webhook POSTs over HTTP and HTTPS, all on loopback.
 # `monitor` runs two cycles against 127.0.0.1; between them a TCP port opens, so the second cycle

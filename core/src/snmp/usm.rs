@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! SNMPv3 User-based Security Model primitives (RFC 3414, RFC 3826, RFC 7860): password to key,
 //! key localisation, message authentication (HMAC-MD5-96, HMAC-SHA-1-96 and HMAC-192-SHA-256)
 //! and privacy (DES-CBC and AES-128-CFB).

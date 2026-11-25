@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! UDP service probing with protocol-correct, read-only requests: DNS (version.bind), NTP client
 //! request, SNMP get of sysDescr with the community "public", SSDP unicast M-SEARCH, mDNS
 //! service enumeration, NetBIOS node status and DHCPINFORM. Any reply from the probed address

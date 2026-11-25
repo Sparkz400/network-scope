@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Sorting and filtering for the Findings and Devices windows. Row lists are recomputed only
 //! when the data or the view settings change.
 use super::i18n::tr;

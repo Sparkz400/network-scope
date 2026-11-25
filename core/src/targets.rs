@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Helpers around the target list of a scan: reading it from a list file (`--targets-file`, the
 //! desktop "Import address list…") and scanning it in random order (`--randomize`, the desktop
 //! checkbox). The order only changes when each address is probed, never which addresses or

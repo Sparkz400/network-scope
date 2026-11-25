@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 """A replayable traffic generator for the test plant (ROADMAP L74, for L69). Standard library only.
 
 It writes capture files of synthetic industrial traffic between two operator stations and two PLCs;

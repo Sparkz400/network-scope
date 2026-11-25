@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Versioned JSON output: every JSON document the program prints carries
 //! `"schema": "network-scope/<kind>/<version>"` (every JSON Lines record too), and the shape of
 //! each kind is described by a hand-written JSON Schema (draft 2020-12) in `docs/schema/`.

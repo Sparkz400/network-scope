@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Sessionless UA Binary discovery using SecurityPolicy None; no authentication or writes.
 use super::{
     AsyncReadExt, Fields,

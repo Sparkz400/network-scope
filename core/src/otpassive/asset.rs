@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Asset inventory: merges the observed OT endpoints into one record per device.
 use crate::{devices, oui, passive::Observation};
 use serde::Serialize;

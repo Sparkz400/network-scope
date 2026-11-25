@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `changes [--since last|7d|DATE] [--format text|json]`: the new, gone and changed devices and
 //! the new and resolved risks between the newest completed scan and the previous one (`last`), or
 //! the state at the start of a window (`12h`, `7d`, `2w`) or at a UTC date (`2026-11-01`).

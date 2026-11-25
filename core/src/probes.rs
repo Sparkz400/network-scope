@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 use crate::scan::PortState;
 use std::{
     net::{IpAddr, SocketAddr},

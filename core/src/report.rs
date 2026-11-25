@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Self-contained HTML report: summary, charts (inline SVG, no scripts), findings, changes since a
 //! baseline, topology map, devices and per-host details. All scanned content is escaped.
 use crate::{

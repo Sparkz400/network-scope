@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Service detection: banner grabbing, data-driven probes (data/probes.json plus an optional
 //! user file), HTTP and TLS inspection and an SMB negotiate. Everything here only reads.
 //!

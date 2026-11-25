@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `network-scope-cli mcp` as a process: JSON-RPC lines in on stdin, only JSON-RPC lines out on
 //! stdout. The inventory is built with `import` from an nmap XML file (no network traffic), and
 //! the scan tool is switched off with `--no-scan`.

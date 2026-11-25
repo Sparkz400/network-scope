@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! TPKT/COTP on port 102 is shared by S7comm and IEC 61850 MMS. This module tells them apart
 //! and decodes MMS (ISO 9506): the confirmed services of requests (named, with the ones that
 //! write, start, stop or delete flagged as control traffic) and the vendor, model and revision of

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Scriptable CLI and live terminal view use exactly the desktop scan engine.
 //!
 //! # Layout

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Runtime-loaded capture driver: the portable binary has no Npcap link dependency.
 use libloading::Library;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};

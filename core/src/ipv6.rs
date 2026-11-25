@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! IPv6 discovery (ROADMAP C21): what is on the local link, found without a target list.
 //!
 //! IPv6 has no address range to sweep, so a scan cannot find hosts by trying addresses. Three

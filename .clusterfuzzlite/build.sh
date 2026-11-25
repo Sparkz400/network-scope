@@ -1,4 +1,6 @@
 #!/bin/bash -eu
+# SPDX-FileCopyrightText: Copyright the Network Scope contributors
+# SPDX-License-Identifier: MIT
 # ClusterFuzzLite build: every cargo-fuzz target in fuzz/ goes to $OUT, with its seed corpus
 # and libFuzzer options (fuzz/options/<target>.options).
 cd "$SRC/network-scope"

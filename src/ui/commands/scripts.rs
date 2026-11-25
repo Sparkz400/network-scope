@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `scripts PATH` checks Rhai scripts (they run with `scan --script PATH`); `scripts list` shows
 //! the shared library that is built into the program and `scripts show NAME` prints one.
 use crate::{

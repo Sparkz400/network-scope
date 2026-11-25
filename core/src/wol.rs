@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Wake-on-LAN: one "magic packet" to a MAC address on the broadcast address.
 //!
 //! This is a send, so it follows the rules of every sender: it takes a token from the rate

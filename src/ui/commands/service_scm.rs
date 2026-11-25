@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! The Windows Service Control Manager side of `service`: raw FFI in the style of
 //! `attach_parent_console` in `src/lib.rs` (no extra crates). Installing needs an elevated
 //! prompt. Windows only; the command-line building and its tests are in `service.rs`.

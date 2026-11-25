@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Continuous monitoring: repeat a scan, compare it with the previous one and with the set of
 //! devices ever seen, and raise alerts for new devices, opened/closed ports, new findings and
 //! unexpected DHCP servers. Alerts are stored in the inventory database and emitted as JSON lines.

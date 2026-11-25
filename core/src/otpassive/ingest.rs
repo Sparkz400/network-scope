@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! Feeding the tracker: capture files (pcap/pcapng) and the live, receive-only capture.
 use super::Tracker;
 

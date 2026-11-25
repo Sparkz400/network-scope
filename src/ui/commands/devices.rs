@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! `devices ID` (active and passive results merged, one record per device, with its stable key), `devices --history`
 //! and `topology ID` (network path map from traceroute data).
 use crate::{

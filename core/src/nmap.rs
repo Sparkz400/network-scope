@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright the Network Scope contributors
+// SPDX-License-Identifier: MIT
 //! nmap XML interchange. Export writes the subset of the nmaprun format that common importers
 //! read (hosts, addresses, hostnames, ports with services, OS match, trace); import reads the same
 //! subset back into a snapshot so nmap results can be diffed, reported and merged with ours.
