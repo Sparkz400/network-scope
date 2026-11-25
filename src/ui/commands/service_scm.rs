@@ -148,6 +148,7 @@ unsafe extern "system" {
     fn GetLastError() -> u32;
     fn LocalFree(memory: *mut c_void) -> *mut c_void;
     fn CreateDirectoryW(path: *const u16, attributes: *const SecurityAttributes) -> i32;
+    fn GetDriveTypeW(root: *const u16) -> u32;
 }
 
 const SC_MANAGER_CONNECT: u32 = 0x1;
@@ -383,6 +384,12 @@ const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
 const SDDL_REVISION_1: u32 = 1;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const INHERIT_ONLY_ACE: u8 = 0x8;
+/// Access-denied entries (plain, object, callback, callback object): the only kinds that may be
+/// left out, since they can only take rights away.
+const DENY_ACE_TYPES: [u8; 4] = [1, 6, 10, 12];
+/// Stands in for the SID of an allow entry of a kind that is not parsed.
+const UNKNOWN_ACE: &str = "an access entry of type ";
+const DRIVE_FIXED: u32 = 3;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const READ_CONTROL: u32 = 0x2_0000;
 const WRITE_DAC: u32 = 0x4_0000;
@@ -492,6 +499,9 @@ fn security(path: &Path) -> Result<Security, String> {
             if head.kind == ACCESS_ALLOWED_ACE_TYPE {
                 let sid = unsafe { ace.cast::<u8>().add(8) }.cast();
                 entries.push((sid_text(sid)?, head.mask, head.flags));
+            } else if !DENY_ACE_TYPES.contains(&head.kind) {
+                // Not parsed (callback, object, ...): counted as every right for anyone.
+                entries.push((format!("{UNKNOWN_ACE}{}", head.kind), u32::MAX, head.flags));
             }
         }
         Some(entries)
@@ -509,7 +519,7 @@ fn open_to_users(s: &Security) -> bool {
         entries.iter().any(|(sid, mask, flags)| {
             flags & INHERIT_ONLY_ACE == 0
                 && mask & WRITE_RIGHTS != 0
-                && BROAD_GROUPS.contains(&sid.as_str())
+                && (BROAD_GROUPS.contains(&sid.as_str()) || sid.starts_with(UNKNOWN_ACE))
         })
     })
 }
@@ -638,18 +648,38 @@ fn check_paths(paths: &[PathBuf], admins: &[&str]) -> Result<(), String> {
             p.display()
         )
     };
+    // Trailing separators and case do not make another path.
+    let norm = |s: &str| s.trim_end_matches('\\').to_lowercase();
     for path in paths {
         let absolute = std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        for p in absolute.ancestors() {
+        let canonical =
+            std::fs::canonicalize(&absolute).map_err(|e| format!("{}: {e}", path.display()))?;
+        let canonical = canonical.to_str().unwrap_or_default();
+        // On a local fixed disk, not a network share or removable media other machines or
+        // users could change behind the access lists.
+        let local = canonical.strip_prefix(r"\\?\").unwrap_or(canonical);
+        let root = local.get(..3).filter(|r| &r.as_bytes()[1..] == b":\\");
+        let fixed = !canonical.starts_with(r"\\?\UNC\")
+            && root.is_some_and(|r| unsafe { GetDriveTypeW(wide(r).as_ptr()) } == DRIVE_FIXED);
+        if !fixed {
+            return Err(refuse(
+                &absolute,
+                "this is not on a local fixed disk".into(),
+            ));
+        }
+        // What is checked below is what the service will open: the path as given must be the
+        // path the system resolves it to (no link, no short 8.3 name on the way).
+        if norm(local) != norm(&absolute.to_string_lossy()) {
+            return Err(refuse(
+                &absolute,
+                format!("this goes through a link or a short name to {local}; give that path"),
+            ));
+        }
+        for (i, p) in absolute.ancestors().enumerate() {
             let meta = std::fs::symlink_metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
             if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(refuse(p, "this is a link (reparse point)".into()));
             }
-        }
-        // No link on the way, so this is the same place; checked as the system resolves it.
-        let canonical =
-            std::fs::canonicalize(&absolute).map_err(|e| format!("{}: {e}", path.display()))?;
-        for (i, p) in canonical.ancestors().enumerate() {
             // The file and its folder: no other account may change either; further up: none
             // may rename or replace a folder.
             let rights = if i < 2 { WRITE_RIGHTS } else { REPLACE_RIGHTS };
@@ -1129,8 +1159,42 @@ mod tests {
             err.contains("policy.rhai") && err.contains("S-1-5-32-546"),
             "{err}"
         );
-        set_dacl(&file, &format!("D:P(A;;FA;;;{me})(A;;0x1200a9;;;BU)")).unwrap();
+        // An allow entry of a kind that is not parsed (here a conditional one) counts as a writer;
+        // a deny entry does not.
+        set_dacl(
+            &file,
+            &format!("D:P(A;;FA;;;{me})(XA;;FA;;;WD;(Member_of {{SID(BA)}}))"),
+        )
+        .unwrap();
+        let err = check(&file).unwrap_err();
+        assert!(err.contains("an access entry of type 9"), "{err}");
+        set_dacl(
+            &file,
+            &format!("D:P(D;;FA;;;BG)(A;;FA;;;{me})(A;;0x1200a9;;;BU)"),
+        )
+        .unwrap();
         check(&file).unwrap();
+        // The same path in another case or with a trailing separator is the same object.
+        let upper = PathBuf::from(dir.to_string_lossy().to_uppercase());
+        check(&upper).unwrap();
+        check(&PathBuf::from(format!("{}\\", dir.display()))).unwrap();
+        // A short (8.3) name on the way is another spelling the service would open: refused,
+        // where the volume makes short names.
+        use std::os::windows::process::CommandExt;
+        let short = std::process::Command::new("cmd")
+            .raw_arg(format!(
+                "/C for %I in (\"{}\") do @echo %~sI",
+                file.display()
+            ))
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if !short.is_empty() && !short.eq_ignore_ascii_case(&file.to_string_lossy()) {
+            let err = check(Path::new(&short)).unwrap_err();
+            assert!(err.contains("short name"), "{short}: {err}");
+        } else {
+            eprintln!("skipped the short-name part: no 8.3 name here");
+        }
         // A folder further up: creating folders in it is fine (as in C:\), renaming or
         // replacing what is in it is not; entries only for what is created below do not count.
         set_dacl(&base, &format!("{mine}(A;;0x4;;;AU)(A;OICIIO;FA;;;AU)")).unwrap();
@@ -1149,7 +1213,7 @@ mod tests {
             .is_ok_and(|o| o.status.success());
         if junction {
             let err = check(&link.join("policy.rhai")).unwrap_err();
-            assert!(err.contains("reparse point"), "{err}");
+            assert!(err.contains("through a link"), "{err}");
         }
         // A missing file fails the check instead of passing it.
         assert!(check(&dir.join("missing.rhai")).is_err());
