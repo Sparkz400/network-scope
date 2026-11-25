@@ -297,10 +297,13 @@ fn parse_spdx(doc: &Value) -> Sbom {
             described.push(text(r, "relatedSpdxElement"));
         }
     }
-    let subject = described
-        .iter()
-        .find_map(|id| packages.iter().find(|p| text(p, "SPDXID") == *id))
-        .copied();
+    // By id, the first package of each: neither list is bounded, and a search of the packages
+    // per described id took hours on a crafted file.
+    let mut by_id: std::collections::HashMap<String, &Value> = Default::default();
+    for p in &packages {
+        by_id.entry(text(p, "SPDXID")).or_insert(*p);
+    }
+    let subject = described.iter().find_map(|id| by_id.get(id)).copied();
     let external = |p: &Value, kinds: &[&str]| -> String {
         p.get("externalRefs")
             .and_then(Value::as_array)

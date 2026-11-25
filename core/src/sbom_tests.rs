@@ -206,6 +206,45 @@ fn hostile_and_broken_input_is_rejected_or_bounded() {
     assert!(!s.product.contains('\n') && s.product.chars().count() <= MAX_TEXT);
 }
 
+/// A crafted SPDX file at the component cap: as many DESCRIBES relationships as packages, all
+/// but the last naming a package that is not there. Searching the packages once per
+/// relationship took minutes for this file (and hours for a larger one); by id it is one pass.
+#[test]
+fn an_spdx_file_with_as_many_describes_relationships_as_packages_is_read_in_one_pass() {
+    let n = MAX_COMPONENTS;
+    let mut packages: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"SPDXID":"SPDXRef-p{i}","name":"c{i}","versionInfo":"1.{i}"}}"#))
+        .collect();
+    // An id that is used twice names its first package.
+    packages.push(format!(
+        r#"{{"SPDXID":"SPDXRef-p{}","name":"twice","versionInfo":"2"}}"#,
+        n - 1
+    ));
+    let relationships: Vec<String> = (0..n)
+        .map(|i| {
+            let to = if i + 1 == n { "p" } else { "absent" };
+            format!(
+                r#"{{"spdxElementId":"SPDXRef-DOCUMENT","relationshipType":"DESCRIBES","relatedSpdxElement":"SPDXRef-{to}{i}"}}"#
+            )
+        })
+        .collect();
+    let doc = format!(
+        r#"{{"spdxVersion":"SPDX-2.3","packages":[{}],"relationships":[{}]}}"#,
+        packages.join(","),
+        relationships.join(",")
+    );
+    let started = std::time::Instant::now();
+    let s = parse(doc.as_bytes(), &Subject::default()).unwrap().sbom;
+    let last = n - 1;
+    assert_eq!(
+        (s.product, s.version),
+        (format!("c{last}"), format!("1.{last}"))
+    );
+    assert_eq!(s.components.len(), n - 1, "every package but the subject");
+    // Well under a second; the bound only has to tell one pass from 400 million comparisons.
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
+
 #[test]
 fn import_writes_the_cache_and_skips_files_that_are_not_sboms() {
     let dir = std::env::temp_dir().join(format!("ns-sbom-{}", std::process::id()));
