@@ -51,6 +51,7 @@ const MIGRATIONS: &[Migration] = &[
     (4, migrate_baseline),
     (5, crate::research::migrate),
     (6, migrate_scan_hosts),
+    (7, migrate_alert_outbox),
 ];
 type Migration = (i64, fn(&Connection) -> rusqlite::Result<()>);
 /// Schema version of a database this program has fully upgraded.
@@ -94,6 +95,17 @@ fn migrate_baseline(c: &Connection) -> rusqlite::Result<()> {
 fn migrate_scan_hosts(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS scan_hosts(scan_id INTEGER NOT NULL, seq INTEGER NOT NULL, host TEXT NOT NULL, PRIMARY KEY(scan_id,seq)) WITHOUT ROWID;",
+    )
+}
+
+/// Migration 7: the alerts a monitor has not delivered yet (`notify::Outbox`), so that a restart
+/// does not lose them. A row belongs to a monitor (`scope`, its targets text) and one of its
+/// sinks (`sink`, a hash: a webhook URL can carry a token), not to a scan. [`prune`] and
+/// [`delete`] therefore leave the table alone; the monitor removes a row when the alert is
+/// delivered or its sink is no longer configured.
+fn migrate_alert_outbox(c: &Connection) -> rusqlite::Result<()> {
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS alert_outbox(id INTEGER PRIMARY KEY, scope TEXT NOT NULL, sink TEXT NOT NULL, alert TEXT NOT NULL);",
     )
 }
 
@@ -203,6 +215,11 @@ pub(crate) fn open_read(path: &Path) -> Result<Connection, String> {
             "device_key TEXT PRIMARY KEY, label TEXT NOT NULL, owner TEXT NOT NULL, criticality TEXT NOT NULL, tags TEXT NOT NULL, expected INTEGER NOT NULL, source TEXT NOT NULL, approved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL",
         ),
         ("baseline_meta", "key TEXT PRIMARY KEY, value TEXT NOT NULL"),
+        // What `load_outbox` selects from.
+        (
+            "alert_outbox",
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL, sink TEXT NOT NULL, alert TEXT NOT NULL",
+        ),
     ] {
         let present: bool = c
             .query_row(
@@ -788,6 +805,59 @@ pub fn list_alerts_since(
         .query_map(params![since, scope], alert_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+/// The alerts the monitor of `scope` (its targets text) has not delivered yet, oldest first,
+/// each with the key of its sink. Read without writing (see [`open_read`]). An entry that
+/// cannot be read as an alert is left out.
+pub(crate) fn load_outbox(
+    path: &Path,
+    scope: &str,
+) -> Result<Vec<(String, crate::monitor::Alert)>, String> {
+    let c = open_read(path)?;
+    let mut s = c
+        .prepare("SELECT sink,alert FROM alert_outbox WHERE scope=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = s
+        .query_map([scope], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut entries = vec![];
+    for row in rows {
+        let (sink, alert) = row.map_err(|e| e.to_string())?;
+        if let Ok(alert) = serde_json::from_str(&alert) {
+            entries.push((sink, alert));
+        }
+    }
+    Ok(entries)
+}
+/// Replaces what [`load_outbox`] returns for `scope` with `queues`: per sink key, its alerts
+/// in order.
+pub(crate) fn save_outbox(
+    path: &Path,
+    scope: &str,
+    queues: &[(String, &[crate::monitor::Alert])],
+) -> Result<(), String> {
+    let mut c = open(path)?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM alert_outbox WHERE scope=?1", [scope])
+        .map_err(|e| e.to_string())?;
+    for (sink, alerts) in queues {
+        for alert in *alerts {
+            tx.execute(
+                "INSERT INTO alert_outbox(scope,sink,alert) VALUES(?1,?2,?3)",
+                params![
+                    scope,
+                    sink,
+                    serde_json::to_string(alert).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 /// Identity keys whose values change on every scan without anything changing on the device
 /// (matched by suffix). Certificate expiry is still reported through `tls.<port>.expired`, which

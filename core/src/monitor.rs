@@ -696,7 +696,8 @@ pub fn run(
             eprintln!("Alert history not read ({e}); persisting alerts may repeat once");
         }
     }
-    let mut outbox = crate::notify::Outbox::default();
+    // What the last run could not deliver goes out with the first cycle.
+    let mut outbox = crate::notify::Outbox::restore(db, targets_text, &notify.sinks);
     let mut cycle = 0;
     let (mut failed, mut last_error) = (0, None);
     loop {
