@@ -738,6 +738,9 @@ pub fn route_of(dest: Ipv6Addr, link: &Link) -> Result<Route6, String> {
             Some(source),
         )
     } else if cfg!(target_os = "linux") {
+        // shortcut: one command per routed target here and on macOS/BSD (the kernel selects
+        // the route, and the command has a time limit); read the routing table once and select
+        // in this module if scans of many routed IPv6 targets are slow.
         parse_ip_route_get6(
             &run("ip", &["-6", "route", "get", &dest.to_string()])?,
             link,

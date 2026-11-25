@@ -1680,6 +1680,9 @@ pub fn neighbor6(
     if cfg!(windows) {
         return crate::ipv6::cached_mac(ip, link).or_else(|| resolve6(ip, link.index));
     }
+    // shortcut: an address that is not in the table costs a read before and one after the
+    // datagram, shared only with the lookups waiting at that moment; resolve the missing
+    // addresses of a scan in batches if many silent on-link targets make it slow.
     let look = || {
         table.mac(
             ip,

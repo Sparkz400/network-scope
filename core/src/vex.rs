@@ -464,6 +464,9 @@ impl Library {
         names: &[String],
         version: &str,
     ) -> Option<&Statement> {
+        // shortcut: walks every statement (as `lookup_purl` does), fine for a single lookup;
+        // the CycloneDX export asks per SBOM component, so hand it the `by_cve` index that
+        // `apply` uses once exports with a large VEX cache are slow.
         let about = self
             .statements
             .iter()

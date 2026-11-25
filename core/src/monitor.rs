@@ -741,6 +741,8 @@ fn restore_dedup(dedup: &mut Dedup, db: &Path, targets_text: &str, now: i64) -> 
 /// in the settings that are never stored, which no comparison looks at.
 struct Last {
     id: i64,
+    /// When it was saved (Unix seconds).
+    saved: i64,
     snapshot: Snapshot,
     devices: Vec<devices::Device>,
     /// The findings and what they were analysed with; `None` until a comparison needs them.
@@ -748,16 +750,22 @@ struct Last {
 }
 
 /// Makes `last` the newest complete scan of the targets in the inventory. What was kept from
-/// the last cycle stays while it still is that scan, which the inventory is asked by id:
-/// another program may have saved or deleted one. Otherwise the scan is read.
+/// the last cycle stays while it still is that scan, which the inventory is asked: another
+/// program may have saved or deleted one. Otherwise the scan is read.
 fn sync_last(db: &Path, targets: &str, last: &mut Option<Last>) -> Result<(), String> {
-    if let Some(kept) = last.as_ref()
-        && store::latest_complete_before_time(db, targets, i64::MAX)? == Some(kept.id)
-    {
-        return Ok(());
+    if let Some(kept) = last.as_ref() {
+        let newest = store::earlier_complete(db, targets, i64::MAX, store::Earlier::Any, 1)?;
+        // By id and time: the id of a deleted newest scan is given to the next one saved.
+        if newest
+            .first()
+            .is_some_and(|e| (e.id, e.timestamp) == (kept.id, kept.saved))
+        {
+            return Ok(());
+        }
     }
-    *last = store::latest_complete(db, targets, i64::MAX)?.map(|(id, _, snapshot)| Last {
+    *last = store::latest_complete(db, targets, i64::MAX)?.map(|(id, saved, snapshot)| Last {
         id,
+        saved,
         devices: devices::merge(&snapshot.hosts, &snapshot.observations),
         snapshot,
         findings: None,
@@ -976,7 +984,8 @@ pub fn run(
             // read is noted first: rules replaced while it runs then count as changed.
             let inputs = risk::Inputs::current();
             let findings = risk::analyze_snapshot(&snapshot);
-            let id = store::save_analysed(db, &snapshot, &findings, store::now())?;
+            let saved = store::now();
+            let id = store::save_analysed(db, &snapshot, &findings, saved)?;
             // The comparison is between two analyses with the same rules and feeds, on the same
             // day: what an import or the calendar changed in the findings of an unchanged host
             // is not a new finding. So the kept findings of the previous scan are used only
@@ -1044,6 +1053,7 @@ pub fn run(
                 // The scan the next cycle compares with (see `sync_last`).
                 last = Some(Last {
                     id,
+                    saved,
                     snapshot,
                     devices: cur_devices,
                     findings: Some((findings, inputs)),
@@ -2243,10 +2253,16 @@ mod tests {
         store::save(&db, &scan("elsewhere", true, &[1])).unwrap();
         store::save(&db, &scan("lab", false, &[2])).unwrap();
         assert_eq!(sync(&mut last), (Some((first, vec![22])), 0));
-        // Another program saved a scan of these targets, then deleted it again.
+        // Another program saved a scan of these targets.
         let second = store::save(&db, &scan("lab", true, &[22, 80])).unwrap();
         assert_eq!(sync(&mut last), (Some((second, vec![22, 80])), 1));
+        // It deleted it and saved another: that one gets the same id, and is not the same scan.
         store::delete(&db, second).unwrap();
+        let later = store::now() + 60;
+        let third = store::save_at(&db, &scan("lab", true, &[443]), later).unwrap();
+        assert_eq!(third, second);
+        assert_eq!(sync(&mut last), (Some((third, vec![443])), 1));
+        store::delete(&db, third).unwrap();
         assert_eq!(sync(&mut last), (Some((first, vec![22])), 1));
         store::delete(&db, first).unwrap();
         assert_eq!(sync(&mut last), (None, 0));
