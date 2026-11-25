@@ -1266,3 +1266,106 @@ fn only_one_function_transmits() {
     assert_eq!(code.matches("send_to(").count(), 1);
     assert!(!code.contains("TcpStream") && !code.contains("UdpSocket"));
 }
+
+/// The echo is paced like the scan: Safe Mode spacing, `--rate`, or nothing.
+#[test]
+fn the_gate_follows_safe_mode_and_the_rate() {
+    let take = |g: &Gate| g.try_take_for(PacketKind::Ipv6Echo, DETAIL).is_ok();
+    let log = Arc::new(crate::sendlog::SentLog::new());
+    let safe = gate(&Settings::default(), log.clone());
+    assert!(safe.is_safe());
+    assert!(take(&safe) && !take(&safe), "one echo, then a wait");
+    let rated = Settings {
+        safe: false,
+        max_rate: 10,
+        ..Settings::default()
+    };
+    let g = gate(&rated, log.clone());
+    assert!(!g.is_safe());
+    assert!(take(&g) && !take(&g), "a burst of one at 10 per second");
+    let free = Settings {
+        safe: false,
+        max_rate: 0,
+        ..Settings::default()
+    };
+    let g = gate(&free, log.clone());
+    assert!((0..100).all(|_| take(&g)));
+    // Every echo that took a token is in the scan's sent log.
+    assert_eq!(log.snapshot()[0].count, 102);
+}
+
+/// The step after a scan does nothing unless asked for, and a failed interface list is a note.
+#[test]
+fn after_scan_is_off_by_default_and_reports_what_it_found() {
+    let log = Arc::new(crate::sendlog::SentLog::new());
+    let mut hosts = vec![host("192.168.1.10", "02:00:00:00:00:01")];
+    let out = after_scan(
+        &Settings::default(),
+        log.clone(),
+        &mut hosts,
+        AddHosts::Fresh,
+    );
+    assert_eq!((out.added, out.observations.len()), (0, 0));
+    assert!(log.snapshot().is_empty() && hosts.len() == 1);
+    assert_eq!(
+        out.summary(),
+        "IPv6: 0 interface(s), 0 answered the multicast echo, 0 neighbor(s) in the cache, 0 host(s) added"
+    );
+    let os = Os {
+        interfaces: &|| Err("access denied".into()),
+        echo: &|_, _| panic!("no interface, no echo"),
+        cache: &|| Ok(vec![neighbor("fe80::7", "02:00:00:00:00:07", State::Delay)]),
+    };
+    let s = Settings {
+        ipv6_discover: true,
+        ..Settings::default()
+    };
+    let out = after_scan_with(&s, log, &mut hosts, AddHosts::Fresh, &os);
+    assert_eq!(out.found.notes, ["IPv6 discovery: access denied"]);
+    // Without an echo there is no "before" to compare with: the cache entry is no answer.
+    assert!(out.found.responders.is_empty());
+    assert_eq!(out.found.neighbors.len(), 1);
+    assert!(
+        out.summary().contains("1 neighbor(s) in the cache"),
+        "{}",
+        out.summary()
+    );
+}
+
+#[test]
+fn every_neighbour_state_is_read_and_unknown_ones_are_skipped() {
+    let linux = "\
+fe80::1 dev eth0 lladdr aa:bb:cc:dd:ee:01 DELAY
+fe80::2 dev eth0 lladdr aa:bb:cc:dd:ee:02 PROBE
+fe80::3 dev eth0 lladdr aa:bb:cc:dd:ee:03 NOARP
+";
+    let states: Vec<&str> = parse_ip_neigh6(linux)
+        .iter()
+        .map(|n| n.state.name())
+        .collect();
+    assert_eq!(states, ["delay", "probe"]);
+    let macos = "\
+Neighbor Linklayer Address Netif Expire St Flgs Prbs
+fe80::1%en0 0:1b:21:aa:bb:1 en0 9s D
+fe80::2%en0 0:1b:21:aa:bb:2 en0 9s P
+fe80::3%en0 0:1b:21:aa:bb:3 en0 9s I
+fe80::4%en0 0:1b:21:aa:bb:4 en0 9s
+";
+    let n = parse_ndp_an(macos);
+    let states: Vec<(&str, bool)> = n
+        .iter()
+        .map(|n| (n.state.name(), n.state.fresh()))
+        .collect();
+    assert_eq!(states, [("delay", true), ("probe", true)]);
+    // Lines that are not addresses are skipped, also in the interface lists.
+    let (interfaces, local) = parse_if_inet6(
+        "fe80000000000000000000000000001 02 40 20 80 eth0\n00000000000000000000000000000001 01 80 10 80 lo\n",
+    );
+    assert!(interfaces.is_empty());
+    assert_eq!(local, [v6("::1")]);
+    let (interfaces, local) = parse_ifconfig_inet6(
+        "en0: flags=8863\n\tinet6 not-an-address prefixlen 64\n\tinet6 fe80::1%en0 prefixlen 64 scopeid 0x4\n",
+    );
+    assert_eq!(local, [v6("fe80::1")]);
+    assert_eq!(interfaces[0].name, "en0");
+}
