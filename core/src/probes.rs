@@ -93,22 +93,18 @@ fn no_syn_retransmissions(socket: &tokio::net::TcpSocket, timeout: Duration) {
 }
 
 /// A loopback port that refuses connections, for tests, with the socket that keeps it that way
-/// (hold it until the test has connected). The socket is bound and never listens: Linux and
-/// Windows answer a SYN to it with a reset, and no listener of a test running at the same time
-/// can be given the port, which happened to ports that were bound and released again.
-/// Elsewhere the port is released as before (`None`): whether macOS refuses or drops such a
-/// SYN has not been tried.
+/// (hold it until the test has connected). The socket is bound and never listens: Linux,
+/// Windows and the BSD stacks (macOS) answer a SYN to it with a reset, and no listener of a test
+/// running at the same time can be given the port, which happened to ports that were bound and
+/// released again.
 #[cfg(test)]
-pub(crate) fn refused_port() -> (u16, Option<socket2::Socket>) {
+pub(crate) fn refused_port() -> (u16, socket2::Socket) {
     let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
     socket
         .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
         .unwrap();
     let port = socket.local_addr().unwrap().as_socket().unwrap().port();
-    (
-        port,
-        cfg!(any(windows, target_os = "linux")).then_some(socket),
-    )
+    (port, socket)
 }
 
 #[cfg(test)]
