@@ -1,13 +1,13 @@
 //! `findings ID [--min-severity low] [--sort exploited|severity] [--fail-on-findings]` and
 //! `findings ID --top N [--format text|json]` (risk scores and the "fix these first" list).
 use crate::{
-    risk, schema, score, store,
+    risk, schema, score,
     ui::{Ctx, args::min_severity, findings_exit, output},
 };
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     let opts = &ctx.opts;
-    let snapshot = store::load(&ctx.db, ctx.id(0)?)?;
+    let snapshot = ctx.scan(0)?;
     let min = min_severity(opts)?;
     let mut list: Vec<_> = risk::analyze_snapshot(&snapshot)
         .into_iter()
@@ -19,6 +19,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
         "severity" => crate::feeds::sort_by_severity(&mut list),
         _ => return Err("Sort must be exploited or severity".into()),
     }
+    // A finding the vendor says does not apply (VEX) does not fail a gate.
+    let open = list.iter().filter(|f| !f.cleared_by_vex()).count();
     if let Some(n) = opts.get("top") {
         let n: usize = n
             .parse()
@@ -32,12 +34,10 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             _ => return Err("Choose text or json".into()),
         };
         output(&text, opts)?;
-        ctx.status = findings_exit(ctx.fail_on_findings(), list.len());
+        ctx.status = findings_exit(ctx.fail_on_findings(), open);
         return Ok(());
     }
     output(&schema::list("findings", "findings", &list)?, opts)?;
-    // A finding the vendor says does not apply (VEX) does not fail a gate.
-    let open = list.iter().filter(|f| !f.cleared_by_vex()).count();
     ctx.status = findings_exit(ctx.fail_on_findings(), open);
     Ok(())
 }

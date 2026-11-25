@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, RwLock},
 };
 
 /// Size limits checked before a file is read (the catalog is about 1.5 MB, the plain EPSS CSV
@@ -494,45 +494,143 @@ pub fn status(feeds: &Feeds, path: &Path) -> serde_json::Value {
 
 // ---- Active feeds -------------------------------------------------------------------------
 
-fn slot() -> &'static RwLock<Option<Arc<Feeds>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<Feeds>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
+/// The process-wide copy of one cache file (`feeds.json`, `nvd.json`, `csaf.json`, `vex.json`,
+/// `sboms.json`): loaded on first use, and again by [`ActiveCache::refresh`] when the file has
+/// changed, so a monitor that runs for weeks uses what was imported in the meantime.
+pub(crate) struct ActiveCache<T> {
+    /// The name in messages ("Feeds", "NVD").
+    label: &'static str,
+    /// What it means that the default cache could not be loaded ("findings are not enriched").
+    without: &'static str,
+    default_path: fn() -> Option<PathBuf>,
+    load: fn(&Path) -> Result<T, String>,
+    slot: RwLock<Option<Loaded<T>>>,
 }
+struct Loaded<T> {
+    data: Arc<T>,
+    /// The file `data` is from; `None` when there is none to look at again (tests, no
+    /// configuration folder).
+    path: Option<PathBuf>,
+    stamp: Stamp,
+}
+/// Modification time and length of a file, `None` while it does not exist: tells a rewritten
+/// cache from the loaded one without reading it.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+impl<T: Default> ActiveCache<T> {
+    pub(crate) const fn new(
+        label: &'static str,
+        without: &'static str,
+        default_path: fn() -> Option<PathBuf>,
+        load: fn(&Path) -> Result<T, String>,
+    ) -> Self {
+        Self {
+            label,
+            without,
+            default_path,
+            load,
+            slot: RwLock::new(None),
+        }
+    }
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Option<Loaded<T>>> {
+        self.slot.write().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Makes the cache at `path` the active one; an error when it is missing or unreadable, and
+    /// the previous one then stays.
+    pub(crate) fn set(&self, path: &Path) -> Result<(), String> {
+        // Taken before the read: a file replaced in between counts as changed afterwards.
+        let stamp = stamp(path);
+        let data = Arc::new((self.load)(path)?);
+        *self.write() = Some(Loaded {
+            data,
+            path: Some(path.to_path_buf()),
+            stamp,
+        });
+        Ok(())
+    }
+    /// Forgets the loaded data: the next [`Self::get`] reads the default cache again.
+    pub(crate) fn clear(&self) {
+        *self.write() = None;
+    }
+    /// The active data: what [`Self::set`] loaded, else the default cache when it exists, else
+    /// nothing. An unreadable default cache is reported on stderr.
+    pub(crate) fn get(&self) -> Arc<T> {
+        if let Some(loaded) = &*self.slot.read().unwrap_or_else(|e| e.into_inner()) {
+            return loaded.data.clone();
+        }
+        // Tests never read the developer's own cache.
+        let path = (self.default_path)().filter(|_| !cfg!(test));
+        let stamp = path.as_deref().and_then(stamp);
+        let data = match &path {
+            Some(p) if stamp.is_some() => (self.load)(p).unwrap_or_else(|e| {
+                eprintln!("{}: {e}; {}", self.label, self.without);
+                T::default()
+            }),
+            _ => T::default(),
+        };
+        let loaded = Loaded {
+            data: Arc::new(data),
+            path,
+            stamp,
+        };
+        self.write().get_or_insert(loaded).data.clone()
+    }
+    /// Loads the file again when it changed (or appeared) since it was loaded. A file that is
+    /// gone or cannot be loaded now (half written, damaged, another version) keeps the loaded
+    /// data in use; that is said once, and the file is read again only after its next change.
+    pub(crate) fn refresh(&self) {
+        let (path, loaded) = match self.write().as_ref() {
+            Some(Loaded {
+                path: Some(path),
+                stamp,
+                ..
+            }) => (path.clone(), *stamp),
+            _ => return,
+        };
+        let now = stamp(&path);
+        if now.is_none() || now == loaded {
+            return;
+        }
+        let result = (self.load)(&path);
+        let mut slot = self.write();
+        let Some(active) = slot.as_mut().filter(|a| a.path.as_ref() == Some(&path)) else {
+            return;
+        };
+        active.stamp = now;
+        match result {
+            Ok(data) => active.data = Arc::new(data),
+            Err(e) => eprintln!("{}: {e}; the data loaded before stays in use", self.label),
+        }
+    }
+}
+
+static ACTIVE: ActiveCache<Feeds> = ActiveCache::new(
+    "Feeds",
+    "findings are not enriched",
+    default_path,
+    Feeds::load,
+);
 
 /// Makes the cache at `explicit` (`--feeds FILE`) the active feeds; an error when it is missing
 /// or unreadable. The previous feeds stay in place on error.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
-    let feeds = Feeds::load(explicit)?;
-    if let Ok(mut s) = slot().write() {
-        *s = Some(Arc::new(feeds));
-    }
-    Ok(())
+    ACTIVE.set(explicit)
 }
 
 /// The active feeds: the explicit cache, else the default cache when it exists, else nothing.
 /// An unreadable default cache is reported once on stderr. Tests never read the developer's
 /// own cache.
 pub fn active() -> Arc<Feeds> {
-    if let Some(f) = slot().read().ok().and_then(|s| s.clone()) {
-        return f;
-    }
-    #[cfg(test)]
-    let feeds = Arc::new(Feeds::default());
-    #[cfg(not(test))]
-    let feeds = Arc::new(match default_path().filter(|p| p.exists()) {
-        Some(p) => Feeds::load(&p).unwrap_or_else(|e| {
-            eprintln!("Feeds: {e}; findings are not enriched");
-            Feeds::default()
-        }),
-        None => Feeds::default(),
-    });
-    if let Ok(mut s) = slot().write() {
-        if let Some(existing) = s.as_ref() {
-            return existing.clone();
-        }
-        *s = Some(feeds.clone());
-    }
-    feeds
+    ACTIVE.get()
+}
+
+/// Reads the cache again when its file changed since it was loaded (an import while a monitor
+/// runs). Never an error: a file that cannot be read keeps the loaded feeds in use.
+pub fn refresh() {
+    ACTIVE.refresh()
 }
 
 /// Enriches the findings from the active feeds and ranks them. A no-op without feeds: the
@@ -634,6 +732,55 @@ mod tests {
     }
     fn ids(list: &[Finding]) -> Vec<&str> {
         list.iter().map(|f| f.id.as_str()).collect()
+    }
+
+    /// What a monitor relies on between two cycles: a cache that was imported again is read
+    /// again, and one that cannot be read right now changes nothing.
+    #[test]
+    fn an_active_cache_follows_its_file_and_keeps_its_data_when_the_file_is_broken() {
+        let dir = std::env::temp_dir().join(format!("ns-active-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cache.txt");
+        let cache = ActiveCache::<String>::new(
+            "Test",
+            "nothing is used",
+            || None,
+            |path| match std::fs::read_to_string(path) {
+                Ok(text) if text.starts_with("cache") => Ok(text),
+                Ok(_) => Err("not a cache".into()),
+                Err(e) => Err(e.to_string()),
+            },
+        );
+        // Nothing is loaded yet, and a file that is not there is not made active.
+        cache.refresh();
+        assert!(cache.set(&file).is_err());
+        std::fs::write(&file, "cache 1").unwrap();
+        cache.set(&file).unwrap();
+        let first = cache.get();
+        assert_eq!(*first, "cache 1");
+        // Unchanged: not read again.
+        cache.refresh();
+        assert!(Arc::ptr_eq(&first, &cache.get()));
+        // Imported again (the length differs, so the test does not depend on the clock).
+        std::fs::write(&file, "cache of the second import").unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache of the second import");
+        // Half written, then gone: the loaded data stays in use.
+        std::fs::write(&file, "{").unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache of the second import");
+        std::fs::remove_file(&file).unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache of the second import");
+        // Complete again.
+        std::fs::write(&file, "cache, third").unwrap();
+        cache.refresh();
+        assert_eq!(*cache.get(), "cache, third");
+        // Forgotten: tests have no default cache, so nothing is active.
+        cache.clear();
+        assert_eq!(*cache.get(), "");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -696,10 +696,20 @@ fn send_partial(ctx: &Ctx, host: Host) {
     }
 }
 
-/// A port was found open: tell the consumer now, with every port found open so far.
+/// Open ports of one host that are announced one by one and get service identification. A host
+/// with more (a captive portal, proxy or tarpit that completes every handshake) keeps its full
+/// list of open ports. Without the limit, 65,535 open ports are as many provisional hosts,
+/// each carrying every port so far (gigabytes), and as many banner waits (days).
+const MANY_OPEN_PORTS: usize = 100;
+
+/// A port was found open: tell the consumer now, with every port found open so far. Beyond
+/// [`MANY_OPEN_PORTS`] nothing more is announced: the finished host carries the full list.
 fn announce_open(ctx: &Ctx, base: &Host, live: &Mutex<Vec<u16>>, port: u16) {
     let open = {
         let mut list = live.lock().unwrap_or_else(|e| e.into_inner());
+        if list.len() >= MANY_OPEN_PORTS {
+            return;
+        }
         list.push(port);
         list.sort_unstable();
         list.clone()
@@ -708,6 +718,18 @@ fn announce_open(ctx: &Ctx, base: &Host, live: &Mutex<Vec<u16>>, port: u16) {
     host.responding = true;
     host.open = open;
     send_partial(ctx, host);
+}
+
+/// Cuts the ports that get service identification to the first [`MANY_OPEN_PORTS`]. When that
+/// leaves ports out, the note for the host that says so (`open` is how many it has open).
+fn cap_service_ports(ports: &mut Vec<u16>, open: usize) -> Option<String> {
+    if ports.len() <= MANY_OPEN_PORTS {
+        return None;
+    }
+    ports.truncate(MANY_OPEN_PORTS);
+    Some(format!(
+        "{open} open ports (a proxy or tarpit that accepts every connection?); services were identified on the first {MANY_OPEN_PORTS} only"
+    ))
 }
 
 /// Outcome of the ARP sweep for one host.
@@ -1211,7 +1233,8 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             (if s.safe { 1 } else { 8 }).min(gov.limit()),
         ));
         let mut tasks = JoinSet::new();
-        let ports = crate::plan::service_ports(&h.open, &s);
+        let mut ports = crate::plan::service_ports(&h.open, &s);
+        let capped = cap_service_ports(&mut ports, h.open.len());
         for port in ports {
             if gov.paused() {
                 break;
@@ -1284,6 +1307,10 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             carried.push(format!("svc:{}", carried_ports.join(",")));
         }
         flush_backoff_notes(&gov, &mut h);
+        // First, like a back-off note: failed identifications may have filled the list.
+        if let Some(text) = capped {
+            note_first(&mut h, text);
+        }
     }
     // JARM: ten extra hellos per port that service detection found to speak TLS. Opt-in, never
     // in Safe Mode, one port at a time, every connection through the rate gate, and never on
@@ -1686,6 +1713,45 @@ mod tests {
         }
     }
 
+    /// A host that accepts every port: the provisional hosts and the service identification
+    /// stop at the limit, and the host says so.
+    #[test]
+    fn a_host_with_very_many_open_ports_is_announced_and_identified_up_to_a_limit() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = Ctx {
+            partial: Some(tx),
+            ..test_ctx()
+        };
+        let live = Mutex::new(vec![]);
+        for port in (1..=u16::MAX).rev() {
+            announce_open(&ctx, &host("10.0.0.1"), &live, port);
+        }
+        drop(ctx);
+        let announced: Vec<Vec<u16>> = rx
+            .iter()
+            .map(|event| match event {
+                Event::Partial(h) => h.open,
+                _ => panic!("only provisional hosts are sent"),
+            })
+            .collect();
+        assert_eq!(announced.len(), MANY_OPEN_PORTS);
+        assert_eq!(announced[MANY_OPEN_PORTS - 1].len(), MANY_OPEN_PORTS);
+        assert!(announced[MANY_OPEN_PORTS - 1].is_sorted());
+
+        let open: Vec<u16> = (1..=u16::MAX).collect();
+        let eligible = crate::plan::service_ports(&open, &Settings::default());
+        let mut ports = eligible.clone();
+        let note = cap_service_ports(&mut ports, open.len()).unwrap();
+        assert_eq!(ports, eligible[..MANY_OPEN_PORTS]);
+        assert_eq!(
+            note,
+            "65535 open ports (a proxy or tarpit that accepts every connection?); services were identified on the first 100 only"
+        );
+        // At the limit nothing is cut and nothing is said.
+        assert_eq!(cap_service_ports(&mut ports, MANY_OPEN_PORTS), None);
+        assert_eq!(ports.len(), MANY_OPEN_PORTS);
+    }
+
     #[test]
     fn scan_analysis_stores_reasons_and_confidence_for_os_and_device_type() {
         let mut h = host("10.0.0.1");
@@ -1842,13 +1908,8 @@ mod tests",
     fn adaptive_connect_scan_classifies_like_the_default() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let open = listener.local_addr().unwrap().port();
-        // Closed ports: bind and release, so nothing listens there.
-        let closed: Vec<u16> = (0..6)
-            .map(|_| {
-                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-                l.local_addr().unwrap().port()
-            })
-            .collect();
+        let reserved: Vec<_> = (0..6).map(|_| crate::probes::refused_port()).collect();
+        let closed: Vec<u16> = reserved.iter().map(|r| r.0).collect();
         let mut ports = closed.clone();
         ports.push(open);
         // More ports than the pilot batch, so the RTT-derived timeout is used too.
@@ -1872,10 +1933,7 @@ mod tests",
     async fn connect_probe_records_an_rtt_sample_only_for_answers() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let open = listener.local_addr().unwrap().port();
-        let closed = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
+        let (closed, _reserved) = crate::probes::refused_port();
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         let s = Settings {
             safe: false,
@@ -2009,12 +2067,8 @@ mod tests",
             .map(|l| l.local_addr().unwrap().port())
             .collect();
         // Many closed ports (refused on Linux, silent after ~2 s on Windows loopback).
-        let closed: Vec<u16> = (0..60)
-            .map(|_| {
-                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-                l.local_addr().unwrap().port()
-            })
-            .collect();
+        let reserved: Vec<_> = (0..60).map(|_| crate::probes::refused_port()).collect();
+        let closed: Vec<u16> = reserved.iter().map(|r| r.0).collect();
         let mut ports = [open.clone(), closed].concat();
         ports.sort_unstable();
         ports.dedup();
@@ -2105,15 +2159,8 @@ mod tests",
             .map(|l| l.local_addr().unwrap().port())
             .collect();
         open.sort_unstable();
-        let closed: Vec<u16> = (0..6)
-            .map(|_| {
-                std::net::TcpListener::bind("127.0.0.1:0")
-                    .unwrap()
-                    .local_addr()
-                    .unwrap()
-                    .port()
-            })
-            .collect();
+        let reserved: Vec<_> = (0..6).map(|_| crate::probes::refused_port()).collect();
+        let closed: Vec<u16> = reserved.iter().map(|r| r.0).collect();
         let mut ports = [open.clone(), closed.clone()].concat();
         ports.sort_unstable();
         ports.dedup();

@@ -58,7 +58,10 @@ fn approve(ctx: &mut Ctx) -> Result<(), String> {
         .get(1)
         .map(|id| id.parse::<i64>().map_err(|_| "Invalid scan ID".to_string()))
         .transpose()?;
-    let a = baseline::approve(&ctx.db, scan, store::now())?;
+    let a = baseline::approve(&ctx.db, scan, store::now()).map_err(|e| match scan {
+        Some(id) => crate::ui::scan_error(id, e),
+        None => e,
+    })?;
     progress(
         &ctx.opts,
         format_args!(

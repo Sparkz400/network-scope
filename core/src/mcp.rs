@@ -819,7 +819,7 @@ impl Server {
     /// says what is wrong.
     fn load(&self, id: i64) -> Result<store::Snapshot, String> {
         store::load(&self.cfg.db, id).map_err(|e| {
-            if e == rusqlite::Error::QueryReturnedNoRows.to_string() {
+            if store::is_missing_scan(&e) {
                 format!("No scan with ID {id}")
             } else {
                 format!("Could not read scan {id}: {e}")

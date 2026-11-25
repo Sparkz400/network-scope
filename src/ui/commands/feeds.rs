@@ -578,6 +578,17 @@ mod tests {
             ExitCode::Success,
             "cleared findings do not fail the gate"
         );
+        // The same gate with --top: the cleared findings are scored and listed, not counted.
+        let mut top = args(&["findings", "1", "--db", &db_path, "--csaf", &csaf_path]);
+        top.extend(args(&["--vex", &vex_path, "--min-severity", "high"]));
+        top.extend(args(&[
+            "--top",
+            "5",
+            "--fail-on-findings",
+            "--output",
+            &out_path,
+        ]));
+        assert_eq!(run(&top).unwrap(), ExitCode::Success);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

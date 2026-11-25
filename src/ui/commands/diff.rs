@@ -15,11 +15,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
     } else {
         None
     };
-    let report = store::diff_report(
-        &store::load(&ctx.db, ctx.id(0)?)?,
-        &store::load(&ctx.db, ctx.id(1)?)?,
-        &ignore,
-    )?;
+    let report = store::diff_report(&ctx.scan(0)?, &ctx.scan(1)?, &ignore)?;
     output(&store::render_diff(&report, format)?, opts)?;
     if let Some(min) = gate {
         ctx.status = findings_exit(true, new_findings_at_or_above(&report, min));

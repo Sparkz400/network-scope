@@ -114,8 +114,8 @@ fn error_text(error: &ErrorBuffer) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 /// The MAC address and the first IPv4 address of a capture interface of [`interfaces`], as
-/// text; either is empty when the interface has none, and `None` means the system was not
-/// asked (see `platform::interface_addresses`: Windows only so far).
+/// text; either is empty when the interface has none, and `None` means the system has no
+/// interface of that name (see `platform::interface_addresses`).
 pub fn interface_addresses(name: &str) -> Option<(String, String)> {
     crate::platform::interface_addresses(name)
 }

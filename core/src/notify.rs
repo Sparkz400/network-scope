@@ -17,6 +17,7 @@ use rustls_platform_verifier::Verifier;
 use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -160,6 +161,11 @@ impl Sink {
             transport,
             facility: 16,
         }))
+    }
+    /// What a stored queue knows the sink by ([`Outbox::restore`]): a hash of its label, since
+    /// a webhook URL can carry a token.
+    fn key(&self) -> String {
+        crate::provenance::hash(self.label().as_bytes())
     }
     fn label(&self) -> String {
         match self {
@@ -674,14 +680,70 @@ pub const MAX_PENDING: usize = 1000;
 /// limit of the cycle was reached) is kept and sent first on the next call, in order. A sink
 /// that fails gets every alert at least once when it is back; a syslog sink that failed in the
 /// middle of a batch gets the batch again.
-// shortcut: kept in memory, so a monitor that is restarted forgets undelivered alerts (they are
-// in the inventory, `alerts`); persist the queue next to the alerts when that matters.
+///
+/// A monitor's queue ([`Outbox::restore`]) is also kept in its inventory, so a restart does not
+/// lose it. The queue in memory is the one that counts: a write that fails (the inventory is
+/// locked or gone, which is when alerts matter most) is reported and tried again with the next
+/// call, and nothing is dropped for it. The stored copy is written after the sending, so a
+/// monitor that is killed in between sends those alerts once more when it is back.
 #[derive(Default)]
 pub struct Outbox {
     /// Per sink, by position in the `sinks` of every call.
     pending: Vec<Vec<Alert>>,
+    /// The inventory and the monitor's targets text the queue is stored under; `None`: memory
+    /// only.
+    stored: Option<(PathBuf, String)>,
+    /// The stored copy is not what `pending` holds: its last write failed, or it has entries
+    /// that were dropped when it was read.
+    stale: bool,
 }
 impl Outbox {
+    /// The queue that the monitor of `scope` (its targets text) left in the inventory `db`, for
+    /// the sinks it has now. A sink is recognised by [`Sink::key`], not by its position: the
+    /// list may have changed. What was kept for a sink that is no longer configured is dropped.
+    /// An inventory that cannot be read starts with an empty queue.
+    pub fn restore(db: &Path, scope: &str, sinks: &[Sink]) -> Self {
+        let mut outbox = Self {
+            pending: vec![vec![]; sinks.len()],
+            stored: Some((db.to_path_buf(), scope.to_string())),
+            stale: false,
+        };
+        let keys: Vec<String> = sinks.iter().map(Sink::key).collect();
+        match crate::store::load_outbox(db, scope) {
+            Ok(entries) => {
+                for (key, alert) in entries {
+                    match keys.iter().position(|k| *k == key) {
+                        Some(sink) => outbox.pending[sink].push(alert),
+                        // Its sink is gone: the next write leaves the entry out.
+                        None => outbox.stale = true,
+                    }
+                }
+            }
+            Err(e) => eprintln!("Undelivered alerts not read ({e}); the queue starts empty"),
+        }
+        outbox
+    }
+    /// Writes the queue to the inventory it was restored from (see the type: best effort).
+    fn store(&mut self, sinks: &[Sink]) {
+        let Some((db, scope)) = &self.stored else {
+            return;
+        };
+        let queues: Vec<(String, &[Alert])> = sinks
+            .iter()
+            .zip(&self.pending)
+            .filter(|(_, pending)| !pending.is_empty())
+            .map(|(sink, pending)| (sink.key(), pending.as_slice()))
+            .collect();
+        self.stale = match crate::store::save_outbox(db, scope, &queues) {
+            Ok(()) => false,
+            Err(e) => {
+                eprintln!(
+                    "Undelivered alerts not saved ({e}); they stay in memory and are saved with the next cycle"
+                );
+                true
+            }
+        };
+    }
     /// One warning per sink that failed, with what is kept for the next call.
     pub fn deliver(&mut self, sinks: &[Sink], alerts: &[Alert], timeout: Duration) -> Vec<String> {
         self.deliver_with(sinks, alerts, timeout, &platform_tls_config)
@@ -695,15 +757,20 @@ impl Outbox {
     ) -> Vec<String> {
         self.pending.resize_with(sinks.len(), Vec::new);
         let mut warnings = vec![];
+        // Whether a queue differs from what it held before this call (the stored copy).
+        let mut changed = false;
         for (sink, pending) in sinks.iter().zip(&mut self.pending) {
+            let kept = pending.len();
             pending.extend_from_slice(alerts);
             if pending.is_empty() {
                 continue;
             }
             let Err((sent, e)) = send(sink, pending, timeout, tls) else {
                 pending.clear();
+                changed |= kept > 0;
                 continue;
             };
+            changed |= sent > 0 || !alerts.is_empty();
             pending.drain(..sent);
             let dropped = pending.len().saturating_sub(MAX_PENDING);
             pending.drain(..dropped);
@@ -717,6 +784,9 @@ impl Outbox {
                     String::new()
                 }
             ));
+        }
+        if changed || self.stale {
+            self.store(sinks);
         }
         warnings
     }
@@ -1059,6 +1129,93 @@ pub(crate) mod tests {
             serde_json::from_str::<Alert>(body).unwrap().message
         });
         assert_eq!(messages, ["one", "one", "two"]);
+    }
+
+    /// A webhook receiver on a loopback port that answers one request per status, in order.
+    fn receiver(
+        statuses: &'static [&'static str],
+    ) -> (Vec<Sink>, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            statuses
+                .iter()
+                .map(|status| {
+                    let (mut c, _) = listener.accept().unwrap();
+                    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let request = serve_http(&mut c, status);
+                    let body = request.split("\r\n\r\n").nth(1).unwrap();
+                    serde_json::from_str::<Alert>(body).unwrap().message
+                })
+                .collect()
+        });
+        let sink = Sink::webhook(&format!("http://127.0.0.1:{port}/hook?token=secret")).unwrap();
+        (vec![sink], server)
+    }
+
+    #[test]
+    fn a_restarted_monitor_sends_what_the_last_run_could_not_deliver() {
+        let dir = std::env::temp_dir().join(format!("ns-outbox-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("inventory.sqlite");
+        let stored = |scope: &str| crate::store::load_outbox(&db, scope).unwrap();
+        let (scope, t) = ("10.0.0.0/24", Duration::from_secs(2));
+        // The receiver is down for the first run and back for the second.
+        let (sinks, server) = receiver(&["500 Internal Server Error", "204 No Content"]);
+        let mut outbox = Outbox::restore(&db, scope, &sinks);
+        assert!(!db.exists(), "nothing to keep: nothing is written");
+        let w = outbox.deliver(&sinks, &[alert("new-device", "one")], t);
+        assert!(
+            w.len() == 1 && w[0].contains("kept for the next cycle"),
+            "{w:?}"
+        );
+        let kept = stored(scope);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].1.message, "one");
+        // The sink is stored as a hash: neither the address nor the token is in the file.
+        assert_eq!(kept[0].0, sinks[0].key());
+        assert!(kept[0].0.starts_with("sha256:") && !kept[0].0.contains("secret"));
+        let file = String::from_utf8_lossy(&std::fs::read(&db).unwrap()).into_owned();
+        assert!(!file.contains("token=secret") && !file.contains("127.0.0.1"));
+        // A monitor of other targets on the same inventory has a queue of its own.
+        let mut other = Outbox::restore(&db, "192.168.1.0/24", &sinks);
+        assert!(other.deliver(&sinks, &[], t).is_empty());
+        assert_eq!(stored(scope).len(), 1);
+        // The monitor is restarted: the queue comes from the inventory and goes out.
+        drop(outbox);
+        let mut outbox = Outbox::restore(&db, scope, &sinks);
+        assert!(outbox.deliver(&sinks, &[], t).is_empty());
+        assert!(stored(scope).is_empty());
+        assert_eq!(server.join().unwrap(), ["one", "one"]);
+        // What was kept for a sink that is no longer configured is dropped, not sent elsewhere.
+        let gone = [alert("port-opened", "for the old receiver")];
+        crate::store::save_outbox(&db, scope, &[("sha256:gone".into(), &gone[..])]).unwrap();
+        let mut outbox = Outbox::restore(&db, scope, &sinks);
+        assert!(outbox.deliver(&sinks, &[], t).is_empty());
+        assert!(stored(scope).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_outbox_that_cannot_be_saved_keeps_its_alerts_in_memory() {
+        // A file where the inventory's folder should be: every write of the queue fails.
+        let blocker =
+            std::env::temp_dir().join(format!("ns-outbox-blocked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&blocker);
+        let _ = std::fs::remove_file(&blocker);
+        std::fs::write(&blocker, b"").unwrap();
+        let db = blocker.join("inventory.sqlite");
+        let (sinks, server) = receiver(&["500 Internal Server Error", "204 No Content"]);
+        let mut outbox = Outbox::restore(&db, "10.0.0.0/24", &sinks);
+        let t = Duration::from_secs(2);
+        let w = outbox.deliver(&sinks, &[alert("new-device", "one")], t);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(outbox.stale && outbox.pending[0].len() == 1);
+        assert!(outbox.deliver(&sinks, &[], t).is_empty());
+        assert!(outbox.pending[0].is_empty());
+        assert_eq!(server.join().unwrap(), ["one", "one"]);
+        std::fs::remove_file(&blocker).unwrap();
     }
 
     // The macOS verifier (Security.framework) has strict rules for test certificates (validity

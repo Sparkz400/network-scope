@@ -14,7 +14,7 @@ pub(super) fn devices(ctx: &mut Ctx) -> Result<(), String> {
             opts,
         );
     }
-    let snapshot = store::load(db, ctx.id(0)?)?;
+    let snapshot = ctx.scan(0)?;
     let mut devices = devices::merge(&snapshot.hosts, &snapshot.observations);
     // The stable device key: what the inventory recognises the device as across scans.
     let matches = store::resolve_devices(db, &devices)?;
@@ -30,7 +30,7 @@ pub(super) fn devices(ctx: &mut Ctx) -> Result<(), String> {
 
 pub(super) fn topology(ctx: &mut Ctx) -> Result<(), String> {
     let opts = &ctx.opts;
-    let snapshot = store::load(&ctx.db, ctx.id(0)?)?;
+    let snapshot = ctx.scan(0)?;
     let graph = topology::build(&snapshot.hosts);
     match opts.get("format").map(String::as_str).unwrap_or("ascii") {
         "ascii" => output(topology::ascii(&graph).trim_end(), opts),

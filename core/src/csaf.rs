@@ -62,7 +62,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    sync::Arc,
 };
 
 /// Largest advisory file accepted (real ones are a few hundred KB).
@@ -1191,44 +1191,24 @@ pub fn status(csaf: &Csaf, path: &Path) -> Value {
 
 // ---- Active advisories ---------------------------------------------------------------------
 
-fn slot() -> &'static RwLock<Option<Arc<Csaf>>> {
-    static SLOT: OnceLock<RwLock<Option<Arc<Csaf>>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(None))
-}
+static ACTIVE: crate::feeds::ActiveCache<Csaf> =
+    crate::feeds::ActiveCache::new("CSAF", "advisories are not used", default_path, Csaf::load);
 
 /// Makes the cache at `explicit` (`--csaf FILE`) the active advisories; an error when it is
 /// missing or unreadable.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
-    let csaf = Csaf::load(explicit)?;
-    if let Ok(mut s) = slot().write() {
-        *s = Some(Arc::new(csaf));
-    }
-    Ok(())
+    ACTIVE.set(explicit)
 }
 
 /// The active advisories: the explicit cache, else the default cache when it exists, else
 /// nothing. Tests never read the developer's own cache.
 pub fn active() -> Arc<Csaf> {
-    if let Some(c) = slot().read().ok().and_then(|s| s.clone()) {
-        return c;
-    }
-    #[cfg(test)]
-    let csaf = Arc::new(Csaf::default());
-    #[cfg(not(test))]
-    let csaf = Arc::new(match default_path().filter(|p| p.exists()) {
-        Some(p) => Csaf::load(&p).unwrap_or_else(|e| {
-            eprintln!("CSAF: {e}; advisories are not used");
-            Csaf::default()
-        }),
-        None => Csaf::default(),
-    });
-    if let Ok(mut s) = slot().write() {
-        if let Some(existing) = s.as_ref() {
-            return existing.clone();
-        }
-        *s = Some(csaf.clone());
-    }
-    csaf
+    ACTIVE.get()
+}
+
+/// Reads the cache again when its file changed since it was loaded (see `feeds::refresh`).
+pub fn refresh() {
+    ACTIVE.refresh()
 }
 
 #[cfg(test)]

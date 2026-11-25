@@ -27,7 +27,9 @@ fn workbench_snapshots(ctx: &Ctx, index: usize) -> Result<Vec<store::Snapshot>, 
     } else {
         store::list(&ctx.db)?.into_iter().map(|e| e.id).collect()
     };
-    ids.iter().map(|id| store::load(&ctx.db, *id)).collect()
+    ids.iter()
+        .map(|id| crate::ui::load_scan(&ctx.db, *id))
+        .collect()
 }
 
 /// `fingerprints groups [SCAN_ID]`: the unidentified banners, grouped by similarity (the
@@ -132,7 +134,7 @@ fn export_unknown(ctx: &mut Ctx) -> Result<(), String> {
     };
     let snapshots = ids
         .iter()
-        .map(|id| store::load(&ctx.db, *id))
+        .map(|id| crate::ui::load_scan(&ctx.db, *id))
         .collect::<Result<Vec<_>, _>>()?;
     let export = unknown_banners(&snapshots);
     progress(

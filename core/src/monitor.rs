@@ -696,7 +696,8 @@ pub fn run(
             eprintln!("Alert history not read ({e}); persisting alerts may repeat once");
         }
     }
-    let mut outbox = crate::notify::Outbox::default();
+    // What the last run could not deliver goes out with the first cycle.
+    let mut outbox = crate::notify::Outbox::restore(db, targets_text, &notify.sinks);
     let mut cycle = 0;
     let (mut failed, mut last_error) = (0, None);
     loop {
@@ -704,6 +705,13 @@ pub fn run(
             return Ok(());
         }
         cycle += 1;
+        // What was imported since the last cycle is used from this one on. Not part of the
+        // cycle's result: a cache that cannot be read keeps the loaded data, and the cycle runs.
+        crate::feeds::refresh();
+        crate::nvd::refresh();
+        crate::csaf::refresh();
+        crate::vex::refresh();
+        crate::sbom::refresh();
         let result = (|| -> Result<(), String> {
             let mut observations = vec![];
             let mut notices = vec![];

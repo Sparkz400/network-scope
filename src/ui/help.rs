@@ -140,7 +140,9 @@ Scan options:
   --favicon       one GET /favicon.ico per web port, hashed (Shodan-compatible) into http.PORT.favicon_mmh3
                   (with --services --fast; not on hosts the scan found industrial)
   --dry-run       scan, monitor, trace, dcp, wol: print per host which packet types would be sent
-                  (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing
+                  (ports, UDP probe names, TLS/SMB, OT requests with function codes, ...) and send nothing;
+                  history prune: say how many scans would be deleted and delete nothing;
+                  service install: print the service command line and install nothing
   --record FILE.pcapng  scan: keep the payloads the scan sent and received (OT requests and replies, service
                   probes, HTTP) as pcapng. An application-level record, not a wire capture
   --record-wire   with --record: capture the real frames of the scan instead (Npcap/libpcap; --interface, or the
@@ -467,6 +469,16 @@ mod tests {
             assert!(!has(name, option), "{name} --{option}");
         }
         assert!(!command("history").unwrap().contains("Safe Mode"));
+        // --dry-run does something else for these two, and their help says what.
+        for (name, does) in [
+            (
+                "history",
+                "history prune: say how many scans would be deleted",
+            ),
+            ("service", "service install: print the service command line"),
+        ] {
+            assert!(command(name).unwrap().contains(does), "{name}");
+        }
     }
 
     #[test]
