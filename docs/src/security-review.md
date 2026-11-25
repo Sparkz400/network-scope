@@ -14,7 +14,7 @@ This page records the security reviews of Network Scope: what was reviewed, how,
   3. what the program sends and stores: webhooks, syslog, the update check, secrets, privileges, the OT and printer safety rules, the CI and release pipeline.
 - Where a finding depended on the system, it was measured on Windows 11: memory use of a crafted import, and the access lists of `C:\ProgramData`, `C:\` and the service registry key (`icacls`, `sc sdshow`, `Get-Acl`).
 - **Tools** that run on every change and were part of the review: clippy with warnings as errors, CodeQL, `cargo deny` and `cargo audit`, gitleaks, and fuzzing of every parser of untrusted input (ClusterFuzzLite).
-- **Human review.** The maintainer read the findings, the fixes and this page. *Approval: pending.*
+- **Human review.** The maintainer read the findings, the fixes and this page, and approved the review on 2026-11-25.
 
 ### Findings
 
