@@ -522,18 +522,59 @@ pub fn mac_on_link(neighbors: &[Neighbor], ip: Ipv6Addr, link: &Link) -> Option<
         .map(|n| n.mac.clone())
 }
 
-/// The MAC of `ip` in the OS neighbour cache on the interface `link` (Windows
-/// `GetIpNetTable2`, Linux `ip -6 neigh show`; none elsewhere). Stale entries count: they are a
-/// MAC source, as the IPv4 lookup's are. Reading the cache sends nothing.
-pub fn cached_mac(ip: Ipv6Addr, link: &Link) -> Option<String> {
-    let neighbors = if cfg!(windows) {
-        win::neighbor_rows().ok()?
+/// The OS neighbour cache (Windows `GetIpNetTable2`, Linux `ip -6 neigh show`, else `ndp -an`),
+/// `None` when it cannot be read. Stale entries count: they are a MAC source, as the IPv4
+/// lookup's are. Reading the cache sends nothing.
+pub fn read_neighbors() -> Option<Vec<Neighbor>> {
+    if cfg!(windows) {
+        win::neighbor_rows().ok()
     } else if cfg!(target_os = "linux") {
-        parse_ip_neigh6(&run("ip", &["-6", "neigh", "show"]).ok()?)
+        Some(parse_ip_neigh6(&run("ip", &["-6", "neigh", "show"]).ok()?))
     } else {
-        parse_ndp_an(&run("ndp", &["-an"]).ok()?)
-    };
-    mac_on_link(&neighbors, ip, link)
+        Some(parse_ndp_an(&run("ndp", &["-an"]).ok()?))
+    }
+}
+
+/// The MAC of `ip` in the OS neighbour cache on the interface `link`.
+pub fn cached_mac(ip: Ipv6Addr, link: &Link) -> Option<String> {
+    mac_on_link(&read_neighbors()?, ip, link)
+}
+
+/// The neighbour cache as one SYN scan has read it. On Linux and macOS a read starts a process
+/// and returns the whole table, so it is shared instead of repeated for every target: the
+/// table that was read last answers for every address it has, and for every lookup that began
+/// before it was read.
+#[derive(Default)]
+pub struct NeighborTable(std::sync::Mutex<Option<(Instant, Vec<Neighbor>)>>);
+
+impl NeighborTable {
+    /// The MAC of `ip` on `link`, from the table as it was at `since` or later; `read` (see
+    /// [`read_neighbors`]) is called when the table at hand is older and does not have the
+    /// address. A read that fails counts for those who waited for it, and keeps what was known.
+    pub fn mac(
+        &self,
+        ip: Ipv6Addr,
+        link: &Link,
+        since: Instant,
+        read: impl FnOnce() -> Option<Vec<Neighbor>>,
+    ) -> Option<String> {
+        // Held while reading: the lookups that wait here are answered by that one read.
+        let mut table = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, neighbors)) = table.as_ref() {
+            let mac = mac_on_link(neighbors, ip, link);
+            if mac.is_some() || *at >= since {
+                return mac;
+            }
+        }
+        let at = Instant::now();
+        let fresh = read();
+        let (read_at, neighbors) = table.get_or_insert_with(|| (at, vec![]));
+        *read_at = at;
+        if let Some(fresh) = fresh {
+            *neighbors = fresh;
+        }
+        mac_on_link(neighbors, ip, link)
+    }
 }
 
 /// macOS/BSD `ifconfig -a` (see [`parse_ifconfig_inet6`]) for the interface `name`: its index
@@ -1047,12 +1088,42 @@ pub fn discover_with(s: &Settings, gate: &Gate, os: &Os<'_>) -> Found {
     found
 }
 
+/// How long a system command (`ip`, `ndp`, `route`, `ifconfig`) may take. They answer from
+/// kernel tables within milliseconds; one that hangs must not hang the scan.
+const RUN_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new(program)
+    run_within(program, args, RUN_TIMEOUT)
+}
+
+/// The standard output of a command. One that has not finished writing it after `limit` is
+/// killed, and that is an error.
+fn run_within(program: &str, args: &[&str], limit: Duration) -> Result<String, String> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(program)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    // Read on a thread: the wait needs a time limit, and a table larger than the pipe buffer
+    // has to be taken off the child while it writes.
+    let (done, output) = std::sync::mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut bytes = vec![];
+            let _ = std::io::Read::read_to_end(&mut stdout, &mut bytes);
+            let _ = done.send(bytes);
+        });
+    }
+    let bytes = output.recv_timeout(limit);
+    // It has written everything or is over time: nothing more is wanted from it either way.
+    let _ = child.kill();
+    let _ = child.wait();
+    bytes
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map_err(|_| format!("{program}: no answer within {} ms", limit.as_millis()))
 }
 
 fn os_interfaces() -> Result<(Vec<Interface>, Vec<Ipv6Addr>), String> {

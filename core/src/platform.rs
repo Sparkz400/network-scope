@@ -1670,13 +1670,26 @@ fn resolve6(ip: std::net::Ipv6Addr, index: u32) -> Option<String> {
 /// counts, as for IPv4); without an entry the OS resolves it once: Windows
 /// `ResolveIpNetEntry2` (one Neighbor Solicitation); Linux, macOS and the BSDs one 1-byte UDP
 /// datagram to port 9 (the kernel solicits the neighbour) and a second look after 250 ms.
-/// `None` whenever nothing answered.
-pub fn neighbor6(ip: std::net::Ipv6Addr, link: &crate::ipv6::Link) -> Option<String> {
-    if let Some(mac) = crate::ipv6::cached_mac(ip, link) {
-        return Some(mac);
-    }
+/// `None` whenever nothing answered. Reading the cache starts a process on Linux, macOS and
+/// the BSDs, so there the reads of one scan are shared through `table`.
+pub fn neighbor6(
+    ip: std::net::Ipv6Addr,
+    link: &crate::ipv6::Link,
+    table: &crate::ipv6::NeighborTable,
+) -> Option<String> {
     if cfg!(windows) {
-        return resolve6(ip, link.index);
+        return crate::ipv6::cached_mac(ip, link).or_else(|| resolve6(ip, link.index));
+    }
+    let look = || {
+        table.mac(
+            ip,
+            link,
+            std::time::Instant::now(),
+            crate::ipv6::read_neighbors,
+        )
+    };
+    if let Some(mac) = look() {
+        return Some(mac);
     }
     let scope = if ip.segments()[0] & 0xffc0 == 0xfe80 {
         link.index
@@ -1687,7 +1700,7 @@ pub fn neighbor6(ip: std::net::Ipv6Addr, link: &crate::ipv6::Link) -> Option<Str
         let _ = socket.send_to(&[0], std::net::SocketAddrV6::new(ip, 9, 0, scope));
     }
     std::thread::sleep(std::time::Duration::from_millis(250));
-    crate::ipv6::cached_mac(ip, link)
+    look()
 }
 
 /// The adapter GUID of an Npcap device name (`\Device\NPF_{6B29FC40-CA47-1067-B31D-00DD010662DA}`)
