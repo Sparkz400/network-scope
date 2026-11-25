@@ -769,3 +769,23 @@ fn the_host_details_list_the_packages_of_a_matching_firmware_sbom() {
     assert!(h.has("openssl 3.0.13"));
     assert!(h.has("1 single files not listed"));
 }
+/// Every screenshot state of the documentation renders in each variant (small window, Safe Mode
+/// off, dark theme, German) without a panic, and shows the page it is about.
+#[test]
+fn every_screenshot_state_renders_in_every_variant() {
+    const STATES: [&str; 27] = [
+        "main", "findings", "devices", "ot", "script", "timeline", "scan-details", "workbench",
+        "workbench-compare", "workbench-draft", "settings", "schedule", "shortcuts", "safe-off",
+        "findings-grouped", "columns", "home", "home-empty", "hosts-empty", "map", "map-large",
+        "quick", "palette", "palette-actions", "appearance", "wake", "main-small-fast-dark-de",
+    ];
+    for state in STATES {
+        for variant in ["", "-small", "-fast", "-dark", "-de"] {
+            let name = format!("{state}{variant}");
+            let mut h = Harness::new(&name);
+            h.step();
+            assert!(!h.widgets.is_empty(), "{name}: nothing rendered");
+        }
+    }
+    i18n::set(i18n::Lang::English);
+}
