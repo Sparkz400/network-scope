@@ -131,7 +131,12 @@ Network Scope is used on industrial networks. Every change that sends traffic mu
 - A body explaining *why* when it is not obvious.
 - One logical change per commit; keep formatting-only changes separate.
 - Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
+- Sign off every commit with `git commit -s` (see [Developer Certificate of Origin](#developer-certificate-of-origin)).
 
 ## License
 
 By contributing you agree that your contributions are licensed under the [MIT license](LICENSE.txt).
+
+### Developer Certificate of Origin
+
+Every commit in a pull request must carry a `Signed-off-by: Your Name <email>` line, which `git commit -s` adds. With it you certify the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change, or otherwise have the right to submit it under the project's license. Use your real name or a consistent pseudonym you are known by. Forgot it? `git commit --amend -s` fixes the last commit, `git rebase --signoff main` all commits of the branch.
