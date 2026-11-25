@@ -2187,11 +2187,7 @@ mod tests {
 
     /// The device merges, risk analyses and stored snapshots read on this thread so far.
     fn work() -> [usize; 3] {
-        [
-            MERGES.get(),
-            ANALYSES.get(),
-            SNAPSHOTS_READ.get(),
-        ]
+        [MERGES.get(), ANALYSES.get(), SNAPSHOTS_READ.get()]
     }
 
     /// A cycle merges the devices of its scan once and analyses it once, and the next cycle
@@ -2225,13 +2221,18 @@ mod tests {
         let scan = |targets: &str, complete: bool, open: &[u16]| Snapshot {
             targets: targets.into(),
             complete,
-            ..snap(vec![host("10.0.0.1", "AA:BB:CC:00:00:01", open, &[])], vec![])
+            ..snap(
+                vec![host("10.0.0.1", "AA:BB:CC:00:00:01", open, &[])],
+                vec![],
+            )
         };
         let mut last = None;
         let sync = |last: &mut Option<Last>| {
             let read = SNAPSHOTS_READ.get();
             sync_last(&db, "lab", last).unwrap();
-            let kept = last.as_ref().map(|l| (l.id, l.snapshot.hosts[0].open.clone()));
+            let kept = last
+                .as_ref()
+                .map(|l| (l.id, l.snapshot.hosts[0].open.clone()));
             (kept, SNAPSHOTS_READ.get() - read)
         };
         assert_eq!(sync(&mut last), (None, 0));

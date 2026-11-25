@@ -242,7 +242,8 @@ fn an_spdx_file_with_as_many_describes_relationships_as_packages_is_read_in_one_
     );
     assert_eq!(s.components.len(), n - 1, "every package but the subject");
     // Well under a second; the bound only has to tell one pass from 400 million comparisons.
-    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let elapsed = started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(20), "{elapsed:?}");
 }
 
 #[test]

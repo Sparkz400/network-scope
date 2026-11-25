@@ -2044,7 +2044,10 @@ mod tests {
         assert!(rules.0.read().unwrap().is_none());
         std::fs::write(&path, rule("lab-1")).unwrap();
         rules.load(Some(&path)).unwrap();
-        assert!(has("lab-1") && has("openssh-user-enum"), "user and built-in");
+        assert!(
+            has("lab-1") && has("openssh-user-enum"),
+            "user and built-in"
+        );
         // Unchanged: not read again.
         let before = rules.0.read().unwrap().as_ref().unwrap().0.clone();
         rules.refresh();

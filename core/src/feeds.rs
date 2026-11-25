@@ -373,9 +373,9 @@ impl Feeds {
         let header: Header = serde_json::from_slice(&bytes).map_err(not_a_cache)?;
         match header.version.cmp(&CACHE_VERSION) {
             std::cmp::Ordering::Less => Ok(Err(header.version)),
-            std::cmp::Ordering::Equal => serde_json::from_slice(&bytes)
-                .map(Ok)
-                .map_err(not_a_cache),
+            std::cmp::Ordering::Equal => {
+                serde_json::from_slice(&bytes).map(Ok).map_err(not_a_cache)
+            }
             std::cmp::Ordering::Greater => Err(format!(
                 "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
