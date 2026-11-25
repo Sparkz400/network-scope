@@ -218,9 +218,7 @@ pub fn parse_ntp(m: &[u8]) -> Option<String> {
         return None;
     }
     let refid = if stratum <= 1 {
-        String::from_utf8_lossy(&m[12..16])
-            .trim_matches('\0')
-            .to_string()
+        crate::ot::clean(&m[12..16])
     } else {
         Ipv4Addr::new(m[12], m[13], m[14], m[15]).to_string()
     };
@@ -282,7 +280,7 @@ pub fn parse_netbios(m: &[u8]) -> Option<(String, Option<String>)> {
     let mut names = vec![];
     for i in 0..count.min(32) {
         let e = m.get(at + 1 + i * 18..at + 1 + (i + 1) * 18)?;
-        let name = String::from_utf8_lossy(&e[..15]).trim().to_string();
+        let name = crate::ot::clean(&e[..15]);
         let flags = u16::from_be_bytes([e[16], e[17]]);
         names.push(format!(
             "{name}<{:02X}{}>",
@@ -449,7 +447,7 @@ pub fn parse_dhcp(m: &[u8], xid: u32) -> Option<String> {
                         .join("/"),
                 )
             }
-            15 => domain = Some(String::from_utf8_lossy(v).trim_matches('\0').to_string()),
+            15 => domain = Some(crate::ot::clean(v)),
             _ => {}
         }
         i += 2 + len;
@@ -969,6 +967,31 @@ mod tests {
         );
         assert_eq!(parse_dhcp(&ack, 1), None, "xid mismatch");
         assert_eq!(parse_dhcp(&ack[..100], 0xAABBCCDD), None);
+    }
+
+    #[test]
+    fn device_text_drops_terminal_escapes() {
+        let evil = b"\x1b]52;c;QUJD\x07";
+        let mut m = vec![0u8; 48];
+        m[0] = 0x24;
+        m[1] = 1;
+        m[12..16].copy_from_slice(b"\x1b[2J");
+        assert_eq!(parse_ntp(&m).unwrap(), "NTPv4 stratum 1, reference [2J");
+
+        let mut m = vec![0x12, 0x34, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0x20];
+        m.extend(b"CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        m.extend([0, 0, 0x21, 0, 1, 0, 0, 0, 0, 0, 0, 1]);
+        m.extend(evil);
+        m.extend(b"   \0\x04\x00");
+        let (info, _) = parse_netbios(&m).unwrap();
+        assert_eq!(info, "NetBIOS names: ]52;c;QUJD<00>");
+
+        let mut ack = vec![0u8; 236];
+        ack[0] = 2;
+        ack.extend([0x63, 0x82, 0x53, 0x63, 53, 1, 5, 15, evil.len() as u8]);
+        ack.extend(evil);
+        ack.push(255);
+        assert_eq!(parse_dhcp(&ack, 0).unwrap(), "DHCP ACK (domain ]52;c;QUJD)");
     }
 
     async fn responder(reply: Vec<u8>) -> u16 {

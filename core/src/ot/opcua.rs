@@ -50,7 +50,7 @@ impl<'a> Reader<'a> {
         self.take(n as usize)
     }
     fn string(&mut self) -> Result<String, String> {
-        Ok(String::from_utf8_lossy(self.bytes()?).into_owned())
+        Ok(super::clean(self.bytes()?))
     }
     fn node(&mut self) -> Result<u32, String> {
         match self.byte()? {
@@ -469,5 +469,16 @@ mod tests {
         assert!(Reader::new(&[0xff, 0xff, 0xff, 0x7f]).bytes().is_err());
         assert!(Reader::new(&[1, 0, 0, 0]).string().is_err());
         assert!(Reader::new(&[1]).node().is_err());
+    }
+    #[test]
+    fn strings_drop_terminal_escapes() {
+        let mut b = vec![];
+        u32le(&mut b, 0x8001_0000);
+        string(&mut b, "bad\x1b]52;c;QUJD\x07 thing");
+        let e = transport_error(&b).unwrap();
+        assert_eq!(e, "UA transport error 0x80010000: bad]52;c;QUJD thing");
+        let mut b = vec![];
+        string(&mut b, &"\u{9b}x".repeat(3000));
+        assert_eq!(Reader::new(&b).string().unwrap(), "x".repeat(2048));
     }
 }
