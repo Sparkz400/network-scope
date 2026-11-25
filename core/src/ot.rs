@@ -25,7 +25,9 @@ use std::{
 };
 use tokio::io::AsyncReadExt;
 type Fields = BTreeMap<String, String>;
-fn clean(b: &[u8]) -> String {
+/// Text from an untrusted device: no control characters (no terminal escapes), at most 2048
+/// characters.
+pub(crate) fn clean(b: &[u8]) -> String {
     String::from_utf8_lossy(b)
         .trim_matches(|c: char| c == '\0' || c.is_whitespace())
         .chars()

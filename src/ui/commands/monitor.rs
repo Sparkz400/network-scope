@@ -138,6 +138,30 @@ fn run_on_alert(script: &AlertScript, alert: &monitor::Alert, quiet: bool) {
         Err(e) => eprintln!("on-alert script failed: {e}"),
     }
 }
+/// `--webhook-env NAME`: the webhook URL from that environment variable, so that it is neither on
+/// the command line nor in a service's configuration (chat webhooks carry their secret in the
+/// path). Errors name the variable, never its value.
+fn webhook_env(
+    name: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<crate::notify::Sink, String> {
+    let valid = !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit());
+    if !valid {
+        return Err("--webhook-env takes the name of an environment variable (the URL itself must not be given here)".into());
+    }
+    let url = env(name)
+        .filter(|u| !u.trim().is_empty())
+        .ok_or_else(|| {
+            format!("The environment variable {name} is not set or empty; --webhook-env reads the webhook URL from it")
+        })?;
+    crate::notify::Sink::webhook(&url).map_err(|_| {
+        format!(
+            "The environment variable {name} does not hold a valid http:// or https:// webhook URL"
+        )
+    })
+}
 /// Monitor alert policy from the command line, including the opt-in webhook/syslog sinks.
 fn monitor_policy(opts: &BTreeMap<String, String>) -> Result<monitor::Policy, String> {
     let mut policy = monitor::Policy {
@@ -174,6 +198,12 @@ fn monitor_policy(opts: &BTreeMap<String, String>) -> Result<monitor::Policy, St
             .notify
             .sinks
             .push(crate::notify::Sink::webhook(&url)?);
+    }
+    if let Some(name) = opts.get("webhook-env") {
+        policy
+            .notify
+            .sinks
+            .push(webhook_env(name, |n| std::env::var(n).ok())?);
     }
     for dest in list("syslog") {
         policy
@@ -227,6 +257,41 @@ mod tests {
         assert!(monitor_policy(&ftp).unwrap_err().contains("https://"));
         let slow = BTreeMap::from([("alert-timeout".to_string(), "600".to_string())]);
         assert!(monitor_policy(&slow).is_err());
+    }
+
+    #[test]
+    fn webhook_env_reads_the_url_from_the_named_variable() {
+        let secret = "https://hooks.example.com/services/T0/B0/s3cret";
+        let env = |n: &str| match n {
+            "NS_HOOK" => Some(secret.to_string()),
+            "NS_EMPTY" => Some(" ".to_string()),
+            "NS_BAD" => Some("ftp://s3cret".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            webhook_env("NS_HOOK", env).unwrap(),
+            crate::notify::Sink::webhook(secret).unwrap()
+        );
+        for (name, message) in [
+            ("NS_UNSET", "NS_UNSET is not set"),
+            ("NS_EMPTY", "NS_EMPTY is not set or empty"),
+            ("NS_BAD", "NS_BAD does not hold a valid"),
+            (secret, "name of an environment variable"),
+            ("1X", "name of an environment variable"),
+            ("", "name of an environment variable"),
+        ] {
+            // The messages name the expectation, never `name` or `err`: one case is the secret.
+            let err = webhook_env(name, env).unwrap_err();
+            assert!(err.contains(message), "expected {message:?}");
+            assert!(!err.contains("s3cret"), "the value is never shown");
+        }
+        // Through the option: an unset variable is a start-up error.
+        let err = monitor_policy(&opts(&[(
+            "webhook-env",
+            "NS_TEST_NO_SUCH_WEBHOOK_VARIABLE",
+        )]))
+        .unwrap_err();
+        assert!(err.contains("NS_TEST_NO_SUCH_WEBHOOK_VARIABLE"), "{err}");
     }
 
     fn opts(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

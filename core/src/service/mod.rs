@@ -125,12 +125,27 @@ async fn connect(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> Option<
         .ok()
 }
 
+/// How long a reply may keep arriving after the first wait: a device that trickles a byte
+/// just inside the 120 ms gap must not hold a port for minutes.
+const READ_CAP: Duration = Duration::from_secs(2);
+
 async fn read_some<S: AsyncRead + Unpin>(s: &mut S, first: Duration, max: usize) -> Vec<u8> {
+    read_within(s, first, max, READ_CAP).await
+}
+
+async fn read_within<S: AsyncRead + Unpin>(
+    s: &mut S,
+    first: Duration,
+    max: usize,
+    cap: Duration,
+) -> Vec<u8> {
+    let deadline = tokio::time::Instant::now() + first + cap;
     let mut data = vec![];
     let mut chunk = [0u8; 4096];
     let mut wait = first;
     while data.len() < max {
-        match timeout(wait, s.read(&mut chunk)).await {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(wait.min(left), s.read(&mut chunk)).await {
             Ok(Ok(n)) if n > 0 => data.extend_from_slice(&chunk[..n]),
             _ => break,
         }
@@ -618,6 +633,32 @@ mod tests {
         let out = run(odd).await;
         assert!(out.service.is_none());
         assert!(out.banner.unwrap().contains("weird proprietary hello"));
+    }
+
+    /// Sends `head`, then one byte every 50 ms for as long as the peer listens: every gap is
+    /// inside the 120 ms chunk wait.
+    pub(super) async fn trickle(head: &'static [u8]) -> u16 {
+        serve(move |mut s| {
+            Box::pin(async move {
+                let _ = s.write_all(head).await;
+                while s.write_all(b"a").await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn trickled_reply_ends_at_the_deadline() {
+        let port = trickle(b"").await;
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let first = Duration::from_millis(200);
+        let read = read_within(&mut s, first, 32 * 1024, Duration::from_millis(300));
+        let data = timeout(Duration::from_millis(1500), read)
+            .await
+            .expect("the read ends at its deadline");
+        assert!(!data.is_empty() && data.len() < 100, "{} bytes", data.len());
     }
 
     #[tokio::test]

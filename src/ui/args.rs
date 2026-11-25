@@ -49,7 +49,7 @@ pub(super) const FLAGS: [&str; 39] = [
     "incremental",
     "ipv6-discover",
 ];
-pub(super) const VALUES: [&str; 89] = [
+pub(super) const VALUES: [&str; 90] = [
     "feeds",
     "top",
     "nvd",
@@ -75,6 +75,7 @@ pub(super) const VALUES: [&str; 89] = [
     "history",
     "cves",
     "webhook",
+    "webhook-env",
     "syslog",
     "alert-timeout",
     "renotify-hours",

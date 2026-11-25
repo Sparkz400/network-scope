@@ -164,19 +164,31 @@ impl Sink {
             facility: 16,
         }))
     }
-    /// What a stored queue knows the sink by ([`Outbox::restore`]): a hash of its label, since
-    /// a webhook URL can carry a token.
-    fn key(&self) -> String {
-        crate::provenance::hash(self.label().as_bytes())
+    /// Whether a webhook URL has more than scheme, host and port: a path other than `/` or a
+    /// query, where chat services (Slack, Teams, Discord) put the secret.
+    pub fn has_secret_path(&self) -> bool {
+        matches!(self, Self::Webhook(w) if w.path != "/")
     }
+    /// What a stored queue knows the sink by ([`Outbox::restore`]): a hash of the whole
+    /// destination, path included (two hooks on one server keep queues of their own), since a
+    /// webhook URL can carry a token. The same text as the label before it lost the path, so
+    /// queues stored by earlier versions are still found.
+    fn key(&self) -> String {
+        let full = match self {
+            Self::Webhook(w) => format!("{}{}", self.label(), w.path),
+            Self::Syslog(_) => self.label(),
+        };
+        crate::provenance::hash(full.as_bytes())
+    }
+    /// The sink in messages (delivery warnings on stderr, a service's log, the journal): scheme,
+    /// host and port only, never a webhook's path, which may be its secret.
     fn label(&self) -> String {
         match self {
             Self::Webhook(w) => format!(
-                "webhook {}://{}:{}{}",
+                "webhook {}://{}:{}",
                 if w.tls { "https" } else { "http" },
                 w.host,
-                w.port,
-                w.path
+                w.port
             ),
             Self::Syslog(s) => format!(
                 "syslog {}://{}:{}",
@@ -1125,6 +1137,53 @@ pub(crate) mod tests {
             w[0].contains("HTTP 500") && w[0].contains("3 of 3"),
             "{w:?}"
         );
+    }
+
+    /// A chat webhook's path is its secret: messages name scheme, host and port only, while the
+    /// queue key still tells two hooks on one server apart and matches what earlier versions
+    /// stored.
+    #[test]
+    fn webhook_paths_stay_out_of_messages() {
+        let (port, server) = http_server("500 Internal Server Error");
+        let sink = Sink::webhook(&format!(
+            "http://127.0.0.1:{port}/services/T0/B0/s3cret?k=v"
+        ))
+        .unwrap();
+        assert!(sink.has_secret_path());
+        assert_eq!(sink.label(), format!("webhook http://127.0.0.1:{port}"));
+        let w = deliver(
+            std::slice::from_ref(&sink),
+            &[alert("x", "y")],
+            Duration::from_secs(2),
+        );
+        server.join().unwrap();
+        assert!(
+            w.len() == 1 && w[0].starts_with("webhook http://127.0.0.1:"),
+            "{w:?}"
+        );
+        assert!(
+            !w[0].contains("s3cret") && !w[0].contains("services"),
+            "{w:?}"
+        );
+        let mut outbox = Outbox::default();
+        let (port, server) = http_server("500 Internal Server Error");
+        let queued = Sink::webhook(&format!("http://127.0.0.1:{port}/s3cret")).unwrap();
+        let w = outbox.deliver(&[queued], &[alert("x", "y")], Duration::from_secs(2));
+        server.join().unwrap();
+        assert!(w.len() == 1 && !w[0].contains("s3cret"), "{w:?}");
+
+        let a = Sink::webhook("https://hooks.example.com/services/A/secret").unwrap();
+        let b = Sink::webhook("https://hooks.example.com/services/B/secret").unwrap();
+        assert_eq!(a.label(), b.label());
+        assert_ne!(a.key(), b.key());
+        assert_eq!(
+            a.key(),
+            crate::provenance::hash(b"webhook https://hooks.example.com:443/services/A/secret")
+        );
+        for plain in ["https://hooks.example.com", "http://10.0.0.1:9000/"] {
+            assert!(!Sink::webhook(plain).unwrap().has_secret_path(), "{plain}");
+        }
+        assert!(!Sink::syslog("udp://10.0.0.1").unwrap().has_secret_path());
     }
 
     #[test]

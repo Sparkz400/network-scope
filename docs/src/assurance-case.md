@@ -75,6 +75,8 @@ Static analysis runs on every change: `cargo clippy` with warnings as errors, an
 
 ## Residual risks and limits
 
+The findings of the last security review and what was done about them are in [Security review](security-review.md).
+
 - **Release binaries are not code-signed** by an operating-system vendor certificate. Provenance and checksums are the verification path; see [Installation](installation.md#verifying-downloads-and-the-image).
 - **Real-device coverage.** Many OT decoders are tested against simulators and sanitized captures, not against every device family. The protocol pages say what was tested.
 - **Single maintainer.** Reviews are not yet done by a second person; see [GOVERNANCE.md](https://github.com/Sparkz400/network-scope/blob/main/GOVERNANCE.md#continuity).

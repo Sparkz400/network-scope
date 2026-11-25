@@ -484,6 +484,13 @@ pub fn import(xml: &str) -> Result<Snapshot, String> {
     if xml.len() > MAX_IMPORT_BYTES {
         return Err("XML file is too large (limit 256 MB)".into());
     }
+    // nmap writes only `<!DOCTYPE nmaprun>`; entity definitions could expand a small file into
+    // gigabytes by repeating a reference, which roxmltree does not limit.
+    if xml.contains("<!ENTITY") {
+        return Err(
+            "Not an nmap XML file (it defines XML entities, which nmap never writes)".into(),
+        );
+    }
     let doc = roxmltree::Document::parse_with_options(
         xml,
         roxmltree::ParsingOptions {
@@ -1048,7 +1055,20 @@ mod tests {
         );
         // An entity bomb must fail or stay bounded rather than exhaust memory.
         let bomb = "<?xml version=\"1.0\"?><!DOCTYPE nmaprun [<!ENTITY a \"aaaaaaaaaa\"><!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;\"><!ENTITY c \"&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;\"><!ENTITY d \"&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;\"><!ENTITY e \"&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;\"><!ENTITY f \"&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;\"><!ENTITY g \"&f;&f;&f;&f;&f;&f;&f;&f;&f;&f;\"><!ENTITY h \"&g;&g;&g;&g;&g;&g;&g;&g;&g;&g;\"><!ENTITY i \"&h;&h;&h;&h;&h;&h;&h;&h;&h;&h;\"><!ENTITY j \"&i;&i;&i;&i;&i;&i;&i;&i;&i;&i;\">]><nmaprun args=\"&j;\"/>";
-        assert!(import(bomb).is_err(), "roxmltree caps entity expansion");
+        assert!(import(bomb).unwrap_err().contains("entities"));
+    }
+
+    #[test]
+    fn entity_definitions_are_refused_before_parsing() {
+        // One large entity referenced many times: roxmltree's loop check does not stop this.
+        let big = "a".repeat(1000);
+        let body = "<x>&big;</x>".repeat(1000);
+        let xml = format!(
+            "<!DOCTYPE nmaprun [<!ENTITY big \"{big}\">]><nmaprun scanner=\"nmap\">{body}</nmaprun>"
+        );
+        assert!(import(&xml).unwrap_err().contains("entities"));
+        let plain = "<?xml version=\"1.0\"?><!DOCTYPE nmaprun><nmaprun scanner=\"nmap\"/>";
+        assert!(import(plain).unwrap().hosts.is_empty());
     }
 
     #[test]

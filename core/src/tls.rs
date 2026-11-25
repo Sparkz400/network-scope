@@ -218,17 +218,18 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
     let (_, cert) =
         X509Certificate::from_der(der).map_err(|e| format!("Certificate not parseable: {e}"))?;
     let mut f = Fields::new();
-    let subject = cert.subject().to_string();
-    f.insert("subject".into(), subject.clone());
+    // Names come from the device: no terminal escapes, bounded length.
+    let clean = |s: &str| crate::ot::clean(s.as_bytes());
+    f.insert("subject".into(), clean(&cert.subject().to_string()));
     if let Some(cn) = cert
         .subject()
         .iter_common_name()
         .next()
         .and_then(|a| a.as_str().ok())
     {
-        f.insert("cn".into(), cn.to_string());
+        f.insert("cn".into(), clean(cn));
     }
-    f.insert("issuer".into(), cert.issuer().to_string());
+    f.insert("issuer".into(), clean(&cert.issuer().to_string()));
     let self_signed = is_self_signed(&cert);
     f.insert("self_signed".into(), self_signed.to_string());
     if self_signed {
@@ -241,7 +242,7 @@ pub fn describe_cert(der: &[u8]) -> Result<Fields, String> {
             .iter()
             .take(32)
             .filter_map(|n| match n {
-                GeneralName::DNSName(d) => Some((*d).to_string()),
+                GeneralName::DNSName(d) => Some(clean(d)),
                 GeneralName::IPAddress(b) => match b.len() {
                     4 => Some(IpAddr::from(<[u8; 4]>::try_from(*b).ok()?).to_string()),
                     16 => Some(IpAddr::from(<[u8; 16]>::try_from(*b).ok()?).to_string()),
@@ -1281,6 +1282,23 @@ mod tests {
         let leaf_f = describe_cert(leaf.der()).unwrap();
         assert_eq!(leaf_f["subject"], leaf_f["issuer"]);
         assert_eq!(leaf_f["self_signed"], "false");
+    }
+
+    #[test]
+    fn certificate_names_drop_terminal_escapes() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["bbbbbbbbbbbb".into()]).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "AAAAAAAAAAAA");
+        let der = params.self_signed(&key).unwrap().der().to_vec();
+        let evil = b"\x1b]52;c;QUJD\x07";
+        let der = patch(&patch(&der, b"AAAAAAAAAAAA", evil), b"bbbbbbbbbbbb", evil);
+        let f = describe_cert(&der).unwrap();
+        for k in ["subject", "cn", "issuer", "san"] {
+            assert!(f[k].contains("]52;c;QUJD"), "{k}: {:?}", f[k]);
+            assert!(!f[k].chars().any(char::is_control), "{k}: {:?}", f[k]);
+        }
     }
 
     /// Replaces every occurrence of `from` in `der` by `to` (same length).

@@ -26,7 +26,7 @@ The installer and binaries are **not code-signed** yet, so Windows SmartScreen w
 
 ### Portable
 
-Unzip anywhere and run `network-scope.exe` (GUI) or `network-scope-cli.exe` (CLI).
+Unzip anywhere and run `network-scope.exe` (GUI) or `network-scope-cli.exe` (CLI). For the [Windows service](service-and-scheduling.md#windows-service), which runs as SYSTEM, put the program in a folder only administrators can write to, such as `C:\Program Files\Network Scope`: `service install` refuses a program in a folder every user may change (a new folder such as `C:\Tools` is one).
 
 ### Two executables
 

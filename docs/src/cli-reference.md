@@ -292,6 +292,7 @@ All scan options, plus:
 | `--dhcp-discover` | off | Broadcast one DHCPDISCOVER per cycle and collect offers |
 | `--interface ID` / `--listen-seconds N` | 30 | Passive DHCP listening per cycle |
 | `--webhook http(s)://URL,...` | | POST alerts as JSON; HTTPS is verified against the OS certificate store |
+| `--webhook-env NAME` | | One more webhook, its URL read from the environment variable `NAME`, so a URL that carries a secret (Slack, Teams, Discord) is not on the command line; `service install` refuses a `--webhook` with a path or query |
 | `--syslog [udp://\|tcp://]HOST[:PORT],...` | | RFC 5424 syslog |
 | `--alert-timeout S` | 5 | Per-operation alert delivery timeout (1-60) |
 | `--no-dedup` | off | Alert every cycle |

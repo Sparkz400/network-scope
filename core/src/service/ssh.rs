@@ -149,10 +149,12 @@ pub(super) async fn ssh_fields<S: AsyncRead + AsyncWrite + Unpin>(
     if s.write_all(b"SSH-2.0-NetworkScope\r\n").await.is_err() {
         return f;
     }
+    // One bound for the whole key exchange packet, however slowly it arrives.
+    let deadline = tokio::time::Instant::now() + limit + super::READ_CAP;
     if data.len() < 4 {
         data.extend(read_some(s, limit, 8192).await);
     }
-    while data.len() >= 4 {
+    while data.len() >= 4 && tokio::time::Instant::now() < deadline {
         let need = 4 + u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
         if data.len() >= need || need > 70_000 {
             break;
@@ -303,5 +305,19 @@ mod tests {
             ids[&format!("ssh.{port}.hassh")],
             crate::fingerprint::hex(&crate::fingerprint::md5(text.as_bytes()))
         );
+    }
+
+    #[tokio::test]
+    async fn trickled_key_exchange_ends_at_the_deadline() {
+        // Announces a 60,000-byte packet, then sends it one byte every 50 ms.
+        let port = crate::service::tests::trickle(&[0, 0, 0xEA, 0x60]).await;
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let read = ssh_fields(&mut s, b"SSH-2.0-x\r\n", Duration::from_millis(100));
+        let f = tokio::time::timeout(Duration::from_secs(3), read)
+            .await
+            .expect("the key exchange read ends at its deadline");
+        assert!(f.is_empty());
     }
 }
