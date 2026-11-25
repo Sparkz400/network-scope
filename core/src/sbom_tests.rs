@@ -390,3 +390,67 @@ fn the_sboms_of_the_firmware_a_host_reported_are_found() {
     // Another version: none.
     assert!(for_hosts(&library, &hosts, &[lldp("24.10.0")]).is_empty());
 }
+
+#[test]
+fn spdx_purposes_and_suppliers_are_read_as_cyclonedx_types_and_names() {
+    for (purpose, kind) in [
+        ("firmware", "firmware"),
+        ("OPERATING-SYSTEM", "operating-system"),
+        ("application", "application"),
+        ("FRAMEWORK", "framework"),
+        (" container ", "container"),
+        ("DEVICE", "device"),
+        ("FILE", "file"),
+        ("SOURCE", "library"),
+        ("", "library"),
+    ] {
+        assert_eq!(spdx_type(purpose), kind, "{purpose:?}");
+    }
+    let org = |v: Value| organisation(Some(&v));
+    assert_eq!(
+        org(Value::from("Organization: Acme GmbH (x@acme.example)")),
+        "Acme GmbH"
+    );
+    assert_eq!(
+        org(Value::from("Person: Jane Doe (jane@example.org)")),
+        "Jane Doe"
+    );
+    assert_eq!(org(Value::from("NOASSERTION")), "");
+    assert_eq!(org(Value::from(7)), "");
+    assert_eq!(organisation(None), "");
+}
+
+#[test]
+fn an_import_skips_compressed_files_and_summarises_long_lists_of_skipped_ones() {
+    let dir = std::env::temp_dir().join(format!("ns-sbom-skipped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cache = dir.join("sboms.json");
+    let files = dir.join("in");
+    std::fs::create_dir_all(&files).unwrap();
+    // Nothing usable: nothing is written.
+    std::fs::write(files.join("fw.cdx.json"), [0x1f, 0x8b, 8, 0, 0, 0]).unwrap();
+    let e = import(std::slice::from_ref(&files), &Subject::default(), &cache, 1).unwrap_err();
+    assert!(e.contains("gzip-compressed, unpack it first"), "{e}");
+    assert!(!cache.exists());
+    for i in 0..22 {
+        std::fs::write(files.join(format!("n{i:02}.json")), "{}").unwrap();
+    }
+    std::fs::write(files.join("plc.cdx.json"), CYCLONEDX).unwrap();
+    let report = import(std::slice::from_ref(&files), &Subject::default(), &cache, 2).unwrap();
+    assert_eq!((report.imported.len(), report.rejected.len()), (1, 23));
+    let lines = report.lines();
+    assert_eq!(lines[0], "SBOM: 1 imported");
+    assert!(lines[1].contains("Siemens AG S7-1200 CPU firmware V4.2.1 (4 components)"));
+    assert_eq!(
+        lines.iter().filter(|l| l.starts_with("Skipped ")).count(),
+        20
+    );
+    assert!(
+        lines.contains(&"... and 3 more skipped files".to_string()),
+        "{lines:?}"
+    );
+    assert!(lines.last().unwrap().starts_with("1 SBOMs in the cache"));
+    assert!(import(&[], &Subject::default(), &cache, 3).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1109,4 +1109,69 @@ mod tests {
         assert_eq!(hosts.len(), 2);
         assert_eq!(errors, ["Probe task: boom"]);
     }
+
+    /// Targets from a list file (alone or after the command line's), a repeat scan based on the
+    /// last one, and the options that are refused before anything is sent.
+    #[test]
+    fn targets_files_incremental_repeats_and_refused_options() {
+        let (_listener, port) = http_listener();
+        let dir = std::env::temp_dir().join(format!("ns-scan-incr-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("i.sqlite");
+        let (list, out) = (dir.join("targets.txt"), dir.join("o.csv"));
+        std::fs::write(&list, "# lab\n127.0.0.1\n").unwrap();
+        let scan = |extra: &[&str]| {
+            let mut a = vec![
+                "scan",
+                "--scope",
+                "127.0.0.0/8",
+                "--tcp-only",
+                "--fast",
+                "--ports",
+                &port,
+                "--db",
+                db.to_str().unwrap(),
+                "--output",
+                out.to_str().unwrap(),
+                "--quiet",
+            ];
+            a.extend(extra);
+            run(&args(&a))
+        };
+        let l = list.to_str().unwrap();
+        let e = scan(&["127.0.0.1", "--format", "pdf"]).unwrap_err();
+        assert_eq!(e, "Choose json, csv, html, nmap, md, jsonl or cyclonedx");
+        let e = scan(&["127.0.0.1", "--stream", "--tui"]).unwrap_err();
+        assert!(e.contains("choose one"), "{e}");
+        assert!(store::list(&db).unwrap().is_empty(), "nothing was saved");
+
+        // The first incremental scan has no base and runs in full.
+        for _ in 0..2 {
+            let status = scan(&["--targets-file", l, "--incremental", "--format", "csv"]).unwrap();
+            assert_eq!(status, crate::ui::ExitCode::Success);
+            let csv = std::fs::read_to_string(&out).unwrap();
+            assert!(
+                csv.lines()
+                    .any(|r| r.starts_with("\"127.0.0.1\"") && r.contains(&format!("\"{port}\""))),
+                "{csv}"
+            );
+        }
+        let saved = store::list(&db).unwrap();
+        assert_eq!(saved.len(), 2);
+        assert!(saved.iter().all(|e| e.targets == "127.0.0.1" && e.complete));
+        // The second scan was based on the first, and only that one.
+        let based = |id: i64| {
+            let s = store::load(&db, id).unwrap();
+            s.hosts[0].identity.get("incr.base").cloned()
+        };
+        assert_eq!(based(saved[1].id), None);
+        assert_eq!(based(saved[0].id), Some(format!("scan #{}", saved[1].id)));
+
+        // Command-line targets come first, then the file's.
+        std::fs::write(&list, "127.0.0.2\n").unwrap();
+        scan(&["127.0.0.1", "--targets-file", l]).unwrap();
+        assert_eq!(store::list(&db).unwrap()[0].targets, "127.0.0.1 127.0.0.2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

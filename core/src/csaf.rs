@@ -1785,4 +1785,80 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_cpe_names_vendor_product_and_version_and_scores_set_the_severity() {
+        use serde_json::json;
+        let vuln = |cve: &str, score: Value| {
+            json!({
+                "cve": cve,
+                "scores": [score],
+                "product_status": {"known_affected": ["P1", "P2"]},
+            })
+        };
+        let doc = json!({
+            "document": {
+                "category": "csaf_security_advisory",
+                "csaf_version": "2.0",
+                "title": "CPE only",
+                "tracking": {"id": "TEST-CPE-1"},
+            },
+            "product_tree": {"full_product_names": [
+                {
+                    "product_id": "P1",
+                    "name": "",
+                    "product_identification_helper": {
+                        "cpe": "cpe:2.3:h:examplon:ex-900_plc:2.1.0:*:*:*:*:*:*:*",
+                        "model_numbers": ["EX-900-A"],
+                        "skus": ["SKU 900"],
+                    },
+                },
+                // A CPE for all versions names no version: the pair is skipped.
+                {
+                    "product_id": "P2",
+                    "name": "Examplon EX-901",
+                    "product_identification_helper": {
+                        "cpe": "cpe:2.3:o:examplon:ex-901_firmware:*:*:*:*:*:*:*:*",
+                    },
+                },
+            ]},
+            "vulnerabilities": [
+                vuln("CVE-2099-5001", json!({"products": ["P1"], "cvss_v3": {"baseScore": 9.8}})),
+                vuln("CVE-2099-5002", json!({"products": ["P1"], "cvss_v4": {"baseScore": 7.5}})),
+                vuln("CVE-2099-5003", json!({"products": ["P1"], "cvss_v2": {"baseScore": 5.0}})),
+                vuln("CVE-2099-5004", json!({"products": ["P1"], "cvss_v3": {"baseScore": 3.1}})),
+                // The vendor's label wins over the score; a score out of range is no score.
+                vuln(
+                    "CVE-2099-5005",
+                    json!({"products": ["P1"], "cvss_v3": {"baseScore": 9.8, "baseSeverity": "LOW"}}),
+                ),
+                vuln("CVE-2099-5006", json!({"products": ["P1"], "cvss_v3": {"baseScore": 11.0}})),
+                vuln("CVE-2099-5007", json!({"products": ["P1"], "cvss_v3": {"baseScore": 0.0}})),
+            ],
+        });
+        let p = parse_csaf(doc.to_string().as_bytes()).unwrap();
+        assert_eq!(p.skipped, 7, "P2 in every vulnerability");
+        let got: Vec<(&str, Severity, Option<u32>)> = p
+            .entries
+            .iter()
+            .map(|e| (e.cve.as_str(), e.severity, e.cvss))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("CVE-2099-5001", Severity::Critical, Some(98)),
+                ("CVE-2099-5002", Severity::High, Some(75)),
+                ("CVE-2099-5003", Severity::Medium, Some(50)),
+                ("CVE-2099-5004", Severity::Low, Some(31)),
+                ("CVE-2099-5005", Severity::Low, Some(98)),
+                ("CVE-2099-5006", Severity::Info, None),
+                ("CVE-2099-5007", Severity::Info, Some(0)),
+            ]
+        );
+        let e = &p.entries[0];
+        assert_eq!(e.vendor, "examplon");
+        assert_eq!(e.products, ["EX-900-A", "SKU 900", "ex-900 plc"]);
+        assert_eq!(e.range, "=2.1.0");
+        assert_eq!(e.title, "CVE-2099-5001", "no title: the CVE id");
+    }
 }

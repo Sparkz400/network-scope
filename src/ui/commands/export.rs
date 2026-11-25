@@ -349,4 +349,191 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn save(db: &std::path::Path, targets: &str, open: &[u16], at: i64) {
+        let mut h = host("10.0.0.5", "00:00:0C:00:00:01");
+        h.open = open.to_vec();
+        store::save_at(
+            db,
+            &store::Snapshot {
+                sent: vec![],
+                targets: targets.into(),
+                complete: true,
+                settings: Settings::default(),
+                hosts: vec![h],
+                observations: vec![],
+                notes: Default::default(),
+            },
+            at,
+        )
+        .unwrap();
+    }
+
+    /// One HTTP request answered with 200: the raw request.
+    fn one_request_server() -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut raw = vec![];
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = s.read(&mut buf).unwrap_or(0);
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw);
+                let complete = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                    head.lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .is_some_and(|len| body.len() >= len)
+                });
+                if n == 0 || complete {
+                    break;
+                }
+            }
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            );
+            String::from_utf8_lossy(&raw).into_owned()
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn reports_baselines_and_the_dependency_track_upload() {
+        let dir = std::env::temp_dir().join(format!("ns-export-reports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("inventory.sqlite");
+        let d = db.to_str().unwrap();
+        let out = dir.join("out.txt");
+        let o = out.to_str().unwrap();
+
+        save(&db, "10.0.0.0/24", &[22], 1_700_000_000);
+        save(&db, "10.0.0.0/24", &[22, 80], 1_700_086_400);
+        save(&db, "", &[22], 1_700_100_000);
+        // A bad format is named, even for a scan that does not exist.
+        let e = run(&args(&[
+            "export", "9", "--db", d, "--quiet", "--format", "pdf",
+        ]))
+        .unwrap_err();
+        assert!(e.contains("Choose json"), "{e}");
+        let read = |v: &[&str]| {
+            let mut v = v.to_vec();
+            v.extend(["--db", d, "--quiet", "--output", o]);
+            assert_eq!(run(&args(&v)).unwrap(), ExitCode::Success, "{v:?}");
+            std::fs::read_to_string(&out).unwrap()
+        };
+        let html = read(&["export", "2", "--format", "html"]);
+        assert!(html.contains("<html"), "{html}");
+        assert!(!html.contains("Changes since"));
+        let nmap = read(&["export", "2", "--format", "nmap"]);
+        assert!(nmap.contains("<nmaprun") && nmap.contains("start=\"1700086400\""));
+        assert_eq!(read(&["export", "2", "--format", "xml"]), nmap);
+        // With a baseline the reports list what changed since that scan.
+        let md = read(&["export", "2", "--format", "md", "--baseline", "1"]);
+        assert!(md.contains("## Changes since"), "{md}");
+        assert!(md.contains("80 newly open"), "{md}");
+        assert!(!read(&["export", "2", "--format", "markdown"]).contains("Changes since"));
+        let report = read(&["report", "2", "--baseline", "1"]);
+        assert!(report.contains("<h2>Changes since"), "{report}");
+        assert!(!read(&["report", "2"]).contains("Changes since"));
+        for v in [
+            vec!["export", "2", "--format", "md", "--baseline", "first"],
+            vec!["report", "2", "--baseline", "-"],
+        ] {
+            let mut v = v;
+            v.extend(["--db", d, "--quiet"]);
+            assert_eq!(run(&args(&v)).unwrap_err(), "Invalid --baseline");
+        }
+        let e = run(&args(&[
+            "report",
+            "2",
+            "--baseline",
+            "99",
+            "--db",
+            d,
+            "--quiet",
+        ]))
+        .unwrap_err();
+        assert!(e.contains("No scan with ID 99"), "{e}");
+
+        // Dependency-Track: the key comes from the environment only, and is required.
+        let e = run(&args(&[
+            "export",
+            "2",
+            "--db",
+            d,
+            "--quiet",
+            "--format",
+            "cdx",
+            "--push",
+            "http://127.0.0.1:9/",
+        ]))
+        .unwrap_err();
+        assert!(e.contains("--token-env"), "{e}");
+        let var = format!("NS_TEST_DT_KEY_{}", std::process::id());
+        // SAFETY: the variable has a name no other test or thread uses.
+        unsafe { std::env::set_var(&var, "odt_key") };
+        // Defaults: project "Network Scope", version the scan's targets; --output keeps the BOM.
+        let (url, server) = one_request_server();
+        let bom = read(&[
+            "export",
+            "2",
+            "--format",
+            "cyclonedx",
+            "--push",
+            &url,
+            "--token-env",
+            &var,
+        ]);
+        let req = server.join().unwrap();
+        let (head, body) = req.split_once("\r\n\r\n").unwrap();
+        assert!(head.starts_with("POST /api/v1/bom "), "{head}");
+        assert!(head.contains("X-Api-Key: odt_key"), "{head}");
+        assert!(
+            body.contains("name=\"projectName\"\r\n\r\nNetwork Scope\r\n"),
+            "{body}"
+        );
+        assert!(body.contains("name=\"projectVersion\"\r\n\r\n10.0.0.0/24\r\n"));
+        let doc: serde_json::Value = serde_json::from_str(&bom).unwrap();
+        assert_eq!(doc["bomFormat"], "CycloneDX");
+        // A scan without targets is version "inventory"; both names can be given.
+        let (url, server) = one_request_server();
+        let v = [
+            "export",
+            "3",
+            "--db",
+            d,
+            "--quiet",
+            "--format",
+            "cdx",
+            "--push",
+            &url,
+            "--token-env",
+            &var,
+            "--dt-project",
+            "Plant A",
+        ];
+        assert_eq!(run(&args(&v)).unwrap(), ExitCode::Success);
+        let body = server.join().unwrap();
+        assert!(body.contains("\r\n\r\nPlant A\r\n"), "{body}");
+        assert!(body.contains("name=\"projectVersion\"\r\n\r\ninventory\r\n"));
+        let (url, server) = one_request_server();
+        let mut v = v.to_vec();
+        v[8] = &url;
+        v.extend(["--dt-version", "2.1"]);
+        assert_eq!(run(&args(&v)).unwrap(), ExitCode::Success);
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .contains("name=\"projectVersion\"\r\n\r\n2.1\r\n")
+        );
+        unsafe { std::env::remove_var(&var) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
