@@ -339,6 +339,28 @@ impl Feeds {
 
     /// Reads a cache file, bounded and version-checked.
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path)?.map_err(|version| {
+            format!(
+                "{}: cache version {version} is not supported (expected {CACHE_VERSION}); import the feeds again",
+                path.display()
+            )
+        })
+    }
+
+    /// [`Self::load`], with a cache that an older version of the program wrote told apart as
+    /// `Ok(Err(its version))`: that one is expected after an upgrade, and an import starts
+    /// over. Every other file that does not load is an error, and is never written over.
+    fn read(path: &Path) -> Result<Result<Self, u32>, String> {
+        /// What a feeds cache of any version has. The version alone does not make a file one:
+        /// the caches next to it (`nvd.json`, `csaf.json`) and a CycloneDX document have one
+        /// too, and every other field of [`Feeds`] may be missing.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Header {
+            version: u32,
+            kev: serde::de::IgnoredAny,
+            epss: serde::de::IgnoredAny,
+        }
         let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
@@ -346,16 +368,20 @@ impl Feeds {
             return Err(format!("{}: file is too large", path.display()));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let feeds: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("{}: not a feeds cache: {e}", path.display()))?;
-        if feeds.version != CACHE_VERSION {
-            return Err(format!(
-                "{}: cache version {} is not supported (expected {CACHE_VERSION}); import the feeds again",
+        let not_a_cache =
+            |e: serde_json::Error| format!("{}: not a feeds cache: {e}", path.display());
+        let header: Header = serde_json::from_slice(&bytes).map_err(not_a_cache)?;
+        match header.version.cmp(&CACHE_VERSION) {
+            std::cmp::Ordering::Less => Ok(Err(header.version)),
+            std::cmp::Ordering::Equal => serde_json::from_slice(&bytes)
+                .map(Ok)
+                .map_err(not_a_cache),
+            std::cmp::Ordering::Greater => Err(format!(
+                "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
-                feeds.version
-            ));
+                header.version
+            )),
         }
-        Ok(feeds)
     }
 
     /// Writes the cache through a temporary file, so an interrupted import keeps the old one.
@@ -364,6 +390,7 @@ impl Feeds {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        check_size(bytes.len(), MAX_CACHE_BYTES, path)?;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -373,6 +400,19 @@ impl Feeds {
             format!("{}: {e}", path.display())
         })
     }
+}
+
+/// A cache that `load` would refuse for its size (`limit`) is not written: the next import
+/// could not read it back.
+pub(crate) fn check_size(bytes: usize, limit: u64, path: &Path) -> Result<(), String> {
+    if bytes as u64 > limit {
+        return Err(format!(
+            "{}: the cache would be larger than {} MB and could not be read again; nothing was written",
+            path.display(),
+            limit / (1024 * 1024)
+        ));
+    }
+    Ok(())
 }
 
 /// `feeds.json` in the per-user configuration folder (see `appdir`), next to the user
@@ -389,15 +429,10 @@ pub struct ImportReport {
     pub kev_skipped: usize,
     pub epss_rows: Option<usize>,
     pub epss_skipped: usize,
-    /// An existing cache could not be read and was replaced.
-    pub replaced_unreadable: Option<String>,
 }
 impl ImportReport {
     pub fn lines(&self) -> Vec<String> {
         let mut out = vec![];
-        if let Some(e) = &self.replaced_unreadable {
-            out.push(format!("Replaced an unreadable cache ({e})"));
-        }
         if let Some(n) = self.kev_entries {
             out.push(format!(
                 "KEV: {n} known exploited CVEs ({} entries skipped)",
@@ -429,7 +464,8 @@ fn read_limited(path: &Path, limit: u64, what: &str) -> Result<Vec<u8>, String> 
 }
 
 /// Imports a KEV file and/or an EPSS file into the cache at `cache`. A part that is not given
-/// keeps its previous content. Nothing is written when a file is rejected.
+/// keeps its previous content. Nothing is written when a file is rejected, or when what stands
+/// at `cache` cannot be loaded (a cache of an older version starts over).
 pub fn import(
     kev: Option<&Path>,
     epss: Option<&Path>,
@@ -443,20 +479,22 @@ pub fn import(
         path: cache.to_path_buf(),
         ..Default::default()
     };
+    // Before the feed files are read: the part that is not given comes from this cache, so a
+    // file that does not load (damaged, a newer version, the cache option naming another
+    // file) stays as it is.
+    let mut feeds = if cache.exists() {
+        Feeds::read(cache)
+            .map_err(|e| format!("{e}; nothing was imported and the file is unchanged"))?
+            .unwrap_or_default()
+    } else {
+        Feeds::default()
+    };
     let kev = kev
         .map(|p| parse_kev(&read_limited(p, MAX_KEV_BYTES, "KEV")?))
         .transpose()?;
     let epss = epss
         .map(|p| parse_epss(&read_limited(p, MAX_EPSS_BYTES, "EPSS")?))
         .transpose()?;
-    let mut feeds = if cache.exists() {
-        Feeds::load(cache).unwrap_or_else(|e| {
-            report.replaced_unreadable = Some(e);
-            Feeds::default()
-        })
-    } else {
-        Feeds::default()
-    };
     if let Some(p) = kev {
         report.kev_entries = Some(p.data.entries.len());
         report.kev_skipped = p.skipped;
@@ -515,8 +553,8 @@ struct Loaded<T> {
 }
 /// Modification time and length of a file, `None` while it does not exist: tells a rewritten
 /// cache from the loaded one without reading it.
-type Stamp = Option<(std::time::SystemTime, u64)>;
-fn stamp(path: &Path) -> Stamp {
+pub(crate) type Stamp = Option<(std::time::SystemTime, u64)>;
+pub(crate) fn stamp(path: &Path) -> Stamp {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
 }
@@ -1052,12 +1090,59 @@ mod tests {
         assert!(import(Some(&bad), None, &cache, 30).is_err());
         assert_eq!(Feeds::load(&cache).unwrap().imported_at, 20);
         assert!(!cache.with_extension("json.tmp").exists());
-        // A missing file and an unreadable existing cache.
+        // A missing file.
         assert!(import(Some(&dir.join("none")), None, &cache, 1).is_err());
-        std::fs::write(&cache, "garbage").unwrap();
         let r = import(Some(&kev), None, &cache, 40).unwrap();
-        assert!(r.replaced_unreadable.is_some());
         assert!(r.lines().iter().any(|l| l.starts_with("KEV: 4")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What stands at the cache path decides what an import may do with it: only a cache of
+    /// this version is added to (an import of one feed keeps the other from it), one of an
+    /// older version starts over, and anything else is left alone.
+    #[test]
+    fn an_import_never_writes_over_a_file_it_could_not_load() {
+        let dir = temp("guard");
+        let (kev, cache) = (dir.join("kev.json"), dir.join("feeds.json"));
+        std::fs::write(&kev, KEV).unwrap();
+        let newer = format!(
+            r#"{{"version":{},"imported_at":1,"kev":null,"epss":null}}"#,
+            CACHE_VERSION + 1
+        );
+        // Another cache where this one should be (`--feeds csaf.json`), the feed itself, a
+        // damaged file and a cache from a newer version of the program.
+        for (case, content) in [
+            (
+                "another cache",
+                r#"{"version":1,"imported_at":1,"sources":[],"entries":[]}"#,
+            ),
+            ("the KEV file", KEV),
+            ("any JSON object", "{}"),
+            ("damaged", r#"{"version":1,"imported_at":1,"kev":{"entr"#),
+            ("empty", ""),
+            ("newer", newer.as_str()),
+        ] {
+            std::fs::write(&cache, content).unwrap();
+            let e = import(Some(&kev), None, &cache, 5).unwrap_err();
+            assert!(e.contains("the file is unchanged"), "{case}: {e}");
+            assert_eq!(std::fs::read_to_string(&cache).unwrap(), content, "{case}");
+        }
+        // A cache an older version wrote, with a part this version cannot read: the import
+        // starts over.
+        let old = r#"{"version":0,"imported_at":1,"kev":{"shape":"of version 0"},"epss":null}"#;
+        std::fs::write(&cache, old).unwrap();
+        assert!(
+            Feeds::load(&cache)
+                .unwrap_err()
+                .contains("import the feeds again")
+        );
+        import(Some(&kev), None, &cache, 5).unwrap();
+        let feeds = Feeds::load(&cache).unwrap();
+        assert!(feeds.version == CACHE_VERSION && feeds.kev.is_some() && feeds.epss.is_none());
+        // A cache this version could not load again is not written.
+        assert!(check_size(MAX_CACHE_BYTES as usize, MAX_CACHE_BYTES, &cache).is_ok());
+        let e = check_size(MAX_CACHE_BYTES as usize + 1, MAX_CACHE_BYTES, &cache).unwrap_err();
+        assert!(e.contains("nothing was written"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
     fn feeds_with(at: u64) -> Feeds {
@@ -1071,7 +1156,7 @@ mod tests {
     fn cache_version_and_size_are_checked() {
         let dir = temp("cache");
         let path = dir.join("feeds.json");
-        std::fs::write(&path, r#"{"version": 99}"#).unwrap();
+        std::fs::write(&path, r#"{"version": 99, "kev": null, "epss": null}"#).unwrap();
         assert!(Feeds::load(&path).unwrap_err().contains("version"));
         std::fs::write(&path, "\"text\"").unwrap();
         assert!(Feeds::load(&path).is_err());
