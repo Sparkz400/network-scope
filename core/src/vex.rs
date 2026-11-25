@@ -552,6 +552,27 @@ impl Library {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path)?.map_err(|version| {
+            format!(
+                "{}: cache version {version} is not supported (expected {CACHE_VERSION}); import the VEX files again",
+                path.display()
+            )
+        })
+    }
+
+    /// [`Self::load`], with a cache that an older version of the program wrote told apart as
+    /// `Ok(Err(its version))`: that one is expected after an upgrade, and an import starts
+    /// over. Every other file that does not load is an error, and is never written over.
+    fn read(path: &Path) -> Result<Result<Self, u32>, String> {
+        /// What a cache of any version has. The version alone does not make a file a cache: a
+        /// vendor's CycloneDX document has a top-level `version` too.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Header {
+            version: u32,
+            imported_at: u64,
+            statements: Vec<serde::de::IgnoredAny>,
+        }
         let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
@@ -559,16 +580,20 @@ impl Library {
             return Err(format!("{}: file is too large", path.display()));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let cache: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("{}: not a VEX cache: {e}", path.display()))?;
-        if cache.version != CACHE_VERSION {
-            return Err(format!(
-                "{}: cache version {} is not supported (expected {CACHE_VERSION}); import the VEX files again",
+        match serde_json::from_slice::<Self>(&bytes) {
+            Ok(cache) if cache.version == CACHE_VERSION => Ok(Ok(cache)),
+            Ok(cache) if cache.version < CACHE_VERSION => Ok(Err(cache.version)),
+            Ok(cache) => Err(format!(
+                "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
                 cache.version
-            ));
+            )),
+            // An older version may have stored its entries in another shape.
+            Err(e) => match serde_json::from_slice::<Header>(&bytes) {
+                Ok(header) if header.version < CACHE_VERSION => Ok(Err(header.version)),
+                _ => Err(format!("{}: not a VEX cache: {e}", path.display())),
+            },
         }
-        Ok(cache)
     }
 
     /// Writes the cache through a temporary file, so an interrupted import keeps the old one.
@@ -577,6 +602,7 @@ impl Library {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        check_size(bytes.len(), path)?;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -703,6 +729,19 @@ pub fn apply_with(library: &Library, findings: &mut [Finding], hosts: &[Host]) {
     }
 }
 
+/// A cache that [`Library::load`] would refuse for its size is not written: the next import
+/// could not read it back.
+fn check_size(bytes: usize, path: &Path) -> Result<(), String> {
+    if bytes as u64 > MAX_CACHE_BYTES {
+        return Err(format!(
+            "{}: the cache would be larger than {} MB and could not be read again; nothing was written",
+            path.display(),
+            MAX_CACHE_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
 /// `vex.json` next to `feeds.json`.
 pub fn default_path() -> Option<PathBuf> {
     crate::feeds::default_path().map(|p| p.with_file_name("vex.json"))
@@ -779,7 +818,12 @@ pub fn import(paths: &[PathBuf], cache: &Path, now: u64) -> Result<ImportReport,
         files.extend(expand(p)?);
     }
     let mut library = if cache.exists() {
-        Library::load(cache).unwrap_or_default()
+        // A cache of an older version starts over (its files are imported again). A file that
+        // does not load for any other reason stays as it is: it may be no cache at all (the
+        // cache option naming a vendor's document), and saving would write over it.
+        Library::read(cache)
+            .map_err(|e| format!("{e}; nothing was imported and the file is unchanged"))?
+            .unwrap_or_default()
     } else {
         Library::default()
     };

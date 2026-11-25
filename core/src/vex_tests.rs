@@ -264,6 +264,54 @@ fn import_writes_the_cache_and_a_second_import_replaces_the_same_document() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// What stands at the cache path decides what an import may do with it: only a cache of this
+/// version is added to, one of an older version starts over, and anything else is left alone.
+#[test]
+fn an_import_never_writes_over_a_file_it_could_not_load() {
+    let dir = std::env::temp_dir().join(format!("ns-vex-guard-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (input, cache) = (dir.join("in").join("a.json"), dir.join("vex.json"));
+    std::fs::create_dir_all(input.parent().unwrap()).unwrap();
+    std::fs::write(&input, CSAF_VEX).unwrap();
+    let newer = format!(
+        r#"{{"version":{},"imported_at":1,"statements":[]}}"#,
+        CACHE_VERSION + 1
+    );
+    // A vendor's document where the cache should be (`--vex vendor.json`), a damaged file and
+    // a cache from a newer version of the program.
+    for (case, content) in [
+        ("CycloneDX", CYCLONEDX_VEX),
+        ("CSAF", CSAF_VEX),
+        ("damaged", r#"{"version":2,"imported_at":1,"statem"#),
+        ("empty", ""),
+        ("newer", newer.as_str()),
+    ] {
+        std::fs::write(&cache, content).unwrap();
+        let e = import(std::slice::from_ref(&input), &cache, 5).unwrap_err();
+        assert!(e.contains("the file is unchanged"), "{case}: {e}");
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), content, "{case}");
+    }
+    // A cache an older version wrote, also one with entries this version cannot read: the
+    // import starts over.
+    for old in [
+        r#"{"version":1,"imported_at":1,"statements":[]}"#,
+        r#"{"version":1,"imported_at":1,"statements":[{"shape":"of version 1"}]}"#,
+    ] {
+        std::fs::write(&cache, old).unwrap();
+        assert!(Library::load(&cache).unwrap_err().contains("import the VEX files again"));
+        let report = import(std::slice::from_ref(&input), &cache, 5).unwrap();
+        let library = Library::load(&cache).unwrap();
+        assert_eq!(library.version, CACHE_VERSION);
+        assert_eq!(library.statements.len(), report.statements, "{old}");
+    }
+    // A cache this version could not load again is not written.
+    assert!(check_size(MAX_CACHE_BYTES as usize, &cache).is_ok());
+    let e = check_size(MAX_CACHE_BYTES as usize + 1, &cache).unwrap_err();
+    assert!(e.contains("nothing was written"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn a_clearing_statement_must_be_exact_and_affected_wins() {
     let statement = |vendor: &str, product: &str, range: &str, state: State| Statement {
