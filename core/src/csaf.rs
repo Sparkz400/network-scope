@@ -108,7 +108,8 @@ pub struct Entry {
 /// The cache file: every imported advisory entry.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Csaf {
-    #[serde(default)]
+    // `version` and `entries` are what makes a file a CSAF cache (see `Csaf::read`): not
+    // optional, or any JSON object would load as an empty cache.
     pub version: u32,
     /// Unix time of the last import.
     #[serde(default)]
@@ -116,7 +117,6 @@ pub struct Csaf {
     /// Files imported so far (names only), for `feeds status`.
     #[serde(default)]
     pub sources: Vec<String>,
-    #[serde(default)]
     pub entries: Vec<Entry>,
 }
 
@@ -1006,6 +1006,26 @@ impl Csaf {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path)?.map_err(|version| {
+            format!(
+                "{}: cache version {version} is not supported (expected {CACHE_VERSION}); import the advisories again",
+                path.display()
+            )
+        })
+    }
+
+    /// [`Self::load`], with a cache that an older version of the program wrote told apart as
+    /// `Ok(Err(its version))`: that one is expected after an upgrade, and an import starts
+    /// over. Every other file that does not load is an error, and is never written over.
+    fn read(path: &Path) -> Result<Result<Self, u32>, String> {
+        /// What a cache of any version has. The version alone does not make a file a cache: a
+        /// CycloneDX document and the caches next to this one have a top-level `version` too.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Header {
+            version: u32,
+            entries: Vec<serde::de::IgnoredAny>,
+        }
         let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
@@ -1013,16 +1033,20 @@ impl Csaf {
             return Err(format!("{}: file is too large", path.display()));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let cache: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("{}: not a CSAF cache: {e}", path.display()))?;
-        if cache.version != CACHE_VERSION {
-            return Err(format!(
-                "{}: cache version {} is not supported (expected {CACHE_VERSION}); import the advisories again",
+        match serde_json::from_slice::<Self>(&bytes) {
+            Ok(cache) if cache.version == CACHE_VERSION => Ok(Ok(cache)),
+            Ok(cache) if cache.version < CACHE_VERSION => Ok(Err(cache.version)),
+            Ok(cache) => Err(format!(
+                "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
                 cache.version
-            ));
+            )),
+            // An older version may have stored its entries in another shape.
+            Err(e) => match serde_json::from_slice::<Header>(&bytes) {
+                Ok(header) if header.version < CACHE_VERSION => Ok(Err(header.version)),
+                _ => Err(format!("{}: not a CSAF cache: {e}", path.display())),
+            },
         }
-        Ok(cache)
     }
 
     /// Writes the cache through a temporary file, so an interrupted import keeps the old one.
@@ -1031,6 +1055,7 @@ impl Csaf {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        crate::feeds::check_size(bytes.len(), MAX_CACHE_BYTES, path)?;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -1122,7 +1147,12 @@ pub fn import(paths: &[PathBuf], cache: &Path, now: u64) -> Result<ImportReport,
         files.extend(expand(p)?);
     }
     let mut csaf = if cache.exists() {
-        Csaf::load(cache).unwrap_or_default()
+        // A cache of an older version starts over (its files are imported again). A file that
+        // does not load for any other reason stays as it is: it may be no cache at all (the
+        // cache option naming an advisory), and saving would write over it.
+        Csaf::read(cache)
+            .map_err(|e| format!("{e}; nothing was imported and the file is unchanged"))?
+            .unwrap_or_default()
     } else {
         Csaf::default()
     };
@@ -1701,6 +1731,56 @@ mod tests {
         // a cache of another version is refused, not misread
         std::fs::write(&cache, r#"{"version":99,"entries":[]}"#).unwrap();
         assert!(Csaf::load(&cache).unwrap_err().contains("version 99"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What stands at the cache path decides what an import may do with it: only a cache of
+    /// this version is added to, one of an older version starts over, and anything else is
+    /// left alone.
+    #[test]
+    fn an_import_never_writes_over_a_file_it_could_not_load() {
+        let dir = std::env::temp_dir().join(format!("ns-csaf-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (advisory, cache) = (dir.join("a.json"), dir.join("csaf.json"));
+        std::fs::write(&advisory, SIEMENS).unwrap();
+        let import = || import(std::slice::from_ref(&advisory), &cache, 7);
+        let newer = format!(r#"{{"version":{},"entries":[]}}"#, CACHE_VERSION + 1);
+        // An advisory where the cache should be (`--csaf advisory.json`), a document that has a
+        // `version` of its own, a damaged file and a cache from a newer version of the program.
+        for (case, content) in [
+            ("an advisory", SIEMENS),
+            ("CycloneDX", r#"{"bomFormat":"CycloneDX","version":1}"#),
+            ("any JSON object", "{}"),
+            ("damaged", r#"{"version":1,"imported_at":1,"entr"#),
+            ("empty", ""),
+            ("newer", newer.as_str()),
+        ] {
+            std::fs::write(&cache, content).unwrap();
+            let e = import().unwrap_err();
+            assert!(e.contains("the file is unchanged"), "{case}: {e}");
+            assert_eq!(std::fs::read_to_string(&cache).unwrap(), content, "{case}");
+        }
+        // A cache an older version wrote, also one with entries this version cannot read: the
+        // import starts over.
+        for old in [
+            r#"{"version":0,"entries":[]}"#,
+            r#"{"version":0,"entries":[{"shape":"of version 0"}]}"#,
+        ] {
+            std::fs::write(&cache, old).unwrap();
+            assert!(
+                Csaf::load(&cache)
+                    .unwrap_err()
+                    .contains("import the advisories again")
+            );
+            let report = import().unwrap();
+            let loaded = Csaf::load(&cache).unwrap();
+            assert_eq!(
+                (loaded.version, loaded.entries.len()),
+                (CACHE_VERSION, report.entries),
+                "{old}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

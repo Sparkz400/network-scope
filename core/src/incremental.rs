@@ -75,13 +75,27 @@ pub fn load_base(
     targets: &str,
     settings: &Settings,
 ) -> Result<Result<std::sync::Arc<Previous>, String>, String> {
-    let Some((id, _, snapshot)) = crate::store::latest_complete(db, targets, i64::MAX)? else {
-        return Ok(Err("no earlier complete scan of these targets".into()));
+    Ok(
+        match crate::store::latest_complete(db, targets, i64::MAX)? {
+            Some((id, _, snapshot)) => {
+                base_of(Some((id, &snapshot.settings, snapshot.hosts)), settings)
+            }
+            None => base_of(None, settings),
+        },
+    )
+}
+
+/// [`load_base`] for a caller that has the newest complete scan of the targets at hand (a
+/// monitor keeps it from cycle to cycle): its id, settings and hosts, `None` when there is none.
+pub fn base_of(
+    newest: Option<(i64, &Settings, Vec<Host>)>,
+    settings: &Settings,
+) -> Result<std::sync::Arc<Previous>, String> {
+    let Some((id, used, hosts)) = newest else {
+        return Err("no earlier complete scan of these targets".into());
     };
-    if let Err(e) = compatible(&snapshot.settings, settings) {
-        return Ok(Err(e));
-    }
-    Ok(Ok(std::sync::Arc::new(Previous::new(id, snapshot.hosts))))
+    compatible(used, settings)?;
+    Ok(std::sync::Arc::new(Previous::new(id, hosts)))
 }
 
 /// The ports an incremental scan probed on this host, when it did not probe them all.

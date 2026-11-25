@@ -464,38 +464,14 @@ impl Library {
         names: &[String],
         version: &str,
     ) -> Option<&Statement> {
-        let version = norm_version(version);
-        let mut open: Option<&Statement> = None;
-        let mut clearing: Option<&Statement> = None;
-        for s in &self.statements {
-            if !s.cve.eq_ignore_ascii_case(cve) {
-                continue;
-            }
-            if !s.vendor.is_empty() && !vendor.is_empty() && !vendor_matches(&s.vendor, vendor) {
-                continue;
-            }
-            let all = s.range == "*";
-            if !all && (version.is_empty() || !range_holds(&s.range, version)) {
-                continue;
-            }
-            if s.state.resolves() {
-                let exact = !all
-                    && !s.vendor.is_empty()
-                    && !vendor.is_empty()
-                    && if s.specific.is_empty() {
-                        names_cover(names, &s.products)
-                    } else {
-                        covers_all(names, &s.specific)
-                    };
-                if exact && clearing.is_none() {
-                    clearing = Some(s);
-                }
-            } else if names_match(names, &s.products) && open.is_none_or(|b| b.range == "*" && !all)
-            {
-                open = Some(s);
-            }
-        }
-        open.or(clearing)
+        // shortcut: walks every statement (as `lookup_purl` does), fine for a single lookup;
+        // the CycloneDX export asks per SBOM component, so hand it the `by_cve` index that
+        // `apply` uses once exports with a large VEX cache are slow.
+        let about = self
+            .statements
+            .iter()
+            .filter(|s| s.cve.eq_ignore_ascii_case(cve));
+        covering(about, vendor, names, version)
     }
 
     /// The statement that covers `cve` for the package with this package URL (an SBOM
@@ -614,6 +590,43 @@ impl Library {
     }
 }
 
+/// [`Library::lookup`] among the statements about one CVE, in the order of the library.
+fn covering<'a>(
+    about: impl Iterator<Item = &'a Statement>,
+    vendor: &str,
+    names: &[String],
+    version: &str,
+) -> Option<&'a Statement> {
+    let version = norm_version(version);
+    let mut open: Option<&Statement> = None;
+    let mut clearing: Option<&Statement> = None;
+    for s in about {
+        if !s.vendor.is_empty() && !vendor.is_empty() && !vendor_matches(&s.vendor, vendor) {
+            continue;
+        }
+        let all = s.range == "*";
+        if !all && (version.is_empty() || !range_holds(&s.range, version)) {
+            continue;
+        }
+        if s.state.resolves() {
+            let exact = !all
+                && !s.vendor.is_empty()
+                && !vendor.is_empty()
+                && if s.specific.is_empty() {
+                    names_cover(names, &s.products)
+                } else {
+                    covers_all(names, &s.specific)
+                };
+            if exact && clearing.is_none() {
+                clearing = Some(s);
+            }
+        } else if names_match(names, &s.products) && open.is_none_or(|b| b.range == "*" && !all) {
+            open = Some(s);
+        }
+    }
+    open.or(clearing)
+}
+
 /// Whether a statement's product name is one the device reports, or a more general one it
 /// contains (normalised as for the advisories, at least 5 characters; Siemens S7 CPUs also by
 /// family). Unlike [`names_match`], a statement name that only contains the device's name (a more
@@ -708,10 +721,30 @@ fn contexts(host: &Host, port: Option<u16>) -> Vec<Context> {
 
 /// Marks the findings a statement covers (the first CVE of a finding that one covers).
 pub fn apply(findings: &mut [Finding], hosts: &[Host]) {
-    apply_with(&active(), findings, hosts);
+    let active = ACTIVE.get();
+    apply_indexed(&active.library, &active.by_cve, findings, hosts);
 }
 
 pub fn apply_with(library: &Library, findings: &mut [Finding], hosts: &[Host]) {
+    apply_indexed(library, &by_cve(library), findings, hosts);
+}
+
+/// The positions of a library's statements by upper-case CVE id: a lookup per finding must not
+/// walk all of them (a cache holds up to a million).
+fn by_cve(library: &Library) -> HashMap<String, Vec<usize>> {
+    let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, s) in library.statements.iter().enumerate() {
+        index.entry(s.cve.to_ascii_uppercase()).or_default().push(i);
+    }
+    index
+}
+
+fn apply_indexed(
+    library: &Library,
+    by_cve: &HashMap<String, Vec<usize>>,
+    findings: &mut [Finding],
+    hosts: &[Host],
+) {
     if library.is_empty() {
         return;
     }
@@ -722,8 +755,12 @@ pub fn apply_with(library: &Library, findings: &mut [Finding], hosts: &[Host]) {
         };
         let ctx = contexts(host, f.port);
         f.vex = f.cve.iter().find_map(|cve| {
+            let about = by_cve.get(&cve.to_ascii_uppercase())?;
             ctx.iter()
-                .find_map(|(vendor, names, version)| library.lookup(cve, vendor, names, version))
+                .find_map(|(vendor, names, version)| {
+                    let about = about.iter().map(|i| &library.statements[*i]);
+                    covering(about, vendor, names, version)
+                })
                 .map(Applied::from)
         });
     }
@@ -887,8 +924,22 @@ pub fn status(library: &Library, path: &Path) -> Value {
     })
 }
 
-static ACTIVE: crate::feeds::ActiveCache<Library> =
-    crate::feeds::ActiveCache::new("VEX", "no statements are used", default_path, Library::load);
+/// The active statements with their index ([`by_cve`]), built once when the cache is loaded.
+#[derive(Default)]
+struct Indexed {
+    library: Arc<Library>,
+    by_cve: HashMap<String, Vec<usize>>,
+}
+fn load_indexed(path: &Path) -> Result<Indexed, String> {
+    let library = Arc::new(Library::load(path)?);
+    Ok(Indexed {
+        by_cve: by_cve(&library),
+        library,
+    })
+}
+
+static ACTIVE: crate::feeds::ActiveCache<Indexed> =
+    crate::feeds::ActiveCache::new("VEX", "no statements are used", default_path, load_indexed);
 
 /// Makes the cache at `explicit` (`--vex FILE`) the active statements.
 pub fn load_active(explicit: &Path) -> Result<(), String> {
@@ -904,7 +955,7 @@ pub fn reload() {
 /// The active statements: the explicit cache, else the default cache when it exists, else none.
 /// Tests never read the developer's own cache.
 pub fn active() -> Arc<Library> {
-    ACTIVE.get()
+    ACTIVE.get().library.clone()
 }
 
 /// Reads the cache again when its file changed since it was loaded (see `feeds::refresh`).

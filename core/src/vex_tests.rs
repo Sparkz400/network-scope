@@ -547,3 +547,42 @@ fn a_statement_for_one_model_does_not_clear_the_rest_of_its_family() {
         "33.11"
     ));
 }
+
+/// Many statements and many findings: a finding is matched against the statements about its
+/// CVEs, not against all of them (a cache may hold a million).
+#[test]
+fn a_lookup_reads_only_the_statements_about_its_cve() {
+    let mut l = library(&[("vex.json", CSAF_VEX)]);
+    let first = l.statements[0].clone();
+    l.statements.extend((0..100_000).map(|i| Statement {
+        cve: format!("CVE-2098-{i}"),
+        ..first.clone()
+    }));
+    // Ids compare without case, and the statements of the file itself are still found.
+    let mut findings: Vec<Finding> = (0..2_000)
+        .map(|i| finding(&format!("cve-2098-{i}")))
+        .chain([finding("CVE-2099-1000"), finding("CVE-2099-3000")])
+        .collect();
+    // 0.2 s here; walking every statement for every finding took 3 s.
+    apply_with(&l, &mut findings, &[host()]);
+    assert!(findings[..2_001].iter().all(|f| f.vex.is_some()));
+    assert!(findings[2_001].vex.is_none(), "a CVE without a statement");
+    // Not a matter of timing: only the positions the index names are looked at.
+    let mut index = by_cve(&l);
+    index.remove("CVE-2098-7");
+    apply_indexed(&l, &index, &mut findings[..10], &[host()]);
+    let marked: Vec<bool> = findings[5..10].iter().map(|f| f.vex.is_some()).collect();
+    assert_eq!(marked, [true, true, false, true, true]);
+    // The active cache gets its index when it is loaded.
+    let cache = std::env::temp_dir().join(format!("ns-vex-index-{}.json", std::process::id()));
+    let mut small = library(&[("vex.json", CSAF_VEX), ("b.json", CYCLONEDX_VEX)]);
+    small.version = CACHE_VERSION;
+    small.save(&cache).unwrap();
+    let loaded = load_indexed(&cache).unwrap();
+    std::fs::remove_file(&cache).unwrap();
+    assert_eq!(loaded.by_cve["CVE-2099-1000"], [0, 1, 2]);
+    assert_eq!(loaded.by_cve.len(), 3);
+    let mut one = [finding("cve-2099-1000")];
+    apply_indexed(&loaded.library, &loaded.by_cve, &mut one, &[host()]);
+    assert_eq!(one[0].vex.as_ref().unwrap().state, State::NotAffected);
+}

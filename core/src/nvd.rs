@@ -68,7 +68,7 @@ pub struct NvdCve {
 /// The cache file: every imported CVE that has at least one usable match.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Nvd {
-    #[serde(default)]
+    // `version` and `cves` are what makes a file an NVD cache (see `Nvd::read`): not optional.
     pub version: u32,
     /// Unix time of the last import.
     #[serde(default)]
@@ -76,7 +76,6 @@ pub struct Nvd {
     /// Files imported so far (names only), for `feeds status`.
     #[serde(default)]
     pub sources: Vec<String>,
-    #[serde(default)]
     pub cves: BTreeMap<String, NvdCve>,
     /// (product -> (cve id, match index)); built on load, not stored.
     #[serde(skip)]
@@ -703,24 +702,55 @@ impl Nvd {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path)?.map_err(|version| {
+            format!(
+                "{}: cache version {version} is not supported (expected {CACHE_VERSION}); import the NVD files again",
+                path.display()
+            )
+        })
+    }
+
+    /// [`Self::load`], with a cache that an older version of the program wrote told apart as
+    /// `Ok(Err(its version))`: that one is expected after an upgrade, and an import starts
+    /// over. Every other file that does not load is an error, and is never written over.
+    fn read(path: &Path) -> Result<Result<Self, u32>, String> {
+        /// What a cache of any version has. The version alone does not make a file a cache: a
+        /// CycloneDX document and the caches next to this one have a top-level `version` too.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Header {
+            version: u32,
+            cves: serde::de::IgnoredAny,
+        }
         let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
         if size > MAX_CACHE_BYTES {
             return Err(format!("{}: file is too large", path.display()));
         }
-        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut nvd: Self = serde_json::from_reader(std::io::BufReader::new(file))
-            .map_err(|e| format!("{}: not an NVD cache: {e}", path.display()))?;
-        if nvd.version != CACHE_VERSION {
-            return Err(format!(
-                "{}: cache version {} is not supported (expected {CACHE_VERSION}); import the NVD files again",
+        // Streamed: the cache can be a gigabyte.
+        let open = || {
+            std::fs::File::open(path)
+                .map(std::io::BufReader::new)
+                .map_err(|e| format!("{}: {e}", path.display()))
+        };
+        match serde_json::from_reader::<_, Self>(open()?) {
+            Ok(mut nvd) if nvd.version == CACHE_VERSION => {
+                nvd.rebuild_index();
+                Ok(Ok(nvd))
+            }
+            Ok(nvd) if nvd.version < CACHE_VERSION => Ok(Err(nvd.version)),
+            Ok(nvd) => Err(format!(
+                "{}: cache version {} is not supported (expected {CACHE_VERSION}); a newer version of the program wrote it",
                 path.display(),
                 nvd.version
-            ));
+            )),
+            // An older version may have stored its entries in another shape.
+            Err(e) => match serde_json::from_reader::<_, Header>(open()?) {
+                Ok(header) if header.version < CACHE_VERSION => Ok(Err(header.version)),
+                _ => Err(format!("{}: not an NVD cache: {e}", path.display())),
+            },
         }
-        nvd.rebuild_index();
-        Ok(nvd)
     }
 
     /// Writes through a temporary file, so an interrupted import keeps the old cache.
@@ -729,6 +759,7 @@ impl Nvd {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        crate::feeds::check_size(bytes.len(), MAX_CACHE_BYTES, path)?;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
@@ -754,25 +785,22 @@ pub struct ImportReport {
     pub skipped: usize,
     /// CVEs in the cache after the import.
     pub cves: usize,
-    pub replaced_unreadable: Option<String>,
 }
 impl ImportReport {
     pub fn lines(&self) -> Vec<String> {
-        let mut out = vec![];
-        if let Some(e) = &self.replaced_unreadable {
-            out.push(format!("Replaced an unreadable NVD cache ({e})"));
-        }
-        out.push(format!(
-            "NVD: {} file(s), {} records read, {} skipped (rejected, without a CPE range or id); {} CVEs in the cache",
-            self.files, self.records, self.skipped, self.cves
-        ));
-        out.push(format!("Cache written to {}", self.path.display()));
-        out
+        vec![
+            format!(
+                "NVD: {} file(s), {} records read, {} skipped (rejected, without a CPE range or id); {} CVEs in the cache",
+                self.files, self.records, self.skipped, self.cves
+            ),
+            format!("Cache written to {}", self.path.display()),
+        ]
     }
 }
 
 /// Imports NVD feed files into the cache at `cache`, merging with what it holds (a CVE that is
-/// imported again is replaced). Nothing is written when a file is rejected.
+/// imported again is replaced). Nothing is written when a file is rejected, or when what stands
+/// at `cache` cannot be loaded (a cache of an older version starts over).
 pub fn import(files: &[PathBuf], cache: &Path, now: u64) -> Result<ImportReport, String> {
     if files.is_empty() {
         return Err("Provide the NVD feed files: feeds import nvd FILE...".into());
@@ -783,10 +811,11 @@ pub fn import(files: &[PathBuf], cache: &Path, now: u64) -> Result<ImportReport,
         ..Default::default()
     };
     let mut nvd = if cache.exists() {
-        Nvd::load(cache).unwrap_or_else(|e| {
-            report.replaced_unreadable = Some(e);
-            Nvd::default()
-        })
+        // A file that does not load stays as it is: it may be no cache at all (the cache
+        // option naming another file), and saving would write over it.
+        Nvd::read(cache)
+            .map_err(|e| format!("{e}; nothing was imported and the file is unchanged"))?
+            .unwrap_or_default()
     } else {
         Nvd::default()
     };
@@ -1131,12 +1160,53 @@ mod tests {
         assert!(Nvd::load(&cache).unwrap_err().contains("not supported"));
         std::fs::write(&cache, b"{").unwrap();
         assert!(Nvd::load(&cache).unwrap_err().contains("not an NVD cache"));
-        // An unreadable cache is replaced by an import and says so.
-        let f = dir.join("f.json");
-        std::fs::write(&f, FIXTURE).unwrap();
-        let r = import(&[f], &cache, 1).unwrap();
-        assert!(r.replaced_unreadable.is_some());
-        assert!(Nvd::load(&cache).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What stands at the cache path decides what an import may do with it: only a cache of
+    /// this version is added to, one of an older version starts over, and anything else is
+    /// left alone.
+    #[test]
+    fn an_import_never_writes_over_a_file_it_could_not_load() {
+        let dir = temp("guard");
+        let (feed, cache) = (dir.join("f.json"), dir.join("nvd.json"));
+        std::fs::write(&feed, FIXTURE).unwrap();
+        let import = || import(std::slice::from_ref(&feed), &cache, 1);
+        let newer = format!(r#"{{"version":{},"cves":{{}}}}"#, CACHE_VERSION + 1);
+        // The feed file where the cache should be (`--nvd nvdcve.json`), another cache, a
+        // damaged file and a cache from a newer version of the program.
+        for (case, content) in [
+            ("the NVD file", FIXTURE),
+            (
+                "another cache",
+                r#"{"version":1,"imported_at":1,"sources":[],"entries":[]}"#,
+            ),
+            ("any JSON object", "{}"),
+            ("damaged", r#"{"version":1,"imported_at":1,"cves":{"CVE-"#),
+            ("empty", ""),
+            ("newer", newer.as_str()),
+        ] {
+            std::fs::write(&cache, content).unwrap();
+            let e = import().unwrap_err();
+            assert!(e.contains("the file is unchanged"), "{case}: {e}");
+            assert_eq!(std::fs::read_to_string(&cache).unwrap(), content, "{case}");
+        }
+        // A cache an older version wrote, also one with entries this version cannot read: the
+        // import starts over.
+        for old in [
+            r#"{"version":0,"cves":{}}"#,
+            r#"{"version":0,"cves":{"CVE-2000-0001":{"shape":"of version 0"}}}"#,
+        ] {
+            std::fs::write(&cache, old).unwrap();
+            assert!(
+                Nvd::load(&cache)
+                    .unwrap_err()
+                    .contains("import the NVD files again")
+            );
+            let report = import().unwrap();
+            let nvd = Nvd::load(&cache).unwrap();
+            assert_eq!((nvd.version, nvd.cves.len()), (CACHE_VERSION, report.cves));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

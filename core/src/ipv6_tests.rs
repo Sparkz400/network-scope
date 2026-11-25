@@ -983,6 +983,96 @@ fn neighbor_mac_is_taken_only_from_the_capture_interface() {
     assert_eq!(mac_on_link(&list, v6("fe80::1"), &elsewhere), None);
 }
 
+/// What the SYN engine does on Linux and macOS, where reading the neighbour cache starts a
+/// process: one read answers for every address it has and for every lookup that began before
+/// it; a lookup that began later (after the kernel was asked to resolve the address) reads again.
+#[test]
+fn a_neighbour_table_read_is_shared_by_the_lookups_it_can_answer() {
+    let l = link(&[("fe80::5", 64)]);
+    let (table, reads) = (NeighborTable::default(), std::cell::Cell::new(0));
+    let known = std::cell::RefCell::new(vec![
+        neighbor("fe80::1", "02:00:00:00:00:01", State::Reachable),
+        neighbor("fe80::2", "02:00:00:00:00:02", State::Stale),
+    ]);
+    let read = || {
+        reads.set(reads.get() + 1);
+        Some(known.borrow().clone())
+    };
+    let began = Instant::now();
+    let later = || Instant::now() + Duration::from_secs(1);
+    let mac = |ip: &str, since| table.mac(v6(ip), &l, since, read);
+    assert_eq!(mac("fe80::1", began).as_deref(), Some("02:00:00:00:00:01"));
+    // In the table: no further read, whenever the lookup began.
+    assert_eq!(
+        mac("fe80::2", later()).as_deref(),
+        Some("02:00:00:00:00:02")
+    );
+    assert_eq!(
+        mac("fe80::1", later()).as_deref(),
+        Some("02:00:00:00:00:01")
+    );
+    // Not in it, and the lookup began before it was read: that read is the answer.
+    assert_eq!(mac("fe80::9", began), None);
+    assert_eq!(reads.get(), 1);
+    // Began after it (the second look, after the datagram that makes the kernel ask): read again.
+    assert_eq!(mac("fe80::9", later()), None);
+    assert_eq!(reads.get(), 2);
+    known
+        .borrow_mut()
+        .push(neighbor("fe80::9", "02:00:00:00:00:09", State::Reachable));
+    assert_eq!(
+        mac("fe80::9", later()).as_deref(),
+        Some("02:00:00:00:00:09")
+    );
+    assert_eq!(reads.get(), 3);
+    // A read that fails (the command timed out) keeps what is known, and is not repeated for
+    // a lookup that waited for it.
+    let failed = std::cell::Cell::new(0);
+    let fail = || {
+        failed.set(failed.get() + 1);
+        None
+    };
+    assert_eq!(table.mac(v6("fe80::7"), &l, later(), fail), None);
+    assert_eq!(table.mac(v6("fe80::8"), &l, began, fail), None);
+    assert_eq!(failed.get(), 1);
+    assert_eq!(
+        mac("fe80::9", later()).as_deref(),
+        Some("02:00:00:00:00:09")
+    );
+    assert_eq!(reads.get(), 3);
+    // A table that could never be read has nothing, and is tried again by a later lookup.
+    let empty = NeighborTable::default();
+    assert_eq!(empty.mac(v6("fe80::1"), &l, began, fail), None);
+    assert_eq!(
+        empty.mac(v6("fe80::1"), &l, later(), read).as_deref(),
+        Some("02:00:00:00:00:01")
+    );
+}
+
+/// A system command that hangs is killed when its time is over, instead of hanging the scan.
+#[test]
+fn a_command_that_does_not_finish_is_killed_after_its_time_limit() {
+    // Something that runs for a long time without input.
+    let (slow, args): (&str, &[&str]) = if cfg!(windows) {
+        ("ping", &["-n", "60", "127.0.0.1"])
+    } else {
+        ("sleep", &["60"])
+    };
+    let started = Instant::now();
+    let e = run_within(slow, args, Duration::from_millis(300)).unwrap_err();
+    assert!(e.contains("no answer within 300 ms"), "{e}");
+    assert!(started.elapsed() < Duration::from_secs(30), "not killed");
+    // One that finishes gives its output; a program that is not there is an error.
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/c")
+    } else {
+        ("sh", "-c")
+    };
+    let out = run_within(shell, &[flag, "echo ready"], Duration::from_secs(60)).unwrap();
+    assert_eq!(out.trim(), "ready");
+    assert!(run_within("network-scope-no-such-command", &[], RUN_TIMEOUT).is_err());
+}
+
 /// The real tables of this machine: reading them sends nothing. On Windows this checks the row
 /// offsets against the OS (the addresses and MACs must look like addresses and MACs).
 #[test]
