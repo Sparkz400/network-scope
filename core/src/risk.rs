@@ -1303,8 +1303,44 @@ pub fn analyze(hosts: &[Host]) -> Vec<Finding> {
     all
 }
 
+/// What the findings of a snapshot depend on besides the snapshot: the rules and caches the
+/// analysis reads, and the day (end-of-life dates). Kept beside findings to tell whether they
+/// still are what [`analyze_snapshot`] would return now.
+#[derive(Clone)]
+pub(crate) struct Inputs {
+    rules: Arc<CveDb>,
+    feeds: Arc<crate::feeds::Feeds>,
+    nvd: Arc<crate::nvd::Nvd>,
+    csaf: Arc<crate::csaf::Csaf>,
+    vex: Arc<crate::vex::Library>,
+    day: String,
+}
+impl Inputs {
+    /// Taken before an analysis: what is replaced while it runs then counts as changed.
+    pub(crate) fn current() -> Self {
+        Self {
+            rules: cve_db(),
+            feeds: crate::feeds::active(),
+            nvd: crate::nvd::active(),
+            csaf: crate::csaf::active(),
+            vex: crate::vex::active(),
+            day: today(),
+        }
+    }
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.rules, &other.rules)
+            && Arc::ptr_eq(&self.feeds, &other.feeds)
+            && Arc::ptr_eq(&self.nvd, &other.nvd)
+            && Arc::ptr_eq(&self.csaf, &other.csaf)
+            && Arc::ptr_eq(&self.vex, &other.vex)
+            && self.day == other.day
+    }
+}
+
 /// Host findings plus findings from passively observed control traffic.
 pub fn analyze_snapshot(s: &crate::store::Snapshot) -> Vec<Finding> {
+    #[cfg(test)]
+    crate::monitor::ANALYSES.with(|n| n.set(n.get() + 1));
     let mut all = analyze(&s.hosts);
     for (severity, ip, evidence) in crate::otpassive::control_findings(&s.observations) {
         all.push(Finding {
@@ -2044,6 +2080,27 @@ mod tests {
         rules.refresh();
         assert!(has("lab-55555"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Findings kept from an earlier analysis count as current only while the rules, every
+    /// cache and the day are the ones they were made with.
+    #[test]
+    fn kept_findings_are_current_only_with_the_same_rules_caches_and_day() {
+        let then = Inputs::current();
+        assert!(then.same(&Inputs::current()));
+        let changed: [fn(&mut Inputs); 6] = [
+            |i| i.rules = Arc::new(CveDb::builtin()),
+            |i| i.feeds = Default::default(),
+            |i| i.nvd = Default::default(),
+            |i| i.csaf = Default::default(),
+            |i| i.vex = Default::default(),
+            |i| i.day = "1999-12-31".into(),
+        ];
+        for change in changed {
+            let mut now = then.clone();
+            change(&mut now);
+            assert!(!then.same(&now));
+        }
     }
 
     #[test]

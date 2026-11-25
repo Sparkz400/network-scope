@@ -250,6 +250,9 @@ impl Record {
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     records: Vec<Record>,
+    /// Key -> position in `records`: the registry is filled one key and one identifier at a
+    /// time, and a search of the records for each made loading it quadratic.
+    by_key: HashMap<String, usize>,
 }
 
 impl Registry {
@@ -266,30 +269,30 @@ impl Registry {
         &self.records
     }
     pub fn contains_key(&self, key: &str) -> bool {
-        self.records.iter().any(|r| r.key == key)
+        self.by_key.contains_key(key)
     }
-    /// Makes sure a device with this key exists (no identifiers needed).
-    pub fn add_key(&mut self, key: &str) {
-        if !self.contains_key(key) {
-            self.records.push(Record {
-                key: key.to_string(),
-                ..Default::default()
-            });
-        }
-    }
-    /// Adds an identifier to the record of `key`, creating the record.
-    pub fn add(&mut self, key: &str, identifier: Identifier) {
-        let record = match self.records.iter().position(|r| r.key == key) {
-            Some(i) => &mut self.records[i],
+    /// The record of `key`, created when there is none.
+    fn record(&mut self, key: &str) -> &mut Record {
+        let at = match self.by_key.get(key) {
+            Some(at) => *at,
             None => {
+                self.by_key.insert(key.to_string(), self.records.len());
                 self.records.push(Record {
                     key: key.to_string(),
                     ..Default::default()
                 });
-                self.records.last_mut().expect("just pushed")
+                self.records.len() - 1
             }
         };
-        record
+        &mut self.records[at]
+    }
+    /// Makes sure a device with this key exists (no identifiers needed).
+    pub fn add_key(&mut self, key: &str) {
+        self.record(key);
+    }
+    /// Adds an identifier to the record of `key`, creating the record.
+    pub fn add(&mut self, key: &str, identifier: Identifier) {
+        self.record(key)
             .identifiers
             .entry(identifier.kind)
             .or_default()
@@ -963,5 +966,25 @@ mod tests {
             assert_eq!(Kind::parse(k.name()), Some(k));
         }
         assert_eq!(Kind::parse("nope"), None);
+    }
+
+    /// The registry is loaded one key and one identifier at a time (`store::registry_of`): the
+    /// record of a key is found by the key, not by a search of the records (a /16 of known
+    /// devices took minutes to load every cycle).
+    #[test]
+    fn a_large_registry_is_filled_without_searching_it_for_every_key() {
+        let mut registry = Registry::new();
+        let key = |i: usize| format!("ip:10.{}.{}.{}", i >> 16, (i >> 8) & 255, i & 255);
+        for i in 0..60_000 {
+            registry.add_key(&key(i));
+            registry.add(&key(i), Identifier::new(Kind::Ip, &key(i)[3..]).unwrap());
+            registry.add_key(&key(i));
+        }
+        assert_eq!(registry.len(), 60_000);
+        assert!(registry.contains_key(&key(59_999)) && !registry.contains_key(&key(60_000)));
+        // In the order they were added, each with its own identifier.
+        let record = &registry.records()[4_660];
+        assert_eq!(record.key, "ip:10.0.18.52");
+        assert!(record.has(Kind::Ip, "10.0.18.52"));
     }
 }

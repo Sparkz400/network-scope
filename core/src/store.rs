@@ -112,6 +112,8 @@ fn migrate_alert_outbox(c: &Connection) -> rusqlite::Result<()> {
 /// Parses a stored snapshot and puts back the hosts a [`crate::store_stream::ScanWriter`] wrote
 /// to `scan_hosts` (none for a scan saved the usual way).
 fn snapshot_of(c: &Connection, id: i64, data: &str) -> Result<Snapshot, String> {
+    #[cfg(test)]
+    crate::monitor::SNAPSHOTS_READ.with(|n| n.set(n.get() + 1));
     let mut snapshot: Snapshot = serde_json::from_str(data).map_err(|e| e.to_string())?;
     let mut s = c
         .prepare_cached("SELECT host FROM scan_hosts WHERE scan_id=?1 ORDER BY seq")
@@ -282,10 +284,20 @@ pub fn save(path: &Path, snapshot: &Snapshot) -> Result<i64, String> {
 /// [`save`] with the scan time given (Unix seconds): for imports that know when the data was
 /// taken, and for tests of anything that depends on the age of a scan.
 pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, String> {
-    let mut c = open(path)?;
     // The research rows (L67) are derived before the transaction opens: the analysis may read
     // feed caches, which must not happen while the write lock is held.
     let findings = crate::risk::analyze_snapshot(snapshot);
+    save_analysed(path, snapshot, &findings, timestamp)
+}
+/// [`save_at`] for a caller that analysed the snapshot already: `findings` are those of
+/// `risk::analyze_snapshot`.
+pub(crate) fn save_analysed(
+    path: &Path,
+    snapshot: &Snapshot,
+    findings: &[crate::risk::Finding],
+    timestamp: i64,
+) -> Result<i64, String> {
+    let mut c = open(path)?;
     let tx = c
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -304,7 +316,7 @@ pub fn save_at(path: &Path, snapshot: &Snapshot, timestamp: i64) -> Result<i64, 
     let id = tx.last_insert_rowid();
     // Same transaction as the snapshot, so the tables and the scans never disagree; a failure
     // of the research rows alone never loses the scan (`research rebuild` repairs them).
-    crate::research::insert_scan_guarded(&tx, id, timestamp, snapshot, &findings);
+    crate::research::insert_scan_guarded(&tx, id, timestamp, snapshot, findings);
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
