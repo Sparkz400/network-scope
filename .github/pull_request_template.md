@@ -11,6 +11,7 @@
 - [ ] `cargo test --locked` passes
 - [ ] `cargo clippy --all-targets --locked -- -D warnings` passes
 - [ ] `cargo fmt --check` passes
+- [ ] Every commit is signed off (`git commit -s`, [DCO](https://developercertificate.org/))
 - [ ] New behaviour has tests (parsers: truncated and oversized input)
 - [ ] Docs in `docs/src` and `CHANGELOG.md` (`[Unreleased]`) updated for user-visible changes
 - [ ] No real IP addresses, MAC addresses, host names or captures from production networks in code, tests or fixtures
