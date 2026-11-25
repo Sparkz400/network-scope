@@ -440,7 +440,7 @@ impl Scanner {
                                     // Ctrl or Shift marks rows; a plain click shows the host.
                                     if (whole.clicked() || chosen)
                                         && !view.marks.click(
-                                            whole.ctx.input(|i| i.modifiers),
+                                            tables::click_keys(&whole.ctx),
                                             at,
                                             view.rows.len(),
                                             |i| view.rows[i],
@@ -613,7 +613,7 @@ impl Scanner {
                                 tables::copy_menu(&whole, &copies);
                                 if (whole.clicked() || chosen)
                                     && !view.marks.click(
-                                        whole.ctx.input(|i| i.modifiers),
+                                        tables::click_keys(&whole.ctx),
                                         at,
                                         view.rows.len(),
                                         |i| view.rows[i],

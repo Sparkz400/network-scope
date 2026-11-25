@@ -24,6 +24,8 @@ struct Harness {
     events: Vec<egui::Event>,
     widgets: Vec<Widget>,
     size: egui::Vec2,
+    /// The modifier keys that are held down (see `hold`).
+    held: egui::Modifiers,
 }
 
 impl Harness {
@@ -52,6 +54,7 @@ impl Harness {
             events: vec![],
             widgets: vec![],
             size,
+            held: Default::default(),
         };
         // Layout settles over a couple of frames (sizes of panels and tables).
         for _ in 0..3 {
@@ -127,6 +130,7 @@ impl Harness {
 
     /// Holds these modifier keys down from the next frame on (none: lets them go).
     fn hold(&mut self, keys: egui::Modifiers) {
+        self.held = keys;
         self.events.push(egui::Event::ModifiersChanged(keys));
     }
 
@@ -159,7 +163,7 @@ impl Harness {
                 pos,
                 button,
                 pressed,
-                modifiers: Default::default(),
+                modifiers: self.held,
             });
             self.step();
         }
@@ -460,8 +464,32 @@ fn shift_marks_hosts_and_the_menu_of_one_copies_them_all() {
         assert!(h.app.marked.has(&ip(&h, row)), "row {row}");
     }
     assert!(!h.app.marked.has(&ip(&h, 3)));
+    // A click that lets go of Shift in the frame of the release (a remote-control tool, a
+    // very quick hand) still counts as a Shift+click.
+    let fourth = h.one(&name(&h, 3)).center();
+    h.events.push(egui::Event::PointerMoved(fourth));
+    h.step();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: fourth,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::SHIFT,
+    };
+    let quick = [
+        egui::Event::ModifiersChanged(egui::Modifiers::SHIFT),
+        button(true),
+        button(false),
+        egui::Event::ModifiersChanged(Default::default()),
+    ];
+    h.events.extend(quick);
+    h.step();
+    h.step();
+    assert!(
+        h.app.marked.has(&ip(&h, 3)),
+        "the fourth row joined the range"
+    );
     h.right_click(&third);
-    assert!(h.has("Copy 3 addresses") && h.has("Copy 3 rows"));
+    assert!(h.has("Copy 4 addresses") && h.has("Copy 4 rows"));
     assert!(h.has("Copy IP address"), "the host's own menu follows");
     // The findings and the devices mark the same way.
     let mut h = Harness::new("findings");

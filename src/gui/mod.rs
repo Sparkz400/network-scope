@@ -2061,7 +2061,7 @@ impl eframe::App for Scanner {
                                 // Ctrl or Shift marks rows; a plain click selects (the details).
                                 if (chosen || response.clicked())
                                     && !self.marked.click(
-                                        response.ctx.input(|i| i.modifiers),
+                                        tables::click_keys(&response.ctx),
                                         at,
                                         visible.len(),
                                         |i| self.results[visible[i]].ip,

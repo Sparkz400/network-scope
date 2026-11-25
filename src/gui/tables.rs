@@ -188,6 +188,23 @@ pub(super) fn copy_buttons(ui: &mut egui::Ui, items: Vec<(String, String)>) {
         }
     }
 }
+/// The modifier keys of the click that just happened: those the mouse button was released
+/// with (a quick click, or one from a remote-control tool, lets go of Ctrl or Shift within the
+/// same frame), else the keys held now (Enter on a row's address).
+pub(super) fn click_keys(ctx: &egui::Context) -> egui::Modifiers {
+    ctx.input(|i| {
+        (i.events.iter().rev())
+            .find_map(|e| match e {
+                egui::Event::PointerButton {
+                    pressed: false,
+                    modifiers,
+                    ..
+                } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or(i.modifiers)
+    })
+}
 /// The address and the whole row out of a row's copy entries (the first and the last one).
 pub(super) fn ends(mut items: Vec<(String, String)>) -> (String, String) {
     let row = items.pop().map(|i| i.1).unwrap_or_default();
