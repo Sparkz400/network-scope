@@ -490,6 +490,34 @@ fn shift_marks_hosts_and_the_menu_of_one_copies_them_all() {
     );
     h.right_click(&third);
     assert!(h.has("Copy 4 addresses") && h.has("Copy 4 rows"));
+    // The keyboard: Shift with an arrow key marks the rows it passes.
+    let mut h = Harness::new("main");
+    h.click(&name(&h, 1));
+    let down = |modifiers| egui::Event::Key {
+        key: egui::Key::ArrowDown,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    h.hold(egui::Modifiers::SHIFT);
+    for _ in 0..2 {
+        h.events.push(down(egui::Modifiers::SHIFT));
+        h.step();
+    }
+    h.hold(Default::default());
+    assert_eq!(
+        h.app.selected,
+        Some(ip(&h, 3)),
+        "the details follow the arrows"
+    );
+    assert!((1..=3).all(|row| h.app.marked.has(&ip(&h, row))) && !h.app.marked.has(&ip(&h, 0)));
+    h.events.push(down(Default::default()));
+    h.step();
+    assert!(
+        !h.app.marked.has(&ip(&h, 3)),
+        "an arrow without Shift starts over"
+    );
     assert!(h.has("Copy IP address"), "the host's own menu follows");
     // The findings and the devices mark the same way.
     let mut h = Harness::new("findings");

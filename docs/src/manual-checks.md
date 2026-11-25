@@ -25,13 +25,13 @@ The click tests drive the app through synthetic frames, and one run drove a real
 5. **A scan of your own network** (Overview → **Scan my network**, Safe Mode): rows appear while it runs, the counts update when it ends. For a large range (a /16 in a lab) the Findings count appears a moment after the scan, without the window freezing.
 6. **Theme and language**: View → theme dark and light, Settings → Appearance → German; the sidebar, the switch and the timeline are translated and nothing is cut off.
 7. **Window placement**: move and resize the window, maximize it, restart: it comes back the same way.
-8. **Column widths and marked rows**: drag a column border, restart: the column has that width again. Click a host, Shift+click another, right click one of the marked rows: **Copy N rows** puts the rows into the clipboard (paste into a text editor). Tried on Windows 11 on 2026-11-25 together with items 8 (addresses), 9 (**Keep running** only) and 10 (with the window minimized); not tried: **Stop and quit**, dropped files, pasting into the app.
 8. **Addresses and sort**: type other addresses, sort the hosts table by another column, restart. Expected: both are as you left them.
 9. **Quit during a scan**: start a Safe Mode scan of a /24 and close the window (also `Ctrl+Q`). Expected: **Quit while a scan is running?** appears; **Keep running** continues the scan, **Stop and quit** closes, and the scan is in the inventory as partial after the next start.
 10. **A scan that ends in the background**: start a scan, switch to another program. Expected: the taskbar button flashes when the scan ends; a scheduled scan does not flash.
 11. **Dropped files**: drop a `.txt` address list on the window (the Addresses field is filled, nothing starts), a `.pcap` (the Passive / OT page opens and reads it) and another file (a message names it).
 12. **Passive / OT**: the interface list is filled when the page opens. Choose an interface with empty MAC and IPv4 fields. Expected (Windows): both are filled with the adapter's values (compare with `Get-NetAdapter` and `ipconfig`); typed values are kept until **Use the interface's addresses**.
 13. **Inventory**: every row shows its date; **Delete** asks with the scan's targets and date, and the row is gone afterwards; the two pickers and **Compare A to B** list the differences.
+15. **Column widths and marked rows**: drag a column border, restart: the column has that width again. Click a host, Shift+click another, right click one of the marked rows: **Copy N rows** puts the rows into the clipboard (paste into a text editor; also copy an address elsewhere and paste it into the Addresses field).
 14. **Right click** on a row of Findings and of Hosts by device: the entries copy the address, the finding, the CVE, the evidence and the row; paste into a text editor to check.
 
 ## Screen readers

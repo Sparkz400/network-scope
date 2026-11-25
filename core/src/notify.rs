@@ -696,35 +696,69 @@ pub struct Outbox {
     /// The stored copy is not what `pending` holds: its last write failed, or it has entries
     /// that were dropped when it was read.
     stale: bool,
+    /// The stored copy could not be read yet (the inventory was locked when the monitor
+    /// started): it is read before the first write, which would replace it otherwise.
+    unread: bool,
 }
 impl Outbox {
     /// The queue that the monitor of `scope` (its targets text) left in the inventory `db`, for
     /// the sinks it has now. A sink is recognised by [`Sink::key`], not by its position: the
     /// list may have changed. What was kept for a sink that is no longer configured is dropped.
-    /// An inventory that cannot be read starts with an empty queue.
+    /// An inventory that cannot be read now (it is locked) is read again before the queue is
+    /// first written, so what it holds is sent later and not written over.
     pub fn restore(db: &Path, scope: &str, sinks: &[Sink]) -> Self {
         let mut outbox = Self {
             pending: vec![vec![]; sinks.len()],
             stored: Some((db.to_path_buf(), scope.to_string())),
             stale: false,
+            unread: false,
+        };
+        outbox.unread = !outbox.read(sinks);
+        outbox.stale |= outbox.unread;
+        outbox
+    }
+    /// Puts the stored queue in front of what is pending (it is older). False when the
+    /// inventory could not be read.
+    fn read(&mut self, sinks: &[Sink]) -> bool {
+        let Some((db, scope)) = self.stored.clone() else {
+            return true;
+        };
+        // No inventory yet (a first run): nothing was kept.
+        if !db.exists() {
+            return true;
+        }
+        let entries = match crate::store::load_outbox(&db, &scope) {
+            Ok(entries) => entries,
+            Err(e) => {
+                eprintln!("Undelivered alerts not read ({e}); tried again with the next cycle");
+                return false;
+            }
         };
         let keys: Vec<String> = sinks.iter().map(Sink::key).collect();
-        match crate::store::load_outbox(db, scope) {
-            Ok(entries) => {
-                for (key, alert) in entries {
-                    match keys.iter().position(|k| *k == key) {
-                        Some(sink) => outbox.pending[sink].push(alert),
-                        // Its sink is gone: the next write leaves the entry out.
-                        None => outbox.stale = true,
-                    }
-                }
+        let mut older = vec![vec![]; sinks.len()];
+        for (key, alert) in entries {
+            match keys.iter().position(|k| *k == key) {
+                Some(sink) => older[sink].push(alert),
+                // Its sink is gone: the next write leaves the entry out.
+                None => self.stale = true,
             }
-            Err(e) => eprintln!("Undelivered alerts not read ({e}); the queue starts empty"),
         }
-        outbox
+        self.pending.resize_with(sinks.len(), Vec::new);
+        for (pending, mut older) in self.pending.iter_mut().zip(older) {
+            older.append(pending);
+            *pending = older;
+        }
+        true
     }
     /// Writes the queue to the inventory it was restored from (see the type: best effort).
     fn store(&mut self, sinks: &[Sink]) {
+        if self.unread {
+            self.unread = !self.read(sinks);
+            if self.unread {
+                self.stale = true;
+                return;
+            }
+        }
         let Some((db, scope)) = &self.stored else {
             return;
         };
@@ -1194,6 +1228,38 @@ pub(crate) mod tests {
         let mut outbox = Outbox::restore(&db, scope, &sinks);
         assert!(outbox.deliver(&sinks, &[], t).is_empty());
         assert!(stored(scope).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_queue_that_could_not_be_read_at_the_start_is_read_before_it_is_written() {
+        let dir = std::env::temp_dir().join(format!("ns-outbox-unread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("inventory.sqlite");
+        let (scope, t) = ("10.0.0.0/24", Duration::from_secs(2));
+        let (sinks, server) = receiver(&[
+            "500 Internal Server Error",
+            "204 No Content",
+            "204 No Content",
+        ]);
+        // The last run left one alert, and the inventory was locked when this run started.
+        let left = [alert("new-device", "stored")];
+        crate::store::save_outbox(&db, scope, &[(sinks[0].key(), &left[..])]).unwrap();
+        let mut outbox = Outbox {
+            pending: vec![vec![]],
+            stored: Some((db.clone(), scope.to_string())),
+            stale: true,
+            unread: true,
+        };
+        // The receiver is down: the new alert is kept, behind the one that was stored.
+        outbox.deliver(&sinks, &[alert("new-device", "new")], t);
+        let kept: Vec<String> = (crate::store::load_outbox(&db, scope).unwrap().into_iter())
+            .map(|(_, a)| a.message)
+            .collect();
+        assert_eq!(kept, ["stored", "new"]);
+        assert!(outbox.deliver(&sinks, &[], t).is_empty());
+        assert_eq!(server.join().unwrap(), ["new", "stored", "new"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

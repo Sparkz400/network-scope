@@ -153,7 +153,8 @@ Scan options:
                   unchanged services keep their identification (marked as carried over); needs an earlier scan
   --full-every N  monitor with --incremental: every Nth cycle is a full scan (default 10, 0 never)
   --keep N        monitor: keep only the newest N scans of these targets in the inventory (default: all; a monitor
-                  saves one scan per cycle); history prune: the newest N scans of every target set
+                  saves one scan per cycle);
+                  history prune: keep the newest N scans of every target set
   --older-than T  history prune: delete scans older than a window (30d, 12w) or from before a UTC date
   --early-stop    Stop probing a host's remaining ports once its device class is certain (e.g. two print
                   ports open); such a host is marked as not fully checked. Off by default
@@ -321,6 +322,53 @@ fn names_command(line: &str, command: &str) -> bool {
     })
 }
 
+/// An option description that says per command what the option does (`scan, monitor: ...;`,
+/// then `history prune: ...` on a line of its own): only what it says about `command`. Any
+/// other description, and one that does not name the command, is returned whole.
+fn own_clauses(block: &[&str], command: &str) -> String {
+    // The text of a line: after the option and its gap on the first line, else after the indent.
+    let text = |i: usize| {
+        let line = block[i].trim_start();
+        if i == 0 {
+            line.split_once("  ")
+                .map_or("", |(_, text)| text.trim_start())
+        } else {
+            line
+        }
+    };
+    let head = |i: usize| {
+        text(i).split_once(": ").is_some_and(|(list, _)| {
+            !list.is_empty() && (list.chars()).all(|c| c.is_ascii_lowercase() || " ,/-".contains(c))
+        })
+    };
+    // Where each clause starts: the first line, and every later line with a command list.
+    let starts: Vec<usize> = (0..block.len()).filter(|&i| i == 0 || head(i)).collect();
+    let mine: Vec<usize> = (starts.iter().copied())
+        .filter(|&i| names_command(text(i), command))
+        .collect();
+    if !head(0) || mine.is_empty() || mine.len() == starts.len() {
+        return block.join("\n");
+    }
+    let option = &block[0][..block[0].len() - text(0).len()];
+    let mut lines: Vec<String> = vec![];
+    for &start in &mine {
+        let end = (starts.iter().copied())
+            .find(|&s| s > start)
+            .unwrap_or(block.len());
+        for i in start..end {
+            lines.push(if lines.is_empty() {
+                format!("{option}{}", text(i))
+            } else {
+                block[i].to_string()
+            });
+        }
+    }
+    if let Some(last) = lines.last_mut() {
+        *last = last.trim_end_matches(';').to_string();
+    }
+    lines.join("\n")
+}
+
 /// The help of one command, cut out of [`HELP`]: its usage lines, the descriptions of the
 /// options that apply to it and, for the common commands, examples. `None` when the text has
 /// no usage line for `name`, which is the case exactly for an unknown command.
@@ -370,7 +418,7 @@ pub(super) fn command(name: &str) -> Option<String> {
     };
     let mut out = format!("{usage}\n\nOptions:\n");
     for block in blocks.iter().filter(|b| applies(b)) {
-        out.push_str(&block.join("\n"));
+        out.push_str(&own_clauses(block, name));
         out.push('\n');
     }
     if scans {
@@ -469,6 +517,20 @@ mod tests {
             assert!(!has(name, option), "{name} --{option}");
         }
         assert!(!command("history").unwrap().contains("Safe Mode"));
+        // An option that does something else per command: each help says its own part only.
+        let scan = command("scan").unwrap();
+        assert!(scan.contains("  --dry-run       scan, monitor, trace, dcp, wol: print per host"));
+        assert!(scan.contains("OT requests with function codes, ...) and send nothing\n"));
+        assert!(!scan.contains("history prune: say") && !scan.contains("service install: print"));
+        let history = command("history").unwrap();
+        assert!(history.contains(
+            "  --dry-run       history prune: say how many scans would be deleted and delete nothing\n"
+        ));
+        assert!(!history.contains("print per host") && !history.contains("service install"));
+        assert!(history.contains("  --keep N        history prune: keep the newest N scans"));
+        assert!(!history.contains("monitor: keep only"));
+        let monitor = command("monitor").unwrap();
+        assert!(monitor.contains("monitor: keep only") && !monitor.contains("history prune: keep"));
         // --dry-run does something else for these two, and their help says what.
         for (name, does) in [
             (
