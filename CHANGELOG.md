@@ -100,6 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A device that sent its reply one byte at a time could hold a port for up to an hour during service detection.** A reply now has to arrive within 2 s after the first wait, and the SSH key exchange packet within the same bound.
 - **Nothing the desktop copied reached the system clipboard.** The clipboard support of the GUI library was never compiled in, so every copy (the host menu's **Copy IP address**, the copy entries of the tables, `Ctrl+C` in a field) stayed inside the window; pasting what was copied elsewhere goes the same way and presumably failed too. Found by trying the copy menu in a real window. The build now includes it (the `arboard` crate; on Linux also the Wayland clipboard crates, six new entries in `Cargo.lock`). Copying (hosts, findings, devices) and pasting into the Addresses field were tried on Windows; Linux and macOS build and test in CI but were not tried by hand.
 - **`findings ID --top N --fail-on-findings` counted findings a vendor statement had cleared**; the list without `--top` did not.
 - **An unknown scan ID printed `Query returned no rows`.** It now says `No scan with ID N; see "history"`, and `export ID --format xyz` names the unknown format first.
