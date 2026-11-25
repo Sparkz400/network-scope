@@ -313,7 +313,7 @@ impl Scanner {
                                             epss_label(ui, f);
                                         });
                                         row.col(|ui| {
-                                            links(ui, f);
+                                            short_links(ui, f);
                                         });
                                         if row.response().clicked() || chosen {
                                             open_group = Some(f.id.clone());
@@ -433,7 +433,7 @@ impl Scanner {
                                         epss_label(ui, f);
                                     });
                                     row.col(|ui| {
-                                        links(ui, f);
+                                        short_links(ui, f);
                                     });
                                     let whole = row.response();
                                     tables::copy_menu(&whole, &copies);
@@ -1190,7 +1190,14 @@ const DEVICE_WIDTHS: [(&str, f32); 7] = [
 ];
 
 pub(super) fn links(ui: &mut egui::Ui, f: &risk::Finding) {
-    // Short words, so the column leaves its width to the finding; read out in full.
+    super::convenience::link_to(ui, tr!("Learn more"), &super::docs_url(&f.id));
+    if let Some(url) = f.reference.as_deref().filter(|u| u.starts_with("https://")) {
+        super::convenience::link_to(ui, tr!("Reference"), url);
+    }
+}
+/// The same two links for a table column: short words, so the column leaves its width to the
+/// finding; read out in full.
+fn short_links(ui: &mut egui::Ui, f: &risk::Finding) {
     let link = |ui: &mut egui::Ui, short: &str, name: &str, url: &str| {
         super::a11y::named(super::convenience::link_to(ui, short, url), name);
     };
