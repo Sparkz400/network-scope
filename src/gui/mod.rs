@@ -713,6 +713,9 @@ struct Scanner {
     firmware_sboms: Cached<FirmwareSboms>,
     /// Findings of a large scan being worked out on a thread of their own (see `nav.rs`).
     background_findings: Option<nav::BackgroundFindings>,
+    /// A page that shows findings was drawn with findings that are out of date for a large
+    /// scan: the other thread works them out, also while a scan runs.
+    findings_wanted: bool,
 }
 /// A script dry-run for the host in the details window.
 struct ScriptTest {
@@ -842,6 +845,7 @@ impl Scanner {
             risk_map: Default::default(),
             firmware_sboms: Default::default(),
             background_findings: None,
+            findings_wanted: false,
         };
         i18n::set(i18n::detect(&app.saved.language));
         apply_theme(&cc.egui_ctx, app.saved.dark);

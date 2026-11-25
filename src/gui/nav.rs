@@ -60,32 +60,55 @@ impl Scanner {
             && self.results.len() + self.observations.len() <= EAGER_LIMIT
     }
 
+    /// More hosts and observations than are analysed on the UI thread ([`EAGER_LIMIT`]).
+    pub(super) fn large(&self) -> bool {
+        self.results.len() + self.observations.len() > EAGER_LIMIT
+    }
+
     /// Starts working out the findings of a large scan on another thread when they are out of
-    /// date and nothing runs, and takes the answer when it is there (once per frame). The answer
-    /// is used only if the data did not change meanwhile; the hosts are copied for the thread,
-    /// so the window keeps showing and sorting them.
+    /// date, and takes the answer when it is there (once per frame). When nothing runs it
+    /// starts by itself (the sidebar counts them) and the answer is used only if the data did
+    /// not change meanwhile. While a scan or capture runs it starts only for a page that shows
+    /// findings ([`Scanner::ensure_findings`]), one answer at a time and no more often than
+    /// such a page refreshes; that answer is shown although the data has moved on. The hosts
+    /// are copied for the thread, so the window keeps showing and sorting them.
+    // shortcut: that copy is made on the UI thread (some tens of milliseconds for 65,536
+    // hosts) for every answer; share the hosts with the thread if it shows while a scan runs.
     pub(super) fn background_findings(&mut self, ctx: &egui::Context) {
+        let running = self.live() || self.ot.running();
         if let Some(job) = &self.background_findings {
             match job.rx.try_recv() {
                 Ok(findings) => {
-                    if job.generation == self.generation {
+                    let current = job.generation == self.generation;
+                    if current || running {
                         self.findings.set(job.generation, findings);
                     }
                     self.background_findings = None;
+                    // The hosts are in the order of their risk: that order is known now.
+                    if current && self.sort_column == super::RISK_COLUMN {
+                        self.resort();
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => self.background_findings = None,
             }
         }
-        let wanted = !self.eager()
-            && !self.live()
-            && !self.ot.running()
+        let asked = std::mem::take(&mut self.findings_wanted);
+        let wanted = self.large()
             && self.screenshot.is_none()
-            && self.findings.generation != Some(self.generation)
-            && self
-                .background_findings
-                .as_ref()
-                .is_none_or(|job| job.generation != self.generation);
+            && if running {
+                asked
+                    && self.background_findings.is_none()
+                    && self.findings.stale(self.generation, true)
+            } else {
+                self.findings.generation != Some(self.generation)
+                    && self
+                        .background_findings
+                        .as_ref()
+                        .is_none_or(|job| job.generation != self.generation)
+            };
+        // The page that asked keeps its note until the answer is there.
+        self.findings_wanted = asked && self.findings.generation != Some(self.generation);
         if !wanted {
             return;
         }
@@ -353,6 +376,32 @@ mod tests {
         // Up to date: nothing more is started.
         large.background_findings(&ctx);
         assert!(large.background_findings.is_none());
+    }
+
+    #[test]
+    fn the_pages_of_a_large_scan_leave_the_findings_to_the_other_thread() {
+        let mut large = app_with(EAGER_LIMIT as u32 + 101);
+        large.screenshot = None;
+        (large.sort_column, large.sort_reverse) = (super::super::RISK_COLUMN, false);
+        let ctx = egui::Context::default();
+        // What the Findings page, Hosts by device and the map do in every frame.
+        large.ensure_findings();
+        assert_eq!(large.findings.generation, None, "nothing on the UI thread");
+        assert!(large.findings_wanted);
+        large.background_findings(&ctx);
+        assert!(large.findings_wanted, "the page keeps its note");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while large.background_findings.is_some() {
+            assert!(Instant::now() < deadline, "the thread answered");
+            std::thread::sleep(Duration::from_millis(5));
+            large.background_findings(&ctx);
+        }
+        // The answer is used, and the hosts were put in the order of their risk with it (the
+        // sort stamps the data anew and the answer with it).
+        assert_eq!(large.findings.generation, Some(large.generation));
+        assert_eq!(large.findings.value.len(), EAGER_LIMIT + 101);
+        large.ensure_findings();
+        assert!(!large.findings_wanted, "up to date: nothing is asked for");
     }
 
     #[test]

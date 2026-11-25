@@ -803,3 +803,4 @@ Copy {} addresses || {} Adressen kopieren
 Copy {} rows || {} Zeilen kopieren
 Docs || Doku
 Ref. || Ref.
+Working out the findings of this scan… || Die Befunde dieses Scans werden ermittelt…

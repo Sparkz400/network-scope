@@ -153,6 +153,13 @@ impl Scanner {
     /// Findings of everything on screen, recomputed when results or observations change.
     pub(super) fn ensure_findings(&mut self) {
         if self.findings.stale(self.generation, self.live()) {
+            // A large scan: another thread works them out (`background_findings`), and the
+            // page shows the last answer until the new one is there. On this thread the
+            // analysis of 65,536 hosts would hold up the window for seconds.
+            if self.large() && self.screenshot.is_none() {
+                self.findings_wanted = true;
+                return;
+            }
             // Borrow the data into a snapshot instead of deep-cloning it.
             let snapshot = store::Snapshot {
                 sent: vec![],
@@ -192,6 +199,8 @@ impl Scanner {
             self.finding_groups =
                 tables::finding_groups(&self.findings.value, &self.findings_view.rows);
         }
+        // A large scan whose findings another thread is still working out.
+        let pending = self.findings.generation != Some(self.generation) && self.findings_wanted;
         let mut focus = None;
         let mut sort = None;
         let mut open_group: Option<String> = None;
@@ -216,8 +225,16 @@ impl Scanner {
                     ))
                     .truncate(),
                 );
+                if pending {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak(tr!("Working out the findings of this scan…"));
+                    });
+                }
                 if findings.is_empty() {
-                    ui.label(tr!("Nothing found. Enable service detection in Settings to collect the evidence these checks use."));
+                    if !pending {
+                        ui.label(tr!("Nothing found. Enable service detection in Settings to collect the evidence these checks use."));
+                    }
                     return;
                 }
                 // The hosts of one rule (a grouped row was clicked), or the choice to group: in
