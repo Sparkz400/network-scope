@@ -15,7 +15,11 @@
 //! steer what it runs or writes: see `check_not_writable` and `prepare_data_dir`.
 use std::{
     ffi::c_void,
-    os::windows::{ffi::OsStrExt, fs::MetadataExt},
+    os::windows::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    },
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
@@ -128,6 +132,15 @@ unsafe extern "system" {
         dacl: *mut *mut c_void,
         defaulted: *mut i32,
     ) -> i32;
+    fn SetSecurityInfo(
+        handle: *mut c_void,
+        object_type: u32,
+        info: u32,
+        owner: *mut c_void,
+        group: *mut c_void,
+        dacl: *mut c_void,
+        sacl: *mut c_void,
+    ) -> u32;
     fn GetAce(acl: *mut c_void, index: u32, ace: *mut *mut c_void) -> i32;
     fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
 }
@@ -371,6 +384,13 @@ const SDDL_REVISION_1: u32 = 1;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const INHERIT_ONLY_ACE: u8 = 0x8;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const READ_CONTROL: u32 = 0x2_0000;
+const WRITE_DAC: u32 = 0x4_0000;
+const FILE_READ_ATTRIBUTES: u32 = 0x80;
+const FILE_SHARE_READ: u32 = 0x1;
+const FILE_SHARE_WRITE: u32 = 0x2;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x20_0000;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x200_0000;
 
 /// The access of the service's data folder: full control for SYSTEM and Administrators, nothing
 /// inherited from `%ProgramData%` (where every user may create files and folders), inherited by
@@ -501,14 +521,19 @@ fn descriptor(sddl: &str) -> Result<Local, String> {
     Ok(Local(sd))
 }
 
-/// Replaces the DACL of `path` with the one in `sddl`, protected from inheritance; files and
-/// folders below get its inheritable entries.
-fn set_dacl(path: &Path, sddl: &str) -> Result<(), String> {
-    let sd = descriptor(sddl)?;
+/// The DACL inside a descriptor from [`descriptor`] (valid as long as the descriptor is).
+fn dacl_of(sd: &Local) -> Result<*mut c_void, String> {
     let (mut present, mut defaulted, mut dacl) = (0, 0, std::ptr::null_mut());
     if unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl, &mut defaulted) } == 0 {
         return Err(describe("Building the access rights", last_error()));
     }
+    Ok(dacl)
+}
+
+/// Replaces the DACL of `path` with the one in `sddl`, protected from inheritance; files and
+/// folders below get its inheritable entries.
+fn set_dacl(path: &Path, sddl: &str) -> Result<(), String> {
+    let sd = descriptor(sddl)?;
     let name = wide_path(path);
     let code = unsafe {
         SetNamedSecurityInfoW(
@@ -517,7 +542,7 @@ fn set_dacl(path: &Path, sddl: &str) -> Result<(), String> {
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            dacl,
+            dacl_of(&sd)?,
             std::ptr::null_mut(),
         )
     };
@@ -560,13 +585,13 @@ fn check_tree(path: &Path, owners: &[&str]) -> Result<(), String> {
 }
 
 /// Prepares the folder of the service's inventory, where `service.log` and the default
-/// `alert-scripts` folder are too. A missing folder is created with [`DATA_DIR_SDDL`]. An
-/// existing one must hold no links and nothing owned by other accounts; the default folder
-/// (`protect`: `%ProgramData%\NetworkScope`, made by earlier versions with the inherited access)
-/// then gets [`DATA_DIR_SDDL`], while a folder named with `--db` keeps its access (it may be any
-/// folder) but must not be writable by every user.
+/// `alert-scripts` folder are too. A missing folder is created with [`DATA_DIR_SDDL`]. The
+/// default folder (`protect`: `%ProgramData%\NetworkScope`, made by earlier versions with the
+/// inherited access) gets [`DATA_DIR_SDDL`] first, a folder named with `--db` keeps its access (it
+/// may be any folder) but must not be writable by every user; then neither may hold links or
+/// anything owned by other accounts.
 pub(super) fn prepare_data_dir(dir: &Path, protect: bool) -> Result<(), String> {
-    prepare_dir(dir, protect, &TRUSTED_OWNERS)
+    prepare_dir(dir, protect.then_some(DATA_DIR_SDDL), &TRUSTED_OWNERS)
 }
 
 /// Refuses files the service runs or obeys (the program, scripts, probes, the scope file) when
@@ -586,12 +611,14 @@ pub(super) fn check_not_writable(paths: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_dir(dir: &Path, protect: bool, owners: &[&str]) -> Result<(), String> {
+/// `protect`: the access to give an existing folder (`None`: keep its access). A missing folder
+/// is created with that access, or [`DATA_DIR_SDDL`].
+fn prepare_dir(dir: &Path, protect: Option<&str>, owners: &[&str]) -> Result<(), String> {
     if std::fs::symlink_metadata(dir).is_err() {
         if let Some(parent) = dir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        let sd = descriptor(DATA_DIR_SDDL)?;
+        let sd = descriptor(protect.unwrap_or(DATA_DIR_SDDL))?;
         let attributes = SecurityAttributes {
             length: std::mem::size_of::<SecurityAttributes>() as u32,
             descriptor: sd.0,
@@ -609,17 +636,63 @@ fn prepare_dir(dir: &Path, protect: bool, owners: &[&str]) -> Result<(), String>
         }
         return Ok(());
     }
-    check_tree(dir, owners)?;
-    if protect {
-        return set_dacl(dir, DATA_DIR_SDDL);
+    // The folder itself, opened without following a link and without letting it be renamed or
+    // deleted while it is open: what is locked and checked below is this folder.
+    let mut access = READ_CONTROL | FILE_READ_ATTRIBUTES;
+    if protect.is_some() {
+        access |= WRITE_DAC;
     }
-    if open_to_users(&security(dir)?) {
+    let folder = std::fs::OpenOptions::new()
+        .access_mode(access)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    let meta = folder
+        .metadata()
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !meta.is_dir() {
         return Err(format!(
-            "{}: every local user may write to this folder, and the service runs as SYSTEM; use a folder only administrators can write to, or leave out --db (the default is %ProgramData%\\NetworkScope)",
+            "{} is not a plain folder (a link or a file); remove it and install again",
             dir.display()
         ));
     }
-    Ok(())
+    match protect {
+        // Locked first, through the handle, so that no other user can add an entry (or a
+        // junction) after the check below has looked; then again by path, which passes the
+        // access on to what is already inside.
+        Some(sddl) => {
+            let sd = descriptor(sddl)?;
+            let code = unsafe {
+                SetSecurityInfo(
+                    folder.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    dacl_of(&sd)?,
+                    std::ptr::null_mut(),
+                )
+            };
+            if code != 0 {
+                return Err(format!(
+                    "{}: {}",
+                    dir.display(),
+                    describe("Setting the access rights", code)
+                ));
+            }
+            set_dacl(dir, sddl)?;
+        }
+        // Not ours to change; the check below holds only because other users cannot write here.
+        None if open_to_users(&security(dir)?) => {
+            return Err(format!(
+                "{}: every local user may write to this folder, and the service runs as SYSTEM; use a folder only administrators can write to, or leave out --db (the default is %ProgramData%\\NetworkScope)",
+                dir.display()
+            ));
+        }
+        None => {}
+    }
+    check_tree(dir, owners)
 }
 
 // ---- Running as a service ---------------------------------------------------------------
@@ -854,7 +927,7 @@ mod tests {
         let me = security(&base).unwrap().owner;
         let owners = [me.as_str(), "S-1-5-18", "S-1-5-32-544"];
         let dir = base.join("NetworkScope");
-        prepare_dir(&dir, true, &owners).unwrap();
+        prepare_dir(&dir, Some(DATA_DIR_SDDL), &owners).unwrap();
         let s = security(&dir).unwrap();
         let entries = s.allowed.as_ref().unwrap();
         let mut sids: Vec<&str> = entries.iter().map(|(sid, _, _)| sid.as_str()).collect();
@@ -867,20 +940,24 @@ mod tests {
                 .all(|(_, _, f)| f & 0x10 == 0 && f & 0x3 == 0x3)
         );
         assert!(!open_to_users(&s));
-        // An existing folder with wider access (as made by an older version) is checked and
-        // locked down again. The test user needs access to list it; an elevated install has it
-        // through Administrators.
-        set_dacl(
-            &dir,
-            &format!("D:(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{me})(A;CI;0x116;;;BU)"),
-        )
-        .unwrap();
-        assert!(open_to_users(&security(&dir).unwrap()));
-        prepare_dir(&dir, true, &owners).unwrap();
+        // An existing folder with wider access (as made by an older version) is locked down
+        // again and checked. The test user keeps access to list it (an elevated install has it
+        // through Administrators); what is inside gets the new access too.
+        let locked = format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{me})");
+        set_dacl(&dir, &format!("D:(A;OICI;FA;;;{me})(A;OICI;0x116;;;BU)")).unwrap();
+        std::fs::create_dir(dir.join("alert-scripts")).unwrap();
+        assert!(open_to_users(
+            &security(&dir.join("alert-scripts")).unwrap()
+        ));
+        prepare_dir(&dir, Some(&locked), &owners).unwrap();
         assert!(!open_to_users(&security(&dir).unwrap()));
+        assert!(!open_to_users(
+            &security(&dir.join("alert-scripts")).unwrap()
+        ));
         // Another owner is refused (here: the test user, when not trusted).
-        let err = prepare_dir(&dir, true, &["S-1-5-18"]).unwrap_err();
+        let err = prepare_dir(&dir, Some(&locked), &["S-1-5-18"]).unwrap_err();
         assert!(err.contains("owned by") && err.contains("takeown"), "{err}");
+        remove(&dir.join("alert-scripts"));
         remove(&dir);
         remove(&base);
     }
@@ -899,12 +976,24 @@ mod tests {
             .arg(&elsewhere)
             .output()
             .is_ok_and(|o| o.status.success());
+        let before = security(&elsewhere).unwrap().allowed;
         if junction {
-            let err = prepare_dir(&dir, false, &owners).unwrap_err();
+            let err = prepare_dir(&dir, None, &owners).unwrap_err();
             assert!(err.contains("reparse point"), "{err}");
-            // The data folder itself as a link.
-            let err = prepare_dir(&dir.join("alert-scripts"), false, &owners).unwrap_err();
+            // The data folder itself as a link: refused before anything is changed.
+            let err = prepare_dir(&dir.join("alert-scripts"), None, &owners).unwrap_err();
+            assert!(err.contains("not a plain folder"), "{err}");
+            // The default folder is locked before it is checked, so no user can add an entry
+            // after the check: the refused folder already has the new access.
+            set_dacl(&dir, &format!("D:(A;OICI;FA;;;{me})(A;OICI;0x116;;;BU)")).unwrap();
+            let locked = format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{me})");
+            let err = prepare_dir(&dir, Some(&locked), &owners).unwrap_err();
             assert!(err.contains("reparse point"), "{err}");
+            assert!(!open_to_users(&security(&dir).unwrap()));
+            let err = prepare_dir(&dir.join("alert-scripts"), Some(&locked), &owners).unwrap_err();
+            assert!(err.contains("not a plain folder"), "{err}");
+            // The new access did not travel through the junction.
+            assert_eq!(security(&elsewhere).unwrap().allowed, before);
         } else {
             eprintln!("skipped the junction part: mklink /J failed");
         }
@@ -931,7 +1020,7 @@ mod tests {
             let sddl = format!("{sddl}(A;OICI;FA;;;{me})");
             set_dacl(&base, &sddl).unwrap();
             assert_eq!(open_to_users(&security(&base).unwrap()), open, "{sddl}");
-            let result = prepare_dir(&base, false, &[me.as_str()]);
+            let result = prepare_dir(&base, None, &[me.as_str()]);
             assert_eq!(result.is_err(), open, "{sddl}: {result:?}");
         }
         remove(&base);
