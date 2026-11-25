@@ -1908,13 +1908,8 @@ mod tests",
     fn adaptive_connect_scan_classifies_like_the_default() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let open = listener.local_addr().unwrap().port();
-        // Closed ports: bind and release, so nothing listens there.
-        let closed: Vec<u16> = (0..6)
-            .map(|_| {
-                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-                l.local_addr().unwrap().port()
-            })
-            .collect();
+        let reserved: Vec<_> = (0..6).map(|_| crate::probes::refused_port()).collect();
+        let closed: Vec<u16> = reserved.iter().map(|r| r.0).collect();
         let mut ports = closed.clone();
         ports.push(open);
         // More ports than the pilot batch, so the RTT-derived timeout is used too.
@@ -1938,10 +1933,7 @@ mod tests",
     async fn connect_probe_records_an_rtt_sample_only_for_answers() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let open = listener.local_addr().unwrap().port();
-        let closed = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
+        let (closed, _reserved) = crate::probes::refused_port();
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         let s = Settings {
             safe: false,
@@ -2075,12 +2067,8 @@ mod tests",
             .map(|l| l.local_addr().unwrap().port())
             .collect();
         // Many closed ports (refused on Linux, silent after ~2 s on Windows loopback).
-        let closed: Vec<u16> = (0..60)
-            .map(|_| {
-                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-                l.local_addr().unwrap().port()
-            })
-            .collect();
+        let reserved: Vec<_> = (0..60).map(|_| crate::probes::refused_port()).collect();
+        let closed: Vec<u16> = reserved.iter().map(|r| r.0).collect();
         let mut ports = [open.clone(), closed].concat();
         ports.sort_unstable();
         ports.dedup();
@@ -2171,15 +2159,8 @@ mod tests",
             .map(|l| l.local_addr().unwrap().port())
             .collect();
         open.sort_unstable();
-        let closed: Vec<u16> = (0..6)
-            .map(|_| {
-                std::net::TcpListener::bind("127.0.0.1:0")
-                    .unwrap()
-                    .local_addr()
-                    .unwrap()
-                    .port()
-            })
-            .collect();
+        let reserved: Vec<_> = (0..6).map(|_| crate::probes::refused_port()).collect();
+        let closed: Vec<u16> = reserved.iter().map(|r| r.0).collect();
         let mut ports = [open.clone(), closed.clone()].concat();
         ports.sort_unstable();
         ports.dedup();
