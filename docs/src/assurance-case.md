@@ -71,7 +71,7 @@ Data crosses the boundary in only a few places: the parsers, the import function
 | Supply-chain tampering in the build (CWE-494) | Actions pinned by commit hash. Least-privilege tokens. Signed provenance and SBOM for every release. Reproducible-build check. | `release.yml`, `reproducible.yml`, [Supply chain](supply-chain.md) |
 | Leaked secrets in the repository (CWE-798) | gitleaks scan of the full history on every push. | `secrets` workflow |
 
-Static analysis runs on every change: `cargo clippy` with warnings as errors, and CodeQL for Rust and for the workflows. Line coverage of the test suite is measured in CI (`coverage` job) and was 86% for the whole workspace in November 2026.
+Static analysis runs on every change: `cargo clippy` with warnings as errors, and CodeQL for Rust and for the workflows. Line coverage of the test suite is measured in CI (`coverage` job) and was 92% for the whole workspace in November 2026; the job fails below 90%.
 
 ## Residual risks and limits
 

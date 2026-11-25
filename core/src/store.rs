@@ -2692,4 +2692,188 @@ mod tests {
         assert_eq!((none.sightings, none.unreadable), (0, 0));
         remove_db(&path);
     }
+
+    #[test]
+    fn csv_export_has_a_row_per_host_and_observation_and_defuses_formulas() {
+        let mut s = snapshot();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        s.hosts[0].hostname = "=HYPERLINK(\"x\")".into();
+        s.hosts[0].mac = "00:11:22:33:44:55".into();
+        s.hosts[0].open = vec![22, 502];
+        s.notes.insert(ip, "rack 4, \"left\"".into());
+        s.observations = vec![
+            Observation {
+                protocol: "lldp".into(),
+                mac: "00:aa:bb:cc:dd:ee".into(),
+                ip: Some("10.0.0.9".parse().unwrap()),
+                fields: BTreeMap::from([("system".into(), "switch".into())]),
+            },
+            Observation {
+                protocol: "cdp".into(),
+                mac: "00:aa:bb:cc:dd:ff".into(),
+                ip: None,
+                fields: BTreeMap::new(),
+            },
+        ];
+        let csv = export_at(&s, "csv", 0).unwrap();
+        let rows: Vec<&str> = csv.split("\r\n").collect();
+        assert_eq!(
+            rows.len(),
+            5,
+            "header, host, 2 observations, final newline: {csv}"
+        );
+        assert!(rows[0].starts_with("IP,MAC,Responding,Hostname,Open ports"));
+        assert_eq!(
+            rows[1],
+            r#""127.0.0.1","00:11:22:33:44:55","true","'=HYPERLINK(""x"")","22 502","{""Modbus.firmware"":""1.0""}","","rack 4, ""left""""#
+        );
+        assert_eq!(
+            rows[2],
+            r#""10.0.0.9","00:aa:bb:cc:dd:ee","observed","","","{""system"":""switch""}","lldp","""#
+        );
+        assert!(rows[3].starts_with(r#""","00:aa:bb:cc:dd:ff","observed","","","{}","cdp""#));
+        assert_eq!(rows[4], "");
+        // The other formats are reached through the same name; an unknown one lists them.
+        assert!(export_at(&s, "cdx", 0).unwrap().contains("CycloneDX"));
+        assert_eq!(export_at(&s, "cdx", 0), export_at(&s, "cyclonedx", 0));
+        let e = export_at(&s, "pdf", 0).unwrap_err();
+        assert!(
+            e.contains("json, csv, html") && e.contains("compliance-"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn touched_devices_keep_their_first_sighting() {
+        let path = temp_db("touch");
+        assert!(known_devices(&path).unwrap().is_empty());
+        touch_devices(&path, &["mac:a".into(), "mac:b".into()], 100).unwrap();
+        touch_devices(&path, &["mac:b".into(), "mac:c".into()], 250).unwrap();
+        touch_devices(&path, &[], 999).unwrap();
+        let known = known_devices(&path).unwrap();
+        assert_eq!(known.len(), 3);
+        assert_eq!(known["mac:a"], (100, 100));
+        assert_eq!(known["mac:b"], (100, 250));
+        assert_eq!(known["mac:c"], (250, 250));
+        // Known by key alone: the registry has them even without identifiers.
+        for registry in [
+            device_registry_read(&path).unwrap(),
+            device_registry(&path).unwrap(),
+        ] {
+            assert_eq!(registry.len(), 3);
+            assert!(
+                ["mac:a", "mac:b", "mac:c"]
+                    .iter()
+                    .all(|k| registry.contains_key(k))
+            );
+        }
+        remove_db(&path);
+    }
+
+    #[test]
+    fn hostname_and_mac_changes_are_reported_but_not_their_appearance() {
+        let mut a = snapshot();
+        a.hosts[0].hostname = "plc-1".into();
+        a.hosts[0].mac = String::new();
+        let mut b = a.clone();
+        // A MAC that was not known before is not a change; a renamed host is.
+        b.hosts[0].hostname = "plc-2".into();
+        b.hosts[0].mac = "00:11:22:33:44:55".into();
+        let r = diff_report(&a, &b, &IgnoreList::new(&[])).unwrap();
+        assert_eq!(r.summary.attributes_changed, 1, "{:?}", r.changes);
+        assert_eq!(
+            r.lines(),
+            vec!["127.0.0.1: hostname changed: plc-1 → plc-2"]
+        );
+        let mut c = b.clone();
+        c.hosts[0].mac = "00:11:22:33:44:66".into();
+        c.hosts[0].hostname = String::new();
+        let r = diff_report(&b, &c, &IgnoreList::new(&[])).unwrap();
+        assert_eq!(
+            r.lines(),
+            vec!["127.0.0.1: MAC changed: 00:11:22:33:44:55 → 00:11:22:33:44:66"]
+        );
+        assert_eq!(
+            render_diff(&r, "pdf").unwrap_err(),
+            "Choose json, text or lines"
+        );
+        assert!(render_diff(&r, "lines").unwrap().contains("MAC changed"));
+    }
+
+    #[test]
+    fn a_damaged_inventory_is_an_error_for_every_reader_and_writer() {
+        let path = temp_db("damaged");
+        {
+            // Every table exists, at the current version, but none has the columns asked for.
+            let c = Connection::open(&path).unwrap();
+            for table in [
+                "scans",
+                "scan_hosts",
+                "alerts",
+                "known_devices",
+                "device_identifiers",
+                "alert_outbox",
+            ] {
+                c.execute_batch(&format!("CREATE TABLE {table}(x)"))
+                    .unwrap();
+            }
+            c.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
+                .unwrap();
+        }
+        let p = path.as_path();
+        let alert = crate::monitor::Alert {
+            timestamp: 1,
+            severity: crate::risk::Severity::Info,
+            kind: "k".into(),
+            subject: "s".into(),
+            message: "m".into(),
+        };
+        let errors = [
+            list(p).map(|_| ()),
+            newest_complete(p).map(|_| ()),
+            earlier_complete(p, "t", 9, Earlier::Any, 5).map(|_| ()),
+            latest_complete_per_scope(p).map(|_| ()),
+            latest_complete_before_time(p, "t", 9).map(|_| ()),
+            latest_complete(p, "t", 9).map(|_| ()),
+            latest_complete_id(p).map(|_| ()),
+            timestamp(p, 1).map(|_| ()),
+            load(p, 1).map(|_| ()),
+            known_devices(p).map(|_| ()),
+            device_registry(p).map(|_| ()),
+            device_registry_read(p).map(|_| ()),
+            list_alerts(p, 5).map(|_| ()),
+            alerts_read(p, 0, 5).map(|_| ()),
+            list_alerts_since(p, 0, None).map(|_| ()),
+            load_outbox(p, "t").map(|_| ()),
+            device_history(p, "10.0.0.5").map(|_| ()),
+            touch_devices(p, &["mac:a".into()], 1),
+            save_alerts(p, 1, std::slice::from_ref(&alert)),
+            save_outbox(p, "t", &[("sink".into(), std::slice::from_ref(&alert))]),
+            prune(p, &Prune::default()).map(|_| ()),
+            save(p, &snapshot()).map(|_| ()),
+        ];
+        for (i, e) in errors.into_iter().enumerate() {
+            let e = e.expect_err(&format!("call {i} must fail"));
+            assert!(e.contains("column"), "call {i}: {e}");
+        }
+        // Reading never created what was missing; nothing was written.
+        let c = Connection::open(&path).unwrap();
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM scans", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        drop(c);
+        remove_db(&path);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_database_cannot_be_read() {
+        let path = temp_db("not-a-database");
+        std::fs::write(&path, b"this is not SQLite, just text that is long enough").unwrap();
+        let e = list(&path).map(|_| ()).unwrap_err();
+        assert!(e.contains("not a database"), "{e}");
+        let e = save(&path, &snapshot()).unwrap_err();
+        assert!(e.contains("not a database"), "{e}");
+        remove_db(&path);
+    }
 }

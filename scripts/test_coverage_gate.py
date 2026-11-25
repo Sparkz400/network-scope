@@ -44,13 +44,31 @@ class GateTest(unittest.TestCase):
             json.dump(content, handle)
         return path
 
-    def run_gate(self, files, targets):
+    def run_gate(self, files, targets, **extra):
         summary_path = self.write("summary.json", files)
-        targets_path = self.write("targets.json", {"targets": targets})
+        targets_path = self.write("targets.json", {"targets": targets, **extra})
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = coverage_gate.main([summary_path, "--targets", targets_path])
         return code, out.getvalue(), err.getvalue()
+
+    def test_the_whole_workspace_has_its_own_floor(self):
+        risk = [{"name": "risk", "pattern": r"(^|/)src/risk\.rs$", "threshold": 80}]
+        # 286 of 500 lines in the fixture: 57.2%.
+        code, out, _ = self.run_gate(FIXTURE, risk, workspace_threshold=58)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL workspace: 57.20% of 500 lines, below 58%", out)
+        code, out, _ = self.run_gate(FIXTURE, risk, workspace_threshold=57)
+        self.assertEqual(code, 0, out)
+        self.assertIn("workspace: 57.20% of 500 lines (floor 57%)", out)
+        code, out, _ = self.run_gate(FIXTURE, risk)
+        self.assertEqual(code, 0, out)
+
+    def test_a_workspace_floor_that_is_not_a_percentage_is_a_configuration_error(self):
+        risk = [{"name": "risk", "pattern": r"(^|/)src/risk\.rs$", "threshold": 80}]
+        code, _, err = self.run_gate(FIXTURE, risk, workspace_threshold=120)
+        self.assertEqual(code, 2)
+        self.assertIn("workspace_threshold", err)
 
     def test_passes_when_every_file_meets_its_threshold(self):
         code, out, _ = self.run_gate(FIXTURE, [

@@ -480,4 +480,48 @@ mod tests {
             "{after_stop} sent, at most {allowed} allowed"
         );
     }
+
+    /// LAN neighbours answer within milliseconds: the reply window and the tries are bounded
+    /// whatever the ping settings say.
+    #[test]
+    fn timing_is_bounded_by_the_settings() {
+        let timing = |ping_timeout, retries| {
+            let t = Timing::from_settings(&Settings {
+                ping_timeout,
+                retries,
+                ..Settings::default()
+            });
+            (t.wait.as_millis(), t.tries)
+        };
+        assert_eq!(timing(2000, 1), (300, 2));
+        assert_eq!(timing(10, 0), (100, 1));
+        assert_eq!(timing(150, 9), (150, 3));
+    }
+
+    /// A sweep needs the interface's own addresses; without them it does not open a capture.
+    #[test]
+    fn a_sweep_without_source_addresses_does_not_start() {
+        let gate = Arc::new(Gate::unlimited());
+        let start = |ip: &str, mac: &str| {
+            let s = Settings {
+                source_ip: ip.into(),
+                source_mac: mac.into(),
+                interface: "no-such-interface-0".into(),
+                ..Settings::default()
+            };
+            ArpEngine::start(&s, gate.clone()).map(|e| e.source())
+        };
+        assert_eq!(
+            start("", "02:00:00:00:00:09").unwrap_err(),
+            "Set the interface's source IPv4"
+        );
+        assert_eq!(
+            start("10.0.0.9", "02:00:00").unwrap_err(),
+            "MAC must contain six bytes"
+        );
+        assert_eq!(
+            start("10.0.0.9", "zz:00:00:00:00:09").unwrap_err(),
+            "Invalid MAC address"
+        );
+    }
 }

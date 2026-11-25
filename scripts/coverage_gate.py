@@ -88,6 +88,26 @@ def load_summary(path):
     return files
 
 
+def load_workspace_threshold(path):
+    """The optional floor for the line coverage of the whole workspace ("workspace_threshold")."""
+    with open(path, encoding="utf-8") as handle:
+        floor = json.load(handle).get("workspace_threshold")
+    if floor is not None and not (isinstance(floor, (int, float)) and 0 <= floor <= 100):
+        raise GateError(f"{path}: 'workspace_threshold' must be a percentage")
+    return floor
+
+
+def check_workspace(files, floor):
+    """A failure message when the lines of all files together are below the floor, else None."""
+    covered = sum(c for c, _, _ in files.values())
+    lines = sum(n for _, n, _ in files.values())
+    percent = 100.0 * covered / lines if lines else 100.0
+    line = f"workspace: {percent:.2f}% of {lines} lines"
+    if floor is not None and percent + 1e-9 < floor:
+        return line, f"{line}, below {floor:g}%"
+    return line, None
+
+
 def check(files, targets):
     """Returns (rows, failures, notes). A row is (file, covered, lines, percent, target)."""
     compiled = [(re.compile(t["pattern"]), t) for t in targets]
@@ -135,11 +155,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         targets = load_targets(args.targets)
+        floor = load_workspace_threshold(args.targets)
         files = load_summary(args.summary)
     except GateError as err:
         print("coverage gate:", err, file=sys.stderr)
         return 2
     rows, failures, notes = check(files, targets)
+    total, below = check_workspace(files, floor)
+    notes.append(total if floor is None else f"{total} (floor {floor:g}%)")
+    if below:
+        failures.append(below)
     report(rows, failures, notes, sys.stdout)
     return 1 if failures else 0
 

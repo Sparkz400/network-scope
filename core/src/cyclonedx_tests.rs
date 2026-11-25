@@ -973,3 +973,119 @@ fn a_device_depends_on_the_switch_its_lldp_link_goes_to() {
     // Without LLDP tables: no dependencies.
     assert!(bom(&snapshot(), &[]).get("dependencies").is_none());
 }
+
+/// Firmware seen in passive industrial traffic: one component per product and version (case
+/// does not matter), named by the product, else the station name, else just "firmware".
+#[test]
+fn firmware_from_passive_traffic_becomes_one_component_per_product_and_version() {
+    let s = snapshot();
+    let devices = devices::merge(&s.hosts, &s.observations);
+    let asset = |ip: &str, mac: &str, name: &str, product: &str, firmware: &str| Asset {
+        ips: if ip.is_empty() {
+            vec![]
+        } else {
+            vec![ip.parse().unwrap()]
+        },
+        mac: mac.into(),
+        vendor: "Acme".into(),
+        name: name.into(),
+        product: product.into(),
+        firmware: firmware.into(),
+        protocols: vec!["EtherNet/IP".into(), "CIP".into()],
+        ..Default::default()
+    };
+    let mut serial = asset("10.0.0.9", "", "station-9", "Ctrl 9", "3.1");
+    serial.serial = "SN-9".into();
+    let assets = vec![
+        serial,
+        // The same firmware again, spelled differently: no second component.
+        asset("10.0.0.9", "", "", "CTRL 9", "3.1"),
+        // Nothing to name the firmware by: no component.
+        asset("10.0.0.9", "", "", "", ""),
+        asset("10.0.0.9", "", "station-9", "", "4.0"),
+        asset("10.0.0.9", "", "", "", "5.0"),
+        // Matched by MAC on the switch; an asset of no device is left out.
+        asset("", "00:11:22:33:44:55", "", "Switch OS", "9.9"),
+        asset("10.9.9.9", "", "", "Elsewhere", "1.0"),
+    ];
+    let v = build(&Input {
+        snapshot: &s,
+        devices: &devices,
+        assets: &assets,
+        findings: &[],
+        cpe: &|_, _| None,
+        sboms: &crate::sbom::Library::default(),
+        vex: &crate::vex::Library::default(),
+        enrich: &|_| {},
+        nvd: &|_| vec![],
+        timestamp: 1_795_000_000,
+    });
+    let all = all_components(&v);
+    let quiet = all
+        .iter()
+        .find(|c| c["type"] == "device" && prop(c, "address") == ["10.0.0.9"])
+        .unwrap();
+    assert_eq!(quiet["manufacturer"]["name"], "Acme");
+    assert_eq!(
+        prop(quiet, "manufacturer-source"),
+        ["passive industrial traffic"]
+    );
+    assert_eq!(prop(quiet, "serial-number"), ["SN-9"]);
+    let firmware: Vec<(&str, &str)> = quiet["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["name"].as_str().unwrap(), c["version"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        firmware,
+        [("Ctrl 9", "3.1"), ("station-9", "4.0"), ("firmware", "5.0")]
+    );
+    let ctrl = &quiet["components"][0];
+    assert_eq!(ctrl["type"], "firmware");
+    assert_eq!(ctrl["manufacturer"]["name"], "Acme");
+    assert_eq!(prop(ctrl, "source"), ["passive EtherNet/IP, CIP"]);
+    let switch = all
+        .iter()
+        .find(|c| c["type"] == "device" && prop(c, "address") == ["10.0.0.1"])
+        .unwrap();
+    assert!(
+        switch["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "Switch OS" && c["version"] == "9.9")
+    );
+    assert!(!v.to_string().contains("Elsewhere"));
+}
+
+#[test]
+fn vex_justifications_map_to_the_closest_cyclonedx_value() {
+    for (from, to) in [
+        ("code_not_present", Some("code_not_present")),
+        ("component_not_present", Some("code_not_present")),
+        (" vulnerable_code_not_present ", Some("code_not_present")),
+        (
+            "vulnerable_code_not_in_execute_path",
+            Some("code_not_reachable"),
+        ),
+        ("requires_configuration", Some("requires_configuration")),
+        ("requires_dependency", Some("requires_dependency")),
+        ("requires_environment", Some("requires_environment")),
+        ("protected_by_compiler", Some("protected_by_compiler")),
+        ("protected_at_runtime", Some("protected_at_runtime")),
+        ("protected_at_perimeter", Some("protected_at_perimeter")),
+        (
+            "inline_mitigations_already_exist",
+            Some("protected_by_mitigating_control"),
+        ),
+        (
+            "vulnerable_code_cannot_be_controlled_by_adversary",
+            Some("protected_by_mitigating_control"),
+        ),
+        ("because", None),
+        ("", None),
+    ] {
+        assert_eq!(justification(from), to, "{from}");
+    }
+}

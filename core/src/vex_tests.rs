@@ -588,3 +588,78 @@ fn a_lookup_reads_only_the_statements_about_its_cve() {
     apply_indexed(&loaded.library, &loaded.by_cve, &mut one, &[host()]);
     assert_eq!(one[0].vex.as_ref().unwrap().state, State::NotAffected);
 }
+
+#[test]
+fn every_state_has_a_cyclonedx_value_a_label_and_a_verdict() {
+    let all = [
+        (State::NotAffected, "not_affected", "not affected", true),
+        (State::Fixed, "resolved", "fixed", true),
+        (
+            State::FalsePositive,
+            "false_positive",
+            "false positive",
+            true,
+        ),
+        (State::Affected, "exploitable", "affected", false),
+        (
+            State::UnderInvestigation,
+            "in_triage",
+            "under investigation",
+            false,
+        ),
+    ];
+    for (state, cyclonedx, label, resolves) in all {
+        assert_eq!(
+            (state.cyclonedx(), state.label(), state.resolves()),
+            (cyclonedx, label, resolves)
+        );
+    }
+}
+
+#[test]
+fn an_import_skips_compressed_files_and_summarises_long_lists_of_skipped_ones() {
+    let dir = std::env::temp_dir().join(format!("ns-vex-skipped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let files = dir.join("in");
+    std::fs::create_dir_all(&files).unwrap();
+    let cache = dir.join("vex.json");
+    assert!(
+        import(&[], &cache, 1)
+            .unwrap_err()
+            .contains("Provide one or more")
+    );
+    // Nothing usable: nothing is written.
+    std::fs::write(files.join("a.json"), [0x1f, 0x8b, 8, 0]).unwrap();
+    let e = import(std::slice::from_ref(&files), &cache, 1).unwrap_err();
+    assert!(
+        e.contains("a.json: gzip-compressed, unpack it first"),
+        "{e}"
+    );
+    assert!(!cache.exists());
+    for i in 0..22 {
+        std::fs::write(files.join(format!("n{i:02}.json")), "{}").unwrap();
+    }
+    std::fs::write(files.join("vex.json"), CSAF_VEX).unwrap();
+    let r = import(std::slice::from_ref(&files), &cache, 2).unwrap();
+    assert_eq!((r.files, r.rejected.len()), (1, 23));
+    let lines = r.lines();
+    assert_eq!(
+        lines[0],
+        format!("VEX: 1 files, {} statements", r.statements)
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l.starts_with("Skipped ")).count(),
+        20
+    );
+    assert!(
+        lines.contains(&"... and 3 more skipped files".to_string()),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with(&format!("{} statements in the cache", r.total))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
