@@ -86,6 +86,7 @@
 - [Supply chain: SBOM, signing and reproducible builds](supply-chain.md)
 - [Code signing policy](code-signing-policy.md)
 - [Assurance case](assurance-case.md)
+- [Security review](security-review.md)
 - [Data sources](data-sources.md)
 - [FAQ and troubleshooting](faq.md)
 - [Changelog](changelog.md)
