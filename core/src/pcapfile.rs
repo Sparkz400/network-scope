@@ -710,6 +710,180 @@ mod tests {
         assert!(read_all(&cut).is_err());
     }
 
+    /// A pcapng block in big-endian byte order.
+    fn ng_block_be(kind: u32, mut body: Vec<u8>) -> Vec<u8> {
+        while !body.len().is_multiple_of(4) {
+            body.push(0);
+        }
+        let total = (body.len() + 12) as u32;
+        let mut b = kind.to_be_bytes().to_vec();
+        b.extend(total.to_be_bytes());
+        b.extend(body);
+        b.extend(total.to_be_bytes());
+        b
+    }
+    /// A simple packet block: original length, then the captured bytes.
+    fn ng_spb(orig: u32, data: &[u8]) -> Vec<u8> {
+        let mut spb = orig.to_le_bytes().to_vec();
+        spb.extend(data);
+        ng_block(3, spb)
+    }
+
+    #[test]
+    fn a_second_pcapng_section_can_change_the_byte_order() {
+        let mut f = ng_shb();
+        f.extend(ng_idb(1, None));
+        f.extend(ng_epb(0, 1_000_000, &[1]));
+        // Section 2, big-endian: its own interface list starts empty again.
+        let mut shb = 0x1A2B3C4Du32.to_be_bytes().to_vec();
+        shb.extend([0, 1, 0, 0]);
+        shb.extend([0xff; 8]);
+        f.extend(ng_block_be(0x0A0D0D0A, shb));
+        let mut idb = 1u16.to_be_bytes().to_vec();
+        idb.extend([0, 0]);
+        idb.extend(65535u32.to_be_bytes());
+        f.extend(ng_block_be(1, idb));
+        let mut epb = 0u32.to_be_bytes().to_vec();
+        epb.extend(0u32.to_be_bytes());
+        epb.extend(7_000_000u32.to_be_bytes());
+        epb.extend(2u32.to_be_bytes());
+        epb.extend(2u32.to_be_bytes());
+        epb.extend([2, 3]);
+        f.extend(ng_block_be(6, epb));
+        assert_eq!(read_all(&f).unwrap(), [(1, vec![1]), (7, vec![2, 3])]);
+
+        // A later section header that is broken is an error, not a skipped block.
+        let mut bad_magic = ng_shb();
+        bad_magic.extend(ng_shb());
+        let at = bad_magic.len() - 20;
+        bad_magic[at..at + 4].copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(
+            read_all(&bad_magic).unwrap_err(),
+            "Bad pcapng byte-order magic"
+        );
+        let mut short = ng_shb();
+        short.extend([0x0a, 0x0d, 0x0d, 0x0a, 12, 0, 0, 0]);
+        short.extend(0x1A2B3C4Du32.to_le_bytes());
+        assert_eq!(read_all(&short).unwrap_err(), "Bad pcapng section header");
+        let mut cut = ng_shb();
+        cut.extend([0x0a, 0x0d, 0x0d, 0x0a, 28, 0, 0, 0]);
+        assert_eq!(read_all(&cut).unwrap_err(), "Truncated pcapng section");
+    }
+
+    #[test]
+    fn simple_packet_blocks_use_the_first_interface() {
+        let mut f = ng_shb();
+        // Without an interface a simple packet cannot be read.
+        f.extend(ng_spb(1, &[9]));
+        f.extend(ng_idb(1, None));
+        f.extend(ng_idb(105, None));
+        // Captured bytes beyond the original length are padding.
+        f.extend(ng_spb(3, &[1, 2, 3, 4, 5]));
+        f.extend(ng_spb(9, &[6, 7, 8, 9]));
+        // A packet on an interface that does not exist, and one on the Wi-Fi interface.
+        f.extend(ng_epb(5, 1_000_000, &[8]));
+        f.extend(ng_epb(1, 1_000_000, &[8]));
+        let mut r = Reader::new(&f[..]).unwrap();
+        let mut got = vec![];
+        while let Some(frame) = r.next_frame().unwrap() {
+            got.push(frame);
+        }
+        assert_eq!(got, [(0, vec![1, 2, 3]), (0, vec![6, 7, 8, 9])]);
+        assert_eq!(r.skipped, 3);
+
+        // Simple packets of an unsupported first interface name it when nothing was read.
+        let mut wifi = ng_shb();
+        wifi.extend(ng_idb(105, None));
+        wifi.extend(ng_spb(1, &[1]));
+        let e = read_all(&wifi).unwrap_err();
+        assert!(e.contains("105 (802.11 Wi-Fi)"), "{e}");
+        // An oversized interface block keeps the numbering: its packets are skipped.
+        let mut big = ng_shb();
+        big.extend(ng_block(1, vec![0; MAX_BLOCK]));
+        big.extend(ng_idb(1, None));
+        big.extend(ng_epb(0, 1_000_000, &[1]));
+        big.extend(ng_epb(1, 2_000_000, &[2]));
+        let mut r = Reader::new(&big[..]).unwrap();
+        assert_eq!(r.next_frame().unwrap(), Some((2, vec![2])));
+        assert_eq!(r.next_frame().unwrap(), None);
+        assert_eq!(r.skipped, 2);
+    }
+
+    #[test]
+    fn broken_pcapng_blocks_and_headers_fail_cleanly() {
+        let shb = ng_shb();
+        assert_eq!(
+            Reader::new(&shb[..6]).unwrap_err(),
+            "Truncated capture file"
+        );
+        let mut magic = shb.clone();
+        magic[8..12].copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(
+            Reader::new(&magic[..]).unwrap_err(),
+            "Bad pcapng byte-order magic"
+        );
+        let mut total = shb.clone();
+        total[4..8].copy_from_slice(&30u32.to_le_bytes());
+        assert_eq!(
+            Reader::new(&total[..]).unwrap_err(),
+            "Bad pcapng section header"
+        );
+        assert_eq!(
+            Reader::new(&shb[..4]).unwrap_err(),
+            "Truncated pcapng header"
+        );
+        for length in [8u32, 14] {
+            let mut f = ng_shb();
+            f.extend(6u32.to_le_bytes());
+            f.extend(length.to_le_bytes());
+            assert_eq!(
+                read_all(&f).unwrap_err(),
+                "Bad pcapng block length",
+                "{length}"
+            );
+        }
+        let mut f = ng_shb();
+        f.extend(ng_idb(1, None));
+        let epb = ng_epb(0, 0, &[1, 2, 3, 4]);
+        f.extend(&epb[..8]);
+        assert_eq!(read_all(&f).unwrap_err(), "Truncated pcapng block");
+        f.extend(&epb[8..12]);
+        assert_eq!(read_all(&f).unwrap_err(), "Truncated capture file");
+        // The captured length points past the block.
+        let mut f = ng_shb();
+        f.extend(ng_idb(1, None));
+        let mut epb = ng_epb(0, 0, &[1, 2, 3, 4]);
+        epb[20..24].copy_from_slice(&64u32.to_le_bytes());
+        f.extend(epb);
+        assert_eq!(read_all(&f).unwrap_err(), "Truncated pcapng packet");
+    }
+
+    #[test]
+    fn classic_pcap_headers_and_records_cut_short() {
+        let p = write_pcap(&[(1, vec![1, 2, 3, 4])]);
+        assert_eq!(Reader::new(&p[..10]).unwrap_err(), "Truncated capture file");
+        assert_eq!(Reader::new(&p[..4]).unwrap_err(), "Truncated pcap header");
+        // A record header whose data is missing entirely.
+        assert_eq!(read_all(&p[..40]).unwrap_err(), "Truncated capture file");
+        // Big-endian with nanosecond timestamps.
+        let mut be = vec![0xa1, 0xb2, 0x3c, 0x4d, 0, 2, 0, 4];
+        be.extend([0; 8]);
+        be.extend(65535u32.to_be_bytes());
+        be.extend(1u32.to_be_bytes());
+        be.extend(9u32.to_be_bytes());
+        be.extend(0u32.to_be_bytes());
+        be.extend(1u32.to_be_bytes());
+        be.extend(1u32.to_be_bytes());
+        be.push(7);
+        assert_eq!(read_all(&be).unwrap(), [(9, vec![7])]);
+        // A link type without a name is given by its number.
+        let e = Reader::new(&with_link(write_pcap(&[]), 999)[..]).unwrap_err();
+        assert!(
+            e.starts_with("Unsupported link type 999: only Ethernet"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn classic_pcap_with_fcs_flag_in_the_link_type() {
         let mut p = write_pcap(&[(5, vec![1, 2, 3, 4, 0xde, 0xad, 0xbe, 0xef])]);
