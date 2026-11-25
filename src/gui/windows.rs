@@ -199,6 +199,7 @@ impl Scanner {
         let findings = &self.findings.value;
         let view = &mut self.findings_view;
         let group = &mut self.saved.group_findings;
+        let widths = &mut self.saved.column_widths;
         let groups = &self.finding_groups;
         let names = &self.hostnames.value;
         page(
@@ -254,15 +255,15 @@ impl Scanner {
                                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                                 // The finding takes the room that is left: its title is what
                                 // the row is about.
-                                .column(Column::initial(65.0))
+                                .column(tables::sized(widths, GROUP_WIDTHS[0]))
                                 .column(Column::remainder().at_least(215.0).clip(true))
-                                .column(Column::initial(180.0).clip(true))
-                                .column(Column::initial(110.0).clip(true))
-                                .column(Column::initial(65.0).clip(true))
-                                .column(Column::initial(55.0))
-                                .column(Column::initial(150.0))
+                                .column(tables::sized(widths, GROUP_WIDTHS[2]).clip(true))
+                                .column(tables::sized(widths, GROUP_WIDTHS[3]).clip(true))
+                                .column(tables::sized(widths, GROUP_WIDTHS[4]).clip(true))
+                                .column(tables::sized(widths, GROUP_WIDTHS[5]))
+                                .column(tables::sized(widths, GROUP_WIDTHS[6]))
                                 .header(22.0, |mut row| {
-                                    for h in [
+                                    let names = [
                                         tr!("Severity"),
                                         tr!("Finding"),
                                         tr!("Hosts"),
@@ -270,8 +271,10 @@ impl Scanner {
                                         tr!("KEV"),
                                         tr!("EPSS"),
                                         tr!("Learn more"),
-                                    ] {
+                                    ];
+                                    for (h, width) in names.into_iter().zip(GROUP_WIDTHS) {
                                         row.col(|ui| {
+                                            tables::keep(widths, width, ui);
                                             ui.strong(h);
                                         });
                                     }
@@ -328,29 +331,49 @@ impl Scanner {
                             // The finding takes the room that is left (a wide window shows
                             // the whole title). The fixed columns fit a 1100 px window with
                             // both links in view; below that the table scrolls sideways.
-                            .column(Column::initial(65.0))
-                            .column(Column::initial(140.0).clip(true))
+                            .column(tables::sized(widths, FINDING_WIDTHS[0]))
+                            .column(tables::sized(widths, FINDING_WIDTHS[1]).clip(true))
                             .column(Column::remainder().at_least(150.0).clip(true))
-                            .column(Column::initial(95.0).clip(true))
-                            .column(Column::initial(105.0).clip(true))
-                            .column(Column::initial(50.0).clip(true))
-                            .column(Column::initial(55.0))
-                            .column(Column::initial(160.0))
+                            .column(tables::sized(widths, FINDING_WIDTHS[3]).clip(true))
+                            .column(tables::sized(widths, FINDING_WIDTHS[4]).clip(true))
+                            .column(tables::sized(widths, FINDING_WIDTHS[5]).clip(true))
+                            .column(tables::sized(widths, FINDING_WIDTHS[6]))
+                            .column(tables::sized(widths, FINDING_WIDTHS[7]))
                             .header(22.0, |mut row| {
                                 for (i, h) in tables::finding_columns().iter().enumerate() {
                                     row.col(|ui| {
+                                        tables::keep(widths, FINDING_WIDTHS[i], ui);
                                         if tables::header(ui, view, i, h) {
                                             sort = Some(i);
                                         }
                                     });
                                 }
                                 row.col(|ui| {
+                                    tables::keep(widths, FINDING_WIDTHS[7], ui);
                                     ui.strong(tr!("Learn more"));
                                 });
                             })
                             .body(|body| {
                                 body.rows(22.0, view.rows.len(), |mut row| {
-                                    let f = &findings[view.rows[row.index()]];
+                                    let at = row.index();
+                                    let f = &findings[view.rows[at]];
+                                    row.set_selected(view.marks.has(&view.rows[at]));
+                                    // With several rows marked, the menu of one of them
+                                    // copies all of them first.
+                                    let copies = || {
+                                        let of = |i: usize| {
+                                            let f = &findings[view.rows[i]];
+                                            tables::finding_copies(f, names.get(&f.ip))
+                                        };
+                                        let mut items = view.marks.copies(
+                                            at,
+                                            view.rows.len(),
+                                            |i| view.rows[i],
+                                            |i| tables::ends(of(i)),
+                                        );
+                                        items.extend(of(at));
+                                        items
+                                    };
                                     row.col(|ui| {
                                         match &f.vex {
                                             // The vendor says it does not apply: greyed, with why.
@@ -385,9 +408,7 @@ impl Scanner {
                                         let name = names.get(&f.ip);
                                         let cell = tables::row_link(ui, &address);
                                         chosen = cell.clicked();
-                                        tables::copy_menu(&cell, || {
-                                            tables::finding_copies(f, name)
-                                        });
+                                        tables::copy_menu(&cell, &copies);
                                         if let Some(name) = name {
                                             cell.on_hover_text(format!("{address} · {name}"));
                                             ui.weak(name);
@@ -415,10 +436,16 @@ impl Scanner {
                                         links(ui, f);
                                     });
                                     let whole = row.response();
-                                    tables::copy_menu(&whole, || {
-                                        tables::finding_copies(f, names.get(&f.ip))
-                                    });
-                                    if whole.clicked() || chosen {
+                                    tables::copy_menu(&whole, &copies);
+                                    // Ctrl or Shift marks rows; a plain click shows the host.
+                                    if (whole.clicked() || chosen)
+                                        && !view.marks.click(
+                                            whole.ctx.input(|i| i.modifiers),
+                                            at,
+                                            view.rows.len(),
+                                            |i| view.rows[i],
+                                        )
+                                    {
                                         focus = Some(vec![f.ip]);
                                     }
                                 });
@@ -469,6 +496,7 @@ impl Scanner {
         let devices = &self.devices.value;
         let view = &mut self.devices_view;
         let mode = &mut self.view;
+        let widths = &mut self.saved.column_widths;
         // No heading: this is the Hosts page in its device mode, with the same switch first.
         ui.scope(|ui| {
             ui.horizontal_wrapped(|ui| {
@@ -501,16 +529,17 @@ impl Scanner {
                         .sense(egui::Sense::click())
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         // Fits a 1100 px window next to the sidebar; Manufacturer takes the rest.
-                        .column(Column::initial(130.0).clip(true))
-                        .column(Column::initial(150.0).clip(true))
+                        .column(tables::sized(widths, DEVICE_WIDTHS[0]).clip(true))
+                        .column(tables::sized(widths, DEVICE_WIDTHS[1]).clip(true))
                         .column(Column::remainder().at_least(110.0).clip(true))
-                        .column(Column::initial(120.0).clip(true))
-                        .column(Column::initial(100.0).clip(true))
-                        .column(Column::initial(140.0).clip(true))
-                        .column(Column::initial(70.0))
+                        .column(tables::sized(widths, DEVICE_WIDTHS[3]).clip(true))
+                        .column(tables::sized(widths, DEVICE_WIDTHS[4]).clip(true))
+                        .column(tables::sized(widths, DEVICE_WIDTHS[5]).clip(true))
+                        .column(tables::sized(widths, DEVICE_WIDTHS[6]))
                         .header(22.0, |mut row| {
                             for (i, h) in tables::device_columns().iter().enumerate() {
                                 row.col(|ui| {
+                                    tables::keep(widths, DEVICE_WIDTHS[i], ui);
                                     if tables::header(ui, view, i, h) {
                                         sort = Some(i);
                                     }
@@ -519,7 +548,19 @@ impl Scanner {
                         })
                         .body(|body| {
                             body.rows(22.0, view.rows.len(), |mut row| {
-                                let d = &devices[view.rows[row.index()]];
+                                let at = row.index();
+                                let d = &devices[view.rows[at]];
+                                row.set_selected(view.marks.has(&view.rows[at]));
+                                let copies = || {
+                                    let mut items = view.marks.copies(
+                                        at,
+                                        view.rows.len(),
+                                        |i| view.rows[i],
+                                        |i| tables::ends(tables::device_copies(&devices[view.rows[i]])),
+                                    );
+                                    items.extend(tables::device_copies(d));
+                                    items
+                                };
                                 let mut chosen = false;
                                 row.col(|ui| {
                                     // The keyboard way to the row, as in the hosts table.
@@ -532,7 +573,7 @@ impl Scanner {
                                             .join(", "),
                                     );
                                     chosen = cell.clicked();
-                                    tables::copy_menu(&cell, || tables::device_copies(d));
+                                    tables::copy_menu(&cell, &copies);
                                 });
                                 row.col(|ui| {
                                     ui.label(if d.randomized_mac {
@@ -569,8 +610,15 @@ impl Scanner {
                                     }
                                 });
                                 let whole = row.response();
-                                tables::copy_menu(&whole, || tables::device_copies(d));
-                                if whole.clicked() || chosen {
+                                tables::copy_menu(&whole, &copies);
+                                if (whole.clicked() || chosen)
+                                    && !view.marks.click(
+                                        whole.ctx.input(|i| i.modifiers),
+                                        at,
+                                        view.rows.len(),
+                                        |i| view.rows[i],
+                                    )
+                                {
                                     focus = Some((d.ips.clone(), d.id.clone()));
                                 }
                             });
@@ -1110,6 +1158,37 @@ fn epss_label(ui: &mut egui::Ui, f: &risk::Finding) {
 }
 
 /// The documentation page of a finding and its reference; a click opens the default browser.
+/// The columns whose width is remembered, per table: the name it is kept under and the
+/// default width (no name: the column that takes the rest of the width).
+const FINDING_WIDTHS: [(&str, f32); 8] = [
+    ("findings.severity", 65.0),
+    ("findings.host", 140.0),
+    ("", 0.0),
+    ("findings.evidence", 95.0),
+    ("findings.cve", 105.0),
+    ("findings.kev", 50.0),
+    ("findings.epss", 55.0),
+    ("findings.links", 160.0),
+];
+const GROUP_WIDTHS: [(&str, f32); 7] = [
+    ("groups.severity", 65.0),
+    ("", 0.0),
+    ("groups.hosts", 180.0),
+    ("groups.cve", 110.0),
+    ("groups.kev", 65.0),
+    ("groups.epss", 55.0),
+    ("groups.links", 150.0),
+];
+const DEVICE_WIDTHS: [(&str, f32); 7] = [
+    ("devices.address", 130.0),
+    ("devices.mac", 150.0),
+    ("", 0.0),
+    ("devices.type", 120.0),
+    ("devices.os", 100.0),
+    ("devices.ports", 140.0),
+    ("devices.risk", 70.0),
+];
+
 pub(super) fn links(ui: &mut egui::Ui, f: &risk::Finding) {
     super::convenience::link_to(ui, tr!("Learn more"), &super::docs_url(&f.id));
     if let Some(url) = f.reference.as_deref().filter(|u| u.starts_with("https://")) {
