@@ -1675,8 +1675,9 @@ mod tests {
     #[tokio::test]
     async fn a_packet_cancelled_while_waiting_for_its_token_is_not_logged() {
         let gate = Gate::per_second(1.0, 1.0);
-        gate.wait_for(PacketKind::Traceroute, "sent").await;
-        let waiting = gate.wait_for(PacketKind::Traceroute, "never sent");
+        gate.wait_for(PacketKind::Traceroute, "ICMP echo, TTL sweep")
+            .await;
+        let waiting = gate.wait_for(PacketKind::Traceroute, "ICMP echo, TTL sweep");
         assert!(
             tokio::time::timeout(Duration::from_millis(20), waiting)
                 .await
