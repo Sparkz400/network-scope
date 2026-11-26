@@ -104,10 +104,12 @@ pub fn plan(ip: IpAddr, open: &[u16], s: &crate::scan::Settings) -> Plan {
             note: None,
         },
         TraceMethod::Tcp => {
+            // The port named with --melsec-port is industrial too.
+            let allowed = |p: &u16| trace_port_allowed(*p) && *p != s.melsec_port;
             let port = if s.trace_port != 0 {
-                Some(s.trace_port).filter(|p| trace_port_allowed(*p))
+                Some(s.trace_port).filter(allowed)
             } else {
-                open.iter().copied().find(|p| trace_port_allowed(*p))
+                open.iter().copied().find(allowed)
             };
             match port {
                 Some(p) => Plan {
@@ -201,6 +203,8 @@ pub async fn trace_udp(
     Ok(assemble(replies))
 }
 
+/// ICMP (or ICMPv6) traceroute: one echo per TTL, sent in waves like the TCP and UDP methods,
+/// so it stops once the target answered instead of sending every TTL to it.
 pub async fn trace(
     ip: IpAddr,
     max_hops: u8,
@@ -208,28 +212,20 @@ pub async fn trace(
     blocking: &Arc<Semaphore>,
     gate: &Gate,
 ) -> Result<Vec<Hop>, String> {
-    let mut set = JoinSet::new();
-    let hops = max_hops.clamp(1, 64);
     let id = next_trace_id();
-    for ttl in 1..=hops {
-        gate.wait_for(PacketKind::Traceroute, "ICMP echo, TTL sweep")
-            .await;
-        let Ok(permit) = blocking.clone().acquire_owned().await else {
-            break;
-        };
-        set.spawn_blocking(move || {
-            let _permit = permit;
-            (ttl, crate::platform::hop(ip, ttl, timeout_ms, id))
-        });
-    }
-    let (mut replies, mut error) = (vec![], None);
-    while let Some(done) = set.join_next().await {
-        match done {
-            Ok((ttl, Ok(r))) => replies.push((ttl, r)),
-            Ok((_, Err(e))) => error = Some(e),
-            Err(_) => {}
+    let (replies, error) = in_waves(max_hops, WAVE, gate, "ICMP echo, TTL sweep", |ttl| {
+        let blocking = blocking.clone();
+        async move {
+            let permit = blocking.acquire_owned().await.map_err(|e| e.to_string())?;
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                crate::platform::hop(ip, ttl, timeout_ms, id)
+            })
+            .await
+            .map_err(|e| e.to_string())?
         }
-    }
+    })
+    .await;
     if replies.is_empty() {
         return Err(error.unwrap_or_else(|| "no traceroute replies".into()));
     }
@@ -324,6 +320,18 @@ mod tests {
             ..tcp.clone()
         };
         assert_eq!(plan(v4, &[], &fixed).port, Some(8443));
+        // The --melsec-port port is never a traceroute target, open or named.
+        let melsec = Settings {
+            melsec_port: 5007,
+            ..tcp.clone()
+        };
+        assert_eq!(plan(v4, &[5007, 443], &melsec).port, Some(443));
+        assert_eq!(plan(v4, &[5007], &melsec).method, TraceMethod::Icmp);
+        let named = Settings {
+            trace_port: 5007,
+            ..melsec.clone()
+        };
+        assert_eq!(plan(v4, &[443], &named).method, TraceMethod::Icmp);
         let safe = Settings {
             safe: true,
             ..tcp.clone()

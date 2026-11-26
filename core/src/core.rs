@@ -55,9 +55,11 @@ impl Gate {
         &self.log
     }
     /// Waits for a token and records the packet about to be sent (the form senders use).
+    /// Recorded after the wait, so a task cancelled while waiting sent nothing and logs nothing.
     pub async fn wait_for(&self, kind: PacketKind, detail: impl Into<String>) {
-        self.log.record(kind, detail);
+        let detail = detail.into();
         self.wait().await;
+        self.log.record(kind, detail);
     }
     /// Like [`Gate::try_take`], recording the packet when a token was taken.
     pub fn try_take_for(
@@ -871,6 +873,12 @@ fn outcome_of(port: u16, state: &PortState) -> Option<Outcome> {
     }
 }
 
+/// The base scan's host on this address is the same device: their MACs do not differ.
+/// shortcut: without a MAC on either side (routed hosts) the address alone decides.
+fn same_device(before: &Host, now: &Host) -> bool {
+    before.mac.is_empty() || now.mac.is_empty() || before.mac.eq_ignore_ascii_case(&now.mac)
+}
+
 async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<Ctx>) -> Host {
     // A repeat scan (`--incremental`) probes the ports that were open plus a sample, and carries
     // over what it does not look at again; the host says so (`incremental::mark`).
@@ -994,7 +1002,7 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
     };
     // Per-host pacing: the device-type limits and the back-off (see `backoff`). It replaces the
     // plain per-host semaphore; without a back-off it behaves exactly like one.
-    let gov = HostGovernor::new(parallel, s.backoff);
+    let gov = HostGovernor::new(parallel, s.backoff, s.melsec_port);
     let mut probed_sample: Option<Vec<u16>> = None;
     if unused && !h.responding && !s.tcp_only {
         note(&mut h, crate::scan::UNUSED_ADDRESS_NOTE.into());
@@ -1329,11 +1337,21 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             })
             .collect();
         for port in tls_ports {
-            if let Some(jarm) = crate::jarm::fingerprint(ip, port, limit, &ctx.gate).await {
+            // The back-off paces JARM like every other probe of the host.
+            if gov.paused() {
+                break;
+            }
+            let pace = gov.delay();
+            if !pace.is_zero() {
+                sleep(pace).await;
+            }
+            if let Some(jarm) = crate::jarm::fingerprint(ip, port, limit, pace, &ctx.gate).await {
                 h.identity.insert(format!("tls.{port}.jarm"), jarm);
             }
         }
     }
+    // Another device on the base scan's address carries nothing over.
+    let before = before.filter(|b| same_device(b, &h));
     let udp_before = before.filter(|b| b.responding && s.udp);
     if let Some(b) = udp_before
         && h.responding
@@ -1652,6 +1670,20 @@ mod tests {
         assert!(gate.try_take().is_err(), "refusals do not consume tokens");
         std::thread::sleep(Duration::from_millis(110));
         assert!(gate.try_take().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_packet_cancelled_while_waiting_for_its_token_is_not_logged() {
+        let gate = Gate::per_second(1.0, 1.0);
+        gate.wait_for(PacketKind::Traceroute, "ICMP echo, TTL sweep")
+            .await;
+        let waiting = gate.wait_for(PacketKind::Traceroute, "ICMP echo, TTL sweep");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), waiting)
+                .await
+                .is_err()
+        );
+        assert_eq!(gate.log().total(), 1);
     }
 
     #[tokio::test]
@@ -2356,6 +2388,25 @@ mod tests",
             ),
             "{:?}",
             report.changes
+        );
+    }
+
+    #[test]
+    fn another_device_on_the_address_inherits_nothing() {
+        let with_mac = |mac: &str| Host {
+            mac: mac.into(),
+            ..host("10.0.0.5")
+        };
+        let a = with_mac("00:11:22:33:44:55");
+        assert!(same_device(&a, &with_mac("00:11:22:33:44:55")));
+        assert!(same_device(
+            &with_mac("aa:bb:cc:dd:ee:ff"),
+            &with_mac("AA:BB:CC:DD:EE:FF")
+        ));
+        assert!(!same_device(&a, &with_mac("66:77:88:99:aa:bb")));
+        assert!(
+            same_device(&with_mac(""), &a),
+            "no MAC: the address decides"
         );
     }
 

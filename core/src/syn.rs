@@ -215,6 +215,19 @@ const MAX_WINDOW: usize = 4096;
 /// Per-target RTT estimates kept at most; beyond this the map restarts.
 const MAX_ESTIMATES: usize = 65_536;
 
+/// The per-target cell of a lookup cache. Past [`MAX_ESTIMATES`] targets the cache restarts, so a
+/// /8 keeps flat memory; a target looked up again after that is just looked up once more.
+fn bounded_cell<K: std::hash::Hash + Eq, V>(
+    cache: &Mutex<HashMap<K, Arc<OnceCell<V>>>>,
+    key: K,
+) -> Arc<OnceCell<V>> {
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= MAX_ESTIMATES && !map.contains_key(&key) {
+        map.clear();
+    }
+    map.entry(key).or_default().clone()
+}
+
 /// Only a target's own estimate replaces the caller's reply window: a fast LAN
 /// neighbour must not shorten the window of a slow routed target (its SYN-ACK would
 /// arrive after the probe expired). Targets without samples keep the caller's window.
@@ -618,13 +631,7 @@ impl SynEngine {
 
     /// The OS route to `ip`, looked up once per target (a table read: no token).
     async fn route_v6(&self, ip: Ipv6Addr) -> Route6Result {
-        let cell = self
-            .routes6
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(ip)
-            .or_default()
-            .clone();
+        let cell = bounded_cell(&self.routes6, ip);
         let route = self.route6.clone();
         cell.get_or_init(|| async move {
             tokio::task::spawn_blocking(move || route(ip))
@@ -638,13 +645,7 @@ impl SynEngine {
     /// The address whose MAC frames to `ip` carry: `ip` itself when on-link, else
     /// its gateway. Looked up once per target.
     async fn next_hop(&self, ip: Ipv4Addr) -> Result<Ipv4Addr, String> {
-        let cell = self
-            .hops
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(ip)
-            .or_default()
-            .clone();
+        let cell = bounded_cell(&self.hops, ip);
         let route = self.route.clone();
         cell.get_or_init(|| async move {
             tokio::task::spawn_blocking(move || route(ip))
@@ -1210,7 +1211,7 @@ pub fn tcp_trace(
 ) -> Result<Vec<(u8, HopReply)>, String> {
     use std::sync::atomic::{AtomicU16, Ordering};
     static NEXT_BASE: AtomicU16 = AtomicU16::new(0);
-    if !crate::trace::trace_port_allowed(port) {
+    if !crate::trace::trace_port_allowed(port) || port == s.melsec_port {
         return Err(format!(
             "TCP traceroute never targets OT or printer port {port}"
         ));
@@ -1249,6 +1250,18 @@ pub fn tcp_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_caches_stay_bounded() {
+        let cache: Mutex<HashMap<u32, Arc<OnceCell<()>>>> = Mutex::new(HashMap::new());
+        for k in 0..(MAX_ESTIMATES as u32 + 10) {
+            bounded_cell(&cache, k);
+        }
+        assert!(cache.lock().unwrap().len() <= MAX_ESTIMATES);
+        // A known key is reused, not a reason to restart.
+        let a = bounded_cell(&cache, 5);
+        assert!(Arc::ptr_eq(&a, &bounded_cell(&cache, 5)));
+    }
 
     fn frame(
         src: Ipv4Addr,

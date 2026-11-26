@@ -252,6 +252,17 @@ pub(super) fn scan_settings(opts: &BTreeMap<String, String>) -> Result<scan::Set
     if has("parallel") {
         s.port_parallel = cli.port_parallel;
     }
+    // Options no preset sets: their option value is the default unless typed, so take it as is.
+    // Dropping --melsec-port here would let generic probes reach the PLC port it protects.
+    (s.melsec_port, s.dnp3_address, s.dnp3_master) =
+        (cli.melsec_port, cli.dnp3_address, cli.dnp3_master);
+    (s.snmp, s.snmp_ref) = (cli.snmp.clone(), cli.snmp_ref.clone());
+    (s.ipv6_discover, s.record, s.early_stop, s.partial_events) = (
+        cli.ipv6_discover,
+        cli.record,
+        cli.early_stop,
+        cli.partial_events,
+    );
     for (key, f) in [
         ("unit", cli.modbus_unit),
         ("rack", cli.s7_rack),
@@ -777,6 +788,25 @@ mod tests {
         // --fast on a safe preset leaves Safe Mode; machine settings come from the options.
         let s = scan_settings(&o(&["--preset", "quick", "--fast", "--interface", "eth0"])).unwrap();
         assert!(!s.safe && s.interface == "eth0");
+        // Options no preset sets survive it: the MELSEC port stays excluded from generic probes.
+        let s = scan_settings(&o(&[
+            "--preset",
+            "office",
+            "--ot",
+            "--ports",
+            "80,5007",
+            "--melsec-port",
+            "5007",
+            "--ipv6-discover",
+            "--record",
+            "scan.pcapng",
+            "--early-stop",
+            "--stream",
+        ]))
+        .unwrap();
+        assert_eq!(s.melsec_port, 5007);
+        assert!(s.ipv6_discover && s.record && s.early_stop && s.partial_events);
+        assert_eq!(crate::plan::service_ports(&[80, 5007], &s), [80]);
         // plant is passive: the scan options refuse it and point to ot-listen.
         let e = scan_settings(&o(&["--preset", "plant"])).unwrap_err();
         assert!(e.contains("ot-listen"), "{e}");

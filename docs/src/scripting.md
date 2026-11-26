@@ -82,7 +82,7 @@ fn on_alert(a) {
 
 | Member | Meaning |
 | --- | --- |
-| `a.kind` | Alert kind: `new-device`, `port-opened`, `port-closed`, `new-finding`, `device-missing`, `address-changed`, `rogue-dhcp`, ... |
+| `a.kind` | Alert kind: `new-device`, `port-opened`, `port-closed`, `new-finding`, `device-missing`, `address-changed`, `ip-conflict`, `rogue-dhcp`, ... |
 | `a.severity` | `info`, `low`, `medium`, `high` or `critical` |
 | `a.host` | The alert subject (usually the device address) |
 | `a.details` | The alert message |

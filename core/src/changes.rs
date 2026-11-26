@@ -29,7 +29,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::IpAddr,
     path::Path,
 };
@@ -493,8 +493,7 @@ pub fn between(
             continue;
         };
         let changes = per_device.entry((*key).to_string()).or_default();
-        let ips = |d: &Device| d.ips.iter().copied().collect::<BTreeSet<_>>();
-        if !old.ips.is_empty() && !new.ips.is_empty() && ips(old) != ips(new) {
+        if devices::address_changed(&old.ips, &new.ips) {
             changes.push(DeviceChange {
                 kind: "address",
                 detail: format!("{} → {}", list(&old.ips), list(&new.ips)),
@@ -580,9 +579,44 @@ pub fn between(
         device_key: ip_key.get(&f.ip).cloned(),
         finding: f.clone(),
     };
-    out.new_risks = diff.new_findings.iter().map(risk).collect();
-    out.resolved_risks = diff.resolved_findings.iter().map(risk).collect();
-    out.unconfirmed_risks = diff.unconfirmed_findings.iter().map(risk).collect();
+    // The scan diff compares addresses: a device that moved shows its findings as resolved at
+    // the old address and new at the new one. Per device, that pair is no change at all.
+    let keys = |by_key: &BTreeMap<&str, &Device>| {
+        crate::risk::device_keys(
+            by_key
+                .iter()
+                .map(|(k, d)| (d.ips.as_slice(), k.to_string())),
+        )
+    };
+    let (old_ip_key, new_ip_key) = (keys(&old_by_key), keys(&new_by_key));
+    let on = |map: &HashMap<IpAddr, String>, f: &crate::risk::Finding| {
+        f.device_key(map.get(&f.ip).map(String::as_str))
+    };
+    let appeared: HashSet<String> = diff
+        .new_findings
+        .iter()
+        .map(|f| on(&new_ip_key, f))
+        .collect();
+    let disappeared: HashSet<String> = diff
+        .resolved_findings
+        .iter()
+        .chain(&diff.unconfirmed_findings)
+        .map(|f| on(&old_ip_key, f))
+        .collect();
+    let gone = |list: &[crate::risk::Finding]| -> Vec<RiskChange> {
+        list.iter()
+            .filter(|f| !appeared.contains(&on(&old_ip_key, f)))
+            .map(risk)
+            .collect()
+    };
+    out.new_risks = diff
+        .new_findings
+        .iter()
+        .filter(|f| !disappeared.contains(&on(&new_ip_key, f)))
+        .map(risk)
+        .collect();
+    out.resolved_risks = gone(&diff.resolved_findings);
+    out.unconfirmed_risks = gone(&diff.unconfirmed_findings);
     out.summary = Summary {
         new_devices: out.new_devices.len(),
         gone_devices: out.gone_devices.len(),
@@ -918,6 +952,29 @@ mod tests {
         let c = changes(&path, &Since::Last, NOW).unwrap();
         assert!(c.is_quiet(), "{c:?}");
         assert!(render(&c, "text").unwrap().contains("No changes."));
+        remove_db(&path);
+    }
+
+    #[test]
+    fn a_device_that_moved_keeps_its_findings() {
+        let path = temp_db("moved-risks");
+        let at = |ip: &str| {
+            snap(vec![host(
+                ip,
+                "00:00:0C:00:00:07",
+                "router",
+                &[22, 23],
+                KEYS,
+            )])
+        };
+        store::save_at(&path, &at("10.0.0.5"), NOW - DAY).unwrap();
+        store::save_at(&path, &at("10.0.0.77"), NOW - 60).unwrap();
+        let c = changes(&path, &Since::Last, NOW).unwrap();
+        assert!(
+            c.new_risks.is_empty() && c.resolved_risks.is_empty() && c.unconfirmed_risks.is_empty(),
+            "telnet is not new because the device moved: {c:?}"
+        );
+        assert_eq!(c.changed_devices.len(), 1, "{c:?}");
         remove_db(&path);
     }
 
