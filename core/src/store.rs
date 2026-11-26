@@ -43,7 +43,7 @@ pub fn default_path() -> PathBuf {
 /// [`MIGRATIONS`]; the version stamped into `PRAGMA user_version` is the number of the last
 /// migration that ran.
 const BASE_VERSION: i64 = 2;
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS known_devices(key TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, scan_id INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL); CREATE INDEX IF NOT EXISTS alerts_by_time ON alerts(timestamp);";
+const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS known_devices(key TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY, timestamp INTEGER NOT NULL, scan_id INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL); CREATE INDEX IF NOT EXISTS alerts_by_time ON alerts(timestamp);";
 
 /// Schema changes after [`BASE_VERSION`], in order. Append new ones at the end with the next
 /// number; never edit a migration that has shipped. Each runs once, inside the transaction that
@@ -54,6 +54,7 @@ const MIGRATIONS: &[Migration] = &[
     (5, crate::research::migrate),
     (6, migrate_scan_hosts),
     (7, migrate_alert_outbox),
+    (8, migrate_scans_autoincrement),
 ];
 type Migration = (i64, fn(&Connection) -> rusqlite::Result<()>);
 /// Schema version of a database this program has fully upgraded.
@@ -108,6 +109,28 @@ fn migrate_scan_hosts(c: &Connection) -> rusqlite::Result<()> {
 fn migrate_alert_outbox(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS alert_outbox(id INTEGER PRIMARY KEY, scope TEXT NOT NULL, sink TEXT NOT NULL, alert TEXT NOT NULL);",
+    )
+}
+
+/// Migration 8: rebuild `scans` with `AUTOINCREMENT` so a scan id is never reused. Without it a
+/// deleted top id was handed to the next insert; a streamed scan ([`crate::store_stream`]) holds
+/// its id across the whole scan, so a reused id could attach its hosts to a different scan.
+/// Existing ids are kept; a database already carrying `AUTOINCREMENT` (new, or re-run) is a no-op.
+fn migrate_scans_autoincrement(c: &Connection) -> rusqlite::Result<()> {
+    let sql: String = c.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='scans'",
+        [],
+        |r| r.get(0),
+    )?;
+    if sql.contains("AUTOINCREMENT") {
+        return Ok(());
+    }
+    c.execute_batch(
+        "DROP TABLE IF EXISTS scans_new; \
+         CREATE TABLE scans_new(id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, targets TEXT NOT NULL, complete INTEGER NOT NULL, hosts INTEGER NOT NULL, snapshot TEXT NOT NULL); \
+         INSERT INTO scans_new(id,timestamp,targets,complete,hosts,snapshot) SELECT id,timestamp,targets,complete,hosts,snapshot FROM scans; \
+         DROP TABLE scans; \
+         ALTER TABLE scans_new RENAME TO scans;",
     )
 }
 
@@ -1319,13 +1342,21 @@ pub fn diff_report(a: &Snapshot, b: &Snapshot, ignore: &IgnoreList) -> Result<Di
             if h.identity.contains_key(key) {
                 continue;
             }
-            let covered = match key_port(key) {
+            let port = key_port(key);
+            let covered = match port {
                 Some(("udp", p)) => gone_udp.contains(&p),
                 Some((_, p)) => gone_tcp.contains(&p),
                 None => false,
             };
-            // Identity keys of a host that was not fully checked are missing, not removed.
-            if !covered && h.ports_checked {
+            // A TCP port's detail is removed only if the new scan actually rechecked that port
+            // (an incremental scan rechecks a subset, so the whole-host flag would hide every
+            // removal). UDP is carried over per host, not re-probed per port, and a non-port key
+            // needs the whole host checked. An unprobed port's detail is missing, not removed.
+            let checked = match port {
+                Some(("udp", _)) | None => h.ports_checked,
+                Some((_, p)) => crate::incremental::checked(h, p),
+            };
+            if !covered && checked {
                 changes.push(Change::IdentityRemoved {
                     ip,
                     key: key.clone(),
@@ -1624,6 +1655,25 @@ mod tests {
             changes.contains("161") && changes.contains("svc.80"),
             "{changes}"
         );
+    }
+
+    #[test]
+    fn an_incremental_scan_reports_a_detail_removed_on_a_rechecked_port() {
+        let mut a = snapshot();
+        let h = &mut a.hosts[0];
+        h.responding = true;
+        h.ports_checked = true;
+        h.open = vec![22];
+        h.identity.insert("ssh.22".into(), "weak cipher".into());
+        // Incremental scan: port 22 was rechecked (still open) but no longer carries the detail.
+        // ports_checked is false, so only the per-port recheck mark makes this a real removal.
+        let mut b = a.clone();
+        let h = &mut b.hosts[0];
+        h.ports_checked = false;
+        h.identity.remove("ssh.22");
+        h.identity.insert("incr.rechecked".into(), "22".into());
+        let changes = diff(&a, &b).unwrap().join("\n");
+        assert!(changes.contains("ssh.22"), "{changes}");
     }
 
     #[test]

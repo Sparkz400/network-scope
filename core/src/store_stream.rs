@@ -112,18 +112,29 @@ impl ScanWriter {
         self.pending.clear();
         Ok(())
     }
-    /// Writes the rest and records the final state; returns the scan id.
+    /// Writes the rest and records the final state; returns the scan id. The research tables
+    /// (L67) are not written here — a streamed scan is too large to analyse in one pass — so a
+    /// batched scan is indexed for research/export only by `research rebuild`.
     pub fn finish(mut self, complete: bool, sent: Vec<SentEntry>) -> Result<i64, String> {
         self.flush()?;
         self.base.complete = complete;
         self.base.sent = sent;
         let data = serde_json::to_string(&self.base).map_err(|e| e.to_string())?;
-        self.c
+        let updated = self
+            .c
             .execute(
                 "UPDATE scans SET complete=?1, hosts=?2, snapshot=?3 WHERE id=?4",
                 params![complete, self.seq, data, self.id],
             )
             .map_err(|e| e.to_string())?;
+        // The scan row is gone: it was deleted while the scan was being written. Report it
+        // rather than claim a saved scan that is not there (and leave orphan host rows unseen).
+        if updated == 0 {
+            return Err(format!(
+                "scan #{} was deleted while it was being written; it was not saved",
+                self.id
+            ));
+        }
         Ok(self.id)
     }
 }
@@ -226,6 +237,18 @@ mod tests {
         let a = serde_json::to_value(store::load(&path, written).unwrap()).unwrap();
         let b = serde_json::to_value(store::load(&path, saved).unwrap()).unwrap();
         assert_eq!(a, b);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn finish_errors_if_the_scan_row_was_deleted_while_writing() {
+        let path = db("deleted");
+        let mut w = ScanWriter::begin(&path, "t", &Settings::default()).unwrap();
+        w.push(&host(1)).unwrap();
+        // Another program deletes the in-flight (incomplete) scan. finish must report it, not
+        // claim a saved scan that is gone (and leave orphan host rows behind).
+        store::delete(&path, w.id()).unwrap();
+        assert!(w.finish(true, vec![]).is_err());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

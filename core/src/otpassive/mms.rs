@@ -41,12 +41,31 @@ pub(super) struct Flow {
     decided: bool,
     /// (is a request, capture time) of the messages seen before the protocol was known.
     pending: Vec<(bool, i64)>,
+    /// Capture time of the last message on this flow, for idle eviction.
+    last: i64,
 }
+
+/// A flow idle this long (capture seconds) is dropped, so a long live capture does not fill the
+/// table and then refuse new connections. Matches `reassembly::FLOW_IDLE_SECS`.
+const FLOW_IDLE_SECS: i64 = 120;
 
 /// The flow table of the tracker.
 #[derive(Default)]
 pub(super) struct IsoFlows {
     flows: HashMap<FlowKey, Flow>,
+    last_sweep: i64,
+}
+impl IsoFlows {
+    /// Drops flows idle longer than [`FLOW_IDLE_SECS`], checked every 10 s of capture time.
+    fn expire(&mut self, ts: i64) {
+        // Capture timestamps come from untrusted pcap files: saturate instead of overflowing.
+        if ts.saturating_sub(self.last_sweep) < 10 {
+            return;
+        }
+        self.last_sweep = ts;
+        self.flows
+            .retain(|_, f| ts.saturating_sub(f.last) <= FLOW_IDLE_SECS);
+    }
 }
 
 enum Cotp<'a> {
@@ -260,10 +279,12 @@ impl Tracker {
             Cotp::Data(user) => classify(user),
             _ => None,
         };
+        self.iso.expire(ts);
         if !self.iso.flows.contains_key(&key) && self.iso.flows.len() >= MAX_FLOWS {
             return;
         }
         let flow = self.iso.flows.entry(key).or_default();
+        flow.last = ts;
         // data decides; a connection request that looks like S7 is S7 until data says otherwise
         if let Some(kind) = data_kind.filter(|_| !flow.decided) {
             flow.kind = Some(kind);
@@ -527,5 +548,9 @@ mod tests {
         }
         assert!(t.iso.flows.len() <= MAX_FLOWS);
         assert!(t.observations().is_empty());
+        // After the idle window a new connection sweeps the stale flows out, so the table does
+        // not stay full and refuse new connections for the rest of a long capture.
+        t.feed(&frame(HMI, PLC, true, 6000, 102, &CR_MMS), 1 + FLOW_IDLE_SECS + 11);
+        assert_eq!(t.iso.flows.len(), 1);
     }
 }

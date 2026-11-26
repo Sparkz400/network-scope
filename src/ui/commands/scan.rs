@@ -237,6 +237,15 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), String> {
             if complete { "complete" } else { "partial" }
         ),
     );
+    // A batched (streamed) scan writes no research rows: run `research rebuild` to index it.
+    if snapshot.is_none() {
+        progress(
+            opts,
+            format_args!(
+                "Large scan #{id}: run `research rebuild` to index it for research queries and exports"
+            ),
+        );
+    }
     if opts.contains_key("sent-log") {
         eprintln!("{}", crate::sendlog::format_table(&sent));
     }

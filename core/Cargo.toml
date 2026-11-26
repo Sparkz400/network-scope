@@ -36,6 +36,11 @@ rustls-platform-verifier = "0.7"
 # Already in the dependency tree through rustls; used for the SNMPv3 HMAC and digests.
 ring = "0.17"
 
+# Unix only: getrlimit/setrlimit to keep the in-flight socket pool under the open-file limit
+# (core::socket_budget). Already in the dependency tree through socket2/ring.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 # The benchmarks live in their own package (`bench/`): nothing here may turn on a feature of a

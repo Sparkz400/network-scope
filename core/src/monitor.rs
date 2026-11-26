@@ -2513,11 +2513,12 @@ mod tests {
         // Another program saved a scan of these targets.
         let second = store::save(&db, &scan("lab", true, &[22, 80])).unwrap();
         assert_eq!(sync(&mut last), (Some((second, vec![22, 80])), 1));
-        // It deleted it and saved another: that one gets the same id, and is not the same scan.
+        // It deleted it and saved another. The id is never reused (scans.id is AUTOINCREMENT),
+        // so the new scan gets a fresh id: a streamed writer holding `second` cannot collide.
         store::delete(&db, second).unwrap();
         let later = store::now() + 60;
         let third = store::save_at(&db, &scan("lab", true, &[443]), later).unwrap();
-        assert_eq!(third, second);
+        assert!(third > second);
         assert_eq!(sync(&mut last), (Some((third, vec![443])), 1));
         store::delete(&db, third).unwrap();
         assert_eq!(sync(&mut last), (Some((first, vec![22])), 1));
