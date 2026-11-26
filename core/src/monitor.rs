@@ -647,9 +647,9 @@ fn evaluate_derived(
     }
 
     // Several MACs answering for one address: Critical when it is a gateway (traffic of the
-    // whole network can be redirected), else High. A virtual router MAC among them is how a
-    // redundant gateway looks, so that is High and the message says so; it is never silent,
-    // since such a MAC can be spoofed.
+    // whole network can be redirected), else High. One physical MAC with virtual router MACs is
+    // how a redundant gateway looks, so that is High and the message says so; it is never
+    // silent, since such a MAC can be spoofed.
     let gateways = gateways(cur);
     for (ip, macs) in ip_conflicts(cur_devices) {
         let gateway = gateways.contains(&ip);
@@ -668,7 +668,8 @@ fn evaluate_derived(
         };
         out.push(alert(
             now,
-            if gateway && virtual_macs.is_empty() {
+            // Two physical MACs on a gateway stay Critical, whatever virtual MACs join them.
+            if gateway && macs.len() - virtual_macs.len() > 1 {
                 Severity::Critical
             } else {
                 Severity::High
@@ -1734,6 +1735,31 @@ mod tests {
         );
         assert!(
             virtual_router_mac("00:00:5e:00:01:07") && !virtual_router_mac("AA:BB:CC:00:00:01")
+        );
+        // A spoofed virtual MAC does not downgrade a second physical MAC on the gateway.
+        let mut with_vrrp = cur.clone();
+        with_vrrp
+            .observations
+            .push(arp("00:00:5E:00:01:09", "10.0.0.1"));
+        let a2 = evaluate(None, &with_vrrp, &k, &Policy::default(), 1);
+        let gw2 = a2
+            .iter()
+            .find(|a| a.kind == "ip-conflict" && a.subject == "10.0.0.1")
+            .unwrap();
+        assert_eq!(gw2.severity, Severity::Critical, "{}", gw2.message);
+        // One physical MAC plus a virtual one on the gateway: a redundant gateway, High.
+        let redundant = snap(
+            vec![
+                host("10.0.0.1", "AA:BB:CC:00:00:01", &[80], &[]),
+                pc.clone(),
+            ],
+            vec![arp("00:00:5E:00:01:09", "10.0.0.1")],
+        );
+        let a3 = evaluate(None, &redundant, &k, &Policy::default(), 1);
+        let gw3 = a3.iter().find(|a| a.kind == "ip-conflict").unwrap();
+        assert_eq!(
+            (gw3.severity, gw3.subject.as_str()),
+            (Severity::High, "10.0.0.1")
         );
         let gw = a.iter().find(|a| a.subject == "10.0.0.1").unwrap();
         assert!(

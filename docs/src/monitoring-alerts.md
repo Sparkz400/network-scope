@@ -16,7 +16,7 @@ network-scope-cli monitor TARGETS [scan options] --interval 300 [--cycles N]
 | New finding | Severity of the finding (not for a finding an imported vendor statement clears, see [VEX](findings-and-cves.md#vendor-statements-vex-offline)) |
 | Device not on the approved baseline (`unknown-device`, only once a [baseline](inventory-diff-reports.md#approved-baseline) exists; the subject is the device key) | Medium |
 | Address change for a known MAC (`address-changed`; IPv6 addresses count only for devices without IPv4) | Medium |
-| Address claimed by several MACs (`ip-conflict`: ARP spoofing, a duplicate address or a takeover; a VRRP, HSRP or GLBP virtual MAC among them is named in the message) | Critical for a gateway (first traceroute hop, DHCP router, IPv6 router), else High; High when a virtual router MAC is involved (a redundant gateway, or a spoofed one) |
+| Address claimed by several MACs (`ip-conflict`: ARP spoofing, a duplicate address or a takeover; a VRRP, HSRP or GLBP virtual MAC among them is named in the message) | Critical for a gateway (first traceroute hop, DHCP router, IPv6 router), else High; High for one physical MAC plus virtual router MACs (a redundant gateway, or a spoofed virtual MAC); two physical MACs on a gateway stay Critical |
 | Device not seen (`device-missing`, only with `--report-missing`) | Low |
 | Passive capture lost data (`capture-incomplete`) | Low |
 | A cycle failed (`monitor-cycle-failed`: the inventory was locked, an adapter was down, ...) | Medium |
