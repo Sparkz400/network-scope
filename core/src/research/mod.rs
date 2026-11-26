@@ -516,15 +516,22 @@ pub(crate) fn insert_scan_guarded(
     snapshot: &Snapshot,
     findings: &[Finding],
 ) {
-    if c.execute_batch("SAVEPOINT research").is_err() {
+    if let Err(e) = c.execute_batch("SAVEPOINT research") {
+        eprintln!(
+            "scan #{scan_id}: research rows skipped ({e}); run `research rebuild` to index it"
+        );
         return;
     }
     match insert_scan(c, scan_id, scan_time, snapshot, findings) {
         Ok(()) => {
             let _ = c.execute_batch("RELEASE research");
         }
-        Err(_) => {
+        Err(e) => {
             let _ = c.execute_batch("ROLLBACK TO research; RELEASE research");
+            // The scan itself is kept; surface the gap so a systematic failure is not silent.
+            eprintln!(
+                "scan #{scan_id}: research rows not written ({e}); run `research rebuild` to index it"
+            );
         }
     }
 }

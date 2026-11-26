@@ -2480,6 +2480,7 @@ name = "network-scope-core"
 version = "0.6.0"
 dependencies = [
  "dns-lookup",
+ "libc",
  "libloading 0.9.1",
  "pnet_packet",
  "rcgen",

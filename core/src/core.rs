@@ -440,7 +440,7 @@ pub async fn execute(
         // with 256, a /24 in --fast queued its ping and ARP calls for several rounds (Windows home
         // /24 with 2 ports: 8.0-10.2 s, now 5.8-6.3 s, same results). Safe Mode runs 8 hosts.
         blocking: Arc::new(Semaphore::new(512)),
-        sockets: Arc::new(Semaphore::new(4096)),
+        sockets: Arc::new(Semaphore::new(socket_budget(4096))),
         dhcp: Semaphore::new(1),
         syn,
         syn_error,
@@ -534,16 +534,59 @@ fn apply_neighbor(
     silent
 }
 
+/// The most in-flight sockets to allow (`want`, 4096). On Unix the open-file soft limit is
+/// often far lower (Linux 1024, macOS 256); exceeding it makes `connect` fail with EMFILE,
+/// which would silently drop open ports from a host still marked fully checked. So raise the
+/// soft limit toward the hard limit, then keep the pool below it with headroom for everything
+/// else that needs descriptors (service identification, JARM, SNMP, stdio, the database).
+#[cfg(unix)]
+fn socket_budget(want: usize) -> usize {
+    use std::mem::MaybeUninit;
+    // SAFETY: getrlimit/setrlimit fill or read a plain rlimit struct; values are read only on
+    // success (return 0), and nothing is kept past the call.
+    unsafe {
+        let mut lim = MaybeUninit::<libc::rlimit>::uninit();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, lim.as_mut_ptr()) != 0 {
+            return want;
+        }
+        let mut lim = lim.assume_init();
+        if lim.rlim_cur < lim.rlim_max {
+            let raised = libc::rlimit {
+                rlim_cur: lim.rlim_max,
+                rlim_max: lim.rlim_max,
+            };
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &raised) == 0 {
+                lim.rlim_cur = lim.rlim_max;
+            }
+        }
+        let soft = lim.rlim_cur as usize;
+        want.min((soft - soft / 4).max(64))
+    }
+}
+#[cfg(not(unix))]
+fn socket_budget(want: usize) -> usize {
+    want
+}
+
 /// Counts a closed or unanswered port without a note at once and keeps every other result for
 /// the port-ordered pass in `scan_host`: with `--fast` every host of a /24 runs at the same
 /// time, and keeping all results held one record per probe (about 120 bytes each).
-fn tally(h: &mut Host, kept: &mut Vec<(u16, PortProbe)>, item: (u16, PortProbe)) {
-    match (&item.1.state, &item.1.note) {
-        (PortState::Closed, None) => {
-            h.closed += 1;
-            h.responding = true;
+fn tally(h: &mut Host, kept: &mut Vec<(u16, PortProbe)>, mut item: (u16, PortProbe)) {
+    match item.1.state {
+        PortState::Closed | PortState::Unanswered => {
+            // A closed/unanswered port's note is the scan-wide SYN-fallback message, identical
+            // across ports; record it once on the host (deduped) and keep the port as a counter,
+            // so a --syn scan that fell back does not store one record per probed port.
+            if let Some(text) = item.1.note.take() {
+                note(h, text);
+            }
+            if item.1.state == PortState::Closed {
+                h.closed += 1;
+                h.responding = true;
+            } else {
+                h.unanswered += 1;
+            }
         }
-        (PortState::Unanswered, None) => h.unanswered += 1,
         _ => kept.push(item),
     }
 }
@@ -856,6 +899,16 @@ fn note_first(h: &mut Host, text: String) {
         h.errors.truncate(8);
     }
 }
+
+/// A spawned probe task did not finish (it panicked): its port's result is lost, so the host is
+/// no longer a complete picture. Record it rather than drop the result silently.
+fn note_probe_panic(h: &mut Host, e: &tokio::task::JoinError) {
+    h.ports_checked = false;
+    note(
+        h,
+        format!("a probe did not complete ({e}); some ports were not recorded"),
+    );
+}
 /// Moves the notes the back-off controller recorded onto the host.
 fn flush_backoff_notes(gov: &HostGovernor, h: &mut Host) {
     for text in gov.take_notes().into_iter().rev() {
@@ -1053,9 +1106,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             // Probes that finished since the last launch: their open ports steer the order, and
             // with --early-stop they can end the scan of this host.
             while let Some(done) = probes.try_join_next() {
-                if let Ok(item) = done {
-                    order.observe(item.0, item.1.state == PortState::Open);
-                    tally(&mut h, &mut results, item);
+                match done {
+                    Ok(item) => {
+                        order.observe(item.0, item.1.state == PortState::Open);
+                        tally(&mut h, &mut results, item);
+                    }
+                    Err(e) => note_probe_panic(&mut h, &e),
                 }
             }
             if s.early_stop
@@ -1078,9 +1134,12 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 if neighbor_due(&first_connect) {
                     watch = false;
                     while let Some(done) = probes.try_join_next() {
-                        if let Ok(item) = done {
-                            order.observe(item.0, item.1.state == PortState::Open);
-                            tally(&mut h, &mut results, item);
+                        match done {
+                            Ok(item) => {
+                                order.observe(item.0, item.1.state == PortState::Open);
+                                tally(&mut h, &mut results, item);
+                            }
+                            Err(e) => note_probe_panic(&mut h, &e),
                         }
                     }
                     unused = neighbor_verdict(&ctx, ip, &h, &results).await;
@@ -1162,7 +1221,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
             };
             match next {
                 Some(Some(Ok(item))) => tally(&mut h, &mut results, item),
-                Some(_) => {}
+                Some(Some(Err(e))) => note_probe_panic(&mut h, &e),
+                // The sleep sentinel (`Some(None)`): the neighbour check's time is not up yet.
+                Some(None) => {}
                 // All probes are done; a host still silent waits out the check's time.
                 None if pending && !answered(&h, &results) => {
                     sleep(neighbor_wait_left(&first_connect)).await;
@@ -1282,8 +1343,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
         let mut found = vec![];
         while let Some(done) = tasks.join_next().await {
-            if let Ok(item) = done {
-                found.push(item);
+            match done {
+                Ok(item) => found.push(item),
+                Err(e) => note_probe_panic(&mut h, &e),
             }
         }
         found.sort_by_key(|(port, ..)| *port);
@@ -1409,6 +1471,15 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
                 } else {
                     None
                 };
+                // Port 67 is serialized across the whole scan (only one socket can bind the
+                // local DHCP client port 68), so keep it cheap: one try, short wait. An on-link
+                // DHCP server answers a DHCPINFORM at once; the full retry budget here would turn
+                // every host's probe into seconds of strictly serial waiting.
+                let (wait, tries) = if port == 67 {
+                    (wait.min(Duration::from_secs(1)), 1)
+                } else {
+                    (wait, tries)
+                };
                 let _socket = ctx.sockets.acquire().await.ok();
                 let result = crate::udp::probe(ip, port, wait, tries, &ctx.gate).await;
                 drop(permit);
@@ -1417,8 +1488,9 @@ async fn scan_host(ip: IpAddr, ports: Arc<Vec<u16>>, s: Arc<Settings>, ctx: Arc<
         }
         let mut results = vec![];
         while let Some(done) = tasks.join_next().await {
-            if let Ok(item) = done {
-                results.push(item);
+            match done {
+                Ok(item) => results.push(item),
+                Err(e) => note_probe_panic(&mut h, &e),
             }
         }
         results.sort_by_key(|(port, _)| *port);

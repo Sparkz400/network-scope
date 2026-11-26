@@ -108,6 +108,9 @@ pub struct HostOrder<'a> {
     done: BTreeSet<u16>,
     /// Per class: evidence points from the vendor and TTL.
     prior: Vec<u32>,
+    /// Per class: running evidence from the open ports seen so far, kept in step with `open` so
+    /// `votes` is O(1) per class instead of a scan over every open port on every probe.
+    tally: Vec<u32>,
     vendor_hit: Vec<bool>,
     active: Option<usize>,
 }
@@ -135,6 +138,7 @@ impl<'a> HostOrder<'a> {
             open: BTreeSet::new(),
             done: BTreeSet::new(),
             prior,
+            tally: vec![0; table.classes.len()],
             vendor_hit,
             active: None,
         };
@@ -146,19 +150,15 @@ impl<'a> HostOrder<'a> {
     }
 
     fn votes(&self, class: usize) -> u32 {
-        let c = &self.table.classes[class];
-        self.prior[class]
-            + self
-                .open
-                .iter()
-                .map(|p| {
-                    if c.signature.contains(p) {
-                        2
-                    } else {
-                        u32::from(c.ports.contains(p))
-                    }
-                })
-                .sum::<u32>()
+        self.prior[class] + self.tally[class]
+    }
+    /// One open port's evidence for a class (2 for a signature port, 1 for a listed port).
+    fn port_vote(c: &Class, port: u16) -> u32 {
+        if c.signature.contains(&port) {
+            2
+        } else {
+            u32::from(c.ports.contains(&port))
+        }
     }
     /// The class with the most evidence, at least two points (a lone TTL or a lone shared port
     /// such as 80 is not enough).
@@ -194,7 +194,11 @@ impl<'a> HostOrder<'a> {
         if !open {
             return;
         }
-        self.open.insert(port);
+        if self.open.insert(port) {
+            for (class, t) in self.table.classes.iter().zip(self.tally.iter_mut()) {
+                *t += Self::port_vote(class, port);
+            }
+        }
         let active = self.pick_class();
         if active != self.active {
             self.active = active;

@@ -530,7 +530,12 @@ pub fn merge(db: &Path, import: &Import, now: i64) -> Result<Merged, String> {
         }
     }
     let mut c = store::open(db)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
+    // Immediate, like every other write path: a DEFERRED transaction would take a read lock
+    // first and then fail at once with "database is locked" if another writer holds the lock
+    // when it upgrades, instead of waiting out the busy timeout.
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let matches = identity::resolve(&store::registry_of(&tx)?, &pseudo);
     store::record_matches(&tx, &pseudo, &matches, now)?;
     let source = format!("import:{}", import.kind);
