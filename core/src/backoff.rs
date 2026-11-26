@@ -157,6 +157,9 @@ pub struct Backoff {
     strikes: u32,
     weak: bool,
     paused: bool,
+    /// A port the user named as industrial (`--melsec-port`); 0 for none.
+    fragile_port: u16,
+    fragile_seen: bool,
 }
 
 impl Backoff {
@@ -173,7 +176,14 @@ impl Backoff {
             strikes: 0,
             weak: false,
             paused: false,
+            fragile_port: 0,
+            fragile_seen: false,
         }
+    }
+    /// Also treat `port` as an industrial port (0: none), like the built-in OT list.
+    pub fn with_fragile_port(mut self, port: u16) -> Self {
+        self.fragile_port = port;
+        self
     }
     pub fn class(&self) -> DeviceClass {
         self.class
@@ -218,7 +228,15 @@ impl Backoff {
                 if self.open.len() < MAX_OPEN {
                     self.open.insert(port);
                 }
-                self.class = DeviceClass::of(&self.open);
+                // The named industrial port keeps the host fragile once seen, as the OT list does.
+                if self.fragile_port != 0 && port == self.fragile_port {
+                    self.fragile_seen = true;
+                }
+                self.class = if self.fragile_seen {
+                    DeviceClass::Fragile
+                } else {
+                    DeviceClass::of(&self.open)
+                };
                 None
             }
             Outcome::Refused => {
@@ -339,10 +357,11 @@ pub struct HostGovernor {
 }
 
 impl HostGovernor {
-    pub fn new(base_parallel: usize, enabled: bool) -> Arc<Self> {
+    /// `fragile_port`: a port the user named as industrial (`--melsec-port`), 0 for none.
+    pub fn new(base_parallel: usize, enabled: bool, fragile_port: u16) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
-                backoff: Backoff::new(base_parallel, enabled),
+                backoff: Backoff::new(base_parallel, enabled).with_fragile_port(fragile_port),
                 inflight: 0,
                 next_launch: None,
                 notes: vec![],
@@ -455,6 +474,14 @@ mod tests {
         ] {
             assert_eq!(DeviceClass::of(&set(ports)), class, "{ports:?}");
         }
+        // A port named with --melsec-port makes the host fragile too, and keeps it so.
+        let mut b = Backoff::new(64, true).with_fragile_port(5007);
+        feed(&mut b, &[Open(5007), Open(22), Open(445)]);
+        assert_eq!(b.class(), DeviceClass::Fragile);
+        assert_eq!(b.limit(), 2);
+        let mut b = Backoff::new(64, true).with_fragile_port(5007);
+        feed(&mut b, &[Open(22), Open(445)]);
+        assert_eq!(b.class(), DeviceClass::Normal);
         // Lowest limits for OT and printers, medium for unknown, none for computers.
         assert!(DeviceClass::Fragile.parallel_cap() < DeviceClass::Unknown.parallel_cap());
         assert!(DeviceClass::Unknown.parallel_cap() < DeviceClass::Normal.parallel_cap());
@@ -701,7 +728,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_governor_enforces_the_limit_and_wakes_on_release() {
-        let g = HostGovernor::new(2, true);
+        let g = HostGovernor::new(2, true, 0);
         let a = g.admit().await.unwrap();
         let _b = g.admit().await.unwrap();
         // A third probe has to wait for a release.
@@ -722,7 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_governor_spaces_probes_after_a_back_off_and_stops_when_paused() {
-        let g = HostGovernor::new(8, true);
+        let g = HostGovernor::new(8, true, 0);
         g.record(Reset); // unknown class: delay 100 ms, limit 32 >> 1 capped by base 8 -> 4
         assert_eq!(g.delay(), Duration::from_millis(100));
         assert_eq!(g.limit(), 4);
@@ -760,7 +787,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unlimited_healthy_governor_adds_no_delay() {
-        let g = HostGovernor::new(64, true);
+        let g = HostGovernor::new(64, true, 0);
         let start = Instant::now();
         for _ in 0..2000 {
             drop(g.admit().await.unwrap());

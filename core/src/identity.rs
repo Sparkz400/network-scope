@@ -400,8 +400,14 @@ fn score(
         points += Kind::DeclaredName.weight();
         reasons.push(Kind::DeclaredName.name());
     }
+    if exact && device.id.starts_with("ip:") {
+        // Only the same address (no MAC seen): still the same device, unless another device
+        // brings at least as much evidence for this record (a server that moved, whose old
+        // address a newcomer took).
+        return Some((MATCH_THRESHOLD, vec!["same-id"]));
+    }
     if exact {
-        // The same id as before (its MAC or `ip:ADDRESS`) is the same device, as it always was.
+        // The same MAC as before is the same device, as it always was.
         return Some((1000, vec!["same-id"]));
     }
     (points > 0).then_some((points, reasons))
@@ -467,8 +473,11 @@ pub fn resolve(registry: &Registry, devices: &[Device]) -> Vec<Match> {
         }
     }
     // Best pairs first; a record or a device is used once.
+    // At equal points, evidence beats a bare address match.
+    let address_only = |reasons: &[&str]| reasons == ["same-id"];
     pairs.sort_by(|a, b| {
         b.0.cmp(&a.0)
+            .then_with(|| address_only(&a.3).cmp(&address_only(&b.3)))
             .then_with(|| registry.records[a.2].key.cmp(&registry.records[b.2].key))
             .then(a.1.cmp(&b.1))
     });
@@ -822,6 +831,28 @@ mod tests {
         let m = resolve(&registry, &reused);
         assert!(m[0].new);
         assert_eq!(m[0].key, "02:00:00:00:00:01#2");
+    }
+
+    #[test]
+    fn a_moved_server_keeps_its_record_when_a_newcomer_takes_its_address() {
+        let ssh = [("ssh.22.hostkey_sha256", "AAAA11")];
+        let mut registry = Registry::new();
+        let old = devices_of(&[host("10.1.0.5", "", "srv1", &ssh)]);
+        registry.learn("ip:10.1.0.5", &old[0]);
+        let now = devices_of(&[
+            host("10.1.0.5", "", "", &[]),
+            host("10.1.0.6", "", "srv1", &ssh),
+        ]);
+        let m = resolve(&registry, &now);
+        let server = now
+            .iter()
+            .position(|d| d.ips[0].to_string() == "10.1.0.6")
+            .unwrap();
+        assert_eq!(m[server].key, "ip:10.1.0.5", "{m:?}");
+        assert!(m[1 - server].new, "{m:?}");
+        // Alone on the address, the newcomer is still taken for the device recorded there.
+        let alone = devices_of(&[host("10.1.0.5", "", "", &[])]);
+        assert!(!resolve(&registry, &alone)[0].new);
     }
 
     #[test]

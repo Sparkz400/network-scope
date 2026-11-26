@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **IP conflict alert** (`monitor`, kind `ip-conflict`): an address that two or more real MACs claim (ARP spoofing, a duplicate address, a device that took another's address) is alerted, Critical when the address is a gateway (the first traceroute hop, the router a DHCP server hands out, or an IPv6 router announcement), else High. Virtual router MACs (VRRP, HSRP, GLBP) do not count. The conflict was already noted on the devices; now it is raised.
 - **Firmware (SBOM) in the host details**: when an imported firmware SBOM matches the firmware a host reported (industrial identification, industrial traffic or LLDP-MED), the host details list its packages, with type, supplier, package URL, CPE name and licence on hover; single files are counted, not listed. Found as the CycloneDX export finds them (`sbom::for_hosts`).
 - **VEX by package URL**: a CycloneDX statement that names its component by package URL (also as a BOM-Link into another document, `urn:cdx:...#pkg:maven/...`) keeps it and matches the components of firmware SBOMs by package URL (type, namespace, name; qualifiers ignored; the version in the statement's range).
 - **Tested on real public files**: the 334 CISA advisories of 2026 (CSAF), the CycloneDX VEX guide's examples, and Syft 1.57.2 on the OpenWrt 25.12.6 root file system (CycloneDX 1.7 and SPDX 2.3) all import; the export with the OpenWrt SBOM nested passes the CycloneDX 1.6 schema. An ignored test takes such a file from `NS_REAL_SBOM`. A scan of 65,536 hosts exports in 4.5 s (86 MB; `docs/src/lab-and-testing.md`).
@@ -99,6 +100,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Settings in sections.** The window is called Settings and is grouped into collapsible sections (Safe Mode and discovery, Services and identification, Industrial (OT), SNMP, Traceroute, Timing and performance, Scripts, rules and recording, Appearance and language, Scheduled scans, Updates). **Tools → Scheduled scans…** opens it at the schedule.
 
 ### Fixed
+
+- **`--preset` dropped options it does not set**: `--melsec-port`, `--dnp3-address`, `--dnp3-master`, SNMP credentials, `--ipv6-discover`, `--record`, `--early-stop` and `--stream` were silently lost under a preset. Without `--melsec-port` the PLC port it names was no longer excluded, so generic probes (HTTP, TLS, probe payloads) reached it and the read-only MC request was never sent.
+- **The `--melsec-port` port is industrial everywhere**: TCP traceroute never targets it, and a host with it open gets the low back-off limits of an OT device (2 parallel probes instead of 32).
+- **ICMP traceroute stops at the target**: it sends in waves of three TTLs like the TCP and UDP methods, instead of one echo per TTL (20 by default, up to 64) that all reached a nearby device. The dry run already described it this way.
+- **A device that changed address no longer has its findings reported as new**: `changes` and the monitor's `new-finding` compare findings per device, not per address.
+- **No `address-changed` alerts for IPv6 addresses that come and go**: an expired neighbour-cache entry or a rotated temporary address is no move; IPv6 addresses count only for devices without IPv4. The same applies to the "address" change in `changes`.
+- **Repeat scans (`--incremental`) carry nothing over from another device**: when the MAC at an address differs from the base scan's, UDP answers and the traceroute are probed again instead of copied.
+- **`--sent-log` counts only packets that were sent**: a packet is recorded after it got its rate token, so a scan stopped while packets waited for tokens no longer counts them.
+- **The SYN engine keeps flat memory on huge scans**: its per-target route caches restart after 65,536 targets, like its RTT estimates.
+- **JARM follows the back-off**: a slowed-down host gets its JARM hellos paced by its back-off delay, and a paused host gets none.
+- **The repeat-scan port rotation reaches every port when scan ids skip** (several monitors on one database): a prime number of start offsets replaces slices whose count could share a factor with the step.
+- **A server without a visible MAC keeps its identity when it moves**: a newcomer on its old address no longer outranks the server's own evidence (SSH host key, name), so the server keeps its approval, owner and criticality.
 
 - **A device that sent its reply one byte at a time could hold a port for up to an hour during service detection.** A reply now has to arrive within 2 s after the first wait, and the SSH key exchange packet within the same bound.
 - **Some names a device sent reached the terminal with control characters**, so a device could send terminal escape sequences into `diff --format text` or CSV on standard output: the NTP reference, NetBIOS names, the DHCP domain, the names in a TLS certificate and OPC UA texts (including its error messages). Control characters are now removed and these values cut at 2,048 characters, as for the other protocols.

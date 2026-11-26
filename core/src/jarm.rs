@@ -565,13 +565,23 @@ enum Reply {
 
 /// Fingerprints one TLS port with up to ten connections, each through the rate gate. `None`
 /// when the port is on the deny list.
-pub async fn fingerprint(ip: IpAddr, port: u16, limit: Duration, gate: &Gate) -> Option<String> {
+/// `pace`: the host's back-off delay, kept between two hellos (zero: none).
+pub async fn fingerprint(
+    ip: IpAddr,
+    port: u16,
+    limit: Duration,
+    pace: Duration,
+    gate: &Gate,
+) -> Option<String> {
     if !allowed_port(port) {
         return None;
     }
     let host = ip.to_string();
     let mut lines = vec![];
-    for p in &PROBES {
+    for (i, p) in PROBES.iter().enumerate() {
+        if i > 0 && !pace.is_zero() {
+            tokio::time::sleep(pace).await;
+        }
         gate.wait_for(PacketKind::TlsClientHello, DETAIL).await;
         match send(ip, port, &client_hello(p, &host, &Nonces::fresh()), limit).await {
             Reply::Timeout => return Some("0".repeat(62)),
@@ -946,10 +956,10 @@ mod tests {
         });
         let gate = Gate::unlimited();
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        let a = fingerprint(ip, port, Duration::from_secs(2), &gate)
+        let a = fingerprint(ip, port, Duration::from_secs(2), Duration::ZERO, &gate)
             .await
             .unwrap();
-        let b = fingerprint(ip, port, Duration::from_secs(2), &gate)
+        let b = fingerprint(ip, port, Duration::from_secs(2), Duration::ZERO, &gate)
             .await
             .unwrap();
         assert!(is_jarm(&a) && a == b, "{a} {b}");
@@ -983,13 +993,13 @@ mod tests {
         );
         // A port that refuses the connection: all probes empty, 62 zeros.
         let (cport, _reserved) = crate::probes::refused_port();
-        let none = fingerprint(ip, cport, Duration::from_millis(300), &gate)
+        let none = fingerprint(ip, cport, Duration::from_millis(300), Duration::ZERO, &gate)
             .await
             .unwrap();
         assert_eq!(none, "0".repeat(62));
         // Deny list.
         assert_eq!(
-            fingerprint(ip, 502, Duration::from_millis(100), &gate).await,
+            fingerprint(ip, 502, Duration::from_millis(100), Duration::ZERO, &gate).await,
             None
         );
     }
@@ -1020,7 +1030,7 @@ mod tests {
         });
         let gate = Gate::unlimited();
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        let got = fingerprint(ip, port, Duration::from_millis(300), &gate)
+        let got = fingerprint(ip, port, Duration::from_millis(300), Duration::ZERO, &gate)
             .await
             .unwrap();
         assert_eq!(got, "0".repeat(62));

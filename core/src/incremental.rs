@@ -129,7 +129,7 @@ pub fn compatible(base: &Settings, now: &Settings) -> Result<(), String> {
 
 /// The ports to probe on one host: the ports it had open (that are still requested), the
 /// [`LIKELY`] likeliest of the others and a rotating slice of [`ROTATE`] more, taken from the
-/// others in port order at an offset that moves by one slice per base scan (`generation`).
+/// others in port order at an offset that moves with the base scan (`generation`).
 /// A scan with so few ports that the sample would be everything probes them all.
 pub fn ports_for(previous: Option<&Host>, requested: &[u16], generation: i64) -> Vec<u16> {
     if requested.len() <= LIKELY + ROTATE {
@@ -162,7 +162,18 @@ pub fn ports_for(previous: Option<&Host>, requested: &[u16], generation: i64) ->
         .filter(|p| !chosen.contains(p))
         .collect();
     if !others.is_empty() {
-        let start = (generation.unsigned_abs() as usize).wrapping_mul(ROTATE) % others.len();
+        // A prime number of start offsets, each at most ROTATE apart: base scan ids that step by
+        // 2..10 (several monitors on one database) still reach every offset within `offsets`
+        // scans, where a slice count sharing a factor with the step skipped some ports forever.
+        let mut offsets = others.len().div_ceil(ROTATE).max(11);
+        while (2..offsets)
+            .take_while(|d| d * d <= offsets)
+            .any(|d| offsets.is_multiple_of(d))
+        {
+            offsets += 1;
+        }
+        let slot = (generation.unsigned_abs() % offsets as u64) as usize;
+        let start = slot * others.len() / offsets;
         chosen.extend(
             others
                 .iter()
@@ -280,6 +291,19 @@ mod tests {
             ports_for(None, &requested, 7),
             ports_for(None, &requested, 8)
         );
+    }
+
+    #[test]
+    fn the_rotation_reaches_every_port_when_scan_ids_skip() {
+        // Two or three monitors on one database: each sees every second or third scan id.
+        let requested: Vec<u16> = (1..=200).collect();
+        for stride in 1..=10 {
+            let mut seen = BTreeSet::new();
+            for n in 1..=29 {
+                seen.extend(ports_for(None, &requested, n * stride));
+            }
+            assert_eq!(seen.len(), requested.len(), "stride {stride}");
+        }
     }
 
     #[test]

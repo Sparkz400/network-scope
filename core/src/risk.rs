@@ -232,6 +232,29 @@ impl Finding {
             self.id
         )
     }
+    /// Like [`Finding::key`], but on the device (`device`: its key) instead of the address, so a
+    /// device that changed address keeps its findings. Without a device, the address.
+    pub fn device_key(&self, device: Option<&str>) -> String {
+        format!(
+            "{}|{}|{}",
+            device.map_or_else(|| self.ip.to_string(), str::to_string),
+            self.port.map_or(String::new(), |p| p.to_string()),
+            self.id
+        )
+    }
+}
+
+/// Address -> device key, for [`Finding::device_key`].
+pub fn device_keys<'a>(
+    devices: impl IntoIterator<Item = (&'a [std::net::IpAddr], String)>,
+) -> std::collections::HashMap<std::net::IpAddr, String> {
+    let mut out = std::collections::HashMap::new();
+    for (ips, key) in devices {
+        for ip in ips {
+            out.insert(*ip, key.clone());
+        }
+    }
+    out
 }
 
 /// Dotted version with an optional `pN` patch level: "8.9p1" -> [8, 9, 1].

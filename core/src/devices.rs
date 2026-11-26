@@ -525,6 +525,24 @@ pub fn classify_detailed(e: &Facts) -> Option<(String, Evidence)> {
     ))
 }
 
+/// The device really changed address: its IPv4 addresses differ (both scans saw some). IPv6
+/// addresses come and go with neighbour caches and temporary addresses, so they count only for a
+/// device that has no IPv4 address in either scan.
+pub fn address_changed(old: &[IpAddr], new: &[IpAddr]) -> bool {
+    let v4 = |l: &[IpAddr]| {
+        l.iter()
+            .filter(|ip| ip.is_ipv4())
+            .copied()
+            .collect::<BTreeSet<_>>()
+    };
+    let (a, b) = (v4(old), v4(new));
+    if a.is_empty() && b.is_empty() {
+        let all = |l: &[IpAddr]| l.iter().copied().collect::<BTreeSet<_>>();
+        return !old.is_empty() && !new.is_empty() && all(old) != all(new);
+    }
+    !a.is_empty() && !b.is_empty() && a != b
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Device {
     pub id: String,
@@ -1393,6 +1411,35 @@ pub fn history_text(h: &DeviceHistory) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn address_changes_ignore_ipv6_that_comes_and_goes() {
+        let ips = |l: &[&str]| {
+            l.iter()
+                .map(|s| s.parse().unwrap())
+                .collect::<Vec<IpAddr>>()
+        };
+        // A neighbour-cache entry or a temporary address that expired is no move.
+        assert!(!address_changed(
+            &ips(&["10.0.0.5", "fe80::1"]),
+            &ips(&["10.0.0.5"])
+        ));
+        assert!(!address_changed(
+            &ips(&["10.0.0.5", "2001:db8::a"]),
+            &ips(&["10.0.0.5", "2001:db8::b"])
+        ));
+        assert!(address_changed(
+            &ips(&["10.0.0.5", "fe80::1"]),
+            &ips(&["10.0.0.77", "fe80::1"])
+        ));
+        // IPv6-only devices still compare their addresses; one empty side says nothing.
+        assert!(address_changed(
+            &ips(&["2001:db8::a"]),
+            &ips(&["2001:db8::b"])
+        ));
+        assert!(!address_changed(&ips(&["10.0.0.5"]), &ips(&["fe80::1"])));
+        assert!(!address_changed(&ips(&[]), &ips(&["10.0.0.5"])));
+    }
 
     fn host(ip: &str, mac: &str, open: &[u16], id: &[(&str, &str)]) -> Host {
         Host {

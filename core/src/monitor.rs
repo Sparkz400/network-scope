@@ -169,13 +169,14 @@ impl Dedup {
 /// Alert kinds `evaluate` filters by `min_severity`, with the highest severity each can have.
 /// (`new-finding` can have any severity; notices such as `capture-incomplete` are never
 /// filtered.)
-const KIND_MAX_SEVERITY: [(&str, Severity); 7] = [
+const KIND_MAX_SEVERITY: [(&str, Severity); 8] = [
     ("port-closed", Severity::Info),
     ("device-missing", Severity::Low),
     ("address-changed", Severity::Medium),
     ("unknown-device", Severity::Medium),
     ("new-device", Severity::High),
     ("port-opened", Severity::High),
+    ("ip-conflict", Severity::Critical),
     ("rogue-dhcp", Severity::Critical),
 ];
 
@@ -207,6 +208,83 @@ pub fn severity_hint(policy: &Policy) -> Option<String> {
 const RISKY_PORTS: [u16; 14] = [
     21, 23, 69, 135, 139, 445, 1433, 3306, 3389, 5900, 6379, 27017, 2375, 502,
 ];
+
+/// MAC prefixes of virtual router addresses (VRRP v4/v6, HSRP v1/v2, GLBP): they share an IP
+/// with a real router on purpose.
+const VIRTUAL_ROUTER_MACS: [&str; 5] = [
+    "00:00:5E:00:01:",
+    "00:00:5E:00:02:",
+    "00:00:0C:07:AC:",
+    "00:00:0C:9F:F",
+    "00:07:B4:00:",
+];
+
+/// Gateways of the scanned networks: the first hop of a traceroute, the router a DHCP server
+/// hands out, and routers announcing themselves with IPv6 Neighbor Discovery.
+pub fn gateways(s: &Snapshot) -> BTreeSet<IpAddr> {
+    let mut out = BTreeSet::new();
+    for h in &s.hosts {
+        if let Some(ip) = h
+            .trace
+            .first()
+            .filter(|hop| hop.ttl == 1)
+            .and_then(|hop| hop.ip)
+            && ip != h.ip
+        {
+            out.insert(ip);
+        }
+        // "server 10.0.0.1, mask ..., router 10.0.0.1/10.0.0.2, ..."
+        if let Some(list) = h
+            .identity
+            .get("udp.67")
+            .and_then(|info| info.split("router ").nth(1))
+            .and_then(|rest| rest.split([',', ')']).next())
+        {
+            out.extend(
+                list.split('/')
+                    .filter_map(|a| a.trim().parse::<IpAddr>().ok()),
+            );
+        }
+    }
+    for o in &s.observations {
+        if o.fields.get("router").is_some_and(|v| v == "true")
+            && let Some(ip) = o.ip
+        {
+            out.insert(ip);
+        }
+    }
+    out
+}
+
+/// IP addresses that several real MACs claim (ARP spoofing, a duplicate address, a device that
+/// took the gateway's address): address -> the MACs, sorted. Virtual router MACs do not count.
+pub fn ip_conflicts(devices: &[devices::Device]) -> BTreeMap<IpAddr, BTreeSet<String>> {
+    let real = |mac: &str| {
+        !mac.is_empty()
+            && !VIRTUAL_ROUTER_MACS
+                .iter()
+                .any(|p| mac.to_ascii_uppercase().starts_with(p))
+    };
+    let mut claims: BTreeMap<IpAddr, BTreeSet<String>> = BTreeMap::new();
+    for d in devices {
+        let Some(conflicts) = d.observations.get("IP conflict") else {
+            continue;
+        };
+        for (ip, others) in conflicts {
+            let Ok(ip) = ip.parse::<IpAddr>() else {
+                continue;
+            };
+            let macs = claims.entry(ip).or_default();
+            for mac in std::iter::once(d.mac.as_str()).chain(others.split(", ")) {
+                if real(mac) {
+                    macs.insert(mac.to_ascii_uppercase());
+                }
+            }
+        }
+    }
+    claims.retain(|_, macs| macs.len() > 1);
+    claims
+}
 
 /// Every DHCP server seen: scan answers (DHCPINFORM), passive OFFER/ACK traffic and active discovery.
 pub fn dhcp_servers(s: &Snapshot) -> BTreeMap<IpAddr, String> {
@@ -513,7 +591,14 @@ fn evaluate_derived(
                 ));
             }
         }
-        for f in new_findings(previous.findings, current.findings.to_vec()) {
+        let ids = |list: &[devices::Device]| {
+            risk::device_keys(list.iter().map(|d| (d.ips.as_slice(), d.id.clone())))
+        };
+        for f in new_findings(
+            previous.findings,
+            current.findings.to_vec(),
+            (&ids(previous.devices), &ids(cur_devices)),
+        ) {
             out.push(alert(
                 now,
                 f.severity,
@@ -531,12 +616,7 @@ fn evaluate_derived(
         let now_keys: HashSet<String> = cur_devices.iter().map(key_of).collect();
         for d in previous.devices {
             match now_by_id.get(d.id.as_str()) {
-                Some(n)
-                    if !d.mac.is_empty()
-                        && n.ips != d.ips
-                        && !d.ips.is_empty()
-                        && !n.ips.is_empty() =>
-                {
+                Some(n) if !d.mac.is_empty() && devices::address_changed(&d.ips, &n.ips) => {
                     // Medium: a known MAC on a new address can be spoofing or a misconfiguration.
                     out.push(alert(
                         now,
@@ -563,6 +643,25 @@ fn evaluate_derived(
                 _ => {}
             }
         }
+    }
+
+    // Several MACs answering for one address: Critical when it is a gateway (traffic of the
+    // whole network can be redirected), else High.
+    let gateways = gateways(cur);
+    for (ip, macs) in ip_conflicts(cur_devices) {
+        let gateway = gateways.contains(&ip);
+        out.push(alert(
+            now,
+            if gateway { Severity::Critical } else { Severity::High },
+            "ip-conflict",
+            ip.to_string(),
+            format!(
+                "{}{ip} is claimed by {} MACs: {} (ARP spoofing, a duplicate address or a device that took it over)",
+                if gateway { "Gateway " } else { "" },
+                macs.len(),
+                macs.into_iter().collect::<Vec<_>>().join(", ")
+            ),
+        ));
     }
 
     let servers = dhcp_servers(cur);
@@ -1101,14 +1200,23 @@ pub fn run(
 /// statement clears (VEX: not affected, fixed, false positive) is not alerted: it does not count
 /// anywhere else either. One that was cleared in the previous scan and is not any more (other
 /// firmware, a withdrawn statement) is new: nobody was told about it yet.
-fn new_findings(before: &[risk::Finding], now: Vec<risk::Finding>) -> Vec<risk::Finding> {
+/// Findings are compared per device (`devices`: address -> device id of the previous and the
+/// current scan), so a device that changed address does not raise its old findings again.
+fn new_findings(
+    before: &[risk::Finding],
+    now: Vec<risk::Finding>,
+    devices: (&HashMap<IpAddr, String>, &HashMap<IpAddr, String>),
+) -> Vec<risk::Finding> {
+    let key = |f: &risk::Finding, map: &HashMap<IpAddr, String>| {
+        f.device_key(map.get(&f.ip).map(String::as_str))
+    };
     let old: HashSet<String> = before
         .iter()
         .filter(|f| !f.cleared_by_vex())
-        .map(risk::Finding::key)
+        .map(|f| key(f, devices.0))
         .collect();
     now.into_iter()
-        .filter(|f| !old.contains(&f.key()) && !f.cleared_by_vex())
+        .filter(|f| !old.contains(&key(f, devices.1)) && !f.cleared_by_vex())
         .collect()
 }
 
@@ -1359,13 +1467,14 @@ mod tests {
                 source: "VEX-1".into(),
             }),
         };
+        let none = HashMap::new();
         let now = vec![
             finding("cve-cve-2099-1", Some(crate::vex::State::NotAffected)),
             finding("cve-cve-2099-2", Some(crate::vex::State::Affected)),
             finding("cve-cve-2099-3", None),
             finding("telnet-open", None),
         ];
-        let ids: Vec<String> = new_findings(&[finding("telnet-open", None)], now)
+        let ids: Vec<String> = new_findings(&[finding("telnet-open", None)], now, (&none, &none))
             .into_iter()
             .map(|f| f.id)
             .collect();
@@ -1374,8 +1483,22 @@ mod tests {
         let cleared = finding("cve-cve-2099-1", Some(crate::vex::State::NotAffected));
         let live = finding("cve-cve-2099-1", None);
         let before = std::slice::from_ref(&cleared);
-        assert_eq!(new_findings(before, vec![live]).len(), 1);
-        assert!(new_findings(before, vec![cleared.clone()]).is_empty());
+        assert_eq!(new_findings(before, vec![live], (&none, &none)).len(), 1);
+        assert!(new_findings(before, vec![cleared.clone()], (&none, &none)).is_empty());
+        // The same device on a new address keeps its findings; another device there is new.
+        let moved = risk::Finding {
+            ip: "10.0.0.77".parse().unwrap(),
+            ..finding("telnet-open", None)
+        };
+        let old_ids = HashMap::from([("10.0.0.5".parse().unwrap(), "mac:00000c000007".into())]);
+        let new_ids = HashMap::from([("10.0.0.77".parse().unwrap(), "mac:00000c000007".into())]);
+        let before = [finding("telnet-open", None)];
+        assert!(new_findings(&before, vec![moved.clone()], (&old_ids, &new_ids)).is_empty());
+        let other = HashMap::from([("10.0.0.77".parse().unwrap(), "mac:00000c000099".into())]);
+        assert_eq!(
+            new_findings(&before, vec![moved], (&old_ids, &other)).len(),
+            1
+        );
     }
 
     #[test]
@@ -1525,6 +1648,81 @@ mod tests {
             1,
         );
         assert!(!kinds(&quiet).contains(&"device-missing"));
+    }
+
+    #[test]
+    fn a_second_mac_on_an_address_is_an_ip_conflict_and_critical_on_the_gateway() {
+        let arp = |mac: &str, ip: &str| Observation {
+            protocol: "ARP".into(),
+            mac: mac.into(),
+            ip: Some(ip.parse().unwrap()),
+            fields: BTreeMap::new(),
+        };
+        let mut pc = host("10.0.0.20", "AA:BB:CC:00:00:20", &[22], &[]);
+        pc.trace = vec![crate::trace::Hop {
+            ttl: 1,
+            ip: Some("10.0.0.1".parse().unwrap()),
+            rtt: Some(1),
+        }];
+        let router = host("10.0.0.1", "AA:BB:CC:00:00:01", &[80], &[]);
+        let printer = host("10.0.0.30", "AA:BB:CC:00:00:30", &[9100], &[]);
+        let cur = snap(
+            vec![router.clone(), pc.clone(), printer.clone()],
+            vec![
+                arp("66:66:66:00:00:01", "10.0.0.1"),
+                arp("66:66:66:00:00:30", "10.0.0.30"),
+                // A VRRP virtual MAC on an address is how VRRP works: no conflict.
+                arp("00:00:5E:00:01:01", "10.0.0.20"),
+            ],
+        );
+        assert_eq!(
+            gateways(&cur)
+                .into_iter()
+                .map(|g| g.to_string())
+                .collect::<Vec<_>>(),
+            ["10.0.0.1"]
+        );
+        let k = known(&[
+            "AA:BB:CC:00:00:01",
+            "AA:BB:CC:00:00:20",
+            "AA:BB:CC:00:00:30",
+            "66:66:66:00:00:01",
+            "66:66:66:00:00:30",
+            "00:00:5E:00:01:01",
+        ]);
+        let a = evaluate(None, &cur, &k, &Policy::default(), 1);
+        let conflicts: Vec<(Severity, &str)> = a
+            .iter()
+            .filter(|a| a.kind == "ip-conflict")
+            .map(|a| (a.severity, a.subject.as_str()))
+            .collect();
+        assert_eq!(
+            conflicts,
+            [
+                (Severity::Critical, "10.0.0.1"),
+                (Severity::High, "10.0.0.30")
+            ],
+            "{a:?}"
+        );
+        let gw = a.iter().find(|a| a.subject == "10.0.0.1").unwrap();
+        assert!(
+            gw.message
+                .starts_with("Gateway 10.0.0.1 is claimed by 2 MACs"),
+            "{}",
+            gw.message
+        );
+        // The same conflict is one condition across cycles.
+        assert_eq!(
+            alert_key(gw),
+            alert_key(&evaluate(None, &cur, &k, &Policy::default(), 2)[0])
+        );
+        // One MAC per address: nothing.
+        let quiet = snap(vec![router, pc, printer], vec![]);
+        assert!(
+            evaluate(None, &quiet, &k, &Policy::default(), 1)
+                .iter()
+                .all(|a| a.kind != "ip-conflict")
+        );
     }
 
     #[test]
