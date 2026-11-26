@@ -904,7 +904,10 @@ fn note_first(h: &mut Host, text: String) {
 /// no longer a complete picture. Record it rather than drop the result silently.
 fn note_probe_panic(h: &mut Host, e: &tokio::task::JoinError) {
     h.ports_checked = false;
-    note(h, format!("a probe did not complete ({e}); some ports were not recorded"));
+    note(
+        h,
+        format!("a probe did not complete ({e}); some ports were not recorded"),
+    );
 }
 /// Moves the notes the back-off controller recorded onto the host.
 fn flush_backoff_notes(gov: &HostGovernor, h: &mut Host) {

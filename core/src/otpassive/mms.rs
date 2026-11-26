@@ -550,7 +550,10 @@ mod tests {
         assert!(t.observations().is_empty());
         // After the idle window a new connection sweeps the stale flows out, so the table does
         // not stay full and refuse new connections for the rest of a long capture.
-        t.feed(&frame(HMI, PLC, true, 6000, 102, &CR_MMS), 1 + FLOW_IDLE_SECS + 11);
+        t.feed(
+            &frame(HMI, PLC, true, 6000, 102, &CR_MMS),
+            1 + FLOW_IDLE_SECS + 11,
+        );
         assert_eq!(t.iso.flows.len(), 1);
     }
 }
