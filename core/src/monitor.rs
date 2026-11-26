@@ -209,8 +209,8 @@ const RISKY_PORTS: [u16; 14] = [
     21, 23, 69, 135, 139, 445, 1433, 3306, 3389, 5900, 6379, 27017, 2375, 502,
 ];
 
-/// MAC prefixes of virtual router addresses (VRRP v4/v6, HSRP v1/v2, GLBP): they share an IP
-/// with a real router on purpose.
+/// MAC prefixes of virtual router addresses (VRRP v4/v6, HSRP v1/v2, GLBP): a redundant gateway
+/// shares its address with them on purpose, but anyone can send from such a MAC.
 const VIRTUAL_ROUTER_MACS: [&str; 5] = [
     "00:00:5E:00:01:",
     "00:00:5E:00:02:",
@@ -218,6 +218,12 @@ const VIRTUAL_ROUTER_MACS: [&str; 5] = [
     "00:00:0C:9F:F",
     "00:07:B4:00:",
 ];
+
+/// A VRRP, HSRP or GLBP virtual router MAC.
+pub fn virtual_router_mac(mac: &str) -> bool {
+    let mac = mac.to_ascii_uppercase();
+    VIRTUAL_ROUTER_MACS.iter().any(|p| mac.starts_with(p))
+}
 
 /// Gateways of the scanned networks: the first hop of a traceroute, the router a DHCP server
 /// hands out, and routers announcing themselves with IPv6 Neighbor Discovery.
@@ -256,15 +262,10 @@ pub fn gateways(s: &Snapshot) -> BTreeSet<IpAddr> {
     out
 }
 
-/// IP addresses that several real MACs claim (ARP spoofing, a duplicate address, a device that
-/// took the gateway's address): address -> the MACs, sorted. Virtual router MACs do not count.
+/// IP addresses that several MACs claim (ARP spoofing, a duplicate address, a device that took
+/// the gateway's address): address -> the MACs, sorted. Virtual router MACs count too: skipping
+/// them would let a spoofer hide behind one.
 pub fn ip_conflicts(devices: &[devices::Device]) -> BTreeMap<IpAddr, BTreeSet<String>> {
-    let real = |mac: &str| {
-        !mac.is_empty()
-            && !VIRTUAL_ROUTER_MACS
-                .iter()
-                .any(|p| mac.to_ascii_uppercase().starts_with(p))
-    };
     let mut claims: BTreeMap<IpAddr, BTreeSet<String>> = BTreeMap::new();
     for d in devices {
         let Some(conflicts) = d.observations.get("IP conflict") else {
@@ -276,7 +277,7 @@ pub fn ip_conflicts(devices: &[devices::Device]) -> BTreeMap<IpAddr, BTreeSet<St
             };
             let macs = claims.entry(ip).or_default();
             for mac in std::iter::once(d.mac.as_str()).chain(others.split(", ")) {
-                if real(mac) {
+                if !mac.is_empty() {
                     macs.insert(mac.to_ascii_uppercase());
                 }
             }
@@ -646,20 +647,39 @@ fn evaluate_derived(
     }
 
     // Several MACs answering for one address: Critical when it is a gateway (traffic of the
-    // whole network can be redirected), else High.
+    // whole network can be redirected), else High. A virtual router MAC among them is how a
+    // redundant gateway looks, so that is High and the message says so; it is never silent,
+    // since such a MAC can be spoofed.
     let gateways = gateways(cur);
     for (ip, macs) in ip_conflicts(cur_devices) {
         let gateway = gateways.contains(&ip);
+        let virtual_macs: Vec<&str> = macs
+            .iter()
+            .map(String::as_str)
+            .filter(|m| virtual_router_mac(m))
+            .collect();
+        let note = if virtual_macs.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; {} is a VRRP/HSRP/GLBP virtual router MAC: expected for a redundant gateway, unless it is spoofed",
+                virtual_macs.join(", ")
+            )
+        };
         out.push(alert(
             now,
-            if gateway { Severity::Critical } else { Severity::High },
+            if gateway && virtual_macs.is_empty() {
+                Severity::Critical
+            } else {
+                Severity::High
+            },
             "ip-conflict",
             ip.to_string(),
             format!(
-                "{}{ip} is claimed by {} MACs: {} (ARP spoofing, a duplicate address or a device that took it over)",
+                "{}{ip} is claimed by {} MACs: {} (ARP spoofing, a duplicate address or a device that took it over){note}",
                 if gateway { "Gateway " } else { "" },
                 macs.len(),
-                macs.into_iter().collect::<Vec<_>>().join(", ")
+                macs.iter().map(String::as_str).collect::<Vec<_>>().join(", ")
             ),
         ));
     }
@@ -1671,7 +1691,7 @@ mod tests {
             vec![
                 arp("66:66:66:00:00:01", "10.0.0.1"),
                 arp("66:66:66:00:00:30", "10.0.0.30"),
-                // A VRRP virtual MAC on an address is how VRRP works: no conflict.
+                // A VRRP virtual MAC is still a second claim (it can be spoofed), but High.
                 arp("00:00:5E:00:01:01", "10.0.0.20"),
             ],
         );
@@ -1700,9 +1720,20 @@ mod tests {
             conflicts,
             [
                 (Severity::Critical, "10.0.0.1"),
+                (Severity::High, "10.0.0.20"),
                 (Severity::High, "10.0.0.30")
             ],
             "{a:?}"
+        );
+        let vrrp = a.iter().find(|a| a.subject == "10.0.0.20").unwrap();
+        assert!(
+            vrrp.message
+                .contains("00:00:5E:00:01:01 is a VRRP/HSRP/GLBP virtual router MAC"),
+            "{}",
+            vrrp.message
+        );
+        assert!(
+            virtual_router_mac("00:00:5e:00:01:07") && !virtual_router_mac("AA:BB:CC:00:00:01")
         );
         let gw = a.iter().find(|a| a.subject == "10.0.0.1").unwrap();
         assert!(
